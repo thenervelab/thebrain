@@ -1,5 +1,6 @@
 pub use crate::types::{NodeMetricsData};
 use sp_std::{collections::btree_map::BTreeMap, vec::Vec};
+use pallet_registration::NodeType;
 
 impl NodeMetricsData {
     // Configuration constants
@@ -14,22 +15,45 @@ impl NodeMetricsData {
     const GEOGRAPHIC_DIVERSITY_TARGET: u32 = 5; // Target number of distinct regions
     const INTERNAL_SCALING: u32 = 1_000_000;
 
-    pub fn calculate_weight(metrics: &NodeMetricsData, all_nodes_metrics: &[NodeMetricsData], geo_distribution: &BTreeMap<Vec<u8>, u32>) -> u32 {
+    pub fn calculate_weight(_node_type: NodeType, metrics: &NodeMetricsData, all_nodes_metrics: &[NodeMetricsData], geo_distribution: &BTreeMap<Vec<u8>, u32>) -> u32 {
         // Calculate base scores with u64 casting for safety
         let availability_score = (Self::calculate_availability_score(metrics) as u64).saturating_div(100);
         let performance_score = (Self::calculate_performance_score(metrics) as u64).saturating_div(100);
         let reliability_score = (Self::calculate_reliability_score(metrics) as u64).saturating_div(100);
-        let capacity_score = (Self::calculate_capacity_score(metrics) as u64).saturating_div(100);
+        
+        // Conditionally include capacity score only for storage miners
+        let capacity_score = match _node_type {
+            NodeType::StorageMiner => (Self::calculate_capacity_score(metrics) as u64).saturating_div(100),
+            _ => 0, 
+        };
+        
         let network_score = (Self::calculate_network_score(metrics) as u64).saturating_div(100);
         let diversity_score = (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
 
-        // Calculate weighted base score
-        let base_weight = (availability_score.saturating_mul(35)
-            .saturating_add(performance_score.saturating_mul(20))
-            .saturating_add(reliability_score.saturating_mul(15))
-            .saturating_add(capacity_score.saturating_mul(15))
-            .saturating_add(network_score.saturating_mul(10))
-            .saturating_add(diversity_score.saturating_mul(5))) as u32;
+        // Adjust weight calculation based on node type
+        let base_weight = match _node_type {
+            NodeType::StorageMiner => (
+                availability_score.saturating_mul(35)
+                .saturating_add(performance_score.saturating_mul(20))
+                .saturating_add(reliability_score.saturating_mul(15))
+                .saturating_add(capacity_score.saturating_mul(15)) // Capacity score only for storage
+                .saturating_add(network_score.saturating_mul(10))
+                .saturating_add(diversity_score.saturating_mul(5))
+            ) as u32,
+            NodeType::ComputeMiner => (
+                availability_score.saturating_mul(40)
+                .saturating_add(performance_score.saturating_mul(30))
+                .saturating_add(reliability_score.saturating_mul(20))
+                .saturating_add(network_score.saturating_mul(10))
+            ) as u32,
+            NodeType::Validator => (
+                availability_score.saturating_mul(30)
+                .saturating_add(performance_score.saturating_mul(25))
+                .saturating_add(reliability_score.saturating_mul(25))
+                .saturating_add(network_score.saturating_mul(15))
+                .saturating_add(diversity_score.saturating_mul(5))
+            ) as u32,
+        };
 
         // Calculate modifiers
         let bonuses = (Self::calculate_bonuses(metrics) as u64).saturating_div(100);
@@ -63,7 +87,6 @@ impl NodeMetricsData {
             .saturating_div(Self::INTERNAL_SCALING as u64)
             .max(1)
             .min(Self::MAX_SCORE as u64) as u32;
-
 
         weight
     }
