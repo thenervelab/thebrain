@@ -16,11 +16,23 @@ Hippius is a Bittensor subnet that enables decentralized file storage and comput
 
 ## Node Architecture
 
-Each network participant runs specialized offchain workers that enable decentralized information gathering and processing:
+Each network participant runs specialized components and offchain workers that enable decentralized operations:
 
-- **Storage Miners**: Monitor storage capacity, file health, and replication status
-- **Compute Miners**: Track resource availability and task execution metrics
-- **Validators**: Verify network operations and collect performance data
+- **Storage Miners**: 
+  - Run IPFS nodes for distributed file storage
+  - Manage dedicated storage nodes and disk infrastructure
+  - Monitor storage capacity, file health, and replication status via offchain workers
+
+- **Compute Miners**: 
+  - Operate as hypervisors for virtualized compute resources
+  - Manage task execution and resource allocation
+  - Track resource availability and performance metrics via offchain workers
+
+- **Validators**: 
+  - Verify network operations and collect performance data
+  - Ensure network security and proper resource allocation
+  - monitor storage and compute usage via offchain workers
+  - manage replication and task assignment via offchain workers
 
 
 
