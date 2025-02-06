@@ -17,7 +17,7 @@ impl NodeMetricsData {
 
     // New method to calculate compute RAM score
     fn calculate_compute_ram_score(metrics: &NodeMetricsData) -> u64 {
-        if !metrics.is_sev_enabled == 0 {
+        if !metrics.is_sev_enabled {
             return 0;
         }
         // // RAM type scoring
