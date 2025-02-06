@@ -359,7 +359,7 @@ pub mod pallet {
         }
 
         /// Fetch all registered miners who have staked more than 600
-        pub fn get_all_miners_with_min_staked() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+        pub fn get_all_nodes_with_min_staked() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
             // Vector to store filtered node info
             let mut active_storage_miners = Vec::new();
 

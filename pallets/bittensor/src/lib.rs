@@ -21,7 +21,8 @@ pub mod pallet {
     };
     use pallet_metagraph::Pallet as MetagraphPallet;
     use pallet_rankings::Pallet as RankingsPallet;
-    use pallet_registration::{Pallet as RegistrationPallet, NodeRegistration, NodeType};
+    use pallet_registration::{Pallet as RegistrationPallet, NodeRegistration, NodeType, NodeInfo};
+    use pallet_metagraph::UID;
     use pallet_utils::Pallet as UtilsPallet;
     use scale_info::prelude::string::String;
     use sp_core::crypto::Ss58Codec;
@@ -120,66 +121,36 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
-        pub fn calculate_weights_for_miners() -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
-            let uids = MetagraphPallet::<T>::get_uids();
-            let all_miners = RegistrationPallet::<T>::get_all_miners_with_min_staked();
-
+        // New method to calculate weights specifically for storage miners
+        fn calculate_storage_miner_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
+            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+            
             let mut storage_weights: Vec<u16> = Vec::new();
             let mut storage_nodes_ss58: Vec<Vec<u8>> = Vec::new();
             let mut storage_miners_node_id: Vec<Vec<u8>> = Vec::new();
             let mut storage_miners_node_types: Vec<NodeType> = Vec::new();
-
-            let mut compute_weights: Vec<u16> = Vec::new();
-            let mut compute_nodes_ss58: Vec<Vec<u8>> = Vec::new();
-            let mut compute_miners_node_id: Vec<Vec<u8>> = Vec::new();
-            let mut compute_miners_node_types: Vec<NodeType> = Vec::new();
-
-            let mut validator_weights: Vec<u16> = Vec::new();
-            let mut validator_nodes_ss58: Vec<Vec<u8>> = Vec::new();
-            let mut validator_miners_node_id: Vec<Vec<u8>> = Vec::new();
-            let mut validator_miners_node_types: Vec<NodeType> = Vec::new();
-
             let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
             let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-            // Collect metrics for all miners
-            let mut all_nodes_metrics: Vec<NodeMetricsData> = Vec::new();
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
 
-            for miner in &all_miners {
-                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
-                    all_nodes_metrics.push(metrics);
-                } else {
-                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
-                        log::info!("Node metrics not found for miner: {:?}", node_id_str);
-                    }
+            for miner in all_miners {
+                if miner.node_type != NodeType::StorageMiner {
+                    continue;
                 }
-            }
 
-            let all_miners = RegistrationPallet::<T>::get_all_miners_with_min_staked();
-
-            for miner in &all_miners {
-                let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                 if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
-                    let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // Populate this as needed
+                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                    
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight(&metrics, &all_nodes_metrics, &geo_distribution);
-                    if miner.node_type == NodeType::StorageMiner{
-                        storage_weights.push(weight as u16); // Assuming you want to store the weight as u16
-                        storage_miners_node_id.push(miner.node_id.clone());
-                        storage_miners_node_types.push(miner.node_type.clone());
-                        storage_nodes_ss58.push(miner_ss58.clone().into());
-                    }else if miner.node_type == NodeType::ComputeMiner{
-                        compute_weights.push(weight as u16); // Assuming you want to store the weight as u16
-                        compute_miners_node_id.push(miner.node_id.clone());
-                        compute_miners_node_types.push(miner.node_type.clone());
-                        compute_nodes_ss58.push(miner_ss58.clone().into());
-                    }else {
-                        validator_weights.push(weight as u16); // Assuming you want to store the weight as u16
-                        validator_miners_node_id.push(miner.node_id.clone());
-                        validator_miners_node_types.push(miner.node_type.clone());
-                        validator_nodes_ss58.push(miner_ss58.clone().into());
-                    }
+                    let weight = WeightCalculation::calculate_weight(&metrics, all_nodes_metrics, &geo_distribution);
 
+                    storage_weights.push(weight as u16);
+                    storage_miners_node_id.push(miner.node_id.clone());
+                    storage_miners_node_types.push(miner.node_type.clone());
+                    storage_nodes_ss58.push(miner_ss58.clone().into());
+
+                    // Update Bittensor UIDs
                     for uid in uids.iter() {
                         if uid.substrate_address.to_ss58check() == miner_ss58 {
                             all_uids_on_bittensor.push(uid.id);
@@ -188,15 +159,145 @@ pub mod pallet {
                     }
                 } else {
                     if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
+                        log::info!("Node metrics not found for storage miner: {:?}", node_id_str);
+                    }
+                }
+            }
+
+            (storage_weights, storage_nodes_ss58, storage_miners_node_id, 
+             storage_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
+        }
+
+        // New method to calculate weights specifically for compute miners
+        fn calculate_validator_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
+            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+            
+            let mut validator_weights: Vec<u16> = Vec::new();
+            let mut validator_nodes_ss58: Vec<Vec<u8>> = Vec::new();
+            let mut validator_miners_node_id: Vec<Vec<u8>> = Vec::new();
+            let mut validator_miners_node_types: Vec<NodeType> = Vec::new();
+            let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
+            let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
+
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
+
+            for miner in all_miners {
+                if miner.node_type != NodeType::Validator {
+                    continue;
+                }
+
+                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                    
+                    geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                    let weight = WeightCalculation::calculate_weight(&metrics, all_nodes_metrics, &geo_distribution);
+
+                    validator_weights.push(weight as u16);
+                    validator_miners_node_id.push(miner.node_id.clone());
+                    validator_miners_node_types.push(miner.node_type.clone());
+                    validator_nodes_ss58.push(miner_ss58.clone().into());
+
+                    // Update Bittensor UIDs
+                    for uid in uids.iter() {
+                        if uid.substrate_address.to_ss58check() == miner_ss58 {
+                            all_uids_on_bittensor.push(uid.id);
+                            all_weights_on_bitensor.push(weight as u16);
+                        }
+                    }
+                } else {
+                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
+                        log::info!("Node metrics not found for validator miner: {:?}", node_id_str);
+                    }
+                }
+            }
+
+            (validator_weights, validator_nodes_ss58, validator_miners_node_id, 
+             validator_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
+        }
+
+        // New method to calculate weights specifically for compute miners
+        fn calculate_compute_miner_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
+            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+            
+            let mut compute_weights: Vec<u16> = Vec::new();
+            let mut compute_nodes_ss58: Vec<Vec<u8>> = Vec::new();
+            let mut compute_miners_node_id: Vec<Vec<u8>> = Vec::new();
+            let mut compute_miners_node_types: Vec<NodeType> = Vec::new();
+            let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
+            let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
+
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
+
+            for miner in all_miners {
+                if miner.node_type != NodeType::ComputeMiner {
+                    continue;
+                }
+
+                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                    
+                    geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                    let weight = WeightCalculation::calculate_weight(&metrics, all_nodes_metrics, &geo_distribution);
+
+                    compute_weights.push(weight as u16);
+                    compute_miners_node_id.push(miner.node_id.clone());
+                    compute_miners_node_types.push(miner.node_type.clone());
+                    compute_nodes_ss58.push(miner_ss58.clone().into());
+
+                    // Update Bittensor UIDs
+                    for uid in uids.iter() {
+                        if uid.substrate_address.to_ss58check() == miner_ss58 {
+                            all_uids_on_bittensor.push(uid.id);
+                            all_weights_on_bitensor.push(weight as u16);
+                        }
+                    }
+                } else {
+                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
+                        log::info!("Node metrics not found for compute miner: {:?}", node_id_str);
+                    }
+                }
+            }
+
+            (compute_weights, compute_nodes_ss58, compute_miners_node_id, 
+             compute_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
+        }
+
+        // Refactored main weight calculation method
+        pub fn calculate_weights_for_nodes() -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+            let uids = MetagraphPallet::<T>::get_uids();
+            let all_nodes = RegistrationPallet::<T>::get_all_nodes_with_min_staked();
+
+            // Collect metrics for all miners
+            let mut all_nodes_metrics: Vec<NodeMetricsData> = Vec::new();
+            for node in &all_nodes {
+                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(node.node_id.clone()) {
+                    all_nodes_metrics.push(metrics);
+                } else {
+                    if let Ok(node_id_str) = String::from_utf8(node.node_id.clone()) {
                         log::info!("Node metrics not found for miner: {:?}", node_id_str);
                     }
                 }
             }
 
-            (storage_weights, storage_nodes_ss58,  storage_miners_node_id, storage_miners_node_types, 
-             compute_weights, compute_nodes_ss58, compute_miners_node_id, compute_miners_node_types, 
-             validator_weights, validator_nodes_ss58, validator_miners_node_id, validator_miners_node_types, 
-             all_uids_on_bittensor, all_weights_on_bitensor)
+            // Calculate weights for different miner types
+            let (storage_weights, storage_nodes_ss58, storage_miners_node_id, storage_miners_node_types, 
+                 storage_uids, storage_weights_on_bittensor) = Self::calculate_storage_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+
+            let (compute_weights, compute_nodes_ss58, compute_miners_node_id, compute_miners_node_types, 
+                 compute_uids, compute_weights_on_bittensor) = Self::calculate_compute_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+
+            // Calculate weights for different validator types
+            let (validator_weights, validator_nodes_ss58, validator_miners_node_id, validator_miners_node_types, 
+                 validator_uids, validator_weights_on_bittensor) = Self::calculate_validator_weights(&all_nodes, &all_nodes_metrics, &uids);
+
+            // Combine results
+            (
+                storage_weights, storage_nodes_ss58, storage_miners_node_id, storage_miners_node_types,
+                compute_weights, compute_nodes_ss58, compute_miners_node_id, compute_miners_node_types,
+                validator_weights, validator_nodes_ss58, validator_miners_node_id, validator_miners_node_types,
+                [storage_uids, compute_uids, validator_uids].concat(), 
+                [storage_weights_on_bittensor, compute_weights_on_bittensor, validator_weights_on_bittensor].concat()
+            )
         }
 
         pub fn submit_weight_extrinsic(block_number: BlockNumberFor<T>) -> Result<(), &'static str> {
@@ -316,7 +417,7 @@ pub mod pallet {
                 all_dests_on_bittensor, 
                 all_weights_on_bitensor) :
                 (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) = 
-                Self::calculate_weights_for_miners();
+                Self::calculate_weights_for_nodes();
             
             // update rankings in ranking pallet for both instances
             let _ = RankingsPallet::<T>::save_rankings_update(weights.clone(),

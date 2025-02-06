@@ -2417,151 +2417,151 @@ pub mod pallet {
 			});
 		}
 		
-		fn handle_pending_nebula_requests(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
-			let miner_requests = Self::get_pending_nebula_requests(node_id.clone());
+		// fn handle_pending_nebula_requests(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
+		// 	let miner_requests = Self::get_pending_nebula_requests(node_id.clone());
 
-			for miner_request in miner_requests {
-				let url = format!(
-					"http://localhost:3030/get-nebula-ip"
-				);
-				log::info!("URL for vnc request is : {}", url);
-				let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
-				let request = sp_runtime::offchain::http::Request::get(url.as_str());
+		// 	for miner_request in miner_requests {
+		// 		let url = format!(
+		// 			"http://localhost:3030/get-nebula-ip"
+		// 		);
+		// 		log::info!("URL for vnc request is : {}", url);
+		// 		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
+		// 		let request = sp_runtime::offchain::http::Request::get(url.as_str());
 					
-				let pending = request
-					.add_header("Content-Type", "application/json")
-					.deadline(deadline)
-					.send()
-					.map_err(|err| {
-						log::error!("❌ Error making status check VM Request: {:?}", err);
-						sp_runtime::offchain::http::Error::IoError
-					})?;
+		// 		let pending = request
+		// 			.add_header("Content-Type", "application/json")
+		// 			.deadline(deadline)
+		// 			.send()
+		// 			.map_err(|err| {
+		// 				log::error!("❌ Error making status check VM Request: {:?}", err);
+		// 				sp_runtime::offchain::http::Error::IoError
+		// 			})?;
 	
-				let response = pending
-					.try_wait(deadline)
-					.map_err(|err| {
-						log::error!("❌ Error getting VM status Response: {:?}", err);
-						sp_runtime::offchain::http::Error::DeadlineReached
-					})??;
+		// 		let response = pending
+		// 			.try_wait(deadline)
+		// 			.map_err(|err| {
+		// 				log::error!("❌ Error getting VM status Response: {:?}", err);
+		// 				sp_runtime::offchain::http::Error::DeadlineReached
+		// 			})??;
 	
-				if response.code != 200 {
-					log::error!(
-						"Unexpected status code: {}, VM operation failed. Response body: {:?}",
-						response.code, response
-					);
-					return Err(sp_runtime::offchain::http::Error::Unknown);
-				}
+		// 		if response.code != 200 {
+		// 			log::error!(
+		// 				"Unexpected status code: {}, VM operation failed. Response body: {:?}",
+		// 				response.code, response
+		// 			);
+		// 			return Err(sp_runtime::offchain::http::Error::Unknown);
+		// 		}
 
-				let response_body = response.body();
-				let response_body_vec = response_body.collect::<Vec<u8>>();
-				let response_str = core::str::from_utf8(&response_body_vec)
-					.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+		// 		let response_body = response.body();
+		// 		let response_body_vec = response_body.collect::<Vec<u8>>();
+		// 		let response_str = core::str::from_utf8(&response_body_vec)
+		// 			.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
 							
-				match serde_json::from_str::<serde_json::Value>(response_str) {
-					Ok(json_response) => {
-						if let Some(hypervisor_ip) = json_response.get("nebula_ip").and_then(|v| v.as_str()) {
-							// Log the Nebula IP
-							log::info!(
-								"Nebula IP Retrieved: {}",
-								hypervisor_ip
-							);
-						    // Convert Nebula IP to Vec<u8>
-							let hypervisor_ip_bytes = hypervisor_ip.as_bytes().to_vec();
+		// 		match serde_json::from_str::<serde_json::Value>(response_str) {
+		// 			Ok(json_response) => {
+		// 				if let Some(hypervisor_ip) = json_response.get("nebula_ip").and_then(|v| v.as_str()) {
+		// 					// Log the Nebula IP
+		// 					log::info!(
+		// 						"Nebula IP Retrieved: {}",
+		// 						hypervisor_ip
+		// 					);
+		// 				    // Convert Nebula IP to Vec<u8>
+		// 					let hypervisor_ip_bytes = hypervisor_ip.as_bytes().to_vec();
 							
-							// You can add additional processing here if needed
-							// For example, storing the Nebula IP or using it in further logic
-							Self::update_miner_compute_request_hypervisor_ip_offchain(
-								node_id.clone(), 
-								miner_request.request_id, 
-								hypervisor_ip_bytes
-							);
-						} else {
-							log::warn!("Missing 'hypervisor_ip' field in response");
-						}
-					},
-					Err(e) => {
-						log::error!("Failed to parse Nebula IP response JSON: {:?}", e);
-						return Err(sp_runtime::offchain::http::Error::Unknown);
-					}
-				}
-			}
-			Ok(())
-		}
+		// 					// You can add additional processing here if needed
+		// 					// For example, storing the Nebula IP or using it in further logic
+		// 					Self::update_miner_compute_request_hypervisor_ip_offchain(
+		// 						node_id.clone(), 
+		// 						miner_request.request_id, 
+		// 						hypervisor_ip_bytes
+		// 					);
+		// 				} else {
+		// 					log::warn!("Missing 'hypervisor_ip' field in response");
+		// 				}
+		// 			},
+		// 			Err(e) => {
+		// 				log::error!("Failed to parse Nebula IP response JSON: {:?}", e);
+		// 				return Err(sp_runtime::offchain::http::Error::Unknown);
+		// 			}
+		// 		}
+		// 	}
+		// 	Ok(())
+		// }
 
-		fn handle_pending_vnc_requests(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
-			let miner_requests = Self::get_pending_vnc_requests(node_id.clone());
+		// fn handle_pending_vnc_requests(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
+		// 	let miner_requests = Self::get_pending_vnc_requests(node_id.clone());
 
-			for miner_request in miner_requests {
-				// Use job ID to generate VM name consistently
-				let vm_name = format!("vm-{}", String::from_utf8_lossy(&miner_request.job_id.unwrap()).split('-').next().unwrap());
-				log::info!("VM Name: {}", vm_name);
-				let url = format!(
-					"http://localhost:3030/vm-vnc-port/{}",
-					vm_name.clone()
-				);
-				log::info!("URL for vnc request is : {}", url);
-				let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
-				let request = sp_runtime::offchain::http::Request::get(url.as_str());
+		// 	for miner_request in miner_requests {
+		// 		// Use job ID to generate VM name consistently
+		// 		let vm_name = format!("vm-{}", String::from_utf8_lossy(&miner_request.job_id.unwrap()).split('-').next().unwrap());
+		// 		log::info!("VM Name: {}", vm_name);
+		// 		let url = format!(
+		// 			"http://localhost:3030/vm-vnc-port/{}",
+		// 			vm_name.clone()
+		// 		);
+		// 		log::info!("URL for vnc request is : {}", url);
+		// 		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
+		// 		let request = sp_runtime::offchain::http::Request::get(url.as_str());
 	
 				
-				let pending = request
-					.add_header("Content-Type", "application/json")
-					.deadline(deadline)
-					.send()
-					.map_err(|err| {
-						log::error!("❌ Error making status check VM Request: {:?}", err);
-						sp_runtime::offchain::http::Error::IoError
-					})?;
+		// 		let pending = request
+		// 			.add_header("Content-Type", "application/json")
+		// 			.deadline(deadline)
+		// 			.send()
+		// 			.map_err(|err| {
+		// 				log::error!("❌ Error making status check VM Request: {:?}", err);
+		// 				sp_runtime::offchain::http::Error::IoError
+		// 			})?;
 	
-				let response = pending
-					.try_wait(deadline)
-					.map_err(|err| {
-						log::error!("❌ Error getting VM status Response: {:?}", err);
-						sp_runtime::offchain::http::Error::DeadlineReached
-					})??;
+		// 		let response = pending
+		// 			.try_wait(deadline)
+		// 			.map_err(|err| {
+		// 				log::error!("❌ Error getting VM status Response: {:?}", err);
+		// 				sp_runtime::offchain::http::Error::DeadlineReached
+		// 			})??;
 	
-				if response.code != 200 {
-					log::error!(
-						"Unexpected status code: {}, VM operation failed. Response body: {:?}",
-						response.code, response
-					);
-					return Err(sp_runtime::offchain::http::Error::Unknown);
-				}
+		// 		if response.code != 200 {
+		// 			log::error!(
+		// 				"Unexpected status code: {}, VM operation failed. Response body: {:?}",
+		// 				response.code, response
+		// 			);
+		// 			return Err(sp_runtime::offchain::http::Error::Unknown);
+		// 		}
 
-				let response_body = response.body();
-				let response_body_vec = response_body.collect::<Vec<u8>>();
-				let response_str = core::str::from_utf8(&response_body_vec)
-					.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+		// 		let response_body = response.body();
+		// 		let response_body_vec = response_body.collect::<Vec<u8>>();
+		// 		let response_str = core::str::from_utf8(&response_body_vec)
+		// 			.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
 							
-				match serde_json::from_str::<serde_json::Value>(response_str) {
-					Ok(json_response) => {
-						if let (Some(name), Some(vnc_port)) = (
-							json_response.get("name").and_then(|v| v.as_str()),
-							json_response.get("vnc_port").and_then(|v| v.as_u64())
-						) {
-							// Log the VNC port
-							log::info!(
-								"VNC Port Retrieved - VM Name: {}, VNC Port: {}",
-								name, vnc_port
-							);
-							Self::update_miner_compute_request_vnc_offchain(
-								node_id.clone(),
-								miner_request.request_id,
-								vnc_port,
-								vm_name.as_bytes().to_vec()
-							);
-						} else {
-							log::warn!("Missing expected fields in VNC port response");
-						}
-					},
-					Err(e) => {
-						log::error!("Failed to parse VNC port response JSON: {:?}", e);
-						return Err(sp_runtime::offchain::http::Error::Unknown);
-					}
-				}
-			}
-			Ok(())
-		}
+		// 		match serde_json::from_str::<serde_json::Value>(response_str) {
+		// 			Ok(json_response) => {
+		// 				if let (Some(name), Some(vnc_port)) = (
+		// 					json_response.get("name").and_then(|v| v.as_str()),
+		// 					json_response.get("vnc_port").and_then(|v| v.as_u64())
+		// 				) {
+		// 					// Log the VNC port
+		// 					log::info!(
+		// 						"VNC Port Retrieved - VM Name: {}, VNC Port: {}",
+		// 						name, vnc_port
+		// 					);
+		// 					Self::update_miner_compute_request_vnc_offchain(
+		// 						node_id.clone(),
+		// 						miner_request.request_id,
+		// 						vnc_port,
+		// 						vm_name.as_bytes().to_vec()
+		// 					);
+		// 				} else {
+		// 					log::warn!("Missing expected fields in VNC port response");
+		// 				}
+		// 			},
+		// 			Err(e) => {
+		// 				log::error!("Failed to parse VNC port response JSON: {:?}", e);
+		// 				return Err(sp_runtime::offchain::http::Error::Unknown);
+		// 			}
+		// 		}
+		// 	}
+		// 	Ok(())
+		// }
 		
 		fn handle_pending_job_requests(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
 			let miner_requests = Self::get_pending_job_requests(node_id.clone());
