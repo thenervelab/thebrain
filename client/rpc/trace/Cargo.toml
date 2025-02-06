@@ -1,0 +1,35 @@
+[package]
+name = "rpc-trace"
+version = "0.6.0"
+authors = { workspace = true }
+edition = "2021"
+license = "GPL-3.0-only"
+repository = { workspace = true }
+
+[dependencies]
+ethereum-types = { workspace = true }
+futures = { workspace = true }
+jsonrpsee = { workspace = true, features = ["macros", "server"] }
+log = { workspace = true }
+substrate-prometheus-endpoint = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { workspace = true }
+
+# Hippius
+client-evm-tracing = { workspace = true }
+rpc-core-trace = { workspace = true }
+rpc-core-types = { workspace = true }
+rpc-primitives-debug = { workspace = true }
+
+# Substrate
+sc-client-api = { workspace = true }
+sc-utils = { workspace = true }
+sp-api = { workspace = true }
+sp-block-builder = { workspace = true }
+sp-blockchain = { workspace = true }
+sp-runtime = { workspace = true }
+
+# Frontier
+fc-rpc = { workspace = true, features = ["rpc-binary-search-estimate"] }
+fc-storage = { workspace = true }
+fp-rpc = { workspace = true }

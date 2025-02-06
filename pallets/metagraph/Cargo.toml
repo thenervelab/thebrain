@@ -1,0 +1,70 @@
+[package]
+name = "pallet-metagraph"
+authors = ["The Nerve Lab"]
+description = "Pallet for managing metagraph resources and tasks."
+version = "0.1.0"
+license = "MIT"
+homepage = "https://hippius.com"
+repository = "https://github.com/thenervelab/thebrain"
+edition = "2021"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { workspace = true, default-features = false }
+scale-info = { workspace = true, default-features = false }
+sp-std = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+sp-core = { default-features = false, workspace = true }
+sp-keystore = { default-features = false, workspace = true }
+sp-consensus-babe = { default-features = false, workspace = true }
+sp-application-crypto = { default-features = false, workspace = true }
+pallet-babe = { default-features = false, workspace = true }
+fp-account = { workspace = true }
+pallet-session = { workspace = true }
+pallet-staking = { workspace = true }
+pallet-utils = { default-features = false, workspace = true }
+pallet-registration = { default-features = false, workspace = true }
+
+# Substrate
+frame-support = { default-features = false, workspace = true }
+frame-system = { default-features = false, workspace = true }
+frame-benchmarking = { default-features = false, workspace = true, optional = true }
+log = { version = "0.4.22", default-features = false }
+sp-io = { default-features = false, workspace = true }
+hex = { workspace = true }
+hex-literal = { workspace = true }
+
+[dev-dependencies]
+serde  = { workspace = true }
+
+# Substrate
+sp-core = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+
+[features]
+default = ["std"]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+std = [
+    "codec/std",
+    "scale-info/std",
+    "frame-benchmarking?/std",
+    "frame-support/std",
+    "frame-system/std",
+    "sp-std/std",
+    "sp-runtime/std",
+    "sp-io/std",
+    "sp-core/std",
+    "fp-account/std",
+    "sp-keystore/std",
+    "sp-consensus-babe/std",
+    "sp-application-crypto/std",
+    "pallet-babe/std",
+    "pallet-session/std",
+    "pallet-staking/std",
+    "pallet-utils/std",
+    "pallet-registration/std"
+]
+try-runtime = [ "frame-support/try-runtime" ]

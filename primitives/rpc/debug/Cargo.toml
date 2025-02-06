@@ -1,0 +1,28 @@
+[package]
+name = "rpc-primitives-debug"
+version = "0.1.0"
+authors = { workspace = true }
+edition = "2021"
+license = "GPL-3.0-only"
+repository = { workspace = true }
+
+[dependencies]
+ethereum = { workspace = true }
+ethereum-types = { workspace = true }
+
+# Substrate
+parity-scale-codec = { workspace = true }
+sp-api = { workspace = true }
+sp-runtime = { workspace = true }
+sp-std = { workspace = true }
+
+[features]
+default = ["std"]
+std = [
+  "ethereum-types/std",
+  "ethereum/std",
+  "parity-scale-codec/std",
+  "sp-api/std",
+  "sp-runtime/std",
+  "sp-std/std",
+]

@@ -1,0 +1,24 @@
+[package]
+name = "pallet-staking-reward-curve"
+version = "12.0.0"
+authors.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+homepage = "https://hippius.com"
+repository = "https://github.com/thenervelab/thebrain"
+description = "Reward Curve for FRAME staking pallet (polkadot v1.15.0)"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-crate = { version = "3.0.0" }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { features = ["full", "visit"], workspace = true }
+
+[dev-dependencies]
+sp-runtime = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }

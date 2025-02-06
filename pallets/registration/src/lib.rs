@@ -1,0 +1,477 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+pub use pallet::*;
+pub use types::*;
+
+#[cfg(test)]
+mod mock;
+
+#[cfg(test)]
+mod tests;
+
+mod types;
+
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
+
+#[frame_support::pallet]
+pub mod pallet {
+    use super::*;
+	use sp_std::{vec::Vec, prelude::*};
+	use scale_info::prelude::*;
+    use frame_support::{pallet_prelude::*, dispatch::DispatchResultWithPostInfo};
+    use pallet_utils::{MetagraphInfoProvider, Pallet as UtilsPallet};
+    use sp_runtime::offchain::storage_lock::{StorageLock,BlockAndTime};
+    use sp_core::offchain::Duration;
+    use frame_system::{pallet_prelude::*, offchain::{SubmitTransaction,SendTransactionTypes}};
+
+    const LOCK_BLOCK_EXPIRATION: u32 = 1;
+    const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
+	// pub(crate) const LOCK_SLEEP_DURATION: u32 = LOCK_TIMEOUT_EXPIRATION / 3;
+
+    // Define a constant for token decimals (typically at the top of the file)
+    pub const DECIMALS: u32 = 18;
+
+    // New pallet_balances balance type
+    pub type BalanceOf<T> = <T as pallet_balances::Config>::Balance;
+
+    #[pallet::config]
+    pub trait Config: frame_system::Config  + pallet_babe::Config + pallet_balances::Config + pallet_utils::Config + SendTransactionTypes<Call<Self>> + pallet_staking::Config{
+        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+        type MetagraphInfo: MetagraphInfoProvider;
+        /// The minimum amount that must be staked by a miner
+        #[pallet::constant]
+        type MinerStakeThreshold: Get<u32>;
+
+        #[pallet::constant]
+        type ChainDecimals: Get<u32>;
+    }
+
+	#[pallet::pallet]
+	#[pallet::without_storage_info]
+    pub struct Pallet<T>(_);
+
+    // Saves all the miners who have pinned for that file hash
+	#[pallet::storage]
+    #[pallet::getter(fn get_node_info)]
+	pub type NodeRegistration<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		Vec<u8>,     
+		Option<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
+		ValueQuery
+	>;
+
+    #[pallet::event]
+    #[pallet::generate_deposit(pub(super) fn deposit_event)]
+    pub enum Event<T: Config> {
+        NodeRegistered{
+            node_id: Vec<u8>
+        },
+        NodeStatusUpdated{
+            node_id: Vec<u8>,
+            status: Status
+        }
+    }
+
+    #[pallet::error]
+    pub enum Error<T> {
+        NoneValue,
+        StorageOverflow,
+        IpfsNodeIdRequired,
+        NodeAlreadyRegistered,
+        NodeNotFound,
+        NotAminer,
+        IpfsNodeIdAlreadyRegistered,
+        AddressUidNotFoundOnBittensor,
+        InvalidAccountId,
+        InsufficientStake
+    }
+
+    #[pallet::validate_unsigned]
+    impl<T: Config> ValidateUnsigned for Pallet<T> {
+        type Call = Call<T>;
+        
+        fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+            match call {
+                // Handler for `set_node_status_to_degraded_unsigned` unsigned transaction
+                Call::set_node_status_to_degraded_unsigned { node_id, signature } => {
+                    // Get the validator key from BABE authorities
+                    let authorities = <pallet_babe::Pallet<T>>::authorities();
+                    if authorities.is_empty() {
+                        log::error!("❌ No BABE authorities found");
+                        return InvalidTransaction::Custom(1).into();
+                    }
+
+                    let key = &authorities[0].0;
+
+                    // Verify signature
+                    if let Ok(expected_signature) = UtilsPallet::<T>::sign_payload(&UtilsPallet::<T>::babe_public_to_array(key), &node_id) {
+                        if *signature != expected_signature {
+                            return InvalidTransaction::Custom(1).into();
+                        }
+                    } else {
+                        return InvalidTransaction::Custom(2).into();
+                    }
+
+                    let current_block = frame_system::Pallet::<T>::block_number();
+
+                    // Create a unique hash combining all relevant data
+                    let mut data = Vec::new();
+                    data.extend_from_slice(&current_block.encode());
+                    data.extend_from_slice(node_id);
+                                        
+                    let unique_hash = sp_io::hashing::blake2_256(&data);
+
+                    // Ensure unique transaction validity
+                    ValidTransaction::with_tag_prefix("RegistrationOffchain")
+                        .priority(TransactionPriority::max_value())
+                        .and_provides(unique_hash)
+                        .longevity(3)
+                        .propagate(true)
+                        .build()
+                },
+                // Default case for invalid calls
+                _ => InvalidTransaction::Call.into(),
+            }
+        }
+    }
+
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
+
+    #[pallet::call]
+    impl<T: Config> Pallet<T> {
+        #[pallet::call_index(0)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn register_node(origin: OriginFor<T>, node_type: NodeType, node_id : Vec<u8>,ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
+            let who = ensure_signed(origin)?;
+            
+            // Ensure that if the node type is `miner`, the `ipfs_node_id` is not `None`
+            ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired);
+            
+            let node_id = node_id.clone();
+            // Check if the node is already registered
+            ensure!(
+                !NodeRegistration::<T>::contains_key(&node_id),
+                Error::<T>::NodeAlreadyRegistered
+            );
+
+            // Check if the ipfs_node_id is already registered
+            if let Some(ref ipfs_id) = ipfs_node_id {
+                // Iterate through all registered nodes to check for the ipfs_node_id
+                for (_registered_node_id, registered_node_info) in NodeRegistration::<T>::iter() {
+                    if let Some(info) = registered_node_info {
+                        if info.ipfs_node_id.as_ref() == Some(ipfs_id) {
+                            return Err(Error::<T>::IpfsNodeIdAlreadyRegistered.into());
+                        }
+                    }
+                }
+            }
+
+            // If the node type is Validator, ensure minimum stake
+            if node_type == NodeType::Validator {
+                // You'll need to implement a way to check the staked amount
+                // This is a placeholder - replace with actual stake checking logic
+                ensure!(
+                    pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(who.clone()))
+                        .map(|ledger| ledger.active)
+                        .unwrap_or_default() >= T::MinerStakeThreshold::get().into(),
+                    Error::<T>::InsufficientStake
+                );
+            }
+
+            // Get the current block number
+            let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+            let node_info = NodeInfo {
+                node_id: node_id.clone(),
+                node_type,
+                ipfs_node_id,
+                status: Status::Online,
+                registered_at: current_block_number,
+                owner: who
+            };
+            
+            NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+
+            Self::deposit_event(Event::NodeRegistered{node_id});
+            Ok(().into())
+        }
+
+        #[pallet::call_index(1)]
+        #[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+        pub fn set_node_status_to_degraded(
+            origin: OriginFor<T>,
+            node_id: Vec<u8>,
+        ) -> DispatchResult {
+            // Ensure the caller is root
+            ensure_root(origin)?;
+
+            // Try to mutate the node information if it exists
+            NodeRegistration::<T>::try_mutate(&node_id, |node_info_opt| -> DispatchResult {
+                // Check if the node exists in the storage map
+                let node_info = node_info_opt.as_mut().ok_or(Error::<T>::NodeNotFound)?;
+
+                // Ensure the node is of type `miner`
+                if node_info.node_type != NodeType::StorageMiner {
+                    return Err(Error::<T>::NotAminer.into());
+                }
+
+                // Update the status to Degraded
+                node_info.status = Status::Degraded;
+
+                // Emit an event for the status update
+                Self::deposit_event(Event::NodeStatusUpdated{
+                    node_id: node_id.clone(),
+                    status: Status::Degraded
+                });
+
+                Ok(())
+            })
+        }
+
+        #[pallet::call_index(2)]
+        #[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+        pub fn set_node_status_to_degraded_unsigned(
+            origin: OriginFor<T>,
+            node_id: Vec<u8>,
+            signature: Vec<u8>,
+        ) -> DispatchResult {
+			ensure_none(origin)?;
+			let _signature = signature;
+
+            // Try to mutate the node information if it exists
+            NodeRegistration::<T>::try_mutate(&node_id, |node_info_opt| -> DispatchResult {
+                // Check if the node exists in the storage map
+                let node_info = node_info_opt.as_mut().ok_or(Error::<T>::NodeNotFound)?;
+
+                // Update the status to Degraded
+                node_info.status = Status::Degraded;
+
+                // Emit an event for the status update
+                Self::deposit_event(Event::NodeStatusUpdated{
+                    node_id: node_id.clone(),
+                    status: Status::Degraded
+                });
+
+                Ok(())
+            })
+        }
+
+        #[pallet::call_index(3)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn force_register_node(origin: OriginFor<T>, owner: T::AccountId, node_type: NodeType, node_id : Vec<u8>,ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
+            ensure_root(origin)?;
+            
+            // Get the current block number
+            let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+
+            let node_info = NodeInfo {
+                node_id: node_id.clone(),
+                node_type,
+                ipfs_node_id,
+                status: Status::Online,
+                registered_at: current_block_number,
+                owner
+            };
+            NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+
+            Self::deposit_event(Event::NodeRegistered{node_id});
+            Ok(().into())
+        }
+
+    }
+
+
+
+    impl<T: Config> Pallet<T> {
+        /// Fetch all registered miners whose status is not degraded
+        pub fn get_all_active_storage_miners() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            // Vector to store filtered node info
+            let mut active_storage_miners = Vec::new();
+
+            // Iterate over all registered nodes in the storage map
+            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of type miner and its status is not Degraded
+                    if matches!(node_info.node_type, NodeType::StorageMiner) 
+                    &&
+                    !matches!(node_info.status, Status::Degraded) 
+                    {
+                        active_storage_miners.push(node_info);
+                    }
+                }
+            }
+            active_storage_miners
+        }   
+
+        /// Fetch all registered miners whose status is not degraded
+        pub fn get_all_active_compute_miners() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            // Vector to store filtered node info
+            let mut active_storage_miners = Vec::new();
+
+            // Iterate over all registered nodes in the storage map
+            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of type miner and its status is not Degraded
+                    if matches!(node_info.node_type, NodeType::ComputeMiner) 
+                    &&
+                    !matches!(node_info.status, Status::Degraded) 
+                    {
+                        active_storage_miners.push(node_info);
+                    }
+                }
+            }
+            active_storage_miners
+        }   
+        
+
+        /// Fetch all registered miners who have staked more than 600
+        pub fn get_all_storage_miners_with_min_staked() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            // Vector to store filtered node info
+            let mut active_storage_miners = Vec::new();
+
+            // Iterate over all registered nodes in the storage map
+            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of type miner
+                    if matches!(node_info.node_type, NodeType::StorageMiner) {
+                        // Get the staked balance for this miner
+                        let staked_balance = pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(node_info.owner.clone()))
+                            .map(|ledger| ledger.active)
+                            .unwrap_or_default();
+                        
+                        // Convert the threshold to staking currency balance type
+                        let threshold: <T as pallet_staking::Config>::CurrencyBalance = 
+                            (T::MinerStakeThreshold::get() as u128).saturating_mul(10u128.pow(T::ChainDecimals::get()))
+                            .try_into()
+                            .unwrap_or_default();
+
+                        // Check if staked balance is greater than threshold
+                        if staked_balance >= threshold {
+                            active_storage_miners.push(node_info);
+                        }
+                    }
+                }
+            }
+            active_storage_miners
+        }
+
+        /// Fetch all registered miners who have staked more than 600
+        pub fn get_all_miners_with_min_staked() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            // Vector to store filtered node info
+            let mut active_storage_miners = Vec::new();
+
+            // Iterate over all registered nodes in the storage map
+            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                        // Get the staked balance for this miner
+                        let staked_balance = pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(node_info.owner.clone()))
+                            .map(|ledger| ledger.active)
+                            .unwrap_or_default();
+                        
+                        // Convert the threshold to staking currency balance type
+                        let threshold: <T as pallet_staking::Config>::CurrencyBalance = 
+                            (T::MinerStakeThreshold::get() as u128).saturating_mul(10u128.pow(T::ChainDecimals::get()))
+                            .try_into()
+                            .unwrap_or_default();
+
+                        // Check if staked balance is greater than threshold
+                        if staked_balance >= threshold {
+                            active_storage_miners.push(node_info);
+                        }
+                    
+                }
+            }
+            active_storage_miners
+        }
+
+        
+        pub fn get_chain_decimals() -> u32 {
+            T::ChainDecimals::get()
+        }
+        
+        /// Fetch all registered miners whose status is not degraded
+        pub fn get_all_nodes_by_node_type(node_type: NodeType) -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            // Vector to store filtered node info
+            let mut active_nodes = Vec::new();
+
+            // Iterate over all registered nodes in the storage map
+            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of the specified type
+                    if node_info.node_type == node_type
+                        && !matches!(node_info.status, Status::Degraded)
+                    {
+                        active_nodes.push(node_info);
+                    }
+                }
+            }
+            active_nodes
+        }
+
+
+        /// Fetch all registered miners whose status is not degraded
+        pub fn get_all_active_nodes() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            // Vector to store filtered node info
+            let mut active_nodes = Vec::new();
+
+            // Iterate over all registered nodes in the storage map
+            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of type miner and its status is not Degraded
+                    if !matches!(node_info.status, Status::Degraded) 
+                    {
+                        active_nodes.push(node_info);
+                    }
+                }
+            }
+            active_nodes
+        }   
+
+        pub fn get_registered_node(node_id: Vec<u8>) -> Result<NodeInfo<BlockNumberFor<T>, T::AccountId>, &'static str> {
+            // Retrieve the node info from storage
+            match NodeRegistration::<T>::get(node_id) {
+                Some(node_info) => Ok(node_info),
+                _ => Err("Node ID not registered or invalid data"),
+            }
+        }
+
+        // update user storage request handler
+		pub fn call_node_status_to_degraded_unsigned(node_id: Vec<u8>) {
+			// Storing fetched hardware specs
+			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+				b"Registration::lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+			);
+				
+			if let Ok(_guard) = lock.try_lock() {
+				// // Get the validator key from BABE authorities
+				let authorities = <pallet_babe::Pallet<T>>::authorities();
+				if authorities.is_empty() {
+					log::error!("❌ No BABE authorities found");
+					return;
+				}
+								
+				let key = &authorities[0].0;
+
+				if let Ok(signature) = UtilsPallet::<T>::sign_payload(&UtilsPallet::<T>::babe_public_to_array(key), &node_id) {
+		
+                    let call = Call::set_node_status_to_degraded_unsigned { 
+                        node_id,
+                        signature
+                    };
+                        
+                    match SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()) {
+                        Ok(_) => log::info!("✅ Successfully submitted signed degrade "),
+                        Err(e) => log::error!("❌ Error degrading miner: {:?}", e),
+                    }
+                } else {
+                    log::error!("❌ Error signing hardware info");
+                }
+			};
+		}
+    }
+}

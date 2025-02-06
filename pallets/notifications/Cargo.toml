@@ -1,0 +1,45 @@
+[package]
+name = "pallet-notifications"
+authors = ["The Nerve Lab"]
+description = "Pallet for managing user notifications in the Hippius network."
+version = "0.1.0"
+license = "MIT"
+homepage = "https://hippius.com"
+repository = "https://github.com/thenervelab/thebrain"
+edition = "2021"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { workspace = true, default-features = false }
+scale-info = { workspace = true, default-features = false }
+sp-runtime = { workspace = true, default-features = false }
+sp-std = { default-features = false, workspace = true }
+
+# Substrate
+frame-support = { default-features = false, workspace = true }
+frame-system = { default-features = false, workspace = true }
+frame-benchmarking = { default-features = false, workspace = true, optional = true }
+
+[dev-dependencies]
+serde  = { workspace = true }
+
+# Substrate
+sp-core = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+
+[features]
+default = ["std"]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+std = [
+	"codec/std",
+	"scale-info/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"sp-runtime/std",
+	"sp-std/std",
+	"frame-system/std",
+]
+try-runtime = [ "frame-support/try-runtime" ]

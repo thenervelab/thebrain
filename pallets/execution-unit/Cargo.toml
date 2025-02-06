@@ -1,0 +1,70 @@
+[package]
+name = "pallet-execution-unit"
+version = "0.1.0"
+description = "Execution unit pallet for offchain benchmarking"
+authors = ["Dubs"]
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+scale-codec = { workspace = true, default-features = false }
+scale-info = { workspace = true, default-features = false }
+frame-support = { default-features = false, workspace = true }
+frame-system = { default-features = false, workspace = true }
+frame-benchmarking = { default-features = false, workspace = true, optional = true }
+sp-std = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+sp-core = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+pallet-timestamp = { default-features = false, workspace = true }
+pallet-ipfs-pin = { workspace = true, default-features = false }
+pallet-registration = { default-features = false, workspace = true }
+log = { version = "0.4.22", default-features = false }
+parking_lot = { version = "0.12.1", optional = true }
+pallet-metagraph = { workspace = true, default-features = false }
+num_cpus = { workspace = true, optional = true }
+hex = { workspace = true }
+sysinfo = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+pallet-babe = { default-features = false, workspace = true }
+pallet-compute = { workspace = true, default-features = false }
+pallet-credits = { default-features = false, workspace = true }
+pallet-balances = { default-features = false, workspace = true }
+pallet-rankings = { default-features = false, workspace = true }
+num-traits = { version = "0.2.17", default-features = false }
+pallet-marketplace = { workspace = true, default-features = false }
+sp-debug-derive = { default-features = false, workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = ["std"]
+std = [
+    "scale-codec/std",
+    "scale-info/std",
+    "frame-support/std",
+    "frame-system/std",
+    "frame-benchmarking/std",
+    "sp-std/std",
+    "sp-runtime/std",
+    "sp-core/std",
+    "sp-io/std",
+    "pallet-timestamp/std",
+    "pallet-ipfs-pin/std",
+    "pallet-registration/std",
+    "log/std",
+    "parking_lot",
+    "num_cpus",
+    "sysinfo",
+    "serde/std",
+    "sp-debug-derive/std",
+    "pallet-marketplace/std",
+	"pallet-metagraph/std",
+    "pallet-babe/std",
+    "pallet-compute/std",
+    "pallet-credits/std",
+    "pallet-balances/std",
+    "pallet-rankings/std",
+    "num-traits/std",
+]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+try-runtime = ["frame-support/try-runtime"]

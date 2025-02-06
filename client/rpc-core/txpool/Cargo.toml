@@ -1,0 +1,14 @@
+[package]
+name = "rpc-core-txpool"
+version = "0.6.0"
+authors = { workspace = true }
+edition = "2021"
+license = "GPL-3.0-only"
+repository = { workspace = true }
+
+[dependencies]
+ethereum = { workspace = true, features = ["std", "with-codec"] }
+ethereum-types = { workspace = true, features = ["std"] }
+jsonrpsee = { workspace = true, features = ["macros", "server"] }
+serde = { workspace = true, features = ["derive"] }
+fc-rpc-core = { workspace = true }
