@@ -15,6 +15,49 @@ impl NodeMetricsData {
     const GEOGRAPHIC_DIVERSITY_TARGET: u32 = 5; // Target number of distinct regions
     const INTERNAL_SCALING: u32 = 1_000_000;
 
+    // New method to calculate compute RAM score
+    fn calculate_compute_ram_score(metrics: &NodeMetricsData) -> u64 {
+        if !metrics.is_sev_enabled == 0 {
+            return 0;
+        }
+        // // RAM type scoring
+        // let ram_type_score = match metrics.ram_type.as_str() {
+        //     "DDR5" => 100,   // Highest score for latest technology
+        //     "DDR4" => 75,    // Good, but older technology
+        //     "DDR3" => 50,    // Older technology
+        //     _ => 25,          // Unrecognized or very old RAM type
+        // };
+
+        // RAM quantity scoring
+        // Minimum requirement is 128GB
+        // Convert memory from MB to GB (divide by 1024)
+        let ram_gb = metrics.memory_mb / 1024;
+        let ram_quantity_score = if ram_gb >= 128 {
+            // Bonus scoring for RAM beyond 128GB
+            match ram_gb {
+                x if x >= 1024 => 100,  // 1TB or more of RAM
+                x if x >= 512 => 90,    // 512GB to 1TB
+                x if x >= 256 => 80,    // 256GB to 512GB
+                x if x >= 192 => 70,    // 192GB to 256GB
+                x if x >= 128 => 60,    // Minimum 128GB
+                _ => 0,                 // Below minimum, no score
+            }
+        } else {
+            0  // Does not meet minimum RAM requirement
+        };
+
+        // Combine RAM type and quantity scores
+        // // Weighted more towards quantity, but type still matters
+        // let combined_ram_score = (
+        //     (ram_type_score as u64 * 30) +  // 30% weight to RAM type
+        //     (ram_quantity_score as u64 * 70)  // 70% weight to RAM quantity
+        // ) / 100;
+
+        let combined_ram_score = ram_quantity_score as u64 / 100;
+
+        combined_ram_score
+    }
+
     pub fn calculate_weight(_node_type: NodeType, metrics: &NodeMetricsData, all_nodes_metrics: &[NodeMetricsData], geo_distribution: &BTreeMap<Vec<u8>, u32>) -> u32 {
         // Calculate base scores with u64 casting for safety
         let availability_score = (Self::calculate_availability_score(metrics) as u64).saturating_div(100);
@@ -25,6 +68,12 @@ impl NodeMetricsData {
         let capacity_score = match _node_type {
             NodeType::StorageMiner => (Self::calculate_capacity_score(metrics) as u64).saturating_div(100),
             _ => 0, 
+        };
+        
+        // Conditionally include compute RAM score only for compute miners
+        let compute_ram_score = match _node_type {
+            NodeType::ComputeMiner => Self::calculate_compute_ram_score(metrics).saturating_div(100),
+            _ => 0,
         };
         
         let network_score = (Self::calculate_network_score(metrics) as u64).saturating_div(100);
@@ -41,9 +90,10 @@ impl NodeMetricsData {
                 .saturating_add(diversity_score.saturating_mul(5))
             ) as u32,
             NodeType::ComputeMiner => (
-                availability_score.saturating_mul(40)
-                .saturating_add(performance_score.saturating_mul(30))
+                availability_score.saturating_mul(35)
+                .saturating_add(performance_score.saturating_mul(25))
                 .saturating_add(reliability_score.saturating_mul(20))
+                .saturating_add(compute_ram_score.saturating_mul(10)) // New compute RAM score
                 .saturating_add(network_score.saturating_mul(10))
             ) as u32,
             NodeType::Validator => (
