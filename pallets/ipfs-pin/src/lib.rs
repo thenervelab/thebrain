@@ -1244,7 +1244,7 @@ pub mod pallet {
 				total_replicas: 3u32,  // total file replicas
 				fullfilled_replicas: 0u32,
 				owner: owner.clone(),
-				file_hash: file_hash.clone(),
+				file_hash: update_hash.clone(),
 				file_name,
 				is_approved: false,
 				last_charged_at: current_block,

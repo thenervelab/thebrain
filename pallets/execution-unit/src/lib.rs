@@ -57,7 +57,6 @@ pub mod pallet {
 		pallet_prelude::*,
 		traits::Randomness,
 	};
-	// use frame_support::traits::Currency;
 	use frame_system::{
 		offchain::{
 			AppCrypto, SendTransactionTypes, SendUnsignedTransaction, 

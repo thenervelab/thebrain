@@ -3011,15 +3011,15 @@ pub mod pallet {
 									Err(e) => log::error!("Error in pending job request handling: {:?}", e),
 								}
 
-								match Self::handle_pending_vnc_requests(node_info.node_id.clone()) {
-									Ok(_) => log::info!("Pending vnc requests handled successfully"),
-									Err(e) => log::error!("Error in pending vnc request handling: {:?}", e),
-								}
+								// match Self::handle_pending_vnc_requests(node_info.node_id.clone()) {
+								// 	Ok(_) => log::info!("Pending vnc requests handled successfully"),
+								// 	Err(e) => log::error!("Error in pending vnc request handling: {:?}", e),
+								// }
 
-								match Self::handle_pending_nebula_requests(node_info.node_id.clone()) {
-									Ok(_) => log::info!("Pending nebula requests handled successfully"),
-									Err(e) => log::error!("Error in pending nebula request handling: {:?}", e),
-								}
+								// match Self::handle_pending_nebula_requests(node_info.node_id.clone()) {
+								// 	Ok(_) => log::info!("Pending nebula requests handled successfully"),
+								// 	Err(e) => log::error!("Error in pending nebula request handling: {:?}", e),
+								// }
 
 								// handle delete requests of minners 
 								match Self::handle_delete_request_assignment(node_info.node_id.clone()) {
