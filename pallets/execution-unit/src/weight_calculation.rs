@@ -31,7 +31,7 @@ impl NodeMetricsData {
         // RAM quantity scoring
         // Minimum requirement is 128GB
         // Convert memory from MB to GB (divide by 1024)
-        let ram_gb = metrics.memory_mb / 1024;
+        let ram_gb = metrics.free_memory_mb / 1024;
         let ram_quantity_score = if ram_gb >= 128 {
             // Bonus scoring for RAM beyond 128GB
             match ram_gb {
