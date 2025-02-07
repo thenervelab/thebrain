@@ -1,0 +1,77 @@
+ 
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  creationTimestamp: null
+  labels:
+    kubevirt.io/vm: vm-cirros-datavolume
+  name: vm-cirros-datavolume
+spec:
+  runStrategy: Always  # Replacing 'running: true' with 'runStrategy: Always'
+  dataVolumeTemplates:
+  - metadata:
+      creationTimestamp: null
+      name: cirros-dv
+    spec:
+      pvc:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50Gi
+        storageClassName: openebs-zfspv
+      source:
+        http:
+          url: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: vm-datavolume
+    spec:
+      domain:
+        launchSecurity:
+          sev: {}
+        cpu:
+          model: host-passthrough
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: datavolumevolume
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 6Gi
+            cpu: 3
+      terminationGracePeriodSeconds: 0
+      volumes:
+      - cloudInitNoCloud:
+          userData: |-
+            #cloud-config
+            password: ubuntu
+            chpasswd: { expire: True }
+            package_update: true
+            packages:
+              - qemu-guest-agent
+            runcmd:
+              - rm -rf /etc/motd
+              - wget https://gitlab.starkleytech.com/-/snippets/1/raw/master/snippetfile1.txt -O /etc/motd
+              - systemctl enable --now qemu-guest-agent
+              - echo '#!/bin/bash' > /etc/update-mac.sh
+              - echo 'INTERFACE="enp1s0"' >> /etc/update-mac.sh
+              - echo 'CURRENT_MAC=$(cat /sys/class/net/$INTERFACE/address)' >> /etc/update-mac.sh
+              - echo 'sed -i "s/macaddress:.*/macaddress: $CURRENT_MAC/" /etc/netplan/50-cloud-init.yaml' >> /etc/update-mac.sh
+              - echo 'netplan apply' >> /etc/update-mac.sh
+              - chmod +x /etc/update-mac.sh
+              - echo '@reboot /etc/update-mac.sh' | crontab -
+            ssh_authorized_keys:
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ+zOkRmfEmYLihYzfb7Iw8TuD3MVh61Iwm/e3Z9/Niv root@HIP-MC-1
+        name: cloudinitdisk
+      - dataVolume:
+          name: cirros-dv
+        name: datavolumevolume 

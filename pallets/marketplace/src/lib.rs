@@ -318,6 +318,7 @@ pub mod pallet {
 			os_name: Vec<u8>,
 			url: Vec<u8>,
 		},
+        PlanPriceUpdated(T::Hash, u128),
 	}
 
 	#[pallet::error]
@@ -679,8 +680,33 @@ pub mod pallet {
             Ok(().into())
         }
 
+        // Sudo function to increase the price of an existing plan
+        #[pallet::call_index(10)]
+        #[pallet::weight((10_000, Pays::No))]
+        pub fn increase_plan_price(
+            origin: OriginFor<T>,
+            plan_id: T::Hash,
+            new_price: u128,
+        ) -> DispatchResult {
+            ensure_none(origin)?;
+            
+            // Retrieve the existing plan
+            let mut plan = <Plans<T>>::get(plan_id)
+                .ok_or(Error::<T>::NoneValue)?;
 
-		#[pallet::call_index(10)]
+            // Update the plan's price
+            plan.price = new_price;
+
+            // Store the updated plan
+            <Plans<T>>::insert(plan_id, plan);
+
+            // Emit an event (optional, you might want to add this to the Events enum)
+            Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
+
+            Ok(())
+        }
+
+		#[pallet::call_index(11)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
         pub fn process_storage_request_approval(
             origin: OriginFor<T>,
