@@ -143,7 +143,7 @@ pub mod pallet {
                     let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                     
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight(NodeType::StorageMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageMiner, &metrics, all_nodes_metrics, &geo_distribution);
 
                     storage_weights.push(weight as u16);
                     storage_miners_node_id.push(miner.node_id.clone());
@@ -190,7 +190,7 @@ pub mod pallet {
                     let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                     
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight(NodeType::Validator, &metrics, all_nodes_metrics, &geo_distribution);
+                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::Validator, &metrics, all_nodes_metrics, &geo_distribution);
 
                     validator_weights.push(weight as u16);
                     validator_miners_node_id.push(miner.node_id.clone());
@@ -237,7 +237,7 @@ pub mod pallet {
                     let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                     
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight(NodeType::ComputeMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::ComputeMiner, &metrics, all_nodes_metrics, &geo_distribution);
 
                     compute_weights.push(weight as u16);
                     compute_miners_node_id.push(miner.node_id.clone());

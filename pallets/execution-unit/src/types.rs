@@ -99,6 +99,7 @@ pub struct SystemInfo {
 // Define the NodeMetrics struct
 #[derive(Clone, Encode, Decode, TypeInfo)]
 pub struct NodeMetricsData {
+    pub miner_id: Vec<u8>,
     pub bandwidth_mbps: u32, // will come  from node specs
     pub current_storage_bytes: u64, // will come from node specs
     pub total_storage_bytes: u64, // will come from node specs
@@ -141,6 +142,7 @@ pub struct NodeMetricsData {
 impl Default for NodeMetricsData {
     fn default() -> Self {
         NodeMetricsData {
+            miner_id: Vec::new(),
             // Network-wide configuration defaults
             successful_pin_checks: 0,
             total_pin_checks: 0,

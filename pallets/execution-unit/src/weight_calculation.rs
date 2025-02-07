@@ -1,6 +1,8 @@
 pub use crate::types::{NodeMetricsData};
 use sp_std::{collections::btree_map::BTreeMap, vec::Vec};
 use pallet_registration::NodeType;
+use pallet_compute::TechnicalDescription;
+// use frame_system;
 
 impl NodeMetricsData {
     // Configuration constants
@@ -58,7 +60,58 @@ impl NodeMetricsData {
         combined_ram_score
     }
 
-    pub fn calculate_weight(_node_type: NodeType, metrics: &NodeMetricsData, all_nodes_metrics: &[NodeMetricsData], geo_distribution: &BTreeMap<Vec<u8>, u32>) -> u32 {
+    // New method to calculate compute usage score
+    fn calculate_compute_usage_score<T: pallet_compute::Config + pallet_marketplace::Config>(metrics: &NodeMetricsData) -> u64 {
+        // Use a more generic approach to retrieve compute requests
+        let miner_id = metrics.miner_id.clone();
+        let miner_compute_requests = pallet_compute::MinerComputeRequests::<T>::get(miner_id);
+        
+        let mut total_ram_usage = 0;
+        let mut total_cpu_usage = 0;
+        let mut total_storage_usage = 0;
+        
+        for request in miner_compute_requests {
+            // Skip unfulfilled requests
+            if !request.fullfilled {
+                continue;
+            }       
+            
+            // Retrieve the plan to get technical description
+            if let Some(plan) = pallet_marketplace::Plans::<T>::get(request.plan_id) {
+                // Deserialize technical description
+                if let Ok(tech_desc) = serde_json::from_slice::<TechnicalDescription>(&plan.plan_technical_description) {
+                    // Accumulate resource usage
+                    total_ram_usage += tech_desc.ram_gb as u64;
+                    total_cpu_usage += tech_desc.cpu_cores as u64;
+                    total_storage_usage += tech_desc.storage_gb as u64;
+                }
+            }
+        }
+        
+        // Define weights for each resource type
+        const RAM_WEIGHT: u64 = 50;   // 50% importance
+        const CPU_WEIGHT: u64 = 30;   // 30% importance
+        const STORAGE_WEIGHT: u64 = 20;  // 20% importance
+        
+        // Normalize and calculate weighted score out of 100
+        // First, calculate individual resource scores
+        let ram_score = total_ram_usage.saturating_mul(RAM_WEIGHT);
+        let cpu_score = total_cpu_usage.saturating_mul(CPU_WEIGHT);
+        let storage_score = total_storage_usage.saturating_mul(STORAGE_WEIGHT);
+        
+        // Sum up the weighted scores and divide by total weight to get a score out of 100
+        let total_weighted_score = ram_score + cpu_score + storage_score;
+        let normalized_score = total_weighted_score / (RAM_WEIGHT + CPU_WEIGHT + STORAGE_WEIGHT);
+        
+        normalized_score
+    }
+    
+    pub fn calculate_weight<T: pallet_compute::Config + pallet_marketplace::Config>(
+        _node_type: NodeType, 
+        metrics: &NodeMetricsData, 
+        all_nodes_metrics: &[NodeMetricsData], 
+        geo_distribution: &BTreeMap<Vec<u8>, u32>
+    ) -> u32 {
         // Calculate base scores with u64 casting for safety
         let availability_score = (Self::calculate_availability_score(metrics) as u64).saturating_div(100);
         let performance_score = (Self::calculate_performance_score(metrics) as u64).saturating_div(100);
@@ -69,10 +122,16 @@ impl NodeMetricsData {
             NodeType::StorageMiner => (Self::calculate_capacity_score(metrics) as u64).saturating_div(100),
             _ => 0, 
         };
-        
+
         // Conditionally include compute RAM score only for compute miners
         let compute_ram_score = match _node_type {
             NodeType::ComputeMiner => Self::calculate_compute_ram_score(metrics).saturating_div(100),
+            _ => 0,
+        };
+        
+        // Conditionally include compute usage score only for compute miners
+        let compute_usage_score = match _node_type {
+            NodeType::ComputeMiner => Self::calculate_compute_usage_score::<T>(metrics).saturating_div(100),
             _ => 0,
         };
         
@@ -83,18 +142,20 @@ impl NodeMetricsData {
         let base_weight = match _node_type {
             NodeType::StorageMiner => (
                 availability_score.saturating_mul(35)
-                .saturating_add(performance_score.saturating_mul(20))
-                .saturating_add(reliability_score.saturating_mul(15))
-                .saturating_add(capacity_score.saturating_mul(15)) // Capacity score only for storage
-                .saturating_add(network_score.saturating_mul(10))
+                .saturating_add(performance_score.saturating_mul(5))
+                .saturating_add(reliability_score.saturating_mul(10))
+                .saturating_add(capacity_score.saturating_mul(45)) // Capacity score only for storage
+                .saturating_add(network_score.saturating_mul(5))
                 .saturating_add(diversity_score.saturating_mul(5))
             ) as u32,
             NodeType::ComputeMiner => (
                 availability_score.saturating_mul(35)
-                .saturating_add(performance_score.saturating_mul(25))
-                .saturating_add(reliability_score.saturating_mul(20))
-                .saturating_add(compute_ram_score.saturating_mul(10)) // New compute RAM score
-                .saturating_add(network_score.saturating_mul(10))
+                .saturating_add(performance_score.saturating_mul(5))
+                .saturating_add(reliability_score.saturating_mul(10))
+                .saturating_add(compute_ram_score.saturating_mul(15)) // New compute RAM score
+                .saturating_add(compute_usage_score.saturating_mul(25)) // New compute usage score
+                .saturating_add(network_score.saturating_mul(5))
+                .saturating_add(diversity_score.saturating_mul(5))
             ) as u32,
             NodeType::Validator => (
                 availability_score.saturating_mul(30)
@@ -239,6 +300,7 @@ impl NodeMetricsData {
         final_score
     }
 
+    // FileStored
     fn calculate_capacity_score(metrics: &NodeMetricsData) -> u32 {
         // Minimum storage requirement
         if metrics.total_storage_bytes < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {

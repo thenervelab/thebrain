@@ -400,6 +400,7 @@ pub mod pallet {
 					.map(|details| details.loc.clone())
 					.unwrap_or_default(); // Use default if None
 				NodeMetricsData {
+					miner_id: node_id.clone(),
 					bandwidth_mbps: system_info.network_bandwidth_mb_s,
 					// converting mbs into bytes 
 					current_storage_bytes: (system_info.storage_total_mb * 1024 * 1024)  - (system_info.storage_free_mb * 1024 * 1024),
