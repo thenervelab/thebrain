@@ -123,6 +123,12 @@ impl NodeMetricsData {
             _ => 0, 
         };
 
+        // Conditionally include capacity score only for storage miners
+        let storage_usage_score = match _node_type {
+            NodeType::StorageMiner => (Self::calculate_storage_usage_score::<T>(metrics) as u64).saturating_div(100),
+            _ => 0, 
+        };
+
         // Conditionally include compute RAM score only for compute miners
         let compute_ram_score = match _node_type {
             NodeType::ComputeMiner => Self::calculate_compute_ram_score(metrics).saturating_div(100),
@@ -144,7 +150,8 @@ impl NodeMetricsData {
                 availability_score.saturating_mul(35)
                 .saturating_add(performance_score.saturating_mul(5))
                 .saturating_add(reliability_score.saturating_mul(10))
-                .saturating_add(capacity_score.saturating_mul(45)) // Capacity score only for storage
+                .saturating_add(capacity_score.saturating_mul(15)) // Capacity score only for storage
+                .saturating_add(storage_usage_score.saturating_mul(25)) // Capacity score only for storage
                 .saturating_add(network_score.saturating_mul(5))
                 .saturating_add(diversity_score.saturating_mul(5))
             ) as u32,
@@ -300,7 +307,90 @@ impl NodeMetricsData {
         final_score
     }
 
-    // FileStored
+    // New method to calculate storage usage score
+    fn calculate_storage_usage_score<T: pallet_ipfs_pin::Config>(metrics: &NodeMetricsData) -> u64 {
+        // Use a more generic approach to retrieve IPFS pin requests
+        let miner_id = metrics.miner_id.clone();
+        let miner_ipfs_requests = pallet_ipfs_pin::FileStored::<T>::get(miner_id);
+        
+        let mut total_storage_usage = 0;
+        let mut total_pinned_files = 0;
+        let mut total_file_count = 0;
+        
+        for request in miner_ipfs_requests {
+            total_file_count += 1;
+            total_storage_usage += request.file_size_in_bytes as u64;
+            
+            // Count pinned files
+            if request.is_pinned {
+                total_pinned_files += 1;
+            }
+        }
+        
+        // Define weights for storage scoring
+        const TOTAL_STORAGE_WEIGHT: u64 = 50;   // 50% weight to total storage
+        const PINNED_FILES_WEIGHT: u64 = 30;    // 30% weight to number of pinned files
+        const FILE_COUNT_WEIGHT: u64 = 20;      // 20% weight to total file count
+        
+        // Calculate storage size score (50% weight)
+        let storage_size_score = if metrics.total_storage_bytes > 0 {
+            // Normalize storage usage against total storage
+            let usage_percentage = (total_storage_usage * 100) / metrics.total_storage_bytes;
+            
+            // Score based on storage usage percentage
+            let base_score: u64 = match usage_percentage {
+                x if x >= 80 => 100,   // Excellent utilization
+                x if x >= 60 => 75,    // Good utilization
+                x if x >= 40 => 50,    // Moderate utilization
+                x if x >= 20 => 25,    // Low utilization
+                _ => 0,                // Minimal utilization
+            };
+            
+            base_score.saturating_mul(TOTAL_STORAGE_WEIGHT)
+        } else {
+            0
+        };
+        
+        // Calculate pinned files score (30% weight)
+        let pinned_files_score = if total_file_count > 0 {
+            // Calculate percentage of pinned files
+            let pinned_percentage = (total_pinned_files * 100) / total_file_count;
+            
+            // Score based on pinned file percentage
+            let base_score: u64 = match pinned_percentage {
+                x if x >= 90 => 100,   // Almost all files pinned
+                x if x >= 75 => 75,    // Most files pinned
+                x if x >= 50 => 50,    // Half files pinned
+                x if x >= 25 => 25,    // Some files pinned
+                _ => 0,                // Very few files pinned
+            };
+            
+            base_score.saturating_mul(PINNED_FILES_WEIGHT)
+        } else {
+            0
+        };
+        
+        // Calculate file count score (20% weight)
+        let file_count_score = {
+            let base_score: u64 = match total_file_count {
+                x if x >= 1000 => 100,  // Excellent file management
+                x if x >= 500 => 75,    // Very good
+                x if x >= 100 => 50,    // Good
+                x if x >= 50 => 25,     // Moderate
+                x if x >= 10 => 10,     // Minimum score
+                _ => 0,                 // No files
+            };
+            
+            base_score.saturating_mul(FILE_COUNT_WEIGHT)
+        };
+        
+        // Sum up the weighted scores and divide by total weight to get a score out of 100
+        let total_weighted_score = storage_size_score + pinned_files_score + file_count_score;
+        let normalized_score = total_weighted_score / (TOTAL_STORAGE_WEIGHT + PINNED_FILES_WEIGHT + FILE_COUNT_WEIGHT);
+        
+        normalized_score
+    }
+
     fn calculate_capacity_score(metrics: &NodeMetricsData) -> u32 {
         // Minimum storage requirement
         if metrics.total_storage_bytes < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {
