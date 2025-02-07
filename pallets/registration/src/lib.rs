@@ -22,7 +22,12 @@ pub mod pallet {
     use pallet_utils::{MetagraphInfoProvider, Pallet as UtilsPallet};
     use sp_runtime::offchain::storage_lock::{StorageLock,BlockAndTime};
     use sp_core::offchain::Duration;
+    use frame_support::PalletId;
+    use sp_runtime::traits::AccountIdConversion;
     use frame_system::{pallet_prelude::*, offchain::{SubmitTransaction,SendTransactionTypes}};
+    use frame_system::RawOrigin;
+    use sp_runtime::Saturating;
+    use frame_support::traits::Currency;
 
     const LOCK_BLOCK_EXPIRATION: u32 = 1;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -44,6 +49,10 @@ pub mod pallet {
 
         #[pallet::constant]
         type ChainDecimals: Get<u32>;
+
+        /// The pallet's id, used for deriving its sovereign account ID.
+        #[pallet::constant]
+        type PalletId: Get<PalletId>;
     }
 
 	#[pallet::pallet]
@@ -61,6 +70,15 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+    // Add new storage items
+    #[pallet::storage]
+    #[pallet::getter(fn fee_charging_enabled)]
+    pub type FeeChargingEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+    #[pallet::storage]
+    #[pallet::getter(fn current_fee_percentage)]
+    pub type CurrentFeePercentage<T: Config> = StorageValue<_, u16, ValueQuery>;
+    
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -70,9 +88,13 @@ pub mod pallet {
         NodeStatusUpdated{
             node_id: Vec<u8>,
             status: Status
-        }
+        },
+        /// Fee charging status changed
+        FeeChargingStatusChanged { enabled: bool },
+        /// Fee percentage changed
+        FeePercentageChanged { new_percentage: u16 },
     }
-
+    
     #[pallet::error]
     pub enum Error<T> {
         NoneValue,
@@ -84,7 +106,8 @@ pub mod pallet {
         IpfsNodeIdAlreadyRegistered,
         AddressUidNotFoundOnBittensor,
         InvalidAccountId,
-        InsufficientStake
+        InsufficientStake,
+        InsufficientBalanceForFee
     }
 
     #[pallet::validate_unsigned]
@@ -138,6 +161,7 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
+    
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
@@ -178,6 +202,28 @@ pub mod pallet {
                         .unwrap_or_default() >= T::MinerStakeThreshold::get().into(),
                     Error::<T>::InsufficientStake
                 );
+            }
+
+              // Check if fee charging is enabled
+              if Self::fee_charging_enabled() {
+                // Calculate the fee based on the percentage
+                let total_balance = <pallet_balances::Pallet<T>>::total_issuance();
+                let fee_percentage = Self::current_fee_percentage();
+                let fee = total_balance.saturating_mul(fee_percentage.into()) / 100u32.into();
+                
+                // Ensure user has sufficient balance
+                ensure!(
+                    <pallet_balances::Pallet<T>>::free_balance(&who) >= fee,
+                    Error::<T>::InsufficientBalanceForFee
+                );
+
+                // Transfer fee to the pallet's account
+                <pallet_balances::Pallet<T>>::transfer(
+                    &who.clone(), 
+                    &Self::account_id(), 
+                    fee,
+                    frame_support::traits::ExistenceRequirement::KeepAlive
+                )?;
             }
 
             // Get the current block number
@@ -279,6 +325,45 @@ pub mod pallet {
 
             Self::deposit_event(Event::NodeRegistered{node_id});
             Ok(().into())
+        }
+
+
+        /// Sudo function to enable or disable fee charging
+        #[pallet::call_index(4)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_toggle_fee_charging(
+            origin: OriginFor<T>, 
+            enabled: bool
+        ) -> DispatchResult {
+            // Ensure only root can call this
+            ensure_root(origin)?;
+
+            // Update the fee charging status
+            FeeChargingEnabled::<T>::put(enabled);
+
+            // Emit an event
+            Self::deposit_event(Event::FeeChargingStatusChanged { enabled });
+
+            Ok(())
+        }
+
+        /// Sudo function to set the fee percentage
+        #[pallet::call_index(5)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_set_fee_percentage(
+            origin: OriginFor<T>, 
+            percentage: u16
+        ) -> DispatchResult {
+            // Ensure only root can call this
+            ensure_root(origin)?;
+
+            // Update the current fee percentage
+            CurrentFeePercentage::<T>::put(percentage);
+
+            // Emit an event
+            Self::deposit_event(Event::FeePercentageChanged { new_percentage: percentage });
+
+            Ok(())
         }
 
     }
@@ -429,6 +514,10 @@ pub mod pallet {
             }
             active_nodes
         }   
+
+        pub fn account_id() -> T::AccountId {
+            <T as pallet::Config>::PalletId::get().into_account_truncating()
+        }
 
         pub fn get_registered_node(node_id: Vec<u8>) -> Result<NodeInfo<BlockNumberFor<T>, T::AccountId>, &'static str> {
             // Retrieve the node info from storage

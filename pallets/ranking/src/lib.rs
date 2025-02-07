@@ -360,7 +360,7 @@ pub mod pallet {
 
 	    /// The account ID of the marketplace pallet
 		pub fn account_id() -> T::AccountId {
-			T::PalletId::get().into_account_truncating()
+			<T as pallet::Config<I>>::PalletId::get().into_account_truncating()
 		}
 	}
 

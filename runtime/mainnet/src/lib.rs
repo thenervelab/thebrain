@@ -916,13 +916,19 @@ impl pallet_bittensor::Config for Runtime {
 	type NetUid = ConstU16<1>;
 }
 
+parameter_types! {
+    pub const ResgisterPalletId: PalletId = PalletId(*b"register");
+}
+
 impl pallet_registration::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     // Use Pallet instead of the crate name
     type MetagraphInfo = pallet_metagraph::Pallet<Runtime>;
 	type MinerStakeThreshold = ConstU32<0>;
 	type ChainDecimals = ConstU32<18>;
+	type PalletId = ResgisterPalletId;
 }
+
 
 parameter_types! {
 	pub const BlocksPerDay: u32 = HOURS as u32 * 24;
