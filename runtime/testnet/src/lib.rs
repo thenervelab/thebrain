@@ -1131,11 +1131,13 @@ parameter_types! {
     pub const RankingPalletId: PalletId = PalletId(*b"ranking1");
     pub const SecondRankingPalletId: PalletId = PalletId(*b"ranking2");
 	pub const ThirdRankingPalletId: PalletId = PalletId(*b"ranking3");
+	pub const FourthRankingPalletId: PalletId = PalletId(*b"ranking4");
     pub const ComputeNodesRewardPercentage: u32 = 40;
     pub const MinerNodesRewardPercentage: u32 = 60;
 	pub const RankingsInstanceId1: u16 = 1;
 	pub const RankingsInstanceId2: u16 = 2;
 	pub const RankingsInstanceId3: u16 = 3;
+	pub const RankingsInstanceId4: u16 = 4;
 }
 
 // First ranking pallet implementation remains the same
@@ -1160,13 +1162,24 @@ impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
 	type BlocksPerEra = BlocksPerEra;
 }
 
-// Add a second ranking pallet implementation
+// Add a Third ranking pallet implementation
 impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
     type RuntimeEvent = RuntimeEvent;
-    type PalletId = SecondRankingPalletId;
+    type PalletId = ThirdRankingPalletId;
     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 	type InstanceID = RankingsInstanceId3;
+	type AuthorityId = pallet_rankings::crypto::TestAuthId;
+	type BlocksPerEra = BlocksPerEra;
+}
+
+// Add a Fourth ranking pallet implementation
+impl pallet_rankings::Config<pallet_rankings::Instance4> for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type PalletId = FourthRankingPalletId;
+    type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
+    type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
+	type InstanceID = RankingsInstanceId4;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
 }
@@ -1601,6 +1614,7 @@ construct_runtime!(
         RankingStorage: pallet_rankings =63,
         RankingCompute: pallet_rankings::<Instance2> = 68,
 		RankingValidators: pallet_rankings::<Instance3> = 70,
+		RankingGpu: pallet_rankings::<Instance4> = 71,
 		Backup: pallet_backup = 64,
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,

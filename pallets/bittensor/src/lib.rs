@@ -46,7 +46,8 @@ pub mod pallet {
                       + pallet_metagraph::Config + pallet_rankings::Config 
                       + pallet_rankings::Config 
                       + pallet_rankings::Config<pallet_rankings::Instance2>
-                      + pallet_rankings::Config<pallet_rankings::Instance3> {
+                      + pallet_rankings::Config<pallet_rankings::Instance3>
+                      + pallet_rankings::Config<pallet_rankings::Instance4> {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
         #[pallet::constant]
@@ -216,6 +217,54 @@ pub mod pallet {
         }
 
         // New method to calculate weights specifically for compute miners
+        fn calculate_gpu_miner_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
+            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+            
+            let mut gpu_weights: Vec<u16> = Vec::new();
+            let mut gpu_nodes_ss58: Vec<Vec<u8>> = Vec::new();
+            let mut gpu_miners_node_id: Vec<Vec<u8>> = Vec::new();
+            let mut gpu_miners_node_types: Vec<NodeType> = Vec::new();
+            let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
+            let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
+
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
+
+            for miner in all_miners {
+                if miner.node_type != NodeType::ComputeMiner {
+                    continue;
+                }
+
+                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                    
+                    geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::GpuMiner, &metrics, all_nodes_metrics, &geo_distribution);
+
+                    gpu_weights.push(weight as u16);
+                    gpu_miners_node_id.push(miner.node_id.clone());
+                    gpu_miners_node_types.push(miner.node_type.clone());
+                    gpu_nodes_ss58.push(miner_ss58.clone().into());
+
+                    // Update Bittensor UIDs
+                    for uid in uids.iter() {
+                        if uid.substrate_address.to_ss58check() == miner_ss58 {
+                            all_uids_on_bittensor.push(uid.id);
+                            all_weights_on_bitensor.push(weight as u16);
+                        }
+                    }
+                } else {
+                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
+                        log::info!("Node metrics not found for compute miner: {:?}", node_id_str);
+                    }
+                }
+            }
+
+            (gpu_weights, gpu_nodes_ss58, gpu_miners_node_id, 
+             gpu_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
+        }
+
+
+        // New method to calculate weights specifically for compute miners
         fn calculate_compute_miner_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
             -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
             
@@ -263,7 +312,7 @@ pub mod pallet {
         }
 
         // Refactored main weight calculation method
-        pub fn calculate_weights_for_nodes() -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+        pub fn calculate_weights_for_nodes() -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
             let uids = MetagraphPallet::<T>::get_uids();
             let all_nodes = RegistrationPallet::<T>::get_all_nodes_with_min_staked();
 
@@ -286,6 +335,10 @@ pub mod pallet {
             let (compute_weights, compute_nodes_ss58, compute_miners_node_id, compute_miners_node_types, 
                  compute_uids, compute_weights_on_bittensor) = Self::calculate_compute_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
 
+                 
+            let (gpu_weights, gpu_nodes_ss58, gpu_miners_node_id, gpu_miners_node_types, 
+                gpu_uids, gpu_weights_on_bittensor) = Self::calculate_gpu_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+   
             // Calculate weights for different validator types
             let (validator_weights, validator_nodes_ss58, validator_miners_node_id, validator_miners_node_types, 
                  validator_uids, validator_weights_on_bittensor) = Self::calculate_validator_weights(&all_nodes, &all_nodes_metrics, &uids);
@@ -294,9 +347,10 @@ pub mod pallet {
             (
                 storage_weights, storage_nodes_ss58, storage_miners_node_id, storage_miners_node_types,
                 compute_weights, compute_nodes_ss58, compute_miners_node_id, compute_miners_node_types,
+                gpu_weights, gpu_nodes_ss58, gpu_miners_node_id, gpu_miners_node_types,
                 validator_weights, validator_nodes_ss58, validator_miners_node_id, validator_miners_node_types,
-                [storage_uids, compute_uids, validator_uids].concat(), 
-                [storage_weights_on_bittensor, compute_weights_on_bittensor, validator_weights_on_bittensor].concat()
+                [storage_uids, compute_uids, gpu_uids, validator_uids].concat(), 
+                [storage_weights_on_bittensor, compute_weights_on_bittensor, gpu_weights_on_bittensor, validator_weights_on_bittensor].concat()
             )
         }
 
@@ -409,6 +463,11 @@ pub mod pallet {
                 compute_all_miners_node_id,
                 compute_all_miners_node_types, 
 
+                gpu_weights, 
+                gpu_all_nodes_ss58,  
+                gpu_all_miners_node_id,
+                gpu_all_miners_node_types, 
+
                 validator_weights, 
                 validator_all_nodes_ss58,  
                 validator_all_miners_node_id,
@@ -416,7 +475,7 @@ pub mod pallet {
 
                 all_dests_on_bittensor, 
                 all_weights_on_bitensor) :
-                (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) = 
+                (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) = 
                 Self::calculate_weights_for_nodes();
             
             // update rankings in ranking pallet for both instances
@@ -428,6 +487,9 @@ pub mod pallet {
 
             let _ = RankingsPallet::<T, pallet_rankings::Instance3>::save_rankings_update(validator_weights.clone(), 
                     validator_all_nodes_ss58.clone(), validator_all_miners_node_id.clone(), validator_all_miners_node_types.clone(), block_number);
+
+            let _ = RankingsPallet::<T, pallet_rankings::Instance4>::save_rankings_update(gpu_weights.clone(), 
+                    gpu_all_nodes_ss58.clone(), gpu_all_miners_node_id.clone(), gpu_all_miners_node_types.clone(), block_number);
 
             // Ensure both vectors have the same length and are greater than 1
             if all_dests_on_bittensor.len() != all_weights_on_bitensor.len() {

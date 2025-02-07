@@ -17,7 +17,8 @@ pub struct NodeInfo<BlockNumber,AccountId> {
 pub enum NodeType {
     Validator,
     StorageMiner,
-    ComputeMiner
+    ComputeMiner,
+    GpuMiner
 }
 
 #[derive( Encode, Decode,Clone, Eq, PartialEq, Debug, TypeInfo)]
