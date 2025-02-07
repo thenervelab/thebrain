@@ -2137,9 +2137,9 @@ pub mod pallet {
 								})
 							} else {
 								serde_json::json!({
-									"memory": format!("{}", tech_desc.ram_gb * 1024),
+									"memory": format!("{}M", tech_desc.ram_gb * 1024),
 									"vcpus": format!("{}", tech_desc.cpu_cores),
-									"disk_size": format!("{}", tech_desc.storage_gb),
+									"disk_size": format!("{}Gi", tech_desc.storage_gb),
 									"is_sev_enabled": false,
 									"inbound_bandwidth": tech_desc.inbound_bandwidth,
 									"outbound_bandwidth": tech_desc.outbound_bandwidth,
