@@ -25,7 +25,7 @@ pub mod pallet {
     use frame_support::PalletId;
     use sp_runtime::traits::AccountIdConversion;
     use frame_system::{pallet_prelude::*, offchain::{SubmitTransaction,SendTransactionTypes}};
-    use frame_system::RawOrigin;
+    // use frame_system::RawOrigin;
     use sp_runtime::Saturating;
     use frame_support::traits::Currency;
     use sp_core::crypto::Ss58Codec;

@@ -292,7 +292,7 @@ pub mod pallet {
                             validator_ss58
                         );
                         // Remove validator using session and staking pallets
-                        if let Some(val_index) = <pallet_session::Pallet<T>>::validators()
+                        if let Some(_val_index) = <pallet_session::Pallet<T>>::validators()
                             .iter()
                             .position(|v| v == validator)
                         {
@@ -322,7 +322,7 @@ pub mod pallet {
 
                             // 2. Remove from session validators
                             // Note: This will take effect in the next session
-                            if let Some(keys) = <pallet_session::Pallet<T>>::key_owner(
+                            if let Some(_keys) = <pallet_session::Pallet<T>>::key_owner(
                                 sp_core::crypto::KeyTypeId(*b"babe"),
                                 &validator.encode(),
                             ) {
