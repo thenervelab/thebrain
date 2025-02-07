@@ -409,14 +409,18 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
         _total_issuance: Balance,
         _era_duration_millis: u64,
     ) -> (Balance, Balance) {
+		
 		log::info!("Executing era_payout");
         // Fetch the balance available in the marketplace
         let marketplace_balance = pallet_marketplace::Pallet::<Runtime>::balance();
-		log::info!("marketplace balance is {:?}", marketplace_balance);
+		let registration_balance = pallet_registration::Pallet::<Runtime>::balance();
+		let marketplace_account = pallet_marketplace::Pallet::<Runtime>::account_id();
+		let registration_account = pallet_registration::Pallet::<Runtime>::account_id();
+		// Transfer to treasury
+		let recipient_account = AccountId32::from_ss58check("5GEudEYMVWJr64Y3599urXfG1tg4u7iNFWmBYZUET2YTdPkn")
+			.expect("Invalid SS58 address");
+
         if marketplace_balance > 0 {
-            let marketplace_account = pallet_marketplace::Pallet::<Runtime>::account_id();
-			log::info!("marketplace balance at Era Payout is {:?}", marketplace_balance);
-            
             // Calculate amounts for each destination
             let staking_amount = marketplace_balance
                 .checked_mul(65u32.into())
@@ -427,11 +431,6 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
                 .checked_mul(35u32.into())
                 .and_then(|x| x.checked_div(100u32.into()))
                 .unwrap_or_default();
-
-
-            // Transfer to treasury
-			let recipient_account = AccountId32::from_ss58check("5GEudEYMVWJr64Y3599urXfG1tg4u7iNFWmBYZUET2YTdPkn")
-				.expect("Invalid SS58 address");
 
 			// Transfer to the specific account
 			let _ = pallet_balances::Pallet::<Runtime>::transfer(
@@ -474,15 +473,54 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 					);
                 }
             }
+        }
 
-            log::info!(
-                "Distribution: Staking (burned): {:?},  Treasury: {:?}",
-                staking_amount,
-                treasury_amount
-            );
+		if registration_balance > 0 {
+			log::info!("registration balance at Era Payout is {:?}", registration_balance);
+            
+            // Calculate amounts for each destination
+            let staking_amount = registration_balance
+                .checked_mul(50u32.into())
+                .and_then(|x| x.checked_div(100u32.into()))
+                .unwrap_or_default();
 
-            // Return the staking amount for distribution
-            return (0u32.into(), 0u32.into());
+            let treasury_amount = registration_balance
+                .checked_mul(50u32.into())
+                .and_then(|x| x.checked_div(100u32.into()))
+                .unwrap_or_default();
+
+			// Transfer to the specific account
+			let _ = pallet_balances::Pallet::<Runtime>::transfer(
+				&registration_account.clone(),
+				&recipient_account,
+				treasury_amount,
+				ExistenceRequirement::KeepAlive
+			);
+
+            // Get the list of validators from the session
+            let validators = <pallet_session::Pallet<Runtime>>::validators(); // Ensure you have the correct type here
+            let num_validators = validators.len() as u32;
+            if num_validators > 0 {
+                let amount_per_validator = staking_amount.checked_div(num_validators.into()).unwrap_or_default();
+
+                for validator in validators {
+					// Transfer the amount to the validator's account first
+					let _ = pallet_balances::Pallet::<Runtime>::transfer(
+						&registration_account.clone(),
+						&validator,
+						amount_per_validator,
+						ExistenceRequirement::KeepAlive,
+					);
+
+					// Now bond the amount as staked
+					log::info!("staking amount ");
+					let _ = pallet_staking::Pallet::<Runtime>::bond(
+						frame_system::RawOrigin::Signed(validator.clone()).into(),
+						amount_per_validator,
+						pallet_staking::RewardDestination::Staked,
+					);
+                }
+            }
         }
 
         // No payout if no funds are available

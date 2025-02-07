@@ -539,6 +539,11 @@ pub mod pallet {
             <T as pallet::Config>::PalletId::get().into_account_truncating()
         }
 
+        /// Get the current balance of the registration pallet
+        pub fn balance() -> BalanceOf<T> {
+            pallet_balances::Pallet::<T>::free_balance(&Self::account_id())
+        }
+
         pub fn get_registered_node(node_id: Vec<u8>) -> Result<NodeInfo<BlockNumberFor<T>, T::AccountId>, &'static str> {
             // Retrieve the node info from storage
             match NodeRegistration::<T>::get(node_id) {
