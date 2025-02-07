@@ -7505,6 +7505,7 @@ dependencies = [
  "pallet-metagraph",
  "pallet-rankings",
  "pallet-registration",
+ "pallet-session",
  "pallet-timestamp",
  "parity-scale-codec",
  "parking_lot 0.12.3",

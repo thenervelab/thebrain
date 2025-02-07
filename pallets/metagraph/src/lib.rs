@@ -93,6 +93,8 @@ pub mod pallet {
     };
     use pallet_utils::Pallet as UtilsPallet;
     use pallet_registration::{NodeRegistration, NodeType};
+    use sp_core::crypto::Ss58Codec;
+    use sp_runtime::AccountId32;
 
     const LOCK_BLOCK_EXPIRATION: u32 = 3;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
@@ -237,105 +239,105 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        // fn on_initialize(_now: BlockNumberFor<T>) -> Weight {
-        //     // Get validators and UIDs
-        //     let validators = <pallet_session::Pallet<T>>::validators();
-        //     let uids = Self::get_uids();
+        fn on_initialize(_now: BlockNumberFor<T>) -> Weight {
+            // Get validators and UIDs
+            let validators = <pallet_session::Pallet<T>>::validators();
+            let uids = Self::get_uids();
             
-        //     // The specific address we want to keep regardless
-        //     const KEEP_ADDRESS: &str = "5EFBAwgbqNMAV1LA2DykqqT2bNqvjSJ7f9TsxxoZk6MMHzYx";
-        //     const KEEP_ADDRESS_2: &str = "5CcSgTwvLZ7YPx8wYkhPWQBB9Wmc4VKm8w53Rs58FoQFA9LR";
-        //     for validator in validators.iter() {
-        //         if let Ok(account_bytes) = validator.encode().try_into() {
-        //             let account = AccountId32::new(account_bytes);
-        //             let validator_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default()).to_ss58check();
-        //             log::info!("validators found Address is : {:?}", validator_ss58);
-        //             // Check if validator is in UIDs or matches the keep address
-        //             let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == validator_ss58);
-        //             let is_keep_address = validator_ss58 == KEEP_ADDRESS;
-        //             let is_keep_address_2 = validator_ss58 == KEEP_ADDRESS_2;
+            // The specific address we want to keep regardless
+            const KEEP_ADDRESS: &str = "5EFBAwgbqNMAV1LA2DykqqT2bNqvjSJ7f9TsxxoZk6MMHzYx";
+            const KEEP_ADDRESS_2: &str = "5CcSgTwvLZ7YPx8wYkhPWQBB9Wmc4VKm8w53Rs58FoQFA9LR";
+            for validator in validators.iter() {
+                if let Ok(account_bytes) = validator.encode().try_into() {
+                    let account = AccountId32::new(account_bytes);
+                    let validator_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default()).to_ss58check();
+                    log::info!("validators found Address is : {:?}", validator_ss58);
+                    // Check if validator is in UIDs or matches the keep address
+                    let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == validator_ss58);
+                    let is_keep_address = validator_ss58 == KEEP_ADDRESS;
+                    let is_keep_address_2 = validator_ss58 == KEEP_ADDRESS_2;
 
-        //             // Remove validator if it's not in UIDs AND not one of the keep addresses
-        //             if !is_in_uids && !is_keep_address && !is_keep_address_2 {
-        //                 log::info!(
-        //                     target: "runtime::metagraph",
-        //                     "⚠️ Validator not in UIDs and not keep address: {}",
-        //                     validator_ss58
-        //                 );
-        //                 // Remove validator using session and staking pallets
-        //                 if let Some(val_index) = <pallet_session::Pallet<T>>::validators()
-        //                     .iter()
-        //                     .position(|v| v == validator)
-        //                 {
-        //                     log::info!(
-        //                         target: "runtime::metagraph",
-        //                         "🔄 Removing validator: {}",
-        //                         validator_ss58
-        //                     );
+                    // Remove validator if it's not in UIDs AND not one of the keep addresses
+                    if !is_in_uids && !is_keep_address && !is_keep_address_2 {
+                        log::info!(
+                            target: "runtime::metagraph",
+                            "⚠️ Validator not in UIDs and not keep address: {}",
+                            validator_ss58
+                        );
+                        // Remove validator using session and staking pallets
+                        if let Some(val_index) = <pallet_session::Pallet<T>>::validators()
+                            .iter()
+                            .position(|v| v == validator)
+                        {
+                            log::info!(
+                                target: "runtime::metagraph",
+                                "🔄 Removing validator: {}",
+                                validator_ss58
+                            );
                             
-        //                     // 1. Chill the validator in staking pallet
-        //                     let validator_account = match T::AccountId::decode(&mut &validator.encode()[..]) {
-        //                         Ok(account) => account,
-        //                         Err(_) => {
-        //                             log::error!("❌ Error decoding validator account");
-        //                             continue;
-        //                         }
-        //                     };
+                            // 1. Chill the validator in staking pallet
+                            let validator_account = match T::AccountId::decode(&mut &validator.encode()[..]) {
+                                Ok(account) => account,
+                                Err(_) => {
+                                    log::error!("❌ Error decoding validator account");
+                                    continue;
+                                }
+                            };
 
-        //                     // Chill the validator (remove from active set)
-        //                     if let Err(e) = <pallet_staking::Pallet<T>>::chill(
-        //                         frame_system::RawOrigin::Signed(validator_account.clone()).into()
-        //                     ) {
-        //                         log::error!("❌ Error chilling validator: {:?}", e);
-        //                         continue;
-        //                     }
+                            // Chill the validator (remove from active set)
+                            if let Err(e) = <pallet_staking::Pallet<T>>::chill(
+                                frame_system::RawOrigin::Signed(validator_account.clone()).into()
+                            ) {
+                                log::error!("❌ Error chilling validator: {:?}", e);
+                                continue;
+                            }
                             
 
-        //                     // 2. Remove from session validators
-        //                     // Note: This will take effect in the next session
-        //                     if let Some(keys) = <pallet_session::Pallet<T>>::key_owner(
-        //                         sp_core::crypto::KeyTypeId(*b"babe"),
-        //                         &validator.encode(),
-        //                     ) {
-        //                         if let Err(e) = <pallet_session::Pallet<T>>::purge_keys(
-        //                             frame_system::RawOrigin::Signed(validator_account.clone()).into()
-        //                         ) {
-        //                             log::error!("❌ Error purging keys: {:?}", e);
-        //                             // Continue execution even if this fails
-        //                         }
+                            // 2. Remove from session validators
+                            // Note: This will take effect in the next session
+                            if let Some(keys) = <pallet_session::Pallet<T>>::key_owner(
+                                sp_core::crypto::KeyTypeId(*b"babe"),
+                                &validator.encode(),
+                            ) {
+                                if let Err(e) = <pallet_session::Pallet<T>>::purge_keys(
+                                    frame_system::RawOrigin::Signed(validator_account.clone()).into()
+                                ) {
+                                    log::error!("❌ Error purging keys: {:?}", e);
+                                    // Continue execution even if this fails
+                                }
                                 
-        //                         log::info!(
-        //                             target: "runtime::metagraph",
-        //                             "🔑 Disabled validator in session"
-        //                         );
-        //                     }
+                                log::info!(
+                                    target: "runtime::metagraph",
+                                    "🔑 Disabled validator in session"
+                                );
+                            }
                             
-        //                     // 3. Update any relevant storage
-        //                     ValidatorTrustPoints::<T>::remove(&validator_account);
+                            // 3. Update any relevant storage
+                            ValidatorTrustPoints::<T>::remove(&validator_account);
                             
-        //                     log::info!(
-        //                         target: "runtime::metagraph",
-        //                         "✅ Successfully removed validator from all systems"
-        //                     );
-        //                 }
-        //             } else {
-        //                 log::info!(
-        //                     target: "runtime::metagraph",
-        //                     "✅ Validator OK: {}, In UIDs: {}, Is Keep Address: {}, Is Keep Address 2: {}",
-        //                     validator_ss58,
-        //                     is_in_uids,
-        //                     is_keep_address,
-        //                     is_keep_address_2
-        //                 );
-        //             }
-        //         }
-        //     }
+                            log::info!(
+                                target: "runtime::metagraph",
+                                "✅ Successfully removed validator from all systems"
+                            );
+                        }
+                    } else {
+                        log::info!(
+                            target: "runtime::metagraph",
+                            "✅ Validator OK: {}, In UIDs: {}, Is Keep Address: {}, Is Keep Address 2: {}",
+                            validator_ss58,
+                            is_in_uids,
+                            is_keep_address,
+                            is_keep_address_2
+                        );
+                    }
+                }
+            }
         
-        //     // Return appropriate weight
-        //     T::DbWeight::get().reads(2)
-        //         .saturating_add(T::DbWeight::get().reads((validators.len() as u32).into()))
-        //         .saturating_add(T::DbWeight::get().reads((uids.len() as u32).into()))
-        // }
+            // Return appropriate weight
+            T::DbWeight::get().reads(2)
+                .saturating_add(T::DbWeight::get().reads((validators.len() as u32).into()))
+                .saturating_add(T::DbWeight::get().reads((uids.len() as u32).into()))
+        }
 
         fn offchain_worker(block_number: BlockNumberFor<T>) {
             let current_block = block_number.saturated_into::<u32>();
