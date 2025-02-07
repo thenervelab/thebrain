@@ -28,6 +28,8 @@ pub mod pallet {
     use frame_system::RawOrigin;
     use sp_runtime::Saturating;
     use frame_support::traits::Currency;
+    use sp_core::crypto::Ss58Codec;
+    use sp_runtime::AccountId32;
 
     const LOCK_BLOCK_EXPIRATION: u32 = 1;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -107,7 +109,8 @@ pub mod pallet {
         AddressUidNotFoundOnBittensor,
         InvalidAccountId,
         InsufficientStake,
-        InsufficientBalanceForFee
+        InsufficientBalanceForFee,
+        FeeTooHigh
     }
 
     #[pallet::validate_unsigned]
@@ -204,26 +207,37 @@ pub mod pallet {
                 );
             }
 
-              // Check if fee charging is enabled
-              if Self::fee_charging_enabled() {
-                // Calculate the fee based on the percentage
-                let total_balance = <pallet_balances::Pallet<T>>::total_issuance();
-                let fee_percentage = Self::current_fee_percentage();
-                let fee = total_balance.saturating_mul(fee_percentage.into()) / 100u32.into();
-                
-                // Ensure user has sufficient balance
-                ensure!(
-                    <pallet_balances::Pallet<T>>::free_balance(&who) >= fee,
-                    Error::<T>::InsufficientBalanceForFee
-                );
+            // Get all UIDs using the MetagraphInfo provider
+            let uids = T::MetagraphInfo::get_all_uids();
 
-                // Transfer fee to the pallet's account
-                <pallet_balances::Pallet<T>>::transfer(
-                    &who.clone(), 
-                    &Self::account_id(), 
-                    fee,
-                    frame_support::traits::ExistenceRequirement::KeepAlive
-                )?;
+            if let Ok(account_bytes) = who.clone().encode().try_into() {
+                let account = AccountId32::new(account_bytes);
+                let who_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default()).to_ss58check();
+            
+                // Check if the caller is in UIDs
+                let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == who_ss58);
+
+                // Check if fee charging is enabled
+                if Self::fee_charging_enabled() && !is_in_uids{
+                    // Calculate the fee based on the percentage
+                    let total_balance = <pallet_balances::Pallet<T>>::total_issuance();
+                    let fee_percentage = Self::current_fee_percentage();
+                    let fee = total_balance.saturating_mul(fee_percentage.into()) / 100u32.into();
+                    
+                    // Ensure user has sufficient balance
+                    ensure!(
+                        <pallet_balances::Pallet<T>>::free_balance(&who) >= fee,
+                        Error::<T>::InsufficientBalanceForFee
+                    );
+
+                    // Transfer fee to the pallet's account
+                    <pallet_balances::Pallet<T>>::transfer(
+                        &who.clone(), 
+                        &Self::account_id(), 
+                        fee,
+                        frame_support::traits::ExistenceRequirement::KeepAlive
+                    )?;
+                }
             }
 
             // Get the current block number
@@ -331,7 +345,7 @@ pub mod pallet {
         /// Sudo function to enable or disable fee charging
         #[pallet::call_index(4)]
         #[pallet::weight((0, Pays::No))]
-        pub fn sudo_toggle_fee_charging(
+        pub fn set_fee_charging(
             origin: OriginFor<T>, 
             enabled: bool
         ) -> DispatchResult {
@@ -350,12 +364,18 @@ pub mod pallet {
         /// Sudo function to set the fee percentage
         #[pallet::call_index(5)]
         #[pallet::weight((0, Pays::No))]
-        pub fn sudo_set_fee_percentage(
+        pub fn set_fee_percentage(
             origin: OriginFor<T>, 
             percentage: u16
         ) -> DispatchResult {
             // Ensure only root can call this
             ensure_root(origin)?;
+
+            // Ensure the percentage is not greater than 80
+            ensure!(
+                percentage <= 80, 
+                Error::<T>::FeeTooHigh
+            );
 
             // Update the current fee percentage
             CurrentFeePercentage::<T>::put(percentage);
