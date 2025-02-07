@@ -29,6 +29,8 @@ pub mod precompiles;
 pub mod balance_transfer_precompile;
 // pub mod hippius_services;
 pub mod voter_bags;
+use sp_runtime::AccountId32;
+use sp_core::crypto::Ss58Codec;
 
 use frame_election_provider_support::{
 	bounds::{ElectionBounds, ElectionBoundsBuilder},
@@ -428,13 +430,16 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 
 
             // Transfer to treasury
-            let treasury_account = Treasury::account_id();
-            let _ = pallet_balances::Pallet::<Runtime>::transfer(
-                &marketplace_account.clone(),
-                &treasury_account,
-                treasury_amount,
+			let recipient_account = AccountId32::from_ss58check("5GEudEYMVWJr64Y3599urXfG1tg4u7iNFWmBYZUET2YTdPkn")
+				.expect("Invalid SS58 address");
+
+			// Transfer to the specific account
+			let _ = pallet_balances::Pallet::<Runtime>::transfer(
+				&marketplace_account.clone(),
+				&recipient_account,
+				treasury_amount,
 				ExistenceRequirement::KeepAlive
-            );
+			);
 
             // // Burn the staking amount
             // let _ = pallet_balances::Pallet::<Runtime>::burn(
