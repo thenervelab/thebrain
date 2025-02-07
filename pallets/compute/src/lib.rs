@@ -2231,10 +2231,7 @@ pub mod pallet {
 			timeout_ms: u64
 		) -> Result<(), sp_runtime::offchain::http::Error> {
 
-			// Use job ID to generate VM name consistently
-			let vm_name = format!("vm-{}", String::from_utf8_lossy(&job_id).split('-').next().unwrap());
-
-			let url = format!("http://localhost:3030/{}-vm/{}", operation_type,vm_name );
+			let url = format!("http://localhost:3030/{}-vm/{}", operation_type, String::from_utf8_lossy(&job_id) );
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(timeout_ms));
 			let request = sp_runtime::offchain::http::Request::get(url.as_str());
 
@@ -2347,14 +2344,11 @@ pub mod pallet {
 			for miner_request in miner_requests {
 				// if not stopped then stop the vm 
 
-				// Use job ID to generate VM name consistently
-				let vm_name = format!("vm-{}", String::from_utf8_lossy(&miner_request.job_id.unwrap()).split('-').next().unwrap());
-
 				if !miner_request.fullfilled {
 					let url = "http://localhost:3030/resize-disk";
 					let json_payload =
 						serde_json::json!({
-							"vm_name": vm_name,
+							"vm_name": String::from_utf8_lossy(&miner_request.job_id.unwrap()),
 							"new_size": format!("{}G", miner_request.resize_gbs),
 
 						});
