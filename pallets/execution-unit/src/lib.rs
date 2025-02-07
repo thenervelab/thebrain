@@ -75,7 +75,6 @@ pub mod pallet {
 		traits::Zero,
 		AccountId32,
 	};
-	use sp_core::crypto::Ss58Codec;
 	use sp_std::prelude::*;
 	// use pallet_credits::Pallet as CreditsPallet;
 	// use pallet_rankings::Pallet as RankingsPallet;
@@ -87,7 +86,6 @@ pub mod pallet {
 	pub trait Config: frame_system::Config + 
 					  pallet_metagraph::Config + 
 					  pallet_babe::Config + 
-					  pallet_session::Config +
 					  pallet_ipfs_pin::Config + 
 					  pallet_marketplace::Config + 
 					  pallet_timestamp::Config + 
@@ -307,10 +305,7 @@ pub mod pallet {
 
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> 
-	where 
-	{
-
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
 			match IpfsPinPallet::<T>::fetch_node_id() {
 				Ok(node_id) => {

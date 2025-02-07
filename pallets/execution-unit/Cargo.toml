@@ -32,7 +32,6 @@ pallet-credits = { default-features = false, workspace = true }
 pallet-balances = { default-features = false, workspace = true }
 pallet-rankings = { default-features = false, workspace = true }
 num-traits = { version = "0.2.17", default-features = false }
-pallet-session = { workspace = true }
 pallet-marketplace = { workspace = true, default-features = false }
 sp-debug-derive = { default-features = false, workspace = true }
 serde_json = { workspace = true }
@@ -65,10 +64,7 @@ std = [
     "pallet-credits/std",
     "pallet-balances/std",
     "pallet-rankings/std",
-    "pallet-session/std",
     "num-traits/std",
-    "serde/std",
-    "serde_json/std",
 ]
 runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
 try-runtime = ["frame-support/try-runtime"]

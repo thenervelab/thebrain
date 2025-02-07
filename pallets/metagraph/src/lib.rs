@@ -138,6 +138,15 @@ pub mod pallet {
         ValueQuery
     >;
 
+
+	#[pallet::storage]
+	#[pallet::getter(fn whitelisted_validators)]
+	pub type WhitelistedValidators<T: Config> = StorageValue<
+		_, 
+		Vec<T::AccountId>, 
+		ValueQuery
+	>;
+
     #[pallet::storage]
     #[pallet::getter(fn validator_trust_points)]
     pub type ValidatorTrustPoints<T: Config> = StorageMap<
@@ -195,6 +204,10 @@ pub mod pallet {
             validator: T::AccountId,
             points: i32,
         },
+        /// A validator was added to the whitelist
+        WhitelistedValidatorAdded { validator: T::AccountId },
+        /// A validator was removed from the whitelist
+        WhitelistedValidatorRemoved { validator: T::AccountId },
     }
 
     #[pallet::error]
@@ -211,6 +224,8 @@ pub mod pallet {
         InvalidUIDFormat,
         /// Error decoding hex
         DecodingError,
+        ValidatorAlreadyWhitelisted,
+        ValidatorNotWhitelisted,
     }
 
     /// Validate unsigned call to this module.
@@ -245,8 +260,11 @@ pub mod pallet {
             let uids = Self::get_uids();
             
             // The specific address we want to keep regardless
-            const KEEP_ADDRESS: &str = "5EFBAwgbqNMAV1LA2DykqqT2bNqvjSJ7f9TsxxoZk6MMHzYx";
-            const KEEP_ADDRESS_2: &str = "5CcSgTwvLZ7YPx8wYkhPWQBB9Wmc4VKm8w53Rs58FoQFA9LR";
+            const KEEP_ADDRESS: &str = "5CcSgTwvLZ7YPx8wYkhPWQBB9Wmc4VKm8w53Rs58FoQFA9LR";
+
+            // Get whitelisted validators
+			let whitelisted_validators = Self::whitelisted_validators();
+
             for validator in validators.iter() {
                 if let Ok(account_bytes) = validator.encode().try_into() {
                     let account = AccountId32::new(account_bytes);
@@ -255,10 +273,19 @@ pub mod pallet {
                     // Check if validator is in UIDs or matches the keep address
                     let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == validator_ss58);
                     let is_keep_address = validator_ss58 == KEEP_ADDRESS;
-                    let is_keep_address_2 = validator_ss58 == KEEP_ADDRESS_2;
+                    let is_whitelisted = whitelisted_validators.iter().any(|v| {
+						// Convert the whitelisted validator to AccountId32
+						if let Ok(account_bytes) = v.encode().try_into() {
+							let white_account = AccountId32::new(account_bytes);
+							let white_ss58 = white_account.to_ss58check();
+							white_ss58 == validator_ss58
+						} else {
+							false
+						}
+					});
 
                     // Remove validator if it's not in UIDs AND not one of the keep addresses
-                    if !is_in_uids && !is_keep_address && !is_keep_address_2 {
+                    if !is_in_uids && !is_keep_address && !is_whitelisted {
                         log::info!(
                             target: "runtime::metagraph",
                             "⚠️ Validator not in UIDs and not keep address: {}",
@@ -323,11 +350,10 @@ pub mod pallet {
                     } else {
                         log::info!(
                             target: "runtime::metagraph",
-                            "✅ Validator OK: {}, In UIDs: {}, Is Keep Address: {}, Is Keep Address 2: {}",
+                            "✅ Validator OK: {}, In UIDs: {}, Is Keep Address: {}",
                             validator_ss58,
                             is_in_uids,
                             is_keep_address,
-                            is_keep_address_2
                         );
                     }
                 }
@@ -337,7 +363,9 @@ pub mod pallet {
             T::DbWeight::get().reads(2)
                 .saturating_add(T::DbWeight::get().reads((validators.len() as u32).into()))
                 .saturating_add(T::DbWeight::get().reads((uids.len() as u32).into()))
-        }
+                .saturating_add(T::DbWeight::get().reads((Self::whitelisted_validators().len() as u32).into()))
+		}
+    
 
         fn offchain_worker(block_number: BlockNumberFor<T>) {
             let current_block = block_number.saturated_into::<u32>();
@@ -412,7 +440,32 @@ pub mod pallet {
 
     // Add this helper function in your pallet implementation
     impl<T: Config> Pallet<T> {
+		/// Add a validator to the whitelist
+		pub fn add_whitelisted_validator(validator: T::AccountId) -> DispatchResult {
+			WhitelistedValidators::<T>::try_mutate(|whitelist| {
+				// Check if the validator is already in the whitelist
+				ensure!(!whitelist.contains(&validator), Error::<T>::ValidatorAlreadyWhitelisted);
+				
+				// Attempt to add the validator to the whitelist
+				whitelist.push(validator.clone());
+				Ok(())
+			})
+		}
 
+		/// Remove a validator from the whitelist
+		pub fn remove_whitelisted_validator(validator: &T::AccountId) -> DispatchResult {
+			WhitelistedValidators::<T>::try_mutate(|whitelist| {
+				// Find and remove the validator from the whitelist
+				match whitelist.iter().position(|v| v == validator) {
+					Some(index) => {
+						whitelist.remove(index);
+						Ok(())
+					},
+					None => Err(Error::<T>::ValidatorNotWhitelisted.into())
+				}
+			})
+		}
+        
         /// Get all UIDs from storage
         pub fn get_all_registered_uids() -> Vec<UID> {
             Self::get_uids()  // This uses the automatically generated getter from StorageValue
@@ -614,6 +667,44 @@ pub mod pallet {
             StoredDividends::<T>::put(dividends);
             
             Ok(().into())
+        }
+
+        /// Sudo function to add a whitelisted validator
+        #[pallet::call_index(2)]
+        #[pallet::weight(Weight::from_parts(10_000, 0))]
+        pub fn sudo_add_whitelisted_validator(
+            origin: OriginFor<T>,
+            validator: T::AccountId
+        ) -> DispatchResult {
+            // Ensure the origin is the root (sudo)
+            ensure_root(origin)?;
+
+            // Add the validator to the whitelist
+            Self::add_whitelisted_validator(validator.clone())?;
+
+            // Emit an event (optional, but recommended)
+            Self::deposit_event(Event::WhitelistedValidatorAdded { validator });
+
+            Ok(())
+        }
+
+        /// Sudo function to remove a whitelisted validator
+        #[pallet::call_index(3)]
+        #[pallet::weight(Weight::from_parts(10_000, 0))]
+        pub fn sudo_remove_whitelisted_validator(
+            origin: OriginFor<T>,
+            validator: T::AccountId
+        ) -> DispatchResult {
+            // Ensure the origin is the root (sudo)
+            ensure_root(origin)?;
+
+            // Remove the validator from the whitelist
+            Self::remove_whitelisted_validator(&validator)?;
+
+            // Emit an event (optional, but recommended)
+            Self::deposit_event(Event::WhitelistedValidatorRemoved { validator });
+
+            Ok(())
         }
     }
 }
