@@ -1474,7 +1474,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1527,7 +1527,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1584,7 +1584,7 @@ pub mod pallet {
 			if let Ok(_guard) = lock.try_lock() {
 
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1641,7 +1641,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1694,7 +1694,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1748,7 +1748,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1803,7 +1803,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1858,7 +1858,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1914,7 +1914,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T,  <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -1972,7 +1972,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {
@@ -2030,7 +2030,7 @@ pub mod pallet {
 
 			if let Ok(_guard) = lock.try_lock() {
 				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, T::AuthorityId>::all_accounts();
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
 
 				// Check if there are any accounts and log them
 				if signer.can_sign() {

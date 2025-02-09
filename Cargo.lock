@@ -7878,6 +7878,7 @@ dependencies = [
  "log",
  "pallet-babe",
  "pallet-balances",
+ "pallet-credits",
  "pallet-session",
  "pallet-staking",
  "pallet-utils",

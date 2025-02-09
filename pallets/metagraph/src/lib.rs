@@ -393,7 +393,7 @@ pub mod pallet {
                                 (Ok(mut uids), Ok(dividends)) => {
                                     uids = hotkeys::update_uids_with_roles(uids, &dividends);
         
-                                    let signer = Signer::<T, T::AuthorityId>::all_accounts();
+                                    let signer = Signer::<T,  <T as pallet::Config>::AuthorityId>::all_accounts();
         
                                     if !signer.can_sign() {
                                         log::warn!("No accounts available for signing in signer.");

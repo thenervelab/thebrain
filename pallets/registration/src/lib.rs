@@ -25,11 +25,11 @@ pub mod pallet {
     use frame_support::PalletId;
     use sp_runtime::traits::AccountIdConversion;
     use frame_system::{pallet_prelude::*, offchain::{SubmitTransaction,SendTransactionTypes}};
-    // use frame_system::RawOrigin;
     use sp_runtime::Saturating;
     use frame_support::traits::Currency;
     use sp_core::crypto::Ss58Codec;
     use sp_runtime::AccountId32;
+    use pallet_credits::Pallet as CreditsPallet;
 
     const LOCK_BLOCK_EXPIRATION: u32 = 1;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -42,7 +42,7 @@ pub mod pallet {
     pub type BalanceOf<T> = <T as pallet_balances::Config>::Balance;
 
     #[pallet::config]
-    pub trait Config: frame_system::Config  + pallet_babe::Config + pallet_balances::Config + pallet_utils::Config + SendTransactionTypes<Call<Self>> + pallet_staking::Config{
+    pub trait Config: frame_system::Config  + pallet_babe::Config + pallet_balances::Config + pallet_utils::Config + pallet_credits::Config + SendTransactionTypes<Call<Self>> + pallet_staking::Config{
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type MetagraphInfo: MetagraphInfoProvider;
         /// The minimum amount that must be staked by a miner
@@ -170,11 +170,17 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
         #[pallet::weight((0, Pays::No))]
-        pub fn register_node(origin: OriginFor<T>, node_type: NodeType, node_id : Vec<u8>,ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
+        pub fn register_node(origin: OriginFor<T>, node_type: NodeType, node_id : Vec<u8>,
+            pay_in_credits: bool,
+            ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
             let who = ensure_signed(origin)?;
             
-            // Ensure that if the node type is `miner`, the `ipfs_node_id` is not `None`
-            ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired);
+            // Ensure that if the node type is `StorageMiner`, the `ipfs_node_id` is not `None`
+            match node_type {
+                NodeType::StorageMiner => ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired),
+                NodeType::Validator => ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired),
+                _ => {}
+            }
             
             let node_id = node_id.clone();
             // Check if the node is already registered
@@ -230,13 +236,22 @@ pub mod pallet {
                         Error::<T>::InsufficientBalanceForFee
                     );
 
-                    // Transfer fee to the pallet's account
-                    <pallet_balances::Pallet<T>>::transfer(
-                        &who.clone(), 
-                        &Self::account_id(), 
-                        fee,
-                        frame_support::traits::ExistenceRequirement::KeepAlive
-                    )?;
+                    if !pay_in_credits{
+                        // Transfer fee to the pallet's account
+                        <pallet_balances::Pallet<T>>::transfer(
+                            &who.clone(), 
+                            &Self::account_id(), 
+                            fee,
+                            frame_support::traits::ExistenceRequirement::KeepAlive
+                        )?;
+                    }else{
+                        // decrease credits and mint balance
+                        let fee_u128: u128 = fee.try_into().unwrap_or_default();
+                        CreditsPallet::<T>::decrease_user_credits(&who.clone(), fee_u128);
+                        // Deposit charge to marketplace account
+                        let _ = pallet_balances::Pallet::<T>::deposit_creating(&Self::account_id(), fee);
+
+                    }
                 }
             }
 
