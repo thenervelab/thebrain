@@ -167,7 +167,7 @@ pub mod pallet {
 
         fn offchain_worker(block_number: BlockNumberFor<T>) {
             // Run offchain worker every 24 hours based on BlocksPerDay constant
-            if block_number % T::BlocksPerDay::get().into() == 0u32.into() {
+            if block_number % <T as pallet::Config>::BlocksPerDay::get().into() == 0u32.into() {
                 match UtilsPallet::<T>::fetch_node_id() {
                     Ok(node_id) => {
                         let node_info = NodeRegistration::<T>::get(&node_id);

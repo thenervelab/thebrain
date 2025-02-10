@@ -18,7 +18,15 @@ pub mod pallet {
     use super::*;
 	use sp_std::{vec::Vec, prelude::*};
 	use scale_info::prelude::*;
-    use frame_support::{pallet_prelude::*, dispatch::DispatchResultWithPostInfo};
+    use frame_support::{
+        pallet_prelude::*,
+        dispatch::DispatchResultWithPostInfo,
+        traits::{
+            // tokens::ExistenceRequirement,
+            Get,
+            // One,
+        },
+    };
     use pallet_utils::{MetagraphInfoProvider, Pallet as UtilsPallet};
     use sp_runtime::offchain::storage_lock::{StorageLock,BlockAndTime};
     use sp_core::offchain::Duration;
@@ -30,10 +38,15 @@ pub mod pallet {
     use sp_core::crypto::Ss58Codec;
     use sp_runtime::AccountId32;
     use pallet_credits::Pallet as CreditsPallet;
+    use sp_runtime::{
+        traits::{
+            CheckedDiv,
+        },
+    };
+    use sp_runtime::traits::Zero;
 
     const LOCK_BLOCK_EXPIRATION: u32 = 1;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
-	// pub(crate) const LOCK_SLEEP_DURATION: u32 = LOCK_TIMEOUT_EXPIRATION / 3;
 
     // Define a constant for token decimals (typically at the top of the file)
     pub const DECIMALS: u32 = 18;
@@ -55,6 +68,17 @@ pub mod pallet {
         /// The pallet's id, used for deriving its sovereign account ID.
         #[pallet::constant]
         type PalletId: Get<PalletId>;
+
+        /// Initial fixed fee for each node type
+        #[pallet::constant]
+        type StorageMinerInitialFee: Get<BalanceOf<Self>>;
+        #[pallet::constant]
+        type ValidatorInitialFee: Get<BalanceOf<Self>>;
+        #[pallet::constant]
+        type ComputeMinerInitialFee: Get<BalanceOf<Self>>;
+
+        #[pallet::constant]
+        type BlocksPerDay: Get<u32>;
     }
 
 	#[pallet::pallet]
@@ -78,9 +102,25 @@ pub mod pallet {
     pub type FeeChargingEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
     #[pallet::storage]
-    #[pallet::getter(fn current_fee_percentage)]
-    pub type CurrentFeePercentage<T: Config> = StorageValue<_, u16, ValueQuery>;
-    
+    #[pallet::getter(fn current_node_type_fee)]
+    pub type CurrentNodeTypeFee<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        NodeType,
+        BalanceOf<T>,
+        ValueQuery
+    >;
+
+    #[pallet::storage]
+    #[pallet::getter(fn last_registration_block)]
+    pub type LastRegistrationBlock<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        NodeType,
+        BlockNumberFor<T>,
+        ValueQuery
+    >;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -163,7 +203,15 @@ pub mod pallet {
     }
 
     #[pallet::hooks]
-    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
+            // Initialize fees if not already set
+            if CurrentNodeTypeFee::<T>::iter().count() == 0 {
+                Self::initialize_node_type_fees();
+            }
+            Weight::zero()
+        }
+    }
     
 
     #[pallet::call]
@@ -225,10 +273,8 @@ pub mod pallet {
 
                 // Check if fee charging is enabled
                 if Self::fee_charging_enabled() && !is_in_uids{
-                    // Calculate the fee based on the percentage
-                    let total_balance = <pallet_balances::Pallet<T>>::total_issuance();
-                    let fee_percentage = Self::current_fee_percentage();
-                    let fee = total_balance.saturating_mul(fee_percentage.into()) / 100u32.into();
+                    // Calculate dynamic fee based on node type
+                    let fee = Self::calculate_dynamic_fee(node_type.clone());
                     
                     // Ensure user has sufficient balance
                     ensure!(
@@ -252,6 +298,9 @@ pub mod pallet {
                         let _ = pallet_balances::Pallet::<T>::deposit_creating(&Self::account_id(), fee);
 
                     }
+
+                    // Update fee after successful registration
+                    Self::update_fee_after_registration(node_type.clone());
                 }
             }
 
@@ -375,32 +424,6 @@ pub mod pallet {
 
             Ok(())
         }
-
-        /// Sudo function to set the fee percentage
-        #[pallet::call_index(5)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn set_fee_percentage(
-            origin: OriginFor<T>, 
-            percentage: u16
-        ) -> DispatchResult {
-            // Ensure only root can call this
-            ensure_root(origin)?;
-
-            // Ensure the percentage is not greater than 80
-            ensure!(
-                percentage <= 80, 
-                Error::<T>::FeeTooHigh
-            );
-
-            // Update the current fee percentage
-            CurrentFeePercentage::<T>::put(percentage);
-
-            // Emit an event
-            Self::deposit_event(Event::FeePercentageChanged { new_percentage: percentage });
-
-            Ok(())
-        }
-
     }
 
 
@@ -602,5 +625,59 @@ pub mod pallet {
                 }
 			};
 		}
+
+        /// Initialize fees for node types
+        fn initialize_node_type_fees() {
+            CurrentNodeTypeFee::<T>::insert(
+                NodeType::StorageMiner, 
+                T::StorageMinerInitialFee::get()
+            );
+            CurrentNodeTypeFee::<T>::insert(
+                NodeType::Validator, 
+                T::ValidatorInitialFee::get()
+            );
+            CurrentNodeTypeFee::<T>::insert(
+                NodeType::ComputeMiner, 
+                T::ComputeMinerInitialFee::get()
+            );
+        }
+
+        /// Calculate dynamic fee for a node type
+        fn calculate_dynamic_fee(node_type: NodeType) -> BalanceOf<T> {
+            let current_block = frame_system::Pallet::<T>::block_number();
+            let last_registration_block = Self::last_registration_block(node_type.clone());
+            let blocks_per_day = T::BlocksPerDay::get();
+
+            // If no registration for a day, halve the fee
+            if current_block.saturating_sub(last_registration_block) > blocks_per_day.into() {
+                let current_fee = Self::current_node_type_fee(node_type.clone());
+                
+                // Safely divide the fee by 2
+                let halved_fee = current_fee.checked_div(&2u32.into())
+                    .unwrap_or_else(|| Zero::zero());
+                
+                // Update the stored fee
+                CurrentNodeTypeFee::<T>::mutate(node_type.clone(), |fee| {
+                    *fee = halved_fee;
+                });
+                
+                halved_fee
+            } else {
+                // Return current fee
+                Self::current_node_type_fee(node_type)
+            }
+        }
+
+        /// Update fee after registration
+        fn update_fee_after_registration(node_type: NodeType) {
+            // Double the fee
+            CurrentNodeTypeFee::<T>::mutate(node_type.clone(), |fee| {
+                *fee = fee.saturating_mul(2u32.into());
+            });
+
+            // Update last registration block
+            let current_block = frame_system::Pallet::<T>::block_number();
+            LastRegistrationBlock::<T>::insert(node_type, current_block);
+        }
     }
 }

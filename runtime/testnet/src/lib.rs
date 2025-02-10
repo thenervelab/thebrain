@@ -1126,6 +1126,9 @@ impl pallet_bittensor::Config for Runtime {
 
 parameter_types! {
     pub const ResgisterPalletId: PalletId = PalletId(*b"register");
+    pub const StorageMinerInitialFee: Balance = 100_000_000_000; // 100 tokens
+    pub const ValidatorInitialFee: Balance = 200_000_000_000; // 200 tokens
+    pub const ComputeMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
 }
 
 impl pallet_registration::Config for Runtime {
@@ -1135,6 +1138,10 @@ impl pallet_registration::Config for Runtime {
 	type MinerStakeThreshold = ConstU32<0>;
 	type ChainDecimals = ConstU32<18>;
 	type PalletId = ResgisterPalletId;
+	type StorageMinerInitialFee = StorageMinerInitialFee;
+    type ValidatorInitialFee = ValidatorInitialFee;
+    type ComputeMinerInitialFee = ComputeMinerInitialFee;
+	type BlocksPerDay = BlocksPerDay;
 }
 
 parameter_types! {
