@@ -1225,6 +1225,7 @@ pub mod pallet {
             plan_id: T::Hash,
             selected_image: ImageMetadata,
 			cloud_init_cid: Option<Vec<u8>>,
+			minner_id: Option<Vec<u8>>,
         ) -> DispatchResult {
             // Increment and get the next request ID
             let request_id = NextRequestId::<T>::get();
@@ -1245,6 +1246,7 @@ pub mod pallet {
                 selected_image,
                 is_assigned: false,	
 				cloud_init_cid,
+				minner_id,
             };
 
             // Store the request in the ComputeRequests storage

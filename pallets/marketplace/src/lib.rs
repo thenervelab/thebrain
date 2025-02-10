@@ -593,6 +593,7 @@ pub mod pallet {
             selected_image_name: Vec<u8>,
             cloud_init_cid: Option<Vec<u8>>,
             pay_for: Option<T::AccountId>,
+            miner_id: Option<Vec<u8>>
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
@@ -621,6 +622,7 @@ pub mod pallet {
                 location_id,
                 selected_image_name.clone(),
                 cloud_init_cid.clone(),
+                miner_id
             )?;
 
             // Emit an event for the plan purchase
@@ -820,6 +822,7 @@ pub mod pallet {
             location_id: Option<u32>,
             selected_image_name: Vec<u8>,
             cloud_init_cid: Option<Vec<u8>>,
+            miner_id: Option<Vec<u8>>
             // referral_code: Option<Vec<u8>>,
             // pay_upfront: Option<u128>,
         ) -> DispatchResult {
@@ -929,6 +932,7 @@ pub mod pallet {
                 plan_id,
                 compute_image_metadata,
                 cloud_init_cid,
+                miner_id
             )?;
 
             Ok(())

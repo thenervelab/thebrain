@@ -26,6 +26,7 @@ pub struct ComputeRequest<AccountId, BlockNumberFor, Hash>
     pub selected_image: ImageMetadata,
     pub is_assigned: bool, // Optional: to track if the request is assigned
     pub cloud_init_cid: Option<Vec<u8>>, // Optional cloud-init configuration CID
+    pub minner_id: Option<Vec<u8>>, // Optional if they have selected a miner
 }
 
 #[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
