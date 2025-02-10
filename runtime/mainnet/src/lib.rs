@@ -114,7 +114,7 @@ pub use sp_runtime::BuildStorage;
 pub use sp_runtime::{MultiAddress, Perbill, Percent, Permill};
 use sp_runtime::AccountId32;
 use sp_core::crypto::Ss58Codec;
-
+use pallet_registration::NodeType;
 pub use hippius_primitives::{
 	currency::*,
 	fee::*,
@@ -2296,6 +2296,12 @@ impl_runtime_apis! {
 			Historical::prove((fg_primitives::KEY_TYPE, authority_id))
 				.map(|p| p.encode())
 				.map(fg_primitives::OpaqueKeyOwnershipProof::new)
+		}
+	}
+
+	impl rpc_primitives_node_metrics::NodeMetricsRuntimeApi<Block> for Runtime {
+		fn get_active_nodes_by_type() -> Vec<Vec<u8>> {
+			<pallet_registration::Pallet<Runtime>>::get_active_nodes_by_type(NodeType::Validator)
 		}
 	}
 

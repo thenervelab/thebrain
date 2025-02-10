@@ -151,6 +151,7 @@ precompile-utils = { workspace = true }
 evm-tracer = { workspace = true }
 rpc-primitives-debug = { workspace = true }
 rpc-primitives-txpool = { workspace = true }
+rpc-primitives-node-metrics = { workspace = true }
 
 [features]
 default = ["std", "with-rocksdb-weights", "evm-tracing"]
@@ -282,6 +283,7 @@ std = [
     "evm-tracer/std",
     "rpc-primitives-debug/std",
     "rpc-primitives-txpool/std",
+    "rpc-primitives-node-metrics/std",
     "pallet-evm-precompileset-assets-erc20/std",
     "frame-metadata-hash-extension/std",
     "frame-benchmarking?/std",

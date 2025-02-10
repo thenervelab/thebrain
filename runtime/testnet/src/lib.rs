@@ -59,7 +59,7 @@ use pallet_transaction_payment::{
 	CurrencyAdapter, FeeDetails, Multiplier, RuntimeDispatchInfo, 
 };
 
-
+use pallet_registration::NodeType;
 use pallet_tx_pause::RuntimeCallNameOf;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use precompiles::HipiusPrecompiles;
@@ -2940,6 +2940,12 @@ impl_runtime_apis! {
 			Err(sp_runtime::DispatchError::Other(
 				"Missing `evm-tracing` compile time feature flag.",
 			))
+		}
+	}
+
+	impl rpc_primitives_node_metrics::NodeMetricsRuntimeApi<Block> for Runtime {
+		fn get_active_nodes_by_type() -> Vec<Vec<u8>> {
+			<pallet_registration::Pallet<Runtime>>::get_active_nodes_by_type(NodeType::Validator)
 		}
 	}
 

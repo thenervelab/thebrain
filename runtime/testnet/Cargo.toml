@@ -155,6 +155,7 @@ pallet-notifications-precompile = { workspace = true }
 evm-tracer = { workspace = true }
 rpc-primitives-debug = { workspace = true }
 rpc-primitives-txpool = { workspace = true }
+rpc-primitives-node-metrics = { workspace = true}
 
 # Sygma
 # sygma-access-segregator = { workspace = true }
@@ -313,6 +314,7 @@ std = [
     "evm-tracer/std",
     "rpc-primitives-debug/std",
     "rpc-primitives-txpool/std",
+    "rpc-primitives-node-metrics/std",
 
     # Hippius precompiles
     "pallet-evm-precompile-preimage/std",

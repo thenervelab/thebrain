@@ -709,7 +709,7 @@ pub mod pallet {
 
 
         /// Fetch all registered miners of a specific type whose status is not degraded
-		pub fn get_active_nodes_by_type(node_type: NodeType) -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+		pub fn get_active_nodes_by_type(node_type: NodeType) -> Vec<Vec<u8>> {
 			// Vector to store filtered node info
 			let mut active_nodes = Vec::new();
 
@@ -719,7 +719,7 @@ pub mod pallet {
 					// Check if the node is of the specified type and its status is not Degraded
 					if node_info.node_type == node_type && !matches!(node_info.status, Status::Degraded) 
 					{
-						active_nodes.push(node_info);
+						active_nodes.push(node_info.node_id.clone());
 					}
 				}
 			}

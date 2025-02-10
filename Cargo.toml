@@ -331,6 +331,7 @@ primitives-ext = { path = "primitives/ext", default-features = false }
 evm-tracing-events = { path = "primitives/rpc/evm-tracing-events", default-features = false }
 rpc-primitives-debug = { path = "primitives/rpc/debug", default-features = false }
 rpc-primitives-txpool = { path = "primitives/rpc/txpool", default-features = false }
+rpc-primitives-node-metrics = { path = "primitives/rpc/node-metrics", default-features = false }
 
 client-evm-tracing = { path = "client/evm-tracing" }
 rpc-core-debug = { path = "client/rpc-core/debug" }

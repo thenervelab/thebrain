@@ -143,6 +143,7 @@ where
 		+ EthereumRuntimeRPCApi<B>,
 	C::Api: rpc_primitives_debug::DebugRuntimeApi<B>,
 	C::Api: rpc_primitives_txpool::TxPoolRuntimeApi<B>,
+	C::Api: rpc_primitives_node_metrics::NodeMetricsRuntimeApi<B>,
 	C: BlockchainEvents<B> + StorageProvider<B, BE> + 'static,
 	C: HeaderBackend<B> + HeaderMetadata<B, Error = BlockChainError> + StorageProvider<B, BE>,
 	BE: Backend<B> + 'static,

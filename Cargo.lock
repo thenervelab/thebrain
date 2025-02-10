@@ -3773,7 +3773,9 @@ dependencies = [
  "rpc-debug",
  "rpc-docker-registry",
  "rpc-net",
+ "rpc-node-metrics",
  "rpc-primitives-debug",
+ "rpc-primitives-node-metrics",
  "rpc-primitives-txpool",
  "rpc-system",
  "rpc-trace",
@@ -3963,6 +3965,7 @@ dependencies = [
  "parity-scale-codec",
  "precompile-utils",
  "rpc-primitives-debug",
+ "rpc-primitives-node-metrics",
  "rpc-primitives-txpool",
  "scale-info",
  "serde",
@@ -4092,6 +4095,7 @@ dependencies = [
  "precompile-utils",
  "primitive-types",
  "rpc-primitives-debug",
+ "rpc-primitives-node-metrics",
  "rpc-primitives-txpool",
  "scale-info",
  "serde",
@@ -9568,10 +9572,13 @@ dependencies = [
  "fc-rpc-core",
  "futures 0.3.31",
  "jsonrpsee",
+ "parity-scale-codec",
  "rpc-core-types",
+ "scale-info",
  "serde",
  "serde_json",
  "sp-core",
+ "sp-std 14.0.0",
 ]
 
 [[package]]
@@ -9729,7 +9736,6 @@ dependencies = [
 name = "rpc-node-metrics"
 version = "0.1.0"
 dependencies = [
- "base64 0.21.7",
  "client-evm-tracing",
  "ethereum",
  "ethereum-types",
@@ -9740,12 +9746,10 @@ dependencies = [
  "fp-rpc",
  "futures 0.3.31",
  "hex-literal 0.4.1",
- "if-addrs 0.6.7",
  "jsonrpsee",
- "log",
- "reqwest",
  "rpc-core-node-metrics",
  "rpc-core-types",
+ "rpc-primitives-node-metrics",
  "sc-client-api",
  "sc-network",
  "sc-utils",
@@ -9754,6 +9758,7 @@ dependencies = [
  "sp-blockchain",
  "sp-io",
  "sp-runtime",
+ "sp-std 14.0.0",
  "sysinfo",
  "tokio",
 ]
@@ -9765,6 +9770,18 @@ dependencies = [
  "ethereum",
  "ethereum-types",
  "parity-scale-codec",
+ "sp-api",
+ "sp-runtime",
+ "sp-std 14.0.0",
+]
+
+[[package]]
+name = "rpc-primitives-node-metrics"
+version = "0.6.0"
+dependencies = [
+ "parity-scale-codec",
+ "scale-info",
+ "serde",
  "sp-api",
  "sp-runtime",
  "sp-std 14.0.0",

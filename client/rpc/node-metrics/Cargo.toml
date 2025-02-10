@@ -12,10 +12,9 @@ hex-literal = { workspace = true }
 jsonrpsee = { workspace = true, features = ["macros", "server"] }
 tokio = { workspace = true, features = ["sync", "time"] }
 sc-network = { workspace = true }
-log = { version = "0.4.22", default-features = false }
+rpc-primitives-node-metrics = { workspace = true, features = ["std"] }
 
-reqwest = { version = "0.11", features = ["blocking", "json"] }
-base64 = "0.21"
+sp-std = { workspace = true }
 
 
 # Hippius
@@ -24,7 +23,6 @@ rpc-core-node-metrics = { workspace = true }
 rpc-core-types = { workspace = true }
 
 sysinfo = { workspace = true }
-if-addrs = "0.6" 
 
 # Substrate
 sc-client-api = { workspace = true }
