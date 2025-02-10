@@ -86,6 +86,7 @@ pub mod pallet {
     use frame_system::offchain::AppCrypto;
     use frame_system::offchain::SigningTypes;
     use frame_system::offchain::SendUnsignedTransaction;
+    use frame_support::traits::ExistenceRequirement;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -252,6 +253,11 @@ pub mod pallet {
         Vec<T::AccountId>,
         ValueQuery,
     >;  
+
+    // Add storage item for specific miner request fee
+    #[pallet::storage]
+    #[pallet::getter(fn specific_miner_request_fee)]
+    pub type SpecificMinerRequestFee<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -596,6 +602,27 @@ pub mod pallet {
             miner_id: Option<Vec<u8>>
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
+
+            // Check if a specific miner is requested and charge an additional fee
+            if miner_id.is_some() {
+                // Define a fixed fee for requesting a specific miner
+                let specific_miner_fee = Self::specific_miner_request_fee();
+                
+                // Ensure the payer has sufficient balance
+                ensure!(
+                    <pallet_balances::Pallet<T>>::free_balance(&caller) >= specific_miner_fee,
+                    Error::<T>::InsufficientBalance
+                );
+
+                // Charge the specific miner request fee
+                <pallet_balances::Pallet<T>>::transfer(
+                    &caller.clone(), 
+                    &Self::account_id(), 
+                    specific_miner_fee, 
+                    ExistenceRequirement::KeepAlive
+                )?;
+            }
+            
 
             // Check if the caller is a sub-account, and if so, use the main account
             let caller_main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {

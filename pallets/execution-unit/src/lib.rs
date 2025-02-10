@@ -1443,44 +1443,48 @@ pub mod pallet {
 				// Find a suitable miner with matching or exceeding specs
 				if let Some(suitable_miner) = active_compute_miners.iter().find(|miner| {
 					// Check if a specific miner ID is requested
-					let miner_id_match = compute_request.miner_id.as_ref().map_or(true, |requested_miner_id| {
-						miner.node_id == *requested_miner_id
-					});
+					let miner_id_match = match &compute_request.miner_id {
+						Some(requested_miner_id) => miner.node_id == *requested_miner_id,
+						None => true, // No specific miner requested, so all miners are valid
+					};
 
 					// Retrieve node metrics
-					if miner_id_match && let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
-						// Define the minimum resource reservation percentage
-						const MIN_RESERVED_PERCENTAGE: f64 = 0.1; // 10%
+					let node_metrics_match = match Self::get_node_metrics(miner.node_id.clone()) {
+						Some(node_metrics) if miner_id_match => {
+							// Define the minimum resource reservation percentage
+							const MIN_RESERVED_PERCENTAGE: f64 = 0.1; // 10%
 
-						// Check CPU cores requirement with 10% reservation
-						let total_cpu_cores = node_metrics.cpu_cores as f64;
-						let cpu_cores_match = plan_specs["cpu_cores"].as_u64()
-							.map_or(true, |req_cores| {
-								let requested_cores = req_cores as f64;
-								(total_cpu_cores - requested_cores) / total_cpu_cores >= MIN_RESERVED_PERCENTAGE
-							});
+							// Check CPU cores requirement with 10% reservation
+							let total_cpu_cores = node_metrics.cpu_cores as f64;
+							let cpu_cores_match = plan_specs["cpu_cores"].as_u64()
+								.map_or(true, |req_cores| {
+									let requested_cores = req_cores as f64;
+									(total_cpu_cores - requested_cores) / total_cpu_cores >= MIN_RESERVED_PERCENTAGE
+								});
 
-						// Check RAM requirement with 10% reservation (convert MB to GB)
-						let total_ram_gb = (node_metrics.free_memory_mb / 1024) as f64;
-						let ram_match = plan_specs["ram_gb"].as_u64()
-							.map_or(true, |req_ram| {
-								let requested_ram = req_ram as f64;
-								(total_ram_gb - requested_ram) / total_ram_gb >= MIN_RESERVED_PERCENTAGE
-							});
+							// Check RAM requirement with 10% reservation (convert MB to GB)
+							let total_ram_gb = (node_metrics.free_memory_mb / 1024) as f64;
+							let ram_match = plan_specs["ram_gb"].as_u64()
+								.map_or(true, |req_ram| {
+									let requested_ram = req_ram as f64;
+									(total_ram_gb - requested_ram) / total_ram_gb >= MIN_RESERVED_PERCENTAGE
+								});
 
-						// Check storage requirement with 10% reservation
-						let current_storage_gb = (node_metrics.current_storage_bytes / (1024 * 1024 * 1024)) as f64;
-						let storage_match = plan_specs["storage_gb"].as_u64()
-							.map_or(true, |req_storage| {
-								let requested_storage = req_storage as f64;
-								(current_storage_gb - requested_storage) / current_storage_gb >= MIN_RESERVED_PERCENTAGE
-							});
+							// Check storage requirement with 10% reservation
+							let current_storage_gb = (node_metrics.current_storage_bytes / (1024 * 1024 * 1024)) as f64;
+							let storage_match = plan_specs["storage_gb"].as_u64()
+								.map_or(true, |req_storage| {
+									let requested_storage = req_storage as f64;
+									(current_storage_gb - requested_storage) / current_storage_gb >= MIN_RESERVED_PERCENTAGE
+								});
 
-						// Return true if all specified requirements are met and 10% resources remain
-						cpu_cores_match && ram_match && storage_match
-					} else {
-						false // No metrics available for this miner or miner ID mismatch
-					}
+							// Return true if all specified requirements are met and 10% resources remain
+							cpu_cores_match && ram_match && storage_match
+						},
+						_ => false // No metrics available or miner ID mismatch
+					};
+
+					node_metrics_match
 				}) {
 					// Assign the compute request to the suitable miner
 					pallet_compute::Pallet::<T>::save_compute_request(
