@@ -51,6 +51,7 @@ use pallet_evm::GasWeightMapping;
 use pallet_grandpa::{
 	fg_primitives, AuthorityId as GrandpaId, AuthorityList as GrandpaAuthorityList,
 };
+use scale_info::prelude::string::String;
 use pallet_im_online::sr25519::AuthorityId as ImOnlineId;
 use pallet_session::historical as pallet_session_historical;
 pub use pallet_staking::StakerStatus;
@@ -2944,10 +2945,94 @@ impl_runtime_apis! {
 	}
 
 	impl rpc_primitives_node_metrics::NodeMetricsRuntimeApi<Block> for Runtime {
-		fn get_active_nodes_by_type() -> Vec<Vec<u8>> {
-			<pallet_registration::Pallet<Runtime>>::get_active_nodes_by_type(NodeType::Validator)
+		fn get_active_nodes_metrics_by_type(node_type: rpc_primitives_node_metrics::NodeType) -> Vec<Option<rpc_primitives_node_metrics::NodeMetricsData>> {
+			// Convert RPC NodeType to Pallet NodeType
+			let pallet_node_type = match node_type {
+				rpc_primitives_node_metrics::NodeType::Validator => pallet_registration::NodeType::Validator,
+				rpc_primitives_node_metrics::NodeType::StorageMiner => pallet_registration::NodeType::StorageMiner,
+				rpc_primitives_node_metrics::NodeType::ComputeMiner => pallet_registration::NodeType::ComputeMiner,
+				rpc_primitives_node_metrics::NodeType::GpuMiner => pallet_registration::NodeType::GpuMiner,
+			};
+
+			let node_metrics = <pallet_execution_unit::Pallet<Runtime>>::get_active_nodes_metrics_by_type(pallet_node_type);
+
+			// Convert from execution unit NodeMetricsData to RPC primitives NodeMetricsData
+			node_metrics.into_iter().map(|metrics_opt| {
+				metrics_opt.map(|metrics| {
+					rpc_primitives_node_metrics::NodeMetricsData {
+						miner_id: String::from_utf8_lossy(&metrics.miner_id).into_owned(),
+						bandwidth_mbps: metrics.bandwidth_mbps,
+						current_storage_bytes: metrics.current_storage_bytes,
+						total_storage_bytes: metrics.total_storage_bytes,
+						geolocation: String::from_utf8_lossy(&metrics.geolocation).into_owned(),
+						successful_pin_checks: metrics.successful_pin_checks,
+						total_pin_checks: metrics.total_pin_checks,
+						storage_proof_time_ms: metrics.storage_proof_time_ms,
+						storage_growth_rate: metrics.storage_growth_rate,
+						latency_ms: metrics.latency_ms,
+						total_latency_ms: metrics.total_latency_ms,
+						total_times_latency_checked: metrics.total_times_latency_checked,
+						avg_response_time_ms: metrics.avg_response_time_ms,
+						peer_count: metrics.peer_count,
+						failed_challenges_count: metrics.failed_challenges_count,
+						successful_challenges: metrics.successful_challenges,
+						total_challenges: metrics.total_challenges,
+						uptime_minutes: metrics.uptime_minutes,
+						total_minutes: metrics.total_minutes,
+						consecutive_reliable_days: metrics.consecutive_reliable_days,
+						recent_downtime_hours: metrics.recent_downtime_hours,
+						is_sev_enabled: metrics.is_sev_enabled,
+						zfs_info: metrics.zfs_info.into_iter()
+							.map(|info| String::from_utf8_lossy(&info).into_owned())
+							.collect(),
+						raid_info: metrics.raid_info.into_iter()
+							.map(|info| String::from_utf8_lossy(&info).into_owned())
+							.collect(),
+						vm_count: metrics.vm_count,
+						primary_network_interface: metrics.primary_network_interface.map(|nif| {
+							rpc_primitives_node_metrics::NetworkInterfaceInfo {
+								name: String::from_utf8_lossy(&nif.name).into_owned(),
+								mac_address: nif.mac_address.map(|mac| String::from_utf8_lossy(&mac).into_owned()),
+								uplink_mb: nif.uplink_mb,
+								downlink_mb: nif.downlink_mb,
+								network_details: nif.network_details.map(|nd| {
+									rpc_primitives_node_metrics::NetworkDetails {
+										network_type: match nd.network_type {
+											pallet_execution_unit::types::NetworkType::Private => rpc_primitives_node_metrics::NetworkType::Private,
+											pallet_execution_unit::types::NetworkType::Public => rpc_primitives_node_metrics::NetworkType::Public,
+										},
+										city: nd.city.map(|c| String::from_utf8_lossy(&c).into_owned()),
+										region: nd.region.map(|r| String::from_utf8_lossy(&r).into_owned()),
+										country: nd.country.map(|c| String::from_utf8_lossy(&c).into_owned()),
+										loc: nd.loc.map(|l| String::from_utf8_lossy(&l).into_owned()),
+									}
+								}),
+							}
+						}),
+						disks: metrics.disks.into_iter().map(|disk| {
+							rpc_primitives_node_metrics::DiskInfo {
+								name: String::from_utf8_lossy(&disk.name).into_owned(),
+								disk_type: String::from_utf8_lossy(&disk.disk_type).into_owned(),
+								total_space_mb: disk.total_space_mb,
+								free_space_mb: disk.free_space_mb,
+							}
+						}).collect(),
+						ipfs_repo_size: metrics.ipfs_repo_size,
+						ipfs_storage_max: metrics.ipfs_storage_max,
+						cpu_model: String::from_utf8_lossy(&metrics.cpu_model).into_owned(),
+						cpu_cores: metrics.cpu_cores,
+						memory_mb: metrics.memory_mb,
+						free_memory_mb: metrics.free_memory_mb,
+						gpu_name: metrics.gpu_name.map(|gpu| String::from_utf8_lossy(&gpu).into_owned()),
+						gpu_memory_mb: metrics.gpu_memory_mb,
+						hypervisor_disk_type: metrics.hypervisor_disk_type.map(|hdt| String::from_utf8_lossy(&hdt).into_owned()),
+						vm_pool_disk_type: metrics.vm_pool_disk_type.map(|vpdt| String::from_utf8_lossy(&vpdt).into_owned()),
+					}
+				})
+			}).collect()
 		}
 	}
+
 
 	impl rpc_primitives_txpool::TxPoolRuntimeApi<Block> for Runtime {
 		fn extrinsic_filter(

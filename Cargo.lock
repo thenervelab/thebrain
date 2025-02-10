@@ -9574,6 +9574,7 @@ dependencies = [
  "jsonrpsee",
  "parity-scale-codec",
  "rpc-core-types",
+ "rpc-primitives-node-metrics",
  "scale-info",
  "serde",
  "serde_json",

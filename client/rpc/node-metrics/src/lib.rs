@@ -1,15 +1,10 @@
 use jsonrpsee::core::RpcResult;
-use jsonrpsee::proc_macros::rpc;
-// use log::{error, info};
-// use rpc_primitives_node_metrics::NodeType;
-use sc_client_api::AuxStore;
-use sc_network::NetworkService;
-use sc_utils::mpsc::{TracingUnboundedReceiver, TracingUnboundedSender};
 use sp_api::ProvideRuntimeApi;
 use sp_blockchain::HeaderBackend;
 use sp_runtime::traits::Block as BlockT;
 use std::sync::Arc;
-pub use rpc_core_node_metrics::{types::{NodeType},NodeMetricsApiServer};
+pub use rpc_core_node_metrics::{NodeMetricsApiServer};
+use rpc_primitives_node_metrics::{NodeType,NodeMetricsData};
 use rpc_primitives_node_metrics::NodeMetricsRuntimeApi;
 use fc_rpc::internal_err;
 use sp_std::vec::Vec;
@@ -36,13 +31,13 @@ where
 	C::Api: NodeMetricsRuntimeApi<B>,
 	C: HeaderBackend<B> + Send + Sync,
 {
-    fn get_active_nodes_by_type(&self) -> RpcResult<Vec<Vec<u8>>> {
+    fn get_active_nodes_metrics_by_type(&self, node_type: NodeType) -> RpcResult<Vec<Option<NodeMetricsData>>> {
 
         let api = self.client.runtime_api();
 		let best_hash = self.client.info().best_hash;
 
-		Ok(api.get_active_nodes_by_type(best_hash).map_err(|err| {
+		api.get_active_nodes_metrics_by_type(best_hash, node_type).map_err(|err| {
 			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
-		})?)
+		})
     }
 }

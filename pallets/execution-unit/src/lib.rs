@@ -1972,14 +1972,22 @@ pub mod pallet {
 	}
 
 		/// Get node metrics for multiple node IDs
-		pub fn get_node_metrics_batch(node_ids: Vec<Vec<u8>>) -> Vec<(Vec<u8>, Option<NodeMetricsData>)> {
+		pub fn get_node_metrics_batch(node_ids: Vec<Vec<u8>>) -> Vec<Option<NodeMetricsData>> {
 			node_ids
 				.into_iter()
 				.map(|node_id| {
-					let metrics = NodeMetrics::<T>::get(node_id.clone());
-					(node_id, metrics)
+					NodeMetrics::<T>::get(node_id)
 				})
 				.collect()
+		}
+
+
+		pub fn get_active_nodes_metrics_by_type(node_type: NodeType) -> Vec<Option<NodeMetricsData>> {
+			// First, get all active nodes of the specified type
+			let active_node_ids = pallet_registration::Pallet::<T>::get_active_nodes_by_type(node_type);
+
+			// Then, fetch metrics for these active nodes
+			Self::get_node_metrics_batch(active_node_ids)
 		}
 	}
 }
