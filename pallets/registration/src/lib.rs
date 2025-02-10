@@ -135,6 +135,11 @@ pub mod pallet {
         FeeChargingStatusChanged { enabled: bool },
         /// Fee percentage changed
         FeePercentageChanged { new_percentage: u16 },
+        /// Node type fee updated
+        NodeTypeFeeUpdated { 
+            node_type: NodeType, 
+            fee: BalanceOf<T> 
+        },
     }
     
     #[pallet::error]
@@ -424,9 +429,31 @@ pub mod pallet {
 
             Ok(())
         }
+
+        /// Sudo function to update the fee for a specific node type
+        #[pallet::call_index(5)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn set_node_type_fee(
+            origin: OriginFor<T>, 
+            node_type: NodeType,
+            fee: BalanceOf<T>
+        ) -> DispatchResult {
+            // Ensure the caller is an authority
+            let authority = ensure_signed(origin)?;
+            CreditsPallet::<T>::ensure_is_authority(&authority)?;
+
+            // Update the CurrentNodeTypeFee storage map for the specified node type
+            <CurrentNodeTypeFee<T>>::insert(node_type.clone(), fee);
+
+            // Deposit an event to notify about the fee update
+            Self::deposit_event(Event::<T>::NodeTypeFeeUpdated { 
+                node_type, 
+                fee
+            });
+
+            Ok(())
+        }
     }
-
-
 
     impl<T: Config> Pallet<T> {
         /// Fetch all registered miners whose status is not degraded

@@ -326,6 +326,8 @@ pub mod pallet {
 			url: Vec<u8>,
 		},
         PlanPriceUpdated(T::Hash, u128),
+        /// Specific miner request fee updated
+        SpecificMinerRequestFeeUpdated { fee: BalanceOf<T> },
 	}
 
 	#[pallet::error]
@@ -786,6 +788,26 @@ pub mod pallet {
 			});
 
             Ok(().into())
+        }
+        
+        /// Set the specific miner request fee
+        #[pallet::call_index(15)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn set_specific_miner_request_fee(
+            origin: OriginFor<T>,
+            fee: BalanceOf<T>
+        ) -> DispatchResult {
+            // Ensure the caller is an authority
+            let authority = ensure_signed(origin)?;
+            CreditsPallet::<T>::ensure_is_authority(&authority)?;
+
+            // Update the SpecificMinerRequestFee storage value
+            <SpecificMinerRequestFee<T>>::put(fee);
+
+            // Deposit an event to notify about the fee update
+            Self::deposit_event(Event::<T>::SpecificMinerRequestFeeUpdated { fee });
+
+            Ok(())
         }
 	}
 

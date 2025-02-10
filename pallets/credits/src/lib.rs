@@ -656,7 +656,7 @@ pub mod pallet {
 		}
 
         /// Ensure the caller is an authorized account
-        fn ensure_is_authority(authority: &T::AccountId) -> DispatchResult {
+        pub fn ensure_is_authority(authority: &T::AccountId) -> DispatchResult {
             Authorities::<T>::get()
                 .iter()
                 .find(|&a| a == authority)
