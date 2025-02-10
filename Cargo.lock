@@ -9559,6 +9559,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpc-core-node-metrics"
+version = "0.1.0"
+dependencies = [
+ "client-evm-tracing",
+ "ethereum",
+ "ethereum-types",
+ "fc-rpc-core",
+ "futures 0.3.31",
+ "jsonrpsee",
+ "rpc-core-types",
+ "serde",
+ "serde_json",
+ "sp-core",
+]
+
+[[package]]
 name = "rpc-core-system"
 version = "0.1.0"
 dependencies = [
@@ -9706,6 +9722,39 @@ dependencies = [
  "sp-blockchain",
  "sp-io",
  "sp-runtime",
+ "tokio",
+]
+
+[[package]]
+name = "rpc-node-metrics"
+version = "0.1.0"
+dependencies = [
+ "base64 0.21.7",
+ "client-evm-tracing",
+ "ethereum",
+ "ethereum-types",
+ "fc-api",
+ "fc-db",
+ "fc-rpc",
+ "fc-storage",
+ "fp-rpc",
+ "futures 0.3.31",
+ "hex-literal 0.4.1",
+ "if-addrs 0.6.7",
+ "jsonrpsee",
+ "log",
+ "reqwest",
+ "rpc-core-node-metrics",
+ "rpc-core-types",
+ "sc-client-api",
+ "sc-network",
+ "sc-utils",
+ "sp-api",
+ "sp-block-builder",
+ "sp-blockchain",
+ "sp-io",
+ "sp-runtime",
+ "sysinfo",
  "tokio",
 ]
 

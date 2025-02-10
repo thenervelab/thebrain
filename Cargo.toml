@@ -340,6 +340,7 @@ rpc-core-types = { path = "client/rpc-core/types" }
 rpc-core-net = { path = "client/rpc-core/net" }
 rpc-core-system = { path = "client/rpc-core/system" }
 rpc-core-docker-registry = { path = "client/rpc-core/docker-registry" }
+rpc-core-node-metrics = { path = "client/rpc-core/node-metrics" }
 rpc-core-weight= { path = "client/rpc-core/weights" }
 rpc-debug = { path = "client/rpc/debug" }
 rpc-trace = { path = "client/rpc/trace" }
@@ -347,6 +348,7 @@ rpc-txpool = { path = "client/rpc/txpool" }
 rpc-net = { path = "client/rpc/net" }
 rpc-system = { path = "client/rpc/system" }
 rpc-docker-registry = { path = "client/rpc/docker-registry" }
+rpc-node-metrics = { path = "client/rpc/node-metrics" }
 rpc-weight = { path = "client/rpc/weights" }
 
 evm-tracer = { path = "evm-tracer", default-features = false }

@@ -706,5 +706,24 @@ pub mod pallet {
             let current_block = frame_system::Pallet::<T>::block_number();
             LastRegistrationBlock::<T>::insert(node_type, current_block);
         }
+
+
+        /// Fetch all registered miners of a specific type whose status is not degraded
+		pub fn get_active_nodes_by_type(node_type: NodeType) -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+			// Vector to store filtered node info
+			let mut active_nodes = Vec::new();
+
+			// Iterate over all registered nodes in the storage map
+			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+				if let Some(node_info) = node_info_opt {
+					// Check if the node is of the specified type and its status is not Degraded
+					if node_info.node_type == node_type && !matches!(node_info.status, Status::Degraded) 
+					{
+						active_nodes.push(node_info);
+					}
+				}
+			}
+			active_nodes
+		}
     }
 }

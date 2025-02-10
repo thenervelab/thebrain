@@ -160,6 +160,7 @@ where
 	use rpc_net::{Extra, ExtraApiServer};
 	use rpc_system::{SystemInfoApiServer, SystemInfoImpl};
 	use rpc_docker_registry::{DockerRegistryImpl, DockerRegistryApiServer};
+	use rpc_node_metrics::{NodeMetricsApiServer, NodeMetricsImpl};
 	use rpc_weight::{WeightsInfoApiServer,WeightsInfoImpl};
 	use rpc_debug::{Debug, DebugServer};
 	use rpc_trace::{Trace, TraceServer};
@@ -266,6 +267,7 @@ where
 
 	io.merge(SystemInfoImpl::new(client.clone()).into_rpc())?;
 	io.merge(DockerRegistryImpl::new(client.clone()).into_rpc())?;
+	io.merge(NodeMetricsImpl::new(client.clone()).into_rpc())?;
 
     // Get the keystore
     io.merge(WeightsInfoImpl::new(

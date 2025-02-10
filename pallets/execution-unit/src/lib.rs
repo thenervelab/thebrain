@@ -1970,5 +1970,16 @@ pub mod pallet {
 			None => true, // If there's no last run, allow execution
 		}
 	}
+
+		/// Get node metrics for multiple node IDs
+		pub fn get_node_metrics_batch(node_ids: Vec<Vec<u8>>) -> Vec<(Vec<u8>, Option<NodeMetricsData>)> {
+			node_ids
+				.into_iter()
+				.map(|node_id| {
+					let metrics = NodeMetrics::<T>::get(node_id.clone());
+					(node_id, metrics)
+				})
+				.collect()
+		}
 	}
 }
