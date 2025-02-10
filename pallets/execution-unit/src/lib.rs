@@ -1442,8 +1442,13 @@ pub mod pallet {
 
 				// Find a suitable miner with matching or exceeding specs
 				if let Some(suitable_miner) = active_compute_miners.iter().find(|miner| {
+					// Check if a specific miner ID is requested
+					let miner_id_match = compute_request.miner_id.as_ref().map_or(true, |requested_miner_id| {
+						miner.node_id == *requested_miner_id
+					});
+
 					// Retrieve node metrics
-					if let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
+					if miner_id_match && let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
 						// Define the minimum resource reservation percentage
 						const MIN_RESERVED_PERCENTAGE: f64 = 0.1; // 10%
 
@@ -1474,7 +1479,7 @@ pub mod pallet {
 						// Return true if all specified requirements are met and 10% resources remain
 						cpu_cores_match && ram_match && storage_match
 					} else {
-						false // No metrics available for this miner
+						false // No metrics available for this miner or miner ID mismatch
 					}
 				}) {
 					// Assign the compute request to the suitable miner
