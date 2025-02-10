@@ -9,7 +9,7 @@ use sp_api::ProvideRuntimeApi;
 use sp_blockchain::HeaderBackend;
 use sp_runtime::traits::Block as BlockT;
 use std::sync::Arc;
-use rpc_core_node_metrics::{types::{NodeType},NodeMetricsApiServer};
+pub use rpc_core_node_metrics::{types::{NodeType},NodeMetricsApiServer};
 use rpc_primitives_node_metrics::NodeMetricsRuntimeApi;
 use fc_rpc::internal_err;
 use sp_std::vec::Vec;

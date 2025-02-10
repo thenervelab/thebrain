@@ -1,7 +1,7 @@
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::types::error::ErrorObject;
 use std::sync::Arc;
-pub use rpc_core_docker_registry:: DockerRegistryApiServer;
+pub use rpc_core_docker_registry::DockerRegistryApiServer;
 use sp_runtime::traits::Block as BlockT;
 use sp_blockchain::HeaderBackend;
 use fp_rpc::EthereumRuntimeRPCApi;

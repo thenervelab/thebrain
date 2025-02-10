@@ -126,6 +126,7 @@ where
 	C::Api: fp_rpc::EthereumRuntimeRPCApi<Block>,
 	C::Api: rpc_primitives_debug::DebugRuntimeApi<Block>,
 	C::Api: rpc_primitives_txpool::TxPoolRuntimeApi<Block>,
+	C::Api: rpc_primitives_node_metrics::NodeMetricsRuntimeApi<Block>,
 	C::Api: BabeApi<Block>,
 	// C::Api: sygma_runtime_api::SygmaBridgeApi<Block>,
 	C: BlockchainEvents<Block> + 'static,
@@ -215,6 +216,7 @@ where
 	C::Api: fp_rpc::EthereumRuntimeRPCApi<Block>,
 	C::Api: rpc_primitives_debug::DebugRuntimeApi<Block>,
 	C::Api: rpc_primitives_txpool::TxPoolRuntimeApi<Block>,
+	C::Api: rpc_primitives_node_metrics::NodeMetricsRuntimeApi<Block>,
 	C::Api: BabeApi<Block>,
 	C: BlockchainEvents<Block> + 'static,
 	C: HeaderBackend<Block>
