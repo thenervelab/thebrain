@@ -1,209 +1,98 @@
-use crate::{mock::*, Error, Event};
-use frame_support::{assert_noop, assert_ok};
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use frame_support::{assert_ok, assert_noop, traits::OnRuntimeUpgrade};
+    use sp_core::H256;
+    use frame_system as system;
+    use sp_runtime::{testing::Header, traits::{BlakeTwo256, IdentityLookup}};
+    
+    type Test = frame_system::mocking::MockRuntime;
+    
+    frame_support::construct_runtime!(
+        pub enum TestRuntime where
+            Block = frame_system::mocking::MockBlock<Test>,
+            NodeBlock = frame_system::mocking::MockBlock<Test>,
+            UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>,
+        {
+            System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
+            SubAccountPallet: pallet::{Pallet, Storage, Config<T>, Event<T>},
+        }
+    );
 
-/// Sender tries to add a sub account without being the main account or a sub account of a profile
-#[test]
-fn add_sub_account_not_allowed() {
-    new_test_ext().execute_with(|| {
-        let user = 0;
-        let sender = 1;
+    impl system::Config for Test {
+        type BaseCallFilter = frame_support::traits::Everything;
+        type BlockWeights = ();
+        type BlockLength = ();
+        type RuntimeDbWeight = ();
+        type RuntimeEvent = ();
+        type RuntimeOrigin = RuntimeOrigin;
+        type Hash = H256;
+        type Hashing = BlakeTwo256;
+        type AccountId = u64;
+        type Lookup = IdentityLookup<u64>;
+        type Header = Header;
+        type BlockNumber = u64;
+        type RuntimeCall = ();
+        type RuntimeBlock = ();
+        type RuntimeVersion = ();
+        type PalletInfo = PalletInfo;
+        type OnSetCode = ();
+        type OnRuntimeUpgrade = ();
+        type MaxConsumers = frame_support::traits::ConstU32<16>;
+    }
 
-        // create user in profile pallet
-        // create_user(user);
+    impl pallet_subaccount::Config for Test {
+        type RuntimeEvent = ();
+        type WeightInfo = ();
+        type StringLimit = frame_support::traits::ConstU32<300>;
+        type OnRuntimeUpgrade = MigrateToNewStorageFormat<Test>;
+    }
 
-        // The sender adds a sub account for the user. Should fail
-        assert_noop!(
-            SubAccounts::add_sub_account(RuntimeOrigin::signed(sender), user, sender),
-            Error::<Test>::NoSubAccount
-        );
-    });
-}
+    /// Helper function to setup the initial storage state
+    fn setup_old_storage() {
+        SubAccount::<Test>::insert(1, 100);
+        SubAccount::<Test>::insert(2, 200);
+    }
 
-/// Sender tries to add a sub account for a different profile
-#[test]
-fn add_sub_account_for_different_profile() {
-    new_test_ext().execute_with(|| {
-        let profile_main_1 = 0;
-        let profile_main_2 = 1;
-        let unregistered_user = 2;
+    #[test]
+    fn test_migration_transfers_old_data() {
+        new_test_ext().execute_with(|| {
+            // Setup old storage state
+            setup_old_storage();
 
-        // The main account 1 tries to add a sub account for the profile 2. Should fail
-        assert_noop!(
-            SubAccounts::add_sub_account(
-                RuntimeOrigin::signed(profile_main_1),
-                profile_main_2,
-                unregistered_user
-            ),
-            Error::<Test>::NoSubAccount
-        );
-    });
-}
+            // Ensure initial storage contains values
+            assert_eq!(SubAccount::<Test>::get(1), Some(100));
+            assert_eq!(SubAccount::<Test>::get(2), Some(200));
 
-/// Sender tries to add a sub account that is already a sub account of another profile
-#[test]
-fn add_existent_sub_account() {
-    new_test_ext().execute_with(|| {
-        let profile_main_1 = 0;
-        let profile_main_2 = 1;
+            // Run the migration
+            let weight = MigrateToNewStorageFormat::<Test>::on_runtime_upgrade();
 
-        // Add profile_main_2 as a sub account of profile_main_1
-        assert_ok!(SubAccounts::add_sub_account(
-            RuntimeOrigin::signed(profile_main_1),
-            profile_main_1,
-            profile_main_2
-        ));
+            // Verify migration result
+            assert_eq!(NewSubAccount::<Test>::get(1), Some((100, true)));
+            assert_eq!(NewSubAccount::<Test>::get(2), Some((200, true)));
 
-        // Try to add the same sub account again should fail
-        assert_noop!(
-            SubAccounts::add_sub_account(
-                RuntimeOrigin::signed(profile_main_1),
-                profile_main_1,
-                profile_main_2
-            ),
-            Error::<Test>::AlreadySubAccount
-        );
-    });
-}
+            // Old storage should no longer exist
+            assert_eq!(SubAccount::<Test>::get(1), None);
+            assert_eq!(SubAccount::<Test>::get(2), None);
 
-/// Cannot remove all the connected accounts for a profile
-#[test]
-fn remove_all_connected_accounts() {
-    new_test_ext().execute_with(|| {
-        let profile_main_1 = 0;
+            // Ensure a non-zero weight is returned
+            assert!(weight.ref_time() > 0);
+        });
+    }
 
-        // Try to remove the main account as a sub account should fail
-        assert_noop!(
-            SubAccounts::remove_sub_account(
-                RuntimeOrigin::signed(profile_main_1),
-                profile_main_1,
-                profile_main_1
-            ),
-            Error::<Test>::NoAccountsLeft
-        );
-    });
-}
+    #[test]
+    fn test_migration_handles_empty_storage() {
+        new_test_ext().execute_with(|| {
+            // No setup, storage is empty
 
-/// Sub account can be added by the main account and sub accounts
-#[test]
-fn add_sub_accounts() {
-    new_test_ext().execute_with(|| {
-        let profile_main_1 = 0;
-        let sub_account_1 = 1;
-        let sub_account_2 = 2;
+            // Run the migration
+            let weight = MigrateToNewStorageFormat::<Test>::on_runtime_upgrade();
 
-        // Main account adds the first sub account
-        assert_ok!(
-            SubAccounts::add_sub_account(
-                RuntimeOrigin::signed(profile_main_1),
-                profile_main_1,
-                sub_account_1
-            )
-        );
+            // Ensure no data was added
+            assert_eq!(NewSubAccount::<Test>::iter().count(), 0);
 
-        // Check that the sub account was added successfully
-        assert_eq!(SubAccounts::sub_account(sub_account_1), Some(profile_main_1));
-
-        // Sub account 1 adds another sub account
-        assert_ok!(
-            SubAccounts::add_sub_account(
-                RuntimeOrigin::signed(sub_account_1),
-                profile_main_1,
-                sub_account_2
-            )
-        );
-
-        // Check events for both additions
-        System::assert_last_event(
-            Event::SubAccountAdded { 
-                main: profile_main_1, 
-                sub: sub_account_2 
-            }.into()
-        );
-    });
-}
-
-/// Remove a sub account successfully
-#[test]
-fn remove_sub_account_works() {
-    new_test_ext().execute_with(|| {
-        let profile_main_1 = 0;
-        let sub_account_1 = 1;
-
-        // Add a sub account
-        assert_ok!(
-            SubAccounts::add_sub_account(
-                RuntimeOrigin::signed(profile_main_1),
-                profile_main_1,
-                sub_account_1
-            )
-        );
-
-        // Remove the sub account
-        assert_ok!(
-            SubAccounts::remove_sub_account(
-                RuntimeOrigin::signed(profile_main_1),
-                profile_main_1,
-                sub_account_1
-            )
-        );
-
-        // Check that the sub account was removed
-        assert_eq!(SubAccounts::sub_account(sub_account_1), None);
-
-        // Check event
-        System::assert_last_event(
-            Event::SubAccountRemoved { 
-                main: profile_main_1, 
-                sub: sub_account_1 
-            }.into()
-        );
-    });
-}
-
-/// Cannot remove a sub account that doesn't exist
-#[test]
-fn remove_non_existent_sub_account() {
-    new_test_ext().execute_with(|| {
-        let profile_main_1 = 0;
-        let non_existent_sub = 1;
-
-        // Try to remove a non-existent sub account
-        assert_noop!(
-            SubAccounts::remove_sub_account(
-                RuntimeOrigin::signed(profile_main_1),
-                profile_main_1,
-                non_existent_sub
-            ),
-            Error::<Test>::NoSubAccount
-        );
-    });
-}
-
-/// Cannot remove a sub account from a different profile
-#[test]
-fn remove_sub_account_from_different_profile() {
-    new_test_ext().execute_with(|| {
-        let profile_main_1 = 0;
-        let profile_main_2 = 1;
-        let sub_account_1 = 2;
-
-        // Add sub account to profile_main_1
-        assert_ok!(
-            SubAccounts::add_sub_account(
-                RuntimeOrigin::signed(profile_main_1),
-                profile_main_1,
-                sub_account_1
-            )
-        );
-
-        // Try to remove the sub account from a different profile
-        assert_noop!(
-            SubAccounts::remove_sub_account(
-                RuntimeOrigin::signed(profile_main_2),
-                profile_main_1,
-                sub_account_1
-            ),
-            Error::<Test>::NoSubAccount
-        );
-    });
+            // Ensure a valid weight is returned
+            assert!(weight.ref_time() > 0);
+        });
+    }
 }

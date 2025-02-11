@@ -1422,7 +1422,7 @@ impl pallet_subaccount::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
 	type StringLimit = SubAccountStringLimit;
-	// type OnRuntimeUpgrade = pallet_subaccount::migrations::Migrate<Runtime>;
+	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
 }
 
 parameter_types! {
@@ -1600,8 +1600,6 @@ impl pallet_proxy::Config for Runtime {
 	type AnnouncementDepositBase = AnnouncementDepositBase;
 	type AnnouncementDepositFactor = AnnouncementDepositFactor;
 }
-
-
 
 // Create the runtime by composing the FRAME pallets that were previously configured.
 construct_runtime!(
