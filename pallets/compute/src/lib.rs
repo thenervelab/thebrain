@@ -79,6 +79,7 @@ pub mod pallet {
 		pub outbound_bandwidth: String,
 		pub gpu: String,
 		pub gpu_type: String,
+		is_sev_enabled: bool, 
 	}
 
     #[pallet::pallet]
@@ -2129,7 +2130,7 @@ pub mod pallet {
 									"memory": format!("{}M", tech_desc.ram_gb * 1024),
 									"vcpus": format!("{}", tech_desc.cpu_cores),
 									"disk_size": format!("{}Gi", tech_desc.storage_gb),
-									"is_sev_enabled": false,
+									"is_sev_enabled": tech_desc.is_sev_enabled,
 									"inbound_bandwidth": tech_desc.inbound_bandwidth,
 									"outbound_bandwidth": tech_desc.outbound_bandwidth,
 									"gpu": tech_desc.gpu,
@@ -2142,7 +2143,7 @@ pub mod pallet {
 									"memory": format!("{}M", tech_desc.ram_gb * 1024),
 									"vcpus": format!("{}", tech_desc.cpu_cores),
 									"disk_size": format!("{}Gi", tech_desc.storage_gb),
-									"is_sev_enabled": false,
+									"is_sev_enabled": tech_desc.is_sev_enabled,
 									"inbound_bandwidth": tech_desc.inbound_bandwidth,
 									"outbound_bandwidth": tech_desc.outbound_bandwidth,
 									"gpu": tech_desc.gpu,
