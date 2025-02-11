@@ -43,11 +43,13 @@ mod benchmarking;
 
 pub mod weights;
 pub use weights::WeightInfo;
+// pub mod migrations; // Add this line
 
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-
+    // use frame_support::traits::OnRuntimeUpgrade;
+	
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
 
@@ -62,6 +64,8 @@ pub mod pallet {
 
 		/// Weight information for extrinsics in this pallet.
 		type WeightInfo: WeightInfo;
+
+		// type OnRuntimeUpgrade: OnRuntimeUpgrade;
 	}
 
 	/// Store the main account of a given address

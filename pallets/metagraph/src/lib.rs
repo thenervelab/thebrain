@@ -373,69 +373,69 @@ pub mod pallet {
             if current_block % T::UidsSubmissionInterval::get() != 0 {
                 return;
             }
-        
-            match UtilsPallet::<T>::fetch_node_id() {
-                Ok(node_id) => {
-                    let node_info = NodeRegistration::<T>::get(&node_id);
-        
-                    if node_info.is_some() && node_info.unwrap().node_type == NodeType::Validator {
-                        let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-                            b"metagraph::lock",
-                            LOCK_BLOCK_EXPIRATION,
-                            Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-                        );
-        
-                        if let Ok(_guard) = lock.try_lock() {
-                            let uids_result = finney::fetch_uids_keys::<T>();
-                            let dividends_result: Result<Vec<u16>, http::Error> = finney::fetch_dividends::<T>();
-        
-                            match (uids_result, dividends_result) {
-                                (Ok(mut uids), Ok(dividends)) => {
-                                    uids = hotkeys::update_uids_with_roles(uids, &dividends);
-        
-                                    let signer = Signer::<T,  <T as pallet::Config>::AuthorityId>::all_accounts();
-        
-                                    if !signer.can_sign() {
-                                        log::warn!("No accounts available for signing in signer.");
-                                        return;
-                                    }
-        
-                                    let results = signer.send_unsigned_transaction(
-                                        |account| UIDsPayload {
-                                            uids: uids.clone(),
-                                            public: account.public.clone(),
-                                            _marker: PhantomData,
-                                        },
-                                        |payload, signature| {
-                                            Call::submit_hot_keys {
-                                                hot_keys: payload.uids,
-                                                signature,
+            
+            if UtilsPallet::<T>::submission_enabled() {
+                match UtilsPallet::<T>::fetch_node_id() {
+                    Ok(node_id) => {
+                        let node_info = NodeRegistration::<T>::get(&node_id);
+            
+                        if node_info.is_some() && node_info.unwrap().node_type == NodeType::Validator {
+                            let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+                                b"metagraph::lock",
+                                LOCK_BLOCK_EXPIRATION,
+                                Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+                            );
+            
+                            if let Ok(_guard) = lock.try_lock() {
+                                let uids_result = finney::fetch_uids_keys::<T>();
+                                let dividends_result: Result<Vec<u16>, http::Error> = finney::fetch_dividends::<T>();
+            
+                                match (uids_result, dividends_result) {
+                                    (Ok(mut uids), Ok(dividends)) => {
+                                        uids = hotkeys::update_uids_with_roles(uids, &dividends);
+            
+                                        let signer = Signer::<T,  <T as pallet::Config>::AuthorityId>::all_accounts();
+            
+                                        if !signer.can_sign() {
+                                            log::warn!("No accounts available for signing in signer.");
+                                            return;
+                                        }
+            
+                                        let results = signer.send_unsigned_transaction(
+                                            |account| UIDsPayload {
+                                                uids: uids.clone(),
+                                                public: account.public.clone(),
+                                                _marker: PhantomData,
+                                            },
+                                            |payload, signature| {
+                                                Call::submit_hot_keys {
+                                                    hot_keys: payload.uids,
+                                                    signature,
+                                                }
+                                            },
+                                        );
+            
+                                        for (account, result) in results {
+                                            match result {
+                                                Ok(_) => log::info!("[{:?}] Successfully submitted UIDs", account.id),
+                                                Err(e) => log::error!("[{:?}] Failed to submit UIDs: {:?}", account.id, e),
                                             }
-                                        },
-                                    );
-        
-                                    for (account, result) in results {
-                                        match result {
-                                            Ok(_) => log::info!("[{:?}] Successfully submitted UIDs", account.id),
-                                            Err(e) => log::error!("[{:?}] Failed to submit UIDs: {:?}", account.id, e),
                                         }
                                     }
+                                    (Err(e), _) => log::error!("Error fetching UIDs: {:?}", e),
+                                    (_, Err(e)) => log::error!("Error fetching dividends: {:?}", e),
                                 }
-                                (Err(e), _) => log::error!("Error fetching UIDs: {:?}", e),
-                                (_, Err(e)) => log::error!("Error fetching dividends: {:?}", e),
-                            }
-                        };
-                    } else {
-                        log::info!("Can't find Validator node");
+                            };
+                        } else {
+                            log::info!("Can't find Validator node");
+                        }
                     }
-                }
-                Err(e) => {
-                    log::error!("Error fetching node identity: {:?}", e);
+                    Err(e) => {
+                        log::error!("Error fetching node identity: {:?}", e);
+                    }
                 }
             }
         }
-        
-        
     }
 
     // Add this helper function in your pallet implementation

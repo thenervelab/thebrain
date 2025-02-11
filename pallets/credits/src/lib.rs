@@ -13,6 +13,7 @@ mod tests;
 mod benchmarking;
 pub mod weights;
 pub use weights::*;
+// pub mod migrations; // Add this line
 
 use sp_core::offchain::KeyTypeId;
 use frame_system::offchain::AppCrypto;
@@ -69,6 +70,7 @@ pub mod pallet {
     use frame_system::offchain::{Signer,SignedPayload, SendUnsignedTransaction};
     use sp_core::hashing;
     use sp_runtime::format;
+    // use frame_support::traits::OnRuntimeUpgrade;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -83,6 +85,8 @@ pub mod pallet {
 
         #[pallet::constant]
         type RefferallCoolDOwnPeriod: Get<u32>;
+
+        // type OnRuntimeUpgrade: OnRuntimeUpgrade;
 	}
 
     // Define separate storage for free credits.
@@ -112,12 +116,13 @@ pub mod pallet {
     // Define a struct for locked credits
     #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo)]
     pub struct LockedCredit<AccountId, BlockNumber> {
-        owner: AccountId,
-        amount_locked: u128,
-        is_fulfilled: bool,
-        tx_hash: Option<Vec<u8>>,
-        created_at: BlockNumber,
-        id: u64,
+        pub owner: AccountId,
+        pub amount_locked: u128,
+        pub is_fulfilled: bool,
+        pub tx_hash: Option<Vec<u8>>,
+        pub created_at: BlockNumber,
+        pub id: u64,
+        pub is_migrated: bool, 
     }
 
     // Define separate storage for locked credits
@@ -513,6 +518,7 @@ pub mod pallet {
                 tx_hash: None,
                 created_at: frame_system::Pallet::<T>::block_number(),
                 id: locked_credit_id,
+                is_migrated: false,
             };
 
             // Update locked credits

@@ -67,10 +67,6 @@ pub mod pallet {
     #[pallet::without_storage_info]
     pub struct Pallet<T>(_);
 
-    #[pallet::storage]
-    #[pallet::getter(fn submission_enabled)]
-    pub type SubmissionEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
-
     #[pallet::event]
     // #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -124,19 +120,6 @@ pub mod pallet {
 
         //     Ok(())
         // }
-
-        #[pallet::call_index(1)]
-        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-        pub fn set_weight_submission_submission(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
-            // Ensure only an admin or the root can toggle this
-            T::AdminOrigin::ensure_origin(origin)?;
-
-            // Set the submission enabled flag
-            <SubmissionEnabled<T>>::put(enabled);
-
-            log::info!("Submission flag set to: {}", enabled);
-            Ok(())
-        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -383,7 +366,7 @@ pub mod pallet {
             })?;
         
             // Check if submission is enabled before proceeding
-            if Self::submission_enabled() {
+            if UtilsPallet::<T>::submission_enabled() {
                 // Now use the hex_result in the submit_to_chain function
                 match Self::submit_to_chain(&rpc_url, &hex_result) {
                     Ok(_) => {

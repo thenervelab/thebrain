@@ -1122,7 +1122,7 @@ impl pallet_bittensor::Config for Runtime {
 	type FinneyRpcUrl = FinneyApiUrl;
 	type VersionKeyStorageKey = VersionKeyStorageKey;
 	type BittensorCallSubmission = BittensorCallSubmission;
-	type NetUid = ConstU16<1>;
+	type NetUid = ConstU16<30>;
 }
 
 parameter_types! {
@@ -1422,6 +1422,7 @@ impl pallet_subaccount::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
 	type StringLimit = SubAccountStringLimit;
+	// type OnRuntimeUpgrade = pallet_subaccount::migrations::Migrate<Runtime>;
 }
 
 parameter_types! {
@@ -1652,11 +1653,6 @@ construct_runtime!(
 		BaseFee: pallet_base_fee = 37,
 		HotfixSufficients: pallet_hotfix_sufficients = 38,
 
-		// DO NOT USE below indexes
-		// Roles: pallet_roles = 40,
-		// Jobs: pallet_jobs = 41,
-		// Dkg: pallet_dkg = 42,
-		// ZkSaaS: pallet_zksaas = 43,
 		Proxy: pallet_proxy = 44,
 		IpfsPin : pallet_ipfs_pin=52,
 		Registration : pallet_registration=53,
@@ -1676,13 +1672,6 @@ construct_runtime!(
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69
-
-		// Sygma
-		// SygmaAccessSegregator: sygma_access_segregator = 46,
-		// SygmaBasicFeeHandler: sygma_basic_feehandler = 47,
-		// SygmaFeeHandlerRouter: sygma_fee_handler_router = 48,
-		// SygmaPercentageFeeHandler: sygma_percentage_feehandler = 49,
-		// SygmaBridge: sygma_bridge = 50,
 	}
 );
 

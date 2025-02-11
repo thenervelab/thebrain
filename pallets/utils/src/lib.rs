@@ -21,6 +21,8 @@ pub mod pallet {
 	use scale_info::prelude::vec::Vec;
 	use sp_runtime::offchain::http;
 	use sp_consensus_babe::AuthorityId as BabeId;
+	use frame_system::ensure_root;
+	use frame_system::pallet_prelude::OriginFor;
     
 	/// Subscription ID type
 	pub type SubscriptionId = u32;
@@ -43,10 +45,6 @@ pub mod pallet {
 		type RpcMethod: Get<&'static str>;
 	}
 
-	#[pallet::storage]
-	#[pallet::getter(fn something)]
-	pub type Something<T> = StorageValue<_, u32>;
-
 	#[pallet::event]
 	// #[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -58,6 +56,26 @@ pub mod pallet {
 		NoneValue,
 		StorageOverflow,
 	}
+
+	#[pallet::storage]
+    #[pallet::getter(fn submission_enabled)]
+    pub type SubmissionEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	#[pallet::call]
+    impl<T: Config> Pallet<T> {
+        #[pallet::call_index(0)]
+        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+        pub fn set_submission_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
+            // Ensure only an admin or the root can toggle this
+            ensure_root(origin)?;
+
+            // Set the submission enabled flag
+            <SubmissionEnabled<T>>::put(enabled);
+
+            log::info!("Submission flag set to: {}", enabled);
+            Ok(())
+        }
+    }
 
 	impl<T: Config> Pallet<T> {
 		/// Helper function to fetch node ID using configured RPC parameters
