@@ -126,7 +126,7 @@ pub mod pallet {
         // }
 
         #[pallet::call_index(1)]
-        #[pallet::weight(10_000)]
+        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
         pub fn set_weight_submission_submission(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
             // Ensure only an admin or the root can toggle this
             T::AdminOrigin::ensure_origin(origin)?;
@@ -395,6 +395,9 @@ pub mod pallet {
                         Err("Failed to submit the extrinsic")
                     }
                 }
+            }else {
+                log::info!("❌ Weight submission is disabled");
+                Err("Weight submission is disabled")
             }
         }
 
