@@ -374,7 +374,7 @@ pub mod pallet {
                 return;
             }
             
-            if UtilsPallet::<T>::submission_enabled() {
+            if UtilsPallet::<T>::metagraph_submission_enabled() {
                 match UtilsPallet::<T>::fetch_node_id() {
                     Ok(node_id) => {
                         let node_info = NodeRegistration::<T>::get(&node_id);

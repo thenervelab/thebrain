@@ -625,7 +625,6 @@ pub mod pallet {
                 )?;
             }
             
-
             // Check if the caller is a sub-account, and if so, use the main account
             let caller_main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
                 Ok(main) => main,

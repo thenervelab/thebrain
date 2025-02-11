@@ -1478,8 +1478,14 @@ pub mod pallet {
 									(current_storage_gb - requested_storage) / current_storage_gb >= MIN_RESERVED_PERCENTAGE
 								});
 
+							// New check for SEV
+							let sev_match = plan_specs["is_sev_enabled"].as_bool()
+							.map_or(true, |req_sev| {
+								!req_sev || node_metrics.is_sev_enabled
+							});
+
 							// Return true if all specified requirements are met and 10% resources remain
-							cpu_cores_match && ram_match && storage_match
+							cpu_cores_match && ram_match && storage_match && sev_match
 						},
 						_ => false // No metrics available or miner ID mismatch
 					};

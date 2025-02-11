@@ -79,7 +79,7 @@ pub mod pallet {
 		pub outbound_bandwidth: String,
 		pub gpu: String,
 		pub gpu_type: String,
-		is_sev_enabled: bool, 
+		pub is_sev_enabled: bool, //nw field
 	}
 
     #[pallet::pallet]
