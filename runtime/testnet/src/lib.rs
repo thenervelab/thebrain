@@ -60,7 +60,7 @@ use pallet_transaction_payment::{
 	CurrencyAdapter, FeeDetails, Multiplier, RuntimeDispatchInfo, 
 };
 
-use pallet_registration::NodeType;
+// use pallet_registration::NodeType;
 use pallet_tx_pause::RuntimeCallNameOf;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use precompiles::HipiusPrecompiles;
@@ -172,7 +172,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-testnet"),
 	impl_name: create_runtime_str!("hippius-testnet"),
 	authoring_version: 1,
-	spec_version: 1204, // v1.2.4
+	spec_version: 1205, // v1.2.4
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1161,6 +1161,7 @@ impl pallet_credits::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AuthorityId = pallet_credits::crypto::TestAuthId;
 	type RefferallCoolDOwnPeriod = RefferallCoolDOwnPeriod;
+	// type OnRuntimeUpgrade = pallet_credits::migrations::Migrate<Runtime>;
 }
 
 parameter_types! {
@@ -2953,7 +2954,7 @@ impl_runtime_apis! {
 				rpc_primitives_node_metrics::NodeType::ComputeMiner => pallet_registration::NodeType::ComputeMiner,
 				rpc_primitives_node_metrics::NodeType::GpuMiner => pallet_registration::NodeType::GpuMiner,
 			};
-
+			// log!
 			let node_metrics = <pallet_execution_unit::Pallet<Runtime>>::get_active_nodes_metrics_by_type(pallet_node_type);
 
 			// Convert from execution unit NodeMetricsData to RPC primitives NodeMetricsData

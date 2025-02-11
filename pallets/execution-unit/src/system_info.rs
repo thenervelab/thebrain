@@ -258,8 +258,6 @@ impl FromStr for SystemInfo {
     // parsing the request output
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Remove the initial mutable variable declarations
-        // Instead, we'll directly parse and assign values
-        log::info!("Parsing system info: {}", s);
     
         // Parse cpu_model
         let cpu_model = if let Some(start) = s.find("\"cpu_model\":\"") {

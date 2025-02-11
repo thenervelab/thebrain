@@ -67,6 +67,10 @@ pub mod pallet {
     #[pallet::without_storage_info]
     pub struct Pallet<T>(_);
 
+    #[pallet::storage]
+    #[pallet::getter(fn submission_enabled)]
+    pub type SubmissionEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
     #[pallet::event]
     // #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -77,6 +81,7 @@ pub mod pallet {
     pub enum Error<T> {
         NoneValue,
         StorageOverflow,
+        SubmissionDisabled,
     }
 
     #[pallet::hooks]
@@ -119,6 +124,19 @@ pub mod pallet {
 
         //     Ok(())
         // }
+
+        #[pallet::call_index(1)]
+        #[pallet::weight(10_000)]
+        pub fn set_weight_submission_submission(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
+            // Ensure only an admin or the root can toggle this
+            T::AdminOrigin::ensure_origin(origin)?;
+
+            // Set the submission enabled flag
+            <SubmissionEnabled<T>>::put(enabled);
+
+            log::info!("Submission flag set to: {}", enabled);
+            Ok(())
+        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -364,15 +382,18 @@ pub mod pallet {
                 "Failed to get signed weight hex"
             })?;
         
-            // Now use the hex_result in the submit_to_chain function
-            match Self::submit_to_chain(&rpc_url, &hex_result) {
-                Ok(_) => {
-                    log::info!("✅ Successfully submitted the signed extrinsic for weights");
-                    Ok(())
-                }
-                Err(e) => {
-                    log::error!("❌ Failed to submit the extrinsic for weights: {:?}", e);
-                    Err("Failed to submit the extrinsic")
+            // Check if submission is enabled before proceeding
+            if Self::submission_enabled() {
+                // Now use the hex_result in the submit_to_chain function
+                match Self::submit_to_chain(&rpc_url, &hex_result) {
+                    Ok(_) => {
+                        log::info!("✅ Successfully submitted the signed extrinsic for weights");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        log::error!("❌ Failed to submit the extrinsic for weights: {:?}", e);
+                        Err("Failed to submit the extrinsic")
+                    }
                 }
             }
         }

@@ -164,7 +164,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 1203, // v1.2.3
+	spec_version: 1206,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -952,6 +952,7 @@ impl pallet_credits::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AuthorityId = TestAuthId;
 	type RefferallCoolDOwnPeriod = RefferallCoolDOwnPeriod;
+	// type OnRuntimeUpgrade = pallet_credits::migrations::Migrate<Runtime>;
 }
 
 parameter_types! {

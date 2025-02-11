@@ -67,9 +67,8 @@ pub mod pallet {
 			http_utils::fetch_node_id(url, method)
 		}
 
-
 		/// Helper function to sign a payload
-		 pub fn sign_payload(key: &[u8], payload: &[u8]) -> Result<Vec<u8>, ()> {
+		pub fn sign_payload(key: &[u8], payload: &[u8]) -> Result<Vec<u8>, ()> {
 			signing::sign_payload(key, payload)
 		}
 

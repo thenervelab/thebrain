@@ -153,7 +153,6 @@ fn get_vm_pool_disk_type() -> Option<String> {
                             .output() 
                         {
                             let lsblk_stdout = String::from_utf8_lossy(&lsblk_output.stdout);
-                            log::info!("lsblk output: {}", lsblk_stdout);
 
                             // Check disk type based on transport type and device characteristics
                             let lines: Vec<&str> = lsblk_stdout.lines().collect();
@@ -177,7 +176,6 @@ fn get_vm_pool_disk_type() -> Option<String> {
                             .output()
                         {
                             let df_stdout = String::from_utf8_lossy(&df_output.stdout);
-                            log::info!("df output: {}", df_stdout);
                             let lines: Vec<&str> = df_stdout.trim().lines().collect();
                             
                             if lines.len() > 1 {
