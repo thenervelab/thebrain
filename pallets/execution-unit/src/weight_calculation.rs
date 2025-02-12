@@ -107,11 +107,21 @@ impl NodeMetricsData {
     }
     
     pub fn calculate_weight<T: pallet_compute::Config + pallet_marketplace::Config>(
-        _node_type: NodeType, 
-        metrics: &NodeMetricsData, 
-        all_nodes_metrics: &[NodeMetricsData], 
+        _node_type: NodeType,
+        metrics: &NodeMetricsData,
+        all_nodes_metrics: &[NodeMetricsData],
         geo_distribution: &BTreeMap<Vec<u8>, u32>
     ) -> u32 {
+        // Early return for storage miners with less than 1 GB storage
+        if _node_type == NodeType::StorageMiner && metrics.total_storage_bytes < 1_000_000_000 {
+            return 0;
+        }
+
+        // Early return for storage miners with bandwidth less than 125 Mbps
+        if _node_type == NodeType::StorageMiner && metrics.bandwidth_mbps < 125 {
+            return 0;
+        }
+
         // Calculate base scores with u64 casting for safety
         let availability_score = (Self::calculate_availability_score(metrics) as u64).saturating_div(100);
         let performance_score = (Self::calculate_performance_score(metrics) as u64).saturating_div(100);

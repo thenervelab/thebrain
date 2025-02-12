@@ -138,7 +138,6 @@ pub struct NodeMetricsData {
     pub vm_pool_disk_type: Option<Vec<u8>>,
 }
 
-
 impl Default for NodeMetricsData {
     fn default() -> Self {
         NodeMetricsData {
