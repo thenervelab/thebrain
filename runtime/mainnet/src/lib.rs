@@ -1427,7 +1427,7 @@ impl pallet_subaccount::Config for Runtime {
 
 impl pallet_ceph::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	// type WeightInfo = pallet_ceph::weights::SubstrateWeight<Runtime>;
+	type AuthorityId = pallet_ceph::crypto::TestAuthId;
 }
 
 parameter_types! {

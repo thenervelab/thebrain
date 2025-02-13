@@ -1456,6 +1456,7 @@ impl pallet_tx_pause::Config for Runtime {
 
 impl pallet_ceph::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
+	type AuthorityId = pallet_ceph::crypto::TestAuthId;
 }
 
 parameter_types! {
