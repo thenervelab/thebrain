@@ -108,6 +108,16 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn storage_delete_requests)]
+	pub type StorageDeleteRequests<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat, T::AccountId,     // User ID
+		Blake2_128Concat, Vec<u8>,          // File Hash
+		Option<StorageDeleteRequest<T::AccountId, BlockNumberFor<T>>>,
+		ValueQuery
+	>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -121,6 +131,11 @@ pub mod pallet {
 			file_hash: Vec<u8>,
 			file_size: u64,
 			requested_replicas: u32,
+		},
+		/// A new storage delete request was created
+		StorageDeleteRequestCreated {
+			user: T::AccountId,
+			file_hash: Vec<u8>,
 		},
 	}
 
@@ -136,6 +151,8 @@ pub mod pallet {
 		InvalidReplicaCount,
 		/// Storage request already exists
 		StorageRequestAlreadyExists,
+		/// Storage request not found
+		StorageRequestNotFound,
 	}
 
 	#[pallet::call]
@@ -194,6 +211,55 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		/// Create a new storage delete request
+		#[pallet::call_index(1)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		pub fn create_storage_delete_request(
+			origin: OriginFor<T>,
+			file_hash: Vec<u8>,
+			reason: Option<Vec<u8>>,
+		) -> DispatchResult {
+			// Ensure the caller is signed
+			let who = ensure_signed(origin)?;
+
+			// Validate input parameters
+			ensure!(file_hash.len() > 0, Error::<T>::InvalidFileHash);
+
+			// Check if the user has a storage request for this file
+			ensure!(
+				StorageRequests::<T>::contains_key(&who, &file_hash),
+				Error::<T>::StorageRequestNotFound
+			);
+
+			// Get the current block number
+			let current_block = frame_system::Pallet::<T>::block_number();
+
+			// Create the storage delete request
+			let delete_request = StorageDeleteRequest {
+				file_hash: file_hash.clone(),
+				user_id: who.clone(),
+				created_at: current_block,
+				is_fulfilled: false,
+				created_at: None,
+				reason,
+			};
+
+			// Store the delete request
+			StorageDeleteRequests::<T>::insert(
+				who.clone(), 
+				file_hash.clone(), 
+				Some(delete_request.clone())
+			);
+
+			// Emit an event
+			Self::deposit_event(Event::StorageDeleteRequestCreated { 
+				user: who, 
+				file_hash,
+			});
+
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -221,6 +287,21 @@ pub mod pallet {
 		/// Check if a specific file is stored by a user
 		pub fn is_file_stored_by_user(user: &T::AccountId, file_hash: &Vec<u8>) -> bool {
 			UserStoredFiles::<T>::get(user).contains(file_hash)
+		}
+
+		/// Helper method to get delete requests for a user
+		pub fn get_user_storage_delete_requests(user: &T::AccountId) -> Vec<StorageDeleteRequest<T::AccountId, BlockNumberFor<T>>> {
+			StorageDeleteRequests::<T>::iter_prefix(user)
+				.filter_map(|(file_hash, request)| request)
+				.collect()
+		}
+
+		/// Helper method to get a specific delete request
+		pub fn get_user_storage_delete_request_by_hash(
+			user: &T::AccountId, 
+			file_hash: &Vec<u8>
+		) -> Option<StorageDeleteRequest<T::AccountId, BlockNumberFor<T>>> {
+			StorageDeleteRequests::<T>::get(user, file_hash)
 		}
 	}
 }

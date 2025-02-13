@@ -1,5 +1,5 @@
 use frame_support::pallet_prelude::*;
-// use scale_info::TypeInfo;
+use scale_info::TypeInfo;
 use sp_runtime::Vec;
 
 /// Represents a storage request made by a user
@@ -34,6 +34,28 @@ pub struct StorageRequest<AccountId, BlockNumber> {
     pub fullfilled_replicas: u32,
 
     pub last_charged_at: BlockNumber,
+}
+
+/// Represents a storage delete request made by a user
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
+pub struct StorageDeleteRequest<AccountId, BlockNumber> {
+    /// Unique identifier for the file/request
+    pub file_hash: Vec<u8>,
+    
+    /// User who initiated the delete request
+    pub user_id: AccountId,
+    
+    /// Block number when the delete request was created
+    pub created_at: BlockNumber,
+    
+    /// Indicates if the delete request has been processed
+    pub is_fulfilled: bool,
+    
+    /// Block number when the delete request was processed
+    pub created_at: Option<BlockNumber>,
+    
+    /// Reason for deletion (optional)
+    pub reason: Option<Vec<u8>>,
 }
 
 /// Represents the assignment of a storage request to miners
