@@ -1127,7 +1127,6 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
         _era_duration_millis: u64,
     ) -> (Balance, Balance) {
 		
-		log::info!("Executing era_payout");
         // Fetch the balance available in the marketplace
         let marketplace_balance = pallet_marketplace::Pallet::<Runtime>::balance();
 		let registration_balance = pallet_registration::Pallet::<Runtime>::balance();
@@ -1167,13 +1166,10 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
             // Get the list of validators from the session
             let validators = <pallet_session::Pallet<Runtime>>::validators(); // Ensure you have the correct type here
             let num_validators = validators.len() as u32;
-			log::info!("validators count for this era is {:?}", num_validators);
             if num_validators > 0 {
                 let amount_per_validator = staking_amount.checked_div(num_validators.into()).unwrap_or_default();
 
                 for validator in validators {
-					// Transfer the amount to the validator's account first
-					log::info!("transferring balance ");
 					let _ = pallet_balances::Pallet::<Runtime>::transfer(
 						&marketplace_account.clone(),
 						&validator,
@@ -1181,8 +1177,6 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 						ExistenceRequirement::KeepAlive,
 					);
 
-					// Now bond the amount as staked
-					log::info!("staking amount ");
 					let _ = pallet_staking::Pallet::<Runtime>::bond(
 						frame_system::RawOrigin::Signed(validator.clone()).into(),
 						amount_per_validator,
@@ -1193,8 +1187,7 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
         }
 
 		if registration_balance > 0 {
-			log::info!("registration balance at Era Payout is {:?}", registration_balance);
-            
+			
             // Calculate amounts for each destination
             let staking_amount = registration_balance
                 .checked_mul(50u32.into())
@@ -1230,7 +1223,6 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 					);
 
 					// Now bond the amount as staked
-					log::info!("staking amount ");
 					let _ = pallet_staking::Pallet::<Runtime>::bond(
 						frame_system::RawOrigin::Signed(validator.clone()).into(),
 						amount_per_validator,

@@ -334,7 +334,6 @@ pub mod pallet {
 					data.extend_from_slice(&request_id.encode());
 					data.extend_from_slice(&timestamp.encode());
 					let unique_hash = sp_io::hashing::blake2_256(&data);
-					log::info!("unique_hash: {:?}", unique_hash);
 					// Build the transaction validity with a truly unique `provides` value
 					ValidTransaction::with_tag_prefix("ComputeStopRequestFulfilled")
 						.priority(TransactionPriority::max_value())
