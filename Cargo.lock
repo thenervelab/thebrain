@@ -3894,6 +3894,7 @@ dependencies = [
  "pallet-base-fee",
  "pallet-bittensor",
  "pallet-bounties",
+ "pallet-ceph",
  "pallet-child-bounties",
  "pallet-collective",
  "pallet-compute",
@@ -4022,6 +4023,7 @@ dependencies = [
  "pallet-base-fee",
  "pallet-bittensor",
  "pallet-bounties",
+ "pallet-ceph",
  "pallet-child-bounties",
  "pallet-collective",
  "pallet-compute",
@@ -6828,6 +6830,25 @@ dependencies = [
  "sp-core",
  "sp-io",
  "sp-runtime",
+]
+
+[[package]]
+name = "pallet-ceph"
+version = "0.1.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "pallet-assets",
+ "pallet-timestamp",
+ "pallet-treasury",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+ "sp-std 14.0.0",
 ]
 
 [[package]]

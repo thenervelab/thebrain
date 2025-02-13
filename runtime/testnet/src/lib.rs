@@ -1424,7 +1424,6 @@ impl pallet_subaccount::Config for Runtime {
 	type StringLimit = SubAccountStringLimit;
 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
 }
-
 parameter_types! {
 	pub const MaxKeys: u32 = 10_000;
 	pub const MaxPeerInHeartbeats: u32 = 10_000;
@@ -1462,6 +1461,10 @@ impl pallet_tx_pause::Config for Runtime {
 	type WhitelistedCalls = TxPauseWhitelistedCalls;
 	type MaxNameLen = ConstU32<256>;
 	type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
+}
+
+impl pallet_ceph::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
 }
 
 parameter_types! {
@@ -1666,10 +1669,11 @@ construct_runtime!(
         RankingCompute: pallet_rankings::<Instance2> = 68,
 		RankingValidators: pallet_rankings::<Instance3> = 70,
 		RankingGpu: pallet_rankings::<Instance4> = 71,
-		Backup: pallet_backup = 64,
+		Backup: pallet_backup = 64,	
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,
-		ContainerRegistry: pallet_container_registry = 69
+		ContainerRegistry: pallet_container_registry = 69,
+		Ceph: pallet_ceph = 73
 	}
 );
 

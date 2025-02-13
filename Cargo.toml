@@ -356,6 +356,7 @@ evm-tracer = { path = "evm-tracer", default-features = false }
 
 pallet-execution-unit = { path = "pallets/execution-unit", default-features = false }
 pallet-ipfs-pin  = { path = "pallets/ipfs-pin", default-features = false }
+pallet-ceph = { path = "pallets/ceph", default-features = false }
 pallet-rankings   = { path = "pallets/ranking", default-features = false }
 pallet-utils  = { path = "pallets/utils", default-features = false }
 pallet-oracle = { path = "pallets/oracles", default-features = false }
