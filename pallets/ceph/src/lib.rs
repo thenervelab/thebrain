@@ -307,64 +307,7 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// Create a new storage request
-		#[pallet::call_index(0)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn create_storage_request(
-			origin: OriginFor<T>,
-			file_hash: Vec<u8>,
-			file_name: Vec<u8>,
-			metadata: Option<Vec<u8>>,
-		) -> DispatchResult {
-			// Ensure the caller is signed
-			let who = ensure_signed(origin)?;
-
-			// Validate input parameters
-			ensure!(file_hash.len() > 0, Error::<T>::InvalidFileHash);
-			ensure!(file_name.len() > 0, Error::<T>::InvalidFileName);
-
-			// Check if the file hash is blacklisted
-			ensure!(!BlacklistedFileHashes::<T>::contains_key(&file_hash), Error::<T>::FileHashBlacklisted);
-
-			// Get the current block number
-			let current_block = frame_system::Pallet::<T>::block_number();
-
-			// Create the storage request
-			let storage_request = StorageRequest {
-				file_hash: file_hash.clone(),
-				file_name,
-				file_size: 0, // Initially set to 0, can be updated later
-				user_id: who.clone(),
-				is_assigned: false,
-				created_at: current_block,
-				requested_replicas: 3, // Hardcoded to 3 replicas
-				metadata,
-				total_replicas: 3,
-				fullfilled_replicas: 0,
-				last_charged_at: current_block,
-			};
-
-			// Store the storage request
-			StorageRequests::<T>::insert(
-				who.clone(), 
-				file_hash.clone(), 
-				Some(storage_request.clone())
-			);
-
-			// Add the file hash to the user's stored files list
-			Self::add_user_stored_file(&who, file_hash.clone());
-
-			// Emit an event
-			Self::deposit_event(Event::StorageRequestCreated { 
-				user: who, 
-				file_hash,
-				file_size: 0,
-				requested_replicas: 3
-			});
-
-			Ok(())
-		}
-
+		
 		/// Create a new storage delete request
 		#[pallet::call_index(1)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
@@ -550,7 +493,73 @@ pub mod pallet {
 		}
 	}
 
+
+	/// On_initialize hook to process delete requests in each block
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(_now: BlockNumberFor<T>) -> Weight {
+			// Process delete requests
+			Self::process_delete_requests();
+			Weight::from_parts(10_000, 0)
+		}
+		// offchain hook where valis should assign , miners handle assignments
+	}
+	
 	impl<T: Config> Pallet<T> {
+		/// Helper function to create a new storage request
+		pub fn do_create_storage_request(
+			who: T::AccountId,
+			file_hash: Vec<u8>,
+			file_name: Vec<u8>,
+			metadata: Option<Vec<u8>>,
+		) -> DispatchResult {
+			// Validate input parameters
+			ensure!(file_hash.len() > 0, Error::<T>::InvalidFileHash);
+			ensure!(file_name.len() > 0, Error::<T>::InvalidFileName);
+
+			// Check if the file hash is blacklisted
+			ensure!(!BlacklistedFileHashes::<T>::contains_key(&file_hash), Error::<T>::FileHashBlacklisted);
+
+			// Get the current block number
+			let current_block = frame_system::Pallet::<T>::block_number();
+
+			// Create the storage request
+			let storage_request = StorageRequest {
+				file_hash: file_hash.clone(),
+				file_name,
+				file_size: 0, // Initially set to 0, can be updated later
+				user_id: who.clone(),
+				is_assigned: false,
+				created_at: current_block,
+				requested_replicas: 3, // Hardcoded to 3 replicas
+				metadata,
+				total_replicas: 3,
+				fullfilled_replicas: 0,
+				is_approved: false,
+				last_charged_at: current_block,
+			};
+
+			// Store the storage request
+			StorageRequests::<T>::insert(
+				who.clone(), 
+				file_hash.clone(), 
+				Some(storage_request.clone())
+			);
+
+			// Add the file hash to the user's stored files list
+			Self::add_user_stored_file(&who, file_hash.clone());
+
+			// Emit an event
+			Self::deposit_event(Event::StorageRequestCreated { 
+				user: who, 
+				file_hash,
+				file_size: 0,
+				requested_replicas: 3
+			});
+
+			Ok(())
+		}
+
 		/// Add a file hash to the user's stored files list
 		pub fn add_user_stored_file(user: &T::AccountId, file_hash: Vec<u8>) {
 			UserStoredFiles::<T>::mutate(user, |files| {
@@ -755,36 +764,29 @@ pub mod pallet {
 
 		/// Process and remove fulfilled storage delete requests
 		fn process_delete_requests() {
-			// Iterate through all storage delete requests
-			StorageDeleteRequests::<T>::iter().for_each(|((user_id, file_hash), delete_request)| {
-				if let Some(request) = delete_request {
-					if request.is_fulfilled {
-						// Remove the delete request
-						StorageDeleteRequests::<T>::remove(&user_id, &file_hash);
-
-						// Optionally emit an event
-						Self::deposit_event(Event::StorageDeleteRequestProcessed {
-							user: user_id,
-							file_hash,
-						});
+			// Collect keys to avoid borrowing issues during iteration
+			let delete_request_keys: Vec<_> = StorageDeleteRequests::<T>::iter()
+				.filter_map(|(user_id, file_hash, delete_request)| {
+					if let Some(request) = delete_request {
+						if request.is_fulfilled {
+							return Some((user_id, file_hash));
+						}
 					}
-				}
-			});
-		}
+					None
+				})
+				.collect();
 
-		/// On_initialize hook to process delete requests in each block
-		#[pallet::hooks]
-		impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-			fn on_initialize(_now: BlockNumberFor<T>) -> Weight {
-				// Process delete requests
-				Self::process_delete_requests();
+			// Process collected keys
+			for (user_id, file_hash) in delete_request_keys {
+				// Remove the delete request
+				StorageDeleteRequests::<T>::remove(&user_id, &file_hash);
 
-				// Return the weight consumed by this operation
-				// You might want to adjust this based on your specific weight calculation
-				Weight::from_parts(10_000, 0)
+				// Emit an event
+				Self::deposit_event(Event::StorageDeleteRequestProcessed {
+					user: user_id,
+					file_hash,
+				});
 			}
-
-			// offchain hook where valis should assign , miners handle assignments
 		}
 
 		/// Helper method to get current timestamp
@@ -921,6 +923,5 @@ pub mod pallet {
 
 			Ok(())
 		}		
-
 	}
 }

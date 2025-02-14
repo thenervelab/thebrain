@@ -37,6 +37,8 @@ pub struct StorageRequest<AccountId, BlockNumber> {
     pub fullfilled_replicas: u32,
 
     pub last_charged_at: BlockNumber,
+
+    pub is_approved: bool,
 }
 
 /// Represents a storage delete request made by a user
