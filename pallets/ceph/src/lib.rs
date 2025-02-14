@@ -133,6 +133,16 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn blacklisted_file_hashes)]
+	pub type BlacklistedFileHashes<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		Vec<u8>, 
+		bool, 
+		ValueQuery
+	>;
+
 	const LOCK_BLOCK_EXPIRATION: u32 = 3;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
 
@@ -180,6 +190,10 @@ pub mod pallet {
 			user_id: T::AccountId,
 			file_hash: Vec<u8>,
 		},
+		/// A file hash was blacklisted
+		FileHashBlacklisted {
+			file_hash: Vec<u8>,
+		},
 	}
 
 	#[pallet::error]
@@ -198,6 +212,8 @@ pub mod pallet {
 		StorageRequestNotFound,
 		/// Storage request assignment not found
 		StorageRequestAssignmentNotFound,
+		/// File hash is blacklisted
+		FileHashBlacklisted,
 	}
 
 	/// Validate an unsigned transaction for compute request assignment
@@ -297,6 +313,9 @@ pub mod pallet {
 			// Validate input parameters
 			ensure!(file_hash.len() > 0, Error::<T>::InvalidFileHash);
 			ensure!(file_name.len() > 0, Error::<T>::InvalidFileName);
+
+			// Check if the file hash is blacklisted
+			ensure!(!BlacklistedFileHashes::<T>::contains_key(&file_hash), Error::<T>::FileHashBlacklisted);
 
 			// Get the current block number
 			let current_block = frame_system::Pallet::<T>::block_number();
@@ -466,6 +485,9 @@ pub mod pallet {
 		) -> DispatchResult {
 			ensure_none(origin)?;
 
+			// Check if the file hash is blacklisted
+			ensure!(!BlacklistedFileHashes::<T>::contains_key(&file_hash), Error::<T>::FileHashBlacklisted);
+
 			// Generate a unique request ID
 			let request_id = NextRequestId::<T>::get();
 			NextRequestId::<T>::put(request_id.wrapping_add(1));
@@ -497,6 +519,25 @@ pub mod pallet {
 				user_id,
 				file_hash: storage_request_assignment.file_hash 
 			});
+
+			Ok(())
+		}
+
+		/// Sudo function to blacklist a file hash
+		#[pallet::call_index(9)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		pub fn sudo_blacklist_file_hash(
+			origin: OriginFor<T>,
+			file_hash: Vec<u8>,
+		) -> DispatchResult {
+			// Ensure the origin is the root (sudo)
+			ensure_root(origin)?;
+
+			// Add the file hash to the blacklist
+			BlacklistedFileHashes::<T>::insert(file_hash.clone(), true);
+
+			// Emit an event
+			Self::deposit_event(Event::FileHashBlacklisted { file_hash });
 
 			Ok(())
 		}
