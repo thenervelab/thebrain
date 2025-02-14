@@ -115,6 +115,7 @@ pub mod pallet {
                     pallet_balances::Config + 
                     pallet_notifications::Config +
                     pallet_compute::Config +
+                    pallet_ceph::Config +
                     pallet_rankings::Config +
                     pallet_subaccount::Config +
                     pallet_rankings::Config<pallet_rankings::Instance2>+ 
@@ -1288,6 +1289,8 @@ pub mod pallet {
                     file_input.file_name.clone(),
                 )?;
 
+                pallet_ceph::Pallet::<T>::do_create_storage_request(owner.clone(), file_input.file_hash.clone(), file_input.file_name.clone(), None)?;
+                
                 // Emit event for each file
                 Self::deposit_event(Event::PinRequested {
                     who: owner.clone(),

@@ -7677,6 +7677,7 @@ dependencies = [
  "num-traits",
  "pallet-assets",
  "pallet-balances",
+ "pallet-ceph",
  "pallet-compute",
  "pallet-credits",
  "pallet-ipfs-pin",
