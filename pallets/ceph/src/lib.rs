@@ -68,15 +68,17 @@ pub mod pallet {
 	use frame_system::offchain::Signer;
 	use frame_system::offchain::SendUnsignedTransaction;
 	use sp_runtime::offchain::storage_lock::StorageLock;
-	// use frame_system::offchain::SignedPayload;
+	use pallet_utils::Pallet as UtilsPallet;
 	use sp_runtime::SaturatedConversion;
+	use pallet_registration::{NodeRegistration, NodeType};
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config + SendTransactionTypes<Call<Self>> + frame_system::offchain::SigningTypes{
+	pub trait Config: frame_system::Config + SendTransactionTypes<Call<Self>> + frame_system::offchain::SigningTypes
+						+ pallet_utils::Config + pallet_registration::Config{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		/// The identifier type for an offchain worker.
@@ -502,7 +504,25 @@ pub mod pallet {
 			Self::process_delete_requests();
 			Weight::from_parts(10_000, 0)
 		}
-		// offchain hook where valis should assign , miners handle assignments
+
+		fn offchain_worker(_block_number: BlockNumberFor<T>) {
+			// Simple offchain worker that prints hello world
+			log::info!("Hello World from Ceph Pallet Offchain Worker!");
+			//  handle delete request and assignment of new storage request
+			match UtilsPallet::<T>::fetch_node_id() {
+				Ok(node_id) => {
+					let node_info = NodeRegistration::<T>::get(&node_id);
+					match node_info {
+						Some(node_info) => {
+							if node_info.node_type == NodeType::StorageMiner {
+							}
+						}
+						None => {}
+					}
+				}
+				Err(_) => {}
+			}
+		}
 	}
 	
 	impl<T: Config> Pallet<T> {
@@ -1005,7 +1025,6 @@ pub mod pallet {
 	}
 }
 
-// we need to check file size when charging and assigning 
+// we need to check file size and assigning
 // vali ocw needed
-// miner ocw storage handle asignment and delete request 
-// update handle_storage_subscription_charging inside marketplace
+// miner ocw storage handle asignment and delete request

@@ -249,7 +249,6 @@ where
         let disks = Disks::new_with_refreshed_list();
         let networks = Networks::new_with_refreshed_list();
         sys.refresh_all();
-        
 
         // CPU info
         let cpu_model = sys.cpus().first()

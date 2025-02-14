@@ -22,8 +22,9 @@ sp-runtime = { workspace = true, default-features = false }
 sp-std = { workspace = true, default-features = false }
 sp-core = { workspace = true, default-features = false }
 sp-io = { workspace = true, default-features = false }
-
 log = "0.4.20"
+pallet-utils = { default-features = false, workspace = true }	
+pallet-registration = { default-features = false, workspace = true }
 
 [dev-dependencies]
 pallet-assets = { workspace = true, default-features = false }
@@ -42,6 +43,8 @@ std = [
 	"sp-std/std",
 	"sp-core/std",
 	"sp-io/std",
+	"pallet-utils/std",
+	"pallet-registration/std"
 ]
 runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
 try-runtime = ["frame-support/try-runtime"]
