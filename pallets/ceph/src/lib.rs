@@ -377,6 +377,9 @@ pub mod pallet {
 				Some(delete_request.clone())
 			);
 
+			// Remove related storage items
+			Self::remove_file_related_storage_items(&who, &file_hash);
+
 			// Emit an event
 			Self::deposit_event(Event::StorageDeleteRequestCreated { 
 				user: who, 
@@ -711,6 +714,32 @@ pub mod pallet {
 			block_number.wrapping_mul(1000) + 
 			(block_number % 1000) + 
 			(block_number & 0xFF)
+		}
+
+		/// Remove all storage-related items for a specific file
+		fn remove_file_related_storage_items(user: &T::AccountId, file_hash: &Vec<u8>) {
+			// Remove from StorageRequests
+			StorageRequests::<T>::remove(user, file_hash);
+
+			// Remove from UserStoredFiles
+			Self::remove_user_stored_file(user, file_hash);
+
+			// Remove related StorageRequestAssignments
+			// We need to find and remove assignments for this file hash
+			StorageRequestAssignments::<T>::iter()
+				.filter(|(_, assignment_option)| {
+					assignment_option
+						.as_ref()
+						.map_or(false, |assignment| 
+							assignment.file_hash == *file_hash && assignment.user_id == *user
+						)
+				})
+				.for_each(|(request_id, _)| {
+					StorageRequestAssignments::<T>::remove(request_id);
+				});
+
+			// Remove from StorageDeleteRequests
+			StorageDeleteRequests::<T>::remove(user, file_hash);
 		}
 
 
