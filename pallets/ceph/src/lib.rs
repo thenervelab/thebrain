@@ -199,6 +199,10 @@ pub mod pallet {
 			user: T::AccountId,
 			file_hash: Vec<u8>,
 		},
+		/// A user's subscription was cancelled
+		UserSubscriptionCancelled {
+			user: T::AccountId,
+		},
 	}
 
 	#[pallet::error]
@@ -890,6 +894,33 @@ pub mod pallet {
 				log::info!("❌ Could not acquire lock for adding storage request assignment");
 			};
 		}
+
+
+		/// Sudo function to handle user subscription cancellation
+		pub fn handle_cancel_subscription(
+			user_id: T::AccountId,
+		) -> DispatchResult {
+
+			// Remove all storage requests for the user
+			StorageRequests::<T>::iter_prefix(&user_id).for_each(|(file_hash, _)| {
+				StorageRequests::<T>::remove(&user_id, &file_hash);
+			});
+
+			// Remove all storage delete requests for the user
+			StorageDeleteRequests::<T>::iter_prefix(&user_id).for_each(|(file_hash, _)| {
+				StorageDeleteRequests::<T>::remove(&user_id, &file_hash);
+			});
+
+			// Remove user's stored files list
+			UserStoredFiles::<T>::remove(&user_id);
+
+			// Optionally emit an event
+			Self::deposit_event(Event::UserSubscriptionCancelled { 
+				user: user_id 
+			});
+
+			Ok(())
+		}		
 
 	}
 }
