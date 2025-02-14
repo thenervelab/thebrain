@@ -1248,7 +1248,10 @@ pub mod pallet {
                             } else {
                                 // Cancel the request after grace period
                                 pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), None);
-                                
+
+                                // delete all storage items  
+                                pallet_ceph::Pallet::<T>::handle_cancel_subscription(user.clone());
+
                                 // request to delete all backups of user 
                                 Self::move_user_to_backup_delete_requests(&user);
 

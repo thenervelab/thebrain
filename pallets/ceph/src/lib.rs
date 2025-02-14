@@ -896,26 +896,59 @@ pub mod pallet {
 			};
 		}
 
-
 		/// Sudo function to handle user subscription cancellation
 		pub fn handle_cancel_subscription(
 			user_id: T::AccountId,
 		) -> DispatchResult {
+
+			// Get the current block number
+			let current_block = frame_system::Pallet::<T>::block_number();
+
+			// Collect and process storage request assignments
+			let assignments_to_delete: Vec<_> = StorageRequestAssignments::<T>::iter()
+				.filter_map(|(request_id, maybe_assignment)| {
+					// Unwrap the Option and check if the assignment belongs to the user
+					maybe_assignment.and_then(|assignment| {
+						if assignment.user_id == user_id {
+							Some((request_id, assignment))
+						} else {
+							None
+						}
+					})
+				})
+				.collect();
+
+			// Process each assignment
+			for (request_id, assignment) in assignments_to_delete {
+				// Create a delete request for each assignment
+				let delete_request = StorageDeleteRequest {
+					file_hash: assignment.file_hash.clone(),
+					user_id: user_id.clone(),
+					created_at: current_block,
+					is_fulfilled: false,
+					fulfilled_at: None,
+				};
+
+				// Store the delete request
+				StorageDeleteRequests::<T>::insert(
+					&user_id, 
+					&assignment.file_hash, 
+					Some(delete_request)
+				);
+
+				// Remove the assignment
+				StorageRequestAssignments::<T>::remove(request_id);
+			}
 
 			// Remove all storage requests for the user
 			StorageRequests::<T>::iter_prefix(&user_id).for_each(|(file_hash, _)| {
 				StorageRequests::<T>::remove(&user_id, &file_hash);
 			});
 
-			// Remove all storage delete requests for the user
-			StorageDeleteRequests::<T>::iter_prefix(&user_id).for_each(|(file_hash, _)| {
-				StorageDeleteRequests::<T>::remove(&user_id, &file_hash);
-			});
-
 			// Remove user's stored files list
 			UserStoredFiles::<T>::remove(&user_id);
 
-			// Optionally emit an event
+			// Emit an event
 			Self::deposit_event(Event::UserSubscriptionCancelled { 
 				user: user_id 
 			});
@@ -924,3 +957,10 @@ pub mod pallet {
 		}		
 	}
 }
+
+
+// add miner id in delete request
+// we need to check file size when charging and assigning 
+// vali ocw needed
+// miner ocw storage space needed
+// update handle_storage_subscription_charging inside marketplace
