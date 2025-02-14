@@ -447,37 +447,47 @@ pub mod pallet {
 			StorageDeleteRequests::<T>::get(user, file_hash)
 		}
 
-		// /// Get all fulfilled storage requests for a user
-		// pub fn get_user_fulfilled_storage_requests(
-		// 	user: &T::AccountId
-		// ) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
-		// 	StorageRequests::<T>::iter_prefix(user)
-		// 		.filter_map(|(_file_hash, request)| {
-		// 			// Check if request is fulfilled based on replica count
-		// 			if request.fullfilled_replicas >= request.requested_replicas {
-		// 				Some(request)
-		// 			} else {
-		// 				None
-		// 			}
-		// 		})
-		// 		.collect()
-		// }
+		/// Get all fulfilled storage requests for a user
+		pub fn get_user_fulfilled_storage_requests(
+			user: &T::AccountId
+		) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
+			StorageRequests::<T>::iter_prefix(user)
+				.filter_map(|(_file_hash, request_option)| {
+					// Unwrap the Option, filter out None values
+					request_option.and_then(|request| {
+						// Check if request is fulfilled based on replica count
+						// and is_assigned flag
+						if request.fullfilled_replicas >= request.requested_replicas && 
+						   request.is_assigned {
+							Some(request)
+						} else {
+							None
+						}
+					})
+				})
+				.collect()
+		}
 
-		// /// Get all unfulfilled storage requests for a user
-		// pub fn get_user_unfulfilled_storage_requests(
-		// 	user: &T::AccountId
-		// ) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
-		// 	StorageRequests::<T>::iter_prefix(user)
-		// 		.filter_map(|(_file_hash, request)| {
-		// 			// Check if request is not yet fully fulfilled
-		// 			if request.fullfilled_replicas < request.requested_replicas {
-		// 				Some(request)
-		// 			} else {
-		// 				None
-		// 			}
-		// 		})
-		// 		.collect()
-		// }
+		/// Get all unfulfilled storage requests for a user
+		pub fn get_user_unfulfilled_storage_requests(
+			user: &T::AccountId
+		) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
+			StorageRequests::<T>::iter_prefix(user)
+				.filter_map(|(_file_hash, request_option)| {
+					// Unwrap the Option, filter out None values
+					request_option.and_then(|request| {
+						// Check if request is not yet fully fulfilled
+						// or is not assigned
+						if request.fullfilled_replicas < request.requested_replicas || 
+						   !request.is_assigned {
+							Some(request)
+						} else {
+							None
+						}
+					})
+				})
+				.collect()
+		}
 
 		/// Get a specific storage request by user and file hash
 		pub fn get_storage_request(
