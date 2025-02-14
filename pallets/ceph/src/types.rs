@@ -116,3 +116,17 @@ impl<T: Config> SignedPayload<T> for StorageRequestFulfilledPayload<T> {
         self.public.clone()
     }
 }
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct StorageAssignmentFulfilledPayload<T: Config>  {
+    pub node_id: Vec<u8>,
+    pub request_id: Vec<u8>,
+    pub public: T::Public,
+    pub _marker: PhantomData<BlockNumberFor<T>>,
+}
+
+impl<T: Config> SignedPayload<T> for StorageAssignmentFulfilledPayload<T> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
+}

@@ -157,6 +157,15 @@ pub mod pallet {
 			user_id: T::AccountId,
 			file_hash: Vec<u8>,
 		},
+		/// A storage request assignment was marked as fulfilled
+		StorageRequestAssignmentFulfilled {
+			request_id: Vec<u8>,
+			user_id: T::AccountId,
+		},
+		/// A storage request assignment was removed
+		StorageRequestAssignmentRemoved {
+			request_id: Vec<u8>,
+		},
 	}
 
 	#[pallet::error]
@@ -173,6 +182,8 @@ pub mod pallet {
 		StorageRequestAlreadyExists,
 		/// Storage request not found
 		StorageRequestNotFound,
+		/// Storage request assignment not found
+		StorageRequestAssignmentNotFound,
 	}
 
 	/// Validate an unsigned transaction for compute request assignment
@@ -199,6 +210,25 @@ pub mod pallet {
 						.propagate(true)
 						// Add the unique hash to ensure transaction uniqueness
 						.and_provides(("mark_storage_request_fulfilled",unique_hash))
+						.build()					
+				},
+				Call::mark_storage_request_assignment_fulfilled { node_id, request_id } => {
+					// Additional validation checks
+					let block_number = <frame_system::Pallet<T>>::block_number();
+					
+					let mut data = Vec::new();
+					data.extend_from_slice(&block_number.encode());
+					data.extend_from_slice(node_id);
+					data.extend_from_slice(request_id);
+					data.extend_from_slice(&Self::get_current_timestamp().encode());
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					ValidTransaction::with_tag_prefix("StorageRequestAssignmentFulfilled")
+						.priority(TransactionPriority::max_value())
+						.longevity(5)
+						.propagate(true)
+						// Add the unique hash to ensure transaction uniqueness
+						.and_provides(("mark_storage_request_assignment_fulfilled",unique_hash))
 						.build()					
 				},
 				_ => InvalidTransaction::Call.into(),
@@ -342,6 +372,37 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		/// Mark a storage request assignment as fulfilled
+		#[pallet::call_index(7)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		pub fn mark_storage_request_assignment_fulfilled(
+			origin: OriginFor<T>,
+			request_id: Vec<u8>,
+			_node_id: Vec<u8>
+		) -> DispatchResult {
+			ensure_none(origin)?;
+
+			// Retrieve the existing storage request assignment
+			let mut assignment = StorageRequestAssignments::<T>::get(&request_id)
+				.ok_or(Error::<T>::StorageRequestAssignmentNotFound)?;
+
+			// Mark the assignment as fulfilled
+			assignment.is_fulfilled = true;
+				
+			// Set the fulfilled_at timestamp to the current block number
+			assignment.fulfilled_at = Some(<frame_system::Pallet<T>>::block_number());
+
+			// Update the storage request assignment
+			StorageRequestAssignments::<T>::insert(&request_id, Some(assignment.clone()));
+
+			Self::deposit_event(Event::StorageRequestAssignmentFulfilled { 
+				request_id: request_id.clone(),
+				user_id: assignment.user_id 
+			});
+
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -386,37 +447,37 @@ pub mod pallet {
 			StorageDeleteRequests::<T>::get(user, file_hash)
 		}
 
-		/// Get all fulfilled storage requests for a user
-		pub fn get_user_fulfilled_storage_requests(
-			user: &T::AccountId
-		) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
-			StorageRequests::<T>::iter_prefix(user)
-				.filter_map(|(_file_hash, request)| {
-					// Check if request is fulfilled based on replica count
-					if request.fullfilled_replicas >= request.requested_replicas {
-						Some(request)
-					} else {
-						None
-					}
-				})
-				.collect()
-		}
+		// /// Get all fulfilled storage requests for a user
+		// pub fn get_user_fulfilled_storage_requests(
+		// 	user: &T::AccountId
+		// ) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
+		// 	StorageRequests::<T>::iter_prefix(user)
+		// 		.filter_map(|(_file_hash, request)| {
+		// 			// Check if request is fulfilled based on replica count
+		// 			if request.fullfilled_replicas >= request.requested_replicas {
+		// 				Some(request)
+		// 			} else {
+		// 				None
+		// 			}
+		// 		})
+		// 		.collect()
+		// }
 
-		/// Get all unfulfilled storage requests for a user
-		pub fn get_user_unfulfilled_storage_requests(
-			user: &T::AccountId
-		) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
-			StorageRequests::<T>::iter_prefix(user)
-				.filter_map(|(_file_hash, request)| {
-					// Check if request is not yet fully fulfilled
-					if request.fullfilled_replicas < request.requested_replicas {
-						Some(request)
-					} else {
-						None
-					}
-				})
-				.collect()
-		}
+		// /// Get all unfulfilled storage requests for a user
+		// pub fn get_user_unfulfilled_storage_requests(
+		// 	user: &T::AccountId
+		// ) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
+		// 	StorageRequests::<T>::iter_prefix(user)
+		// 		.filter_map(|(_file_hash, request)| {
+		// 			// Check if request is not yet fully fulfilled
+		// 			if request.fullfilled_replicas < request.requested_replicas {
+		// 				Some(request)
+		// 			} else {
+		// 				None
+		// 			}
+		// 		})
+		// 		.collect()
+		// }
 
 		/// Get a specific storage request by user and file hash
 		pub fn get_storage_request(
@@ -483,6 +544,59 @@ pub mod pallet {
 				log::info!("❌ Could not acquire lock for marking compute request as fulfilled");
 			};
 		}		
+
+
+		pub fn call_mark_storage_request_assignment_fulfilled(
+			node_id: Vec<u8>,
+			request_id: Vec<u8>,
+		) {
+			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+				b"Compute::mark_storage_request_assignment_fulfilled_lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+			);
+
+			if let Ok(_guard) = lock.try_lock() {
+				// Fetch signer accounts using AuthorityId
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
+
+				// Check if there are any accounts and log them
+				if signer.can_sign() {
+					log::info!("Signer has accounts available for signing.");
+				} else {
+					log::warn!("No accounts available for signing in signer.");
+				}
+
+				let results = signer.send_unsigned_transaction(
+					|account| {
+						// Create a payload with all necessary data for the  call
+						StorageAssignmentFulfilledPayload {
+							node_id: node_id.clone(),
+							request_id: request_id.clone(),
+							public: account.public.clone(),
+							_marker: PhantomData,
+						}
+					},
+					|payload, _signature| {
+						// Construct the call with the payload and signature
+						Call::mark_storage_request_assignment_fulfilled {
+							node_id: payload.node_id,
+							request_id: payload.request_id,
+						}
+					},
+				);
+
+				// Process results with comprehensive logging
+				for (acc, res) in &results {
+					match res {
+						Ok(_) => log::info!("[{:?}] Successfully marked compute request as fulfilled", acc.id),
+						Err(e) => log::info!("[{:?}] Failed to mark compute request as fulfilled: {:?}", acc.id, e),
+					}
+				}
+			} else {
+				log::info!("❌ Could not acquire lock for marking compute request as fulfilled");
+			};
+		}
 
 		// Helper method to get current timestamp
 		fn get_current_timestamp() -> u64 {
