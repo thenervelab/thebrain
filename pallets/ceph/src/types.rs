@@ -49,6 +49,9 @@ pub struct StorageDeleteRequest<AccountId, BlockNumber> {
     
     /// User who initiated the delete request
     pub user_id: AccountId,
+
+    /// User who initiated the delete request
+    pub miner_id: Vec<u8>,
     
     /// Block number when the delete request was created
     pub created_at: BlockNumber,

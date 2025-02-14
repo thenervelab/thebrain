@@ -329,21 +329,37 @@ pub mod pallet {
 			// Get the current block number
 			let current_block = frame_system::Pallet::<T>::block_number();
 
-			// Create the storage delete request
-			let delete_request = StorageDeleteRequest {
-				file_hash: file_hash.clone(),
-				user_id: who.clone(),
-				created_at: current_block,
-				is_fulfilled: false,
-				fulfilled_at: None
-			};
+			// Collect all assignments for the given file hash
+			let assignments: Vec<_> = StorageRequestAssignments::<T>::iter()
+				.filter_map(|(_, maybe_assignment)| {
+					maybe_assignment.and_then(|assignment| {
+						if assignment.file_hash == file_hash {
+							Some(assignment)
+						} else {
+							None
+						}
+					})
+				})
+				.collect();
 
-			// Store the delete request
-			StorageDeleteRequests::<T>::insert(
-				who.clone(), 
-				file_hash.clone(), 
-				Some(delete_request.clone())
-			);
+			// Create delete requests for each assignment
+			for assignment in assignments {
+				let delete_request = StorageDeleteRequest {
+					file_hash: file_hash.clone(),
+					user_id: who.clone(),
+					miner_id: assignment.miner_id.clone(),
+					created_at: current_block,
+					is_fulfilled: false,
+					fulfilled_at: None
+				};
+
+				// Store the delete request
+				StorageDeleteRequests::<T>::insert(
+					&who, 
+					&file_hash, 
+					Some(delete_request.clone())
+				);
+			}
 
 			// Remove related storage items
 			Self::remove_file_related_storage_items(&who, &file_hash);
@@ -808,7 +824,6 @@ pub mod pallet {
 			Self::remove_user_stored_file(user, file_hash);
 
 			// Remove related StorageRequestAssignments
-			// We need to find and remove assignments for this file hash
 			StorageRequestAssignments::<T>::iter()
 				.filter(|(_, assignment_option)| {
 					assignment_option
@@ -817,14 +832,11 @@ pub mod pallet {
 							assignment.file_hash == *file_hash && assignment.user_id == *user
 						)
 				})
-				.for_each(|(request_id, _)| {
+				.for_each(|(request_id, _)| { 
 					StorageRequestAssignments::<T>::remove(request_id);
 				});
-
-			// Remove from StorageDeleteRequests
-			StorageDeleteRequests::<T>::remove(user, file_hash);
+			// delete request will always be deleted when fulfilled 
 		}
-
 
 		pub fn call_add_storage_request_assignment(
 			node_id: Vec<u8>,
@@ -924,6 +936,7 @@ pub mod pallet {
 				let delete_request = StorageDeleteRequest {
 					file_hash: assignment.file_hash.clone(),
 					user_id: user_id.clone(),
+					miner_id: assignment.miner_id.clone(),
 					created_at: current_block,
 					is_fulfilled: false,
 					fulfilled_at: None,
@@ -947,6 +960,8 @@ pub mod pallet {
 
 			// Remove user's stored files list
 			UserStoredFiles::<T>::remove(&user_id);
+
+			// delete request will always be deleted when fulfilled
 
 			// Emit an event
 			Self::deposit_event(Event::UserSubscriptionCancelled { 
