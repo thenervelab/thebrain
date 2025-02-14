@@ -63,6 +63,13 @@ pub mod pallet {
 	use sp_runtime::Vec;
 	use frame_system::offchain::SendTransactionTypes;
 	use frame_system::offchain::AppCrypto;
+	use sp_runtime::offchain::storage_lock::BlockAndTime;
+	use sp_runtime::offchain::Duration;
+	use frame_system::offchain::Signer;
+	use frame_system::offchain::SendUnsignedTransaction;
+	use sp_runtime::offchain::storage_lock::StorageLock;
+	// use frame_system::offchain::SignedPayload;
+	use sp_runtime::SaturatedConversion;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -118,6 +125,9 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+	const LOCK_BLOCK_EXPIRATION: u32 = 3;
+    const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -137,6 +147,16 @@ pub mod pallet {
 			user: T::AccountId,
 			file_hash: Vec<u8>,
 		},
+		/// A storage request was marked as fulfilled
+		StorageRequestFulfilled {
+			user_id: T::AccountId,
+			file_hash: Vec<u8>,
+		},
+		/// A storage request was removed
+		StorageRequestRemoved {
+			user_id: T::AccountId,
+			file_hash: Vec<u8>,
+		},
 	}
 
 	#[pallet::error]
@@ -154,6 +174,38 @@ pub mod pallet {
 		/// Storage request not found
 		StorageRequestNotFound,
 	}
+
+	/// Validate an unsigned transaction for compute request assignment
+	#[pallet::validate_unsigned]
+	impl<T: Config> ValidateUnsigned for Pallet<T> {
+		type Call = Call<T>;
+	
+		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+			match call {
+				Call::mark_storage_request_fulfilled { node_id, user_id:_, file_hash, storage_request: _ } => {
+					// Additional validation checks
+					let block_number = <frame_system::Pallet<T>>::block_number();
+					
+					let mut data = Vec::new();
+					data.extend_from_slice(&block_number.encode());
+					data.extend_from_slice(node_id);
+					data.extend_from_slice(&file_hash.encode());
+					data.extend_from_slice(&Self::get_current_timestamp().encode());
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					ValidTransaction::with_tag_prefix("StorageRequestFulfilled")
+						.priority(TransactionPriority::max_value())
+						.longevity(5)
+						.propagate(true)
+						// Add the unique hash to ensure transaction uniqueness
+						.and_provides(("mark_storage_request_fulfilled",unique_hash))
+						.build()					
+				},
+				_ => InvalidTransaction::Call.into(),
+			}
+		}
+	}
+	
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -241,7 +293,7 @@ pub mod pallet {
 				user_id: who.clone(),
 				created_at: current_block,
 				is_fulfilled: false,
-				created_at: None,
+				fulfilled_at: None,
 				reason,
 			};
 
@@ -257,6 +309,36 @@ pub mod pallet {
 				user: who, 
 				file_hash,
 			});
+
+			Ok(())
+		}
+
+		/// Mark a storage request as fulfilled
+		#[pallet::call_index(2)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		pub fn mark_storage_request_fulfilled(
+			origin: OriginFor<T>,
+			_node_id: Vec<u8>,
+			user_id: T::AccountId,
+			file_hash: Vec<u8>,
+			storage_request: Option<StorageRequest<T::AccountId, BlockNumberFor<T>>>
+		) -> DispatchResult {
+			ensure_none(origin)?;
+
+			if let Some(mut request) = storage_request {
+				// If a request is provided, update the storage request
+				// If all requested replicas are fulfilled, mark as fully assigned
+				if request.fullfilled_replicas >= request.requested_replicas {
+					request.is_assigned = true;
+				}
+
+				StorageRequests::<T>::insert(&user_id, &file_hash, Some(request));
+				Self::deposit_event(Event::StorageRequestFulfilled { user_id, file_hash });
+			} else {
+				// If no request is provided, remove the existing storage request
+				StorageRequests::<T>::remove(&user_id, &file_hash);
+				Self::deposit_event(Event::StorageRequestRemoved { user_id, file_hash });
+			}
 
 			Ok(())
 		}
@@ -292,7 +374,7 @@ pub mod pallet {
 		/// Helper method to get delete requests for a user
 		pub fn get_user_storage_delete_requests(user: &T::AccountId) -> Vec<StorageDeleteRequest<T::AccountId, BlockNumberFor<T>>> {
 			StorageDeleteRequests::<T>::iter_prefix(user)
-				.filter_map(|(file_hash, request)| request)
+				.filter_map(|(_file_hash, request)| request)
 				.collect()
 		}
 
@@ -303,5 +385,115 @@ pub mod pallet {
 		) -> Option<StorageDeleteRequest<T::AccountId, BlockNumberFor<T>>> {
 			StorageDeleteRequests::<T>::get(user, file_hash)
 		}
+
+		/// Get all fulfilled storage requests for a user
+		pub fn get_user_fulfilled_storage_requests(
+			user: &T::AccountId
+		) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
+			StorageRequests::<T>::iter_prefix(user)
+				.filter_map(|(_file_hash, request)| {
+					// Check if request is fulfilled based on replica count
+					if request.fullfilled_replicas >= request.requested_replicas {
+						Some(request)
+					} else {
+						None
+					}
+				})
+				.collect()
+		}
+
+		/// Get all unfulfilled storage requests for a user
+		pub fn get_user_unfulfilled_storage_requests(
+			user: &T::AccountId
+		) -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
+			StorageRequests::<T>::iter_prefix(user)
+				.filter_map(|(_file_hash, request)| {
+					// Check if request is not yet fully fulfilled
+					if request.fullfilled_replicas < request.requested_replicas {
+						Some(request)
+					} else {
+						None
+					}
+				})
+				.collect()
+		}
+
+		/// Get a specific storage request by user and file hash
+		pub fn get_storage_request(
+			user: &T::AccountId, 
+			file_hash: &Vec<u8>
+		) -> Option<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
+			StorageRequests::<T>::get(user, file_hash)
+		}
+
+		pub fn call_mark_storage_request_fulfilled(
+			node_id: Vec<u8>,
+			user_id: T::AccountId,
+			file_hash: Vec<u8>,
+			storage_request: Option<StorageRequest<T::AccountId, BlockNumberFor<T>>>,
+		) {
+			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+				b"Compute::mark_storage_request_fulfilled_lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+			);
+
+			if let Ok(_guard) = lock.try_lock() {
+				// Fetch signer accounts using AuthorityId
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
+
+				// Check if there are any accounts and log them
+				if signer.can_sign() {
+					log::info!("Signer has accounts available for signing.");
+				} else {
+					log::warn!("No accounts available for signing in signer.");
+				}
+
+				let results = signer.send_unsigned_transaction(
+					|account| {
+						// Create a payload with all necessary data for the  call
+						StorageRequestFulfilledPayload {
+							node_id: node_id.clone(),
+							user_id: user_id.clone(),
+							file_hash: file_hash.clone(),
+							storage_request: storage_request.clone(),
+							public: account.public.clone(),
+							_marker: PhantomData,
+						}
+					},
+					|payload, _signature| {
+						// Construct the call with the payload and signature
+						Call::mark_storage_request_fulfilled {
+							node_id: payload.node_id,
+							user_id: payload.user_id,
+							file_hash: payload.file_hash,
+							storage_request: payload.storage_request.clone(),
+						}
+					},
+				);
+
+				// Process results with comprehensive logging
+				for (acc, res) in &results {
+					match res {
+						Ok(_) => log::info!("[{:?}] Successfully marked compute request as fulfilled", acc.id),
+						Err(e) => log::info!("[{:?}] Failed to mark compute request as fulfilled: {:?}", acc.id, e),
+					}
+				}
+			} else {
+				log::info!("❌ Could not acquire lock for marking compute request as fulfilled");
+			};
+		}		
+
+		// Helper method to get current timestamp
+		fn get_current_timestamp() -> u64 {
+			// Use block number as a base for uniqueness
+			let block_number = <frame_system::Pallet<T>>::block_number().saturated_into::<u64>();
+			
+			// Use a simple method to generate a unique value
+			block_number.wrapping_mul(1000) + 
+			(block_number % 1000) + 
+			(block_number & 0xFF)
+		}
+
 	}
 }

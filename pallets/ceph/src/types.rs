@@ -1,6 +1,9 @@
 use frame_support::pallet_prelude::*;
 use scale_info::TypeInfo;
 use sp_runtime::Vec;
+use frame_system::pallet_prelude::BlockNumberFor;
+use crate::Config;
+use frame_system::offchain::SignedPayload;
 
 /// Represents a storage request made by a user
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
@@ -52,7 +55,7 @@ pub struct StorageDeleteRequest<AccountId, BlockNumber> {
     pub is_fulfilled: bool,
     
     /// Block number when the delete request was processed
-    pub created_at: Option<BlockNumber>,
+    pub fulfilled_at: Option<BlockNumber>,
     
     /// Reason for deletion (optional)
     pub reason: Option<Vec<u8>>,
@@ -95,4 +98,21 @@ pub struct StorageRequestAssignment<AccountId, BlockNumber> {
     
     /// Optional additional storage parameters
     pub storage_params: Option<Vec<u8>>,
+}
+
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct StorageRequestFulfilledPayload<T: Config>  {
+    pub node_id: Vec<u8>,
+    pub file_hash: Vec<u8>,
+    pub user_id: T::AccountId,
+    pub storage_request: Option<StorageRequest<T::AccountId, BlockNumberFor<T>>>,
+    pub public: T::Public,
+    pub _marker: PhantomData<BlockNumberFor<T>>,
+}
+
+impl<T: Config> SignedPayload<T> for StorageRequestFulfilledPayload<T> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
 }
