@@ -100,7 +100,7 @@ pub mod pallet {
 	pub type StorageRequestAssignments<T: Config> = StorageMap<
 		_,
 		Blake2_128Concat,
-		Vec<u8>,          // Request ID
+		u32,          // Request ID
 		Option<StorageRequestAssignment<T::AccountId, BlockNumberFor<T>>>,
 		ValueQuery
 	>;
@@ -122,6 +122,14 @@ pub mod pallet {
 		Blake2_128Concat, T::AccountId,     // User ID
 		Blake2_128Concat, Vec<u8>,          // File Hash
 		Option<StorageDeleteRequest<T::AccountId, BlockNumberFor<T>>>,
+		ValueQuery
+	>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn next_request_id)]
+	pub type NextRequestId<T: Config> = StorageValue<
+		_,
+		u32,
 		ValueQuery
 	>;
 
@@ -159,12 +167,18 @@ pub mod pallet {
 		},
 		/// A storage request assignment was marked as fulfilled
 		StorageRequestAssignmentFulfilled {
-			request_id: Vec<u8>,
+			request_id: u32,
 			user_id: T::AccountId,
 		},
 		/// A storage request assignment was removed
 		StorageRequestAssignmentRemoved {
-			request_id: Vec<u8>,
+			request_id: u32,
+		},
+		/// A new storage request assignment was created
+		StorageRequestAssignmentCreated {
+			request_id: u32,
+			user_id: T::AccountId,
+			file_hash: Vec<u8>,
 		},
 	}
 
@@ -193,7 +207,7 @@ pub mod pallet {
 	
 		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
 			match call {
-				Call::mark_storage_request_fulfilled { node_id, user_id:_, file_hash, storage_request: _ } => {
+				Call::unpdate_storage_request { node_id, user_id:_, file_hash, storage_request: _ } => {
 					// Additional validation checks
 					let block_number = <frame_system::Pallet<T>>::block_number();
 					
@@ -209,7 +223,7 @@ pub mod pallet {
 						.longevity(5)
 						.propagate(true)
 						// Add the unique hash to ensure transaction uniqueness
-						.and_provides(("mark_storage_request_fulfilled",unique_hash))
+						.and_provides(("unpdate_storage_request",unique_hash))
 						.build()					
 				},
 				Call::mark_storage_request_assignment_fulfilled { node_id, request_id } => {
@@ -219,7 +233,7 @@ pub mod pallet {
 					let mut data = Vec::new();
 					data.extend_from_slice(&block_number.encode());
 					data.extend_from_slice(node_id);
-					data.extend_from_slice(request_id);
+					data.extend_from_slice(&request_id.encode());
 					data.extend_from_slice(&Self::get_current_timestamp().encode());
 					let unique_hash = sp_io::hashing::blake2_256(&data);
 
@@ -229,6 +243,35 @@ pub mod pallet {
 						.propagate(true)
 						// Add the unique hash to ensure transaction uniqueness
 						.and_provides(("mark_storage_request_assignment_fulfilled",unique_hash))
+						.build()					
+				},
+				Call::add_storage_request_assignment { 
+					node_id, 
+					file_hash, 
+					miner_id, 
+					user_id: _, 
+					file_url: _,
+					ceph_pool_name: _, 
+					ceph_object_name: _, 
+					storage_params: _, 
+				} => {
+					// Additional validation checks
+					let block_number = <frame_system::Pallet<T>>::block_number();
+					
+					let mut data = Vec::new();
+					data.extend_from_slice(&block_number.encode());
+					data.extend_from_slice(node_id);
+					data.extend_from_slice(&file_hash.encode());
+					data.extend_from_slice(&miner_id.encode());
+					data.extend_from_slice(&Self::get_current_timestamp().encode());
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					ValidTransaction::with_tag_prefix("AddStorageRequestAssignment")
+						.priority(TransactionPriority::max_value())
+						.longevity(5)
+						.propagate(true)
+						// Add the unique hash to ensure transaction uniqueness
+						.and_provides(("add_storage_request_assignment",unique_hash))
 						.build()					
 				},
 				_ => InvalidTransaction::Call.into(),
@@ -346,7 +389,7 @@ pub mod pallet {
 		/// Mark a storage request as fulfilled
 		#[pallet::call_index(2)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn mark_storage_request_fulfilled(
+		pub fn unpdate_storage_request(
 			origin: OriginFor<T>,
 			_node_id: Vec<u8>,
 			user_id: T::AccountId,
@@ -378,7 +421,7 @@ pub mod pallet {
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
 		pub fn mark_storage_request_assignment_fulfilled(
 			origin: OriginFor<T>,
-			request_id: Vec<u8>,
+			request_id: u32,
 			_node_id: Vec<u8>
 		) -> DispatchResult {
 			ensure_none(origin)?;
@@ -399,6 +442,57 @@ pub mod pallet {
 			Self::deposit_event(Event::StorageRequestAssignmentFulfilled { 
 				request_id: request_id.clone(),
 				user_id: assignment.user_id 
+			});
+
+			Ok(())
+		}
+
+		/// Add a new storage request assignment
+		#[pallet::call_index(8)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		pub fn add_storage_request_assignment(
+			origin: OriginFor<T>,
+			_node_id: Vec<u8>,
+			file_hash: Vec<u8>,
+			miner_id: Vec<u8>,
+			user_id: T::AccountId,
+			file_url: Option<Vec<u8>>,
+			ceph_pool_name: Option<Vec<u8>>,
+			ceph_object_name: Option<Vec<u8>>,
+			storage_params: Option<Vec<u8>>,
+		) -> DispatchResult {
+			ensure_none(origin)?;
+
+			// Generate a unique request ID
+			let request_id = NextRequestId::<T>::get();
+			NextRequestId::<T>::put(request_id.wrapping_add(1));
+
+			// Get the current block number
+			let current_block = frame_system::Pallet::<T>::block_number();
+
+			// Create the storage request assignment
+			let storage_request_assignment = StorageRequestAssignment {
+				request_id,
+				file_hash,
+				miner_id,
+				user_id: user_id.clone(),
+				file_url: file_url.unwrap_or_default(),
+				is_fulfilled: false,
+				created_at: current_block,
+				fulfilled_at: None,
+				ceph_pool_name,
+				ceph_object_name,
+				storage_params,
+			};
+
+			// Store the storage request assignment
+			StorageRequestAssignments::<T>::insert(request_id, Some(storage_request_assignment.clone()));
+
+			// Emit an event (you may want to create a corresponding event)
+			Self::deposit_event(Event::StorageRequestAssignmentCreated { 
+				request_id, 
+				user_id,
+				file_hash: storage_request_assignment.file_hash 
 			});
 
 			Ok(())
@@ -497,14 +591,14 @@ pub mod pallet {
 			StorageRequests::<T>::get(user, file_hash)
 		}
 
-		pub fn call_mark_storage_request_fulfilled(
+		pub fn call_unpdate_storage_request(
 			node_id: Vec<u8>,
 			user_id: T::AccountId,
 			file_hash: Vec<u8>,
 			storage_request: Option<StorageRequest<T::AccountId, BlockNumberFor<T>>>,
 		) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-				b"Compute::mark_storage_request_fulfilled_lock",
+				b"Compute::unpdate_storage_request_lock",
 				LOCK_BLOCK_EXPIRATION,
 				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
 			);
@@ -534,7 +628,7 @@ pub mod pallet {
 					},
 					|payload, _signature| {
 						// Construct the call with the payload and signature
-						Call::mark_storage_request_fulfilled {
+						Call::unpdate_storage_request {
 							node_id: payload.node_id,
 							user_id: payload.user_id,
 							file_hash: payload.file_hash,
@@ -558,7 +652,7 @@ pub mod pallet {
 
 		pub fn call_mark_storage_request_assignment_fulfilled(
 			node_id: Vec<u8>,
-			request_id: Vec<u8>,
+			request_id: u32,
 		) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"Compute::mark_storage_request_assignment_fulfilled_lock",
@@ -617,6 +711,77 @@ pub mod pallet {
 			block_number.wrapping_mul(1000) + 
 			(block_number % 1000) + 
 			(block_number & 0xFF)
+		}
+
+
+		pub fn call_add_storage_request_assignment(
+			node_id: Vec<u8>,
+			file_hash: Vec<u8>,
+			miner_id: Vec<u8>,
+			user_id: T::AccountId,
+			file_url: Option<Vec<u8>>,
+			ceph_pool_name: Option<Vec<u8>>,
+			ceph_object_name: Option<Vec<u8>>,
+			storage_params: Option<Vec<u8>>,
+		) {
+			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+				b"Compute::add_storage_request_assignment_lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+			);
+
+			if let Ok(_guard) = lock.try_lock() {
+				// Fetch signer accounts using AuthorityId
+				let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
+
+				// Check if there are any accounts and log them
+				if signer.can_sign() {
+					log::info!("Signer has accounts available for signing.");
+				} else {
+					log::warn!("No accounts available for signing in signer.");
+				}
+
+				let results = signer.send_unsigned_transaction(
+					|account| {
+						// Create a payload with all necessary data for the call
+						AddStorageRequestAssignmentPayload {
+							node_id: node_id.clone(),
+							file_hash: file_hash.clone(),
+							miner_id: miner_id.clone(),
+							user_id: user_id.clone(),
+							file_url: file_url.clone(),
+							ceph_pool_name: ceph_pool_name.clone(),
+							ceph_object_name: ceph_object_name.clone(),
+							storage_params: storage_params.clone(),
+							public: account.public.clone(),
+							_marker: PhantomData,
+						}
+					},
+					|payload, _signature| {
+						// Construct the call with the payload and signature
+						Call::add_storage_request_assignment {
+							node_id: payload.node_id,
+							file_hash: payload.file_hash,
+							miner_id: payload.miner_id,
+							user_id: payload.user_id,
+							file_url: payload.file_url,
+							ceph_pool_name: payload.ceph_pool_name,
+							ceph_object_name: payload.ceph_object_name,
+							storage_params: payload.storage_params,
+						}
+					},
+				);
+
+				// Process results with comprehensive logging
+				for (acc, res) in &results {
+					match res {
+						Ok(_) => log::info!("[{:?}] Successfully added storage request assignment", acc.id),
+						Err(e) => log::info!("[{:?}] Failed to add storage request assignment: {:?}", acc.id, e),
+					}
+				}
+			} else {
+				log::info!("❌ Could not acquire lock for adding storage request assignment");
+			};
 		}
 
 	}

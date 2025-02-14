@@ -65,7 +65,7 @@ pub struct StorageDeleteRequest<AccountId, BlockNumber> {
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct StorageRequestAssignment<AccountId, BlockNumber> {
     /// Unique identifier for the storage request
-    pub request_id: Vec<u8>,
+    pub request_id: u32,
     
     /// File hash associated with the request
     pub file_hash: Vec<u8>,
@@ -88,9 +88,6 @@ pub struct StorageRequestAssignment<AccountId, BlockNumber> {
     /// Block number when the assignment was fulfilled
     pub fulfilled_at: Option<BlockNumber>,
     
-    /// S3 specific storage metadata
-    pub s3_bucket: Option<Vec<u8>>,
-    pub s3_key: Option<Vec<u8>>,
 
     /// Ceph-specific storage details
     pub ceph_pool_name: Option<Vec<u8>>,
@@ -120,12 +117,32 @@ impl<T: Config> SignedPayload<T> for StorageRequestFulfilledPayload<T> {
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub struct StorageAssignmentFulfilledPayload<T: Config>  {
     pub node_id: Vec<u8>,
-    pub request_id: Vec<u8>,
+    pub request_id: u32,
     pub public: T::Public,
     pub _marker: PhantomData<BlockNumberFor<T>>,
 }
 
 impl<T: Config> SignedPayload<T> for StorageAssignmentFulfilledPayload<T> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
+}
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct AddStorageRequestAssignmentPayload<T: Config>  {
+    pub node_id: Vec<u8>,
+    pub file_hash: Vec<u8>,
+    pub miner_id: Vec<u8>,
+    pub user_id: T::AccountId,
+    pub file_url: Option<Vec<u8>>,
+    pub ceph_pool_name: Option<Vec<u8>>,
+    pub ceph_object_name: Option<Vec<u8>>,
+    pub storage_params: Option<Vec<u8>>,
+    pub public: T::Public,
+    pub _marker: PhantomData<BlockNumberFor<T>>,
+}
+
+impl<T: Config> SignedPayload<T> for AddStorageRequestAssignmentPayload<T> {
     fn public(&self) -> T::Public {
         self.public.clone()
     }
