@@ -56,9 +56,6 @@ pub struct StorageDeleteRequest<AccountId, BlockNumber> {
     
     /// Block number when the delete request was processed
     pub fulfilled_at: Option<BlockNumber>,
-    
-    /// Reason for deletion (optional)
-    pub reason: Option<Vec<u8>>,
 }
 
 /// Represents the assignment of a storage request to miners

@@ -194,6 +194,11 @@ pub mod pallet {
 		FileHashBlacklisted {
 			file_hash: Vec<u8>,
 		},
+		/// A storage delete request was processed
+		StorageDeleteRequestProcessed {
+			user: T::AccountId,
+			file_hash: Vec<u8>,
+		},
 	}
 
 	#[pallet::error]
@@ -223,7 +228,7 @@ pub mod pallet {
 	
 		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
 			match call {
-				Call::unpdate_storage_request { node_id, user_id:_, file_hash, storage_request: _ } => {
+				Call::update_storage_request { node_id, user_id:_, file_hash, storage_request: _ } => {
 					// Additional validation checks
 					let block_number = <frame_system::Pallet<T>>::block_number();
 					
@@ -239,7 +244,7 @@ pub mod pallet {
 						.longevity(5)
 						.propagate(true)
 						// Add the unique hash to ensure transaction uniqueness
-						.and_provides(("unpdate_storage_request",unique_hash))
+						.and_provides(("update_storage_request",unique_hash))
 						.build()					
 				},
 				Call::mark_storage_request_assignment_fulfilled { node_id, request_id } => {
@@ -362,7 +367,6 @@ pub mod pallet {
 		pub fn create_storage_delete_request(
 			origin: OriginFor<T>,
 			file_hash: Vec<u8>,
-			reason: Option<Vec<u8>>,
 		) -> DispatchResult {
 			// Ensure the caller is signed
 			let who = ensure_signed(origin)?;
@@ -385,8 +389,7 @@ pub mod pallet {
 				user_id: who.clone(),
 				created_at: current_block,
 				is_fulfilled: false,
-				fulfilled_at: None,
-				reason,
+				fulfilled_at: None
 			};
 
 			// Store the delete request
@@ -411,7 +414,7 @@ pub mod pallet {
 		/// Mark a storage request as fulfilled
 		#[pallet::call_index(2)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn unpdate_storage_request(
+		pub fn update_storage_request(
 			origin: OriginFor<T>,
 			_node_id: Vec<u8>,
 			user_id: T::AccountId,
@@ -635,14 +638,14 @@ pub mod pallet {
 			StorageRequests::<T>::get(user, file_hash)
 		}
 
-		pub fn call_unpdate_storage_request(
+		pub fn call_update_storage_request(
 			node_id: Vec<u8>,
 			user_id: T::AccountId,
 			file_hash: Vec<u8>,
 			storage_request: Option<StorageRequest<T::AccountId, BlockNumberFor<T>>>,
 		) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-				b"Compute::unpdate_storage_request_lock",
+				b"Compute::update_storage_request_lock",
 				LOCK_BLOCK_EXPIRATION,
 				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
 			);
@@ -672,7 +675,7 @@ pub mod pallet {
 					},
 					|payload, _signature| {
 						// Construct the call with the payload and signature
-						Call::unpdate_storage_request {
+						Call::update_storage_request {
 							node_id: payload.node_id,
 							user_id: payload.user_id,
 							file_hash: payload.file_hash,
@@ -746,7 +749,41 @@ pub mod pallet {
 			};
 		}
 
-		// Helper method to get current timestamp
+		/// Process and remove fulfilled storage delete requests
+		fn process_delete_requests() {
+			// Iterate through all storage delete requests
+			StorageDeleteRequests::<T>::iter().for_each(|((user_id, file_hash), delete_request)| {
+				if let Some(request) = delete_request {
+					if request.is_fulfilled {
+						// Remove the delete request
+						StorageDeleteRequests::<T>::remove(&user_id, &file_hash);
+
+						// Optionally emit an event
+						Self::deposit_event(Event::StorageDeleteRequestProcessed {
+							user: user_id,
+							file_hash,
+						});
+					}
+				}
+			});
+		}
+
+		/// On_initialize hook to process delete requests in each block
+		#[pallet::hooks]
+		impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+			fn on_initialize(_now: BlockNumberFor<T>) -> Weight {
+				// Process delete requests
+				Self::process_delete_requests();
+
+				// Return the weight consumed by this operation
+				// You might want to adjust this based on your specific weight calculation
+				Weight::from_parts(10_000, 0)
+			}
+
+			// offchain hook where valis should assign , miners handle assignments
+		}
+
+		/// Helper method to get current timestamp
 		fn get_current_timestamp() -> u64 {
 			// Use block number as a base for uniqueness
 			let block_number = <frame_system::Pallet<T>>::block_number().saturated_into::<u64>();
