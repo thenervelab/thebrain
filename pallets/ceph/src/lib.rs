@@ -385,22 +385,7 @@ pub mod pallet {
 		) -> DispatchResult {
 			ensure_none(origin)?;
 
-			if let Some(mut request) = storage_request {
-				// If a request is provided, update the storage request
-				// If all requested replicas are fulfilled, mark as fully assigned
-				if request.fullfilled_replicas >= request.requested_replicas {
-					request.is_assigned = true;
-				}
-
-				StorageRequests::<T>::insert(&user_id, &file_hash, Some(request));
-				Self::deposit_event(Event::StorageRequestFulfilled { user_id, file_hash });
-			} else {
-				// If no request is provided, remove the existing storage request
-				StorageRequests::<T>::remove(&user_id, &file_hash);
-				Self::deposit_event(Event::StorageRequestRemoved { user_id, file_hash });
-			}
-
-			Ok(())
+			Self::process_storage_request(&user_id, &file_hash, storage_request)
 		}
 
 		/// Mark a storage request assignment as fulfilled
@@ -542,7 +527,7 @@ pub mod pallet {
 			let storage_request = StorageRequest {
 				file_hash: file_hash.clone(),
 				file_name,
-				file_size: 0, // Initially set to 0, can be updated later
+				file_size_in_bytes: 0, // Initially set to 0, can be updated later
 				user_id: who.clone(),
 				is_assigned: false,
 				created_at: current_block,
@@ -970,12 +955,57 @@ pub mod pallet {
 
 			Ok(())
 		}		
+
+		/// Get all unique users who have made storage requests
+		pub fn get_storage_request_users() -> Vec<T::AccountId> {
+			// Initialize an empty vector to store unique users
+			let mut unique_users: Vec<T::AccountId> = Vec::new();
+
+			// Iterate through all storage requests
+			StorageRequests::<T>::iter()
+				.for_each(|(user_id, _file_hash, _request)| {
+					// Check if the user is already in the vector
+					if !unique_users.contains(&user_id) {
+						unique_users.push(user_id);
+					}
+				});
+
+			// Return the vector of unique users
+			unique_users
+		}
+
+		pub fn process_storage_request(
+			user_id: &T::AccountId, 
+			file_hash: &Vec<u8>, 
+			storage_request: Option<StorageRequest<T::AccountId, BlockNumberFor<T>>>
+		) -> DispatchResult {
+			if let Some(mut request) = storage_request {
+				// Check and update assignment status
+				if request.fullfilled_replicas >= request.requested_replicas {
+					request.is_assigned = true;
+				}
+		
+				// Insert the updated request
+				StorageRequests::<T>::insert(user_id, file_hash, Some(request));
+				Self::deposit_event(Event::StorageRequestFulfilled { 
+					user_id: user_id.clone(), 
+					file_hash: file_hash.clone() 
+				});
+			} else {
+				// Remove the storage request if None is passed
+				StorageRequests::<T>::remove(user_id, file_hash);
+				Self::deposit_event(Event::StorageRequestRemoved { 
+					user_id: user_id.clone(), 
+					file_hash: file_hash.clone() 
+				});
+			}
+		
+			Ok(())
+		}
 	}
 }
 
-
-// add miner id in delete request
 // we need to check file size when charging and assigning 
 // vali ocw needed
-// miner ocw storage space needed
+// miner ocw storage handle asignment and delete request 
 // update handle_storage_subscription_charging inside marketplace

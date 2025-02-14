@@ -15,7 +15,7 @@ pub struct StorageRequest<AccountId, BlockNumber> {
     pub file_name: Vec<u8>,
     
     /// Size of the file in bytes
-    pub file_size: u64,
+    pub file_size_in_bytes: u64,
     
     /// User who initiated the storage request
     pub user_id: AccountId,

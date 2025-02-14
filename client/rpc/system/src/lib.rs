@@ -250,7 +250,6 @@ where
         let networks = Networks::new_with_refreshed_list();
         sys.refresh_all();
         
-        log::info!("Refreshing system info {:?}", sys);
 
         // CPU info
         let cpu_model = sys.cpus().first()
