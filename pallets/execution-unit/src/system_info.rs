@@ -313,12 +313,14 @@ impl FromStr for SystemInfo {
         let storage_free_mb = if let Some(start) = s.find("\"storage_free_mb\":") {
             let after_key = &s[start + "\"storage_free_mb\":".len()..];
             if let Some(end) = after_key.find(",") {
-                after_key[..end].trim().parse().map_err(|_| "Failed to parse storage_free_mb")?
+                after_key[..end].trim().parse::<u64>().map_err(|_| "Failed to parse storage_free_mb")?
             } else { 
-                free_memory_mb
+                // If no comma found, try to parse the entire remaining substring
+                after_key.trim().parse::<u64>().map_err(|_| "Failed to parse storage_free_mb")?
             }
         } else {
-            return Err("storage_free_mb key not found");
+            // Fallback to free_memory_mb if storage_free_mb is not found
+            free_memory_mb
         };
     
         // Parse network_bandwidth_mb_s
@@ -597,8 +599,11 @@ impl FromStr for SystemInfo {
         // Parse Ceph OSD total disk MB
         let ceph_osd_total_disk_mb = if let Some(start) = s.find("\"ceph_osd_total_disk_mb\":") {
             let substr = &s[start + 24..];
-            substr.split(',').next()
-                .and_then(|x| x.parse::<u64>().ok())
+            let end = substr.find('}').unwrap_or_else(|| substr.len());
+            substr[..end]
+                .trim()
+                .parse::<u64>()
+                .ok()
         } else {
             None
         };
@@ -606,8 +611,11 @@ impl FromStr for SystemInfo {
         // Parse Ceph OSD free disk MB
         let ceph_osd_free_disk_mb = if let Some(start) = s.find("\"ceph_osd_free_disk_mb\":") {
             let substr = &s[start + 24..];
-            substr.split(',').next()
-                .and_then(|x| x.parse::<u64>().ok())
+            let end = substr.find('}').unwrap_or_else(|| substr.len());
+            substr[..end]
+                .trim()
+                .parse::<u64>()
+                .ok()
         } else {
             None
         };

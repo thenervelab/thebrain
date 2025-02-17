@@ -259,17 +259,26 @@ impl NodeMetricsData {
         let response_score = Self::INTERNAL_SCALING
             .saturating_mul(100)
             .saturating_div(metrics.avg_response_time_ms.max(1).min(Self::MAX_RESPONSE_TIME_MS));
-
-        // Bandwidth scoring with real-world considerations
-        let bandwidth_score = (metrics.bandwidth_mbps.min(10000))
-            .saturating_mul(Self::INTERNAL_SCALING)
-            .saturating_div(10000);
-
+    
+        // Bandwidth scoring with uplink data consideration
+        let bandwidth_score = if let Some(network_interface) = &metrics.primary_network_interface {
+            // Convert uplink_mb to Mbps equivalent
+            let uplink_mbps = (network_interface.uplink_mb * 8 / (1024 * 1024)) as u64; // Convert MB to Mbps and cast to u64
+            (uplink_mbps.min(10000))
+                .saturating_mul(Self::INTERNAL_SCALING.into()) // Convert INTERNAL_SCALING to u64
+                .saturating_div(10000)
+        } else {
+            // Fallback to existing bandwidth_mbps if no primary network interface
+            (metrics.bandwidth_mbps.min(10000) as u64)
+                .saturating_mul(Self::INTERNAL_SCALING.into()) // Convert INTERNAL_SCALING to u64
+                .saturating_div(10000)
+        } as u32; // Cast back to u32 for final result
+    
         // Storage proof scoring
         let storage_proof_score = Self::INTERNAL_SCALING
             .saturating_mul(100)
             .saturating_div(metrics.storage_proof_time_ms.max(1).min(1000));
-
+    
         // Weighted combination
         let final_score = response_score.saturating_mul(40)
             .saturating_add(bandwidth_score.saturating_mul(40))

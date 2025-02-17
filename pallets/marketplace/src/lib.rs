@@ -73,7 +73,7 @@ pub mod pallet {
     use pallet_utils::SubscriptionId;
     use sp_core::H256;
     use sp_std::{vec, vec::Vec};
-    use pallet_ipfs_pin::StorageRequest;
+    // use pallet_ipfs_pin::StorageRequest;
     use num_traits::float::FloatCore;
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_subaccount::traits::SubAccounts;
