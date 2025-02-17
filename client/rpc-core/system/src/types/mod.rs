@@ -37,8 +37,8 @@ pub struct SystemInfo {
     pub gpu_memory_mb: Option<u32>,
     pub hypervisor_disk_type: Option<String>,
     pub vm_pool_disk_type: Option<String>,
-    pub ceph_status: Option<String>,
-    pub ceph_osd_status: Option<String>,
-    pub ceph_osd_total_disk_mb: Option<u64>,
-    pub ceph_osd_free_disk_mb: Option<u64>,
+    // pub ceph_status: Option<String>,
+    // pub ceph_osd_status: Option<String>,
+    // pub ceph_osd_total_disk_mb: Option<u64>,
+    // pub ceph_osd_free_disk_mb: Option<u64>,
 }

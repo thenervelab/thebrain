@@ -95,9 +95,9 @@ pub struct SystemInfo {
     pub hypervisor_disk_type: Option<Vec<u8>>,
     pub vm_pool_disk_type: Option<Vec<u8>>,
     
-    pub ceph_osd_status: Option<Vec<u8>>,
-    pub ceph_osd_total_disk_mb: Option<u64>,
-    pub ceph_osd_free_disk_mb: Option<u64>,
+    // pub ceph_osd_status: Option<Vec<u8>>,
+    // pub ceph_osd_total_disk_mb: Option<u64>,
+    // pub ceph_osd_free_disk_mb: Option<u64>,
 }
 
 // Define the NodeMetrics struct
@@ -141,9 +141,9 @@ pub struct NodeMetricsData {
     pub hypervisor_disk_type: Option<Vec<u8>>,
     pub vm_pool_disk_type: Option<Vec<u8>>,
 
-    pub ceph_osd_status: Option<Vec<u8>>,
-    pub ceph_osd_total_disk_mb: Option<u64>,
-    pub ceph_osd_free_disk_mb: Option<u64>,
+    // pub ceph_osd_status: Option<Vec<u8>>,
+    // pub ceph_osd_total_disk_mb: Option<u64>,
+    // pub ceph_osd_free_disk_mb: Option<u64>,
 }
 
 impl Default for NodeMetricsData {
@@ -190,9 +190,9 @@ impl Default for NodeMetricsData {
             hypervisor_disk_type: None,
             vm_pool_disk_type: None,
 
-            ceph_osd_status: None,
-            ceph_osd_total_disk_mb: None,
-            ceph_osd_free_disk_mb: None,
+            // ceph_osd_status: None,
+            // ceph_osd_total_disk_mb: None,
+            // ceph_osd_free_disk_mb: None,
         }
     }
 }

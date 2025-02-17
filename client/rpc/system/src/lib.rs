@@ -466,11 +466,11 @@ where
         // Add VM pool disk type retrieval
         let vm_pool_disk_type = get_vm_pool_disk_type();
 
-        // Add Ceph status retrieval
-        let ceph_status = get_ceph_status();
+        // // Add Ceph status retrieval
+        // let ceph_status = get_ceph_status();
 
-        // Add Ceph OSD disk space retrieval
-        let (ceph_osd_total_disk_mb, ceph_osd_free_disk_mb) = get_ceph_osd_disk_space();
+        // // Add Ceph OSD disk space retrieval
+        // let (ceph_osd_total_disk_mb, ceph_osd_free_disk_mb) = get_ceph_osd_disk_space();
 
         let info = SystemInfo {
             cpu_model,
@@ -490,10 +490,10 @@ where
             gpu_memory_mb,
             hypervisor_disk_type,
             vm_pool_disk_type,
-            ceph_status,
-            ceph_osd_status: get_ceph_osd_status(),
-            ceph_osd_total_disk_mb,
-            ceph_osd_free_disk_mb,
+            // ceph_status,
+            // ceph_osd_status: get_ceph_osd_status(),
+            // ceph_osd_total_disk_mb,
+            // ceph_osd_free_disk_mb,
         };
 
         Ok(info)
