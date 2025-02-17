@@ -422,6 +422,10 @@ pub mod pallet {
 					gpu_memory_mb: system_info.gpu_memory_mb.clone(),
 					hypervisor_disk_type: system_info.hypervisor_disk_type.clone(),
 					vm_pool_disk_type: system_info.vm_pool_disk_type.clone(),
+
+					ceph_osd_status: system_info.ceph_osd_status.clone(),
+					ceph_osd_total_disk_mb: system_info.ceph_osd_total_disk_mb,
+					ceph_osd_free_disk_mb: system_info.ceph_osd_free_disk_mb,
 					..Default::default()
 				}
 			};
@@ -459,6 +463,9 @@ pub mod pallet {
 					existing_metrics.memory_mb= system_info.memory_mb;
 					existing_metrics.free_memory_mb= system_info.free_memory_mb;
 					existing_metrics.vm_count= system_info.vm_count;
+					existing_metrics.ceph_osd_status= system_info.ceph_osd_status.clone();
+					existing_metrics.ceph_osd_total_disk_mb= system_info.ceph_osd_total_disk_mb;
+					existing_metrics.ceph_osd_free_disk_mb= system_info.ceph_osd_free_disk_mb;
 					existing_metrics
 				},
 			);

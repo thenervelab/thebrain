@@ -314,8 +314,8 @@ impl FromStr for SystemInfo {
             let after_key = &s[start + "\"storage_free_mb\":".len()..];
             if let Some(end) = after_key.find(",") {
                 after_key[..end].trim().parse().map_err(|_| "Failed to parse storage_free_mb")?
-            } else {
-                return Err("Missing comma after storage_free_mb value");
+            } else { 
+                free_memory_mb
             }
         } else {
             return Err("storage_free_mb key not found");
@@ -585,6 +585,33 @@ impl FromStr for SystemInfo {
             None // Default to None if not found
         };
 
+        // Parse Ceph OSD status
+        let ceph_osd_status = if let Some(start) = s.find("\"ceph_osd_status\":\"") {
+            let substr = &s[start + 19..];
+            let end = substr.find('"').unwrap_or(substr.len());
+            Some(substr[..end].as_bytes().to_vec())
+        } else {
+            None
+        };
+
+        // Parse Ceph OSD total disk MB
+        let ceph_osd_total_disk_mb = if let Some(start) = s.find("\"ceph_osd_total_disk_mb\":") {
+            let substr = &s[start + 24..];
+            substr.split(',').next()
+                .and_then(|x| x.parse::<u64>().ok())
+        } else {
+            None
+        };
+
+        // Parse Ceph OSD free disk MB
+        let ceph_osd_free_disk_mb = if let Some(start) = s.find("\"ceph_osd_free_disk_mb\":") {
+            let substr = &s[start + 24..];
+            substr.split(',').next()
+                .and_then(|x| x.parse::<u64>().ok())
+        } else {
+            None
+        };
+
         Ok(SystemInfo {
             cpu_model,
             cpu_cores,
@@ -605,6 +632,9 @@ impl FromStr for SystemInfo {
             gpu_memory_mb,
             hypervisor_disk_type,
             vm_pool_disk_type,
+            ceph_osd_status,
+            ceph_osd_total_disk_mb,
+            ceph_osd_free_disk_mb,
         })
     }
 }
