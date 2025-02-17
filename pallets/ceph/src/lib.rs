@@ -515,6 +515,8 @@ pub mod pallet {
 					match node_info {
 						Some(node_info) => {
 							if node_info.node_type == NodeType::StorageMiner {
+								// kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rados -p my-store.rgw.buckets.data get 63358f60-71d5-4f58-9b78-c83e9243d46c.4798.1_sample.txt /dev/null
+						   		
 							}
 						}
 						None => {}

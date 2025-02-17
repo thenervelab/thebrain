@@ -89,7 +89,6 @@ impl SystemInfo {
 
     // fetching ip details like Private/Pub , loc etc
     fn fetch_ip_details() -> Result<Option<NetworkDetails>, http::Error> {
-      
 
         let url = format!("https://api.ipify.org");
         
@@ -209,11 +208,7 @@ impl SystemInfo {
             }
         };
 
-        log::info!("Detected bogon status: {}", is_private);
-
         if is_private {
-            log::info!("IP Type: Private");
-            log::info!("IP Address: {}", ip);
             let details = NetworkDetails {
                 network_type: NetworkType::Private,
                 city: None,
@@ -223,12 +218,6 @@ impl SystemInfo {
             };
             Ok(Some(details))
         } else {
-            log::info!("IP Type: Public");
-            log::info!("IP Address: {}", ip);
-            log::info!("City: {}", extract_value(body_str, "\"city\"").unwrap_or("none"));
-            log::info!("Region: {}", extract_value(body_str, "\"region\"").unwrap_or("none"));
-            log::info!("Country: {}", extract_value(body_str, "\"country\"").unwrap_or("none"));
-            log::info!("Location: {}", extract_value(body_str, "\"loc\"").unwrap_or("none"));
             let details = NetworkDetails {
                 network_type: NetworkType::Public,
                 city: match extract_value(body_str, "\"city\"") {
@@ -258,6 +247,7 @@ impl FromStr for SystemInfo {
     // parsing the request output
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Remove the initial mutable variable declarations
+        log::info!("the srting parsed is : {}", s);
     
         // Parse cpu_model
         let cpu_model = if let Some(start) = s.find("\"cpu_model\":\"") {
@@ -371,7 +361,6 @@ impl FromStr for SystemInfo {
     
         let network_details = match Self::fetch_ip_details() {
             Ok(Some(details)) => {
-                log::info!("Successfully fetched network details");
                 Some(details)
             },
             _ => {

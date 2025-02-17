@@ -90,7 +90,6 @@ pub struct StorageRequestAssignment<AccountId, BlockNumber> {
     /// Block number when the assignment was fulfilled
     pub fulfilled_at: Option<BlockNumber>,
     
-
     /// Ceph-specific storage details
     pub ceph_pool_name: Option<Vec<u8>>,
     pub ceph_object_name: Option<Vec<u8>>,
