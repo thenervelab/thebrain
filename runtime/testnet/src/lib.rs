@@ -1454,10 +1454,10 @@ impl pallet_tx_pause::Config for Runtime {
 	type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
 }
 
-// impl pallet_ceph::Config for Runtime {
-// 	type RuntimeEvent = RuntimeEvent;
-// 	type AuthorityId = pallet_ceph::crypto::TestAuthId;
-// }
+impl pallet_ceph::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type AuthorityId = pallet_ceph::crypto::TestAuthId;
+}
 
 parameter_types! {
 	pub const BasicDeposit: Balance = deposit(0, 100);
@@ -1665,7 +1665,7 @@ construct_runtime!(
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69,
-		// Ceph: pallet_ceph = 73
+		Ceph: pallet_ceph = 73
 	}
 );
 
