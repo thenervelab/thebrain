@@ -73,7 +73,7 @@ pub mod pallet {
     use pallet_utils::SubscriptionId;
     use sp_core::H256;
     use sp_std::{vec, vec::Vec};
-    // use pallet_ipfs_pin::StorageRequest;
+    use pallet_ipfs_pin::StorageRequest;
     use num_traits::float::FloatCore;
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_subaccount::traits::SubAccounts;
@@ -115,7 +115,7 @@ pub mod pallet {
                     pallet_balances::Config + 
                     pallet_notifications::Config +
                     pallet_compute::Config +
-                    pallet_ceph::Config +
+                    // pallet_ceph::Config +
                     pallet_rankings::Config +
                     pallet_subaccount::Config +
                     pallet_rankings::Config<pallet_rankings::Instance2>+ 
@@ -1141,143 +1141,25 @@ pub mod pallet {
             }
         }
 
-        // fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
-        //     // Get all users who requested storage
-        //     let all_users_who_requested_storage = pallet_ipfs_pin::Pallet::<T>::storage_request_users();
-        //     for user in all_users_who_requested_storage {
-        //         // Retrieve all fulfilled storage requests for this user
-        //         let fulfilled_requests = pallet_ipfs_pin::Pallet::<T>::get_owner_fulfilled_requests(user.clone());
-
-        //         // Variables to track total file size and fulfilled requests for updating
-        //         let mut total_file_size_in_bs: u128 = 0;
-        //         let mut requests_to_update: Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> = Vec::new();
-
-        //         // Calculate total file size for requests older than 1 hour
-        //         for request in fulfilled_requests {
-        //             let block_difference = current_block.saturating_sub(request.last_charged_at);
-        //             if block_difference > T::BlocksPerHour::get().into() {
-        //                 if let Some(file_size_in_bytes) = pallet_ipfs_pin::Pallet::<T>::get_file_size(request.file_hash.clone()) {
-        //                     total_file_size_in_bs += file_size_in_bytes as u128;
-        //                     requests_to_update.push(request);
-        //                 }
-        //             }
-        //         }
-
-        //         // Skip if no files to charge
-        //         if total_file_size_in_bs == 0 {
-        //             continue;
-        //         }
-
-        //         // Convert total file size to gigabytes
-        //         let total_file_size_in_gbs = total_file_size_in_bs as f64 / 1_073_741_824.0;
-
-        //         // Get the current price per GB from the marketplace pallet
-        //         let price_per_gb = Self::get_price_per_gb();
-                
-        //         let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
-                
-        //         // Round up to the nearest whole number of GBs
-        //         let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
-        //         let charge_amount = price_per_gb * rounded_gbs;                    
-
-        //         if user_free_credits >= charge_amount {
-        //             // Decrease user credits
-        //             CreditsPallet::<T>::decrease_user_credits(&user, charge_amount);
-
-        //             // Handle referral logic
-        //             let mut total_discount = 0u128;
-        //             if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&user) {
-        //                 let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, charge_amount, &mut total_discount);
-        //             }
-                    
-        //             // Calculate the amounts for Compute Rankings and Marketplace
-        //             let total_charge = charge_amount - total_discount;
-        //             let rankings_amount = total_charge
-        //                 .checked_mul(70u32.into())
-        //                 .and_then(|x| x.checked_div(100u32.into()))
-        //                 .unwrap_or_default();
-                                
-        //             let marketplace_amount = total_charge - rankings_amount;
-
-        //             // Mint 70% to Compute Rankings
-        //             let _ = pallet_balances::Pallet::<T>::deposit_creating(
-        //                 &RankingsPallet::<T>::account_id(), 
-        //                 rankings_amount.try_into().unwrap_or_default()
-        //             );
-
-        //             // Deposit remaining 30% amount to marketplace account
-        //             let _ = pallet_balances::Pallet::<T>::deposit_creating(
-        //                 &Self::account_id(), 
-        //                 marketplace_amount.try_into().unwrap_or_default()
-        //             );
-
-        //             // Record transaction
-        //             let _ = Self::record_native_transaction(
-        //                 &user,
-        //                 NativeTransactionType::Subscription,
-        //                 (charge_amount - total_discount).into(),
-        //             );
-
-        //             // Update last charged block for each request
-        //             for mut request in requests_to_update.clone() {
-        //                 request.last_charged_at = current_block;
-        //                 pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), Some(request));
-        //             }
-        //         } else {
-        //             // Get the current block number
-        //             let current_block = frame_system::Pallet::<T>::block_number();
-
-        //             // Iterate through requests to update
-        //             for request in requests_to_update {
-        //                 // Check if the request has exceeded the storage grace period
-        //                 let subscription = UserPlanSubscriptions::<T>::get(&user);
-        //                 if let Some(subscription) = subscription {
-        //                     let blocks_per_hour = T::BlocksPerHour::get();
-        //                     let grace_period_blocks = T::StorageGracePeriod::get();
-                            
-        //                     // Calculate grace period start after hourly charging
-        //                     let grace_period_start = subscription.last_charged_at.saturating_add(blocks_per_hour.into());
-                            
-        //                     // Check if the current block is within the grace period
-        //                     if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
-        //                         // Still within grace period
-        //                         log::info!(
-        //                             "Storage request for user {:?} is in grace period",
-        //                             user
-        //                         );
-        //                     } else {
-        //                         // Cancel the request after grace period
-        //                         pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), None);
-
-        //                         // request to delete all backups of user 
-        //                         Self::move_user_to_backup_delete_requests(&user);
-
-        //                         // Handle unpinning for inactive subscription
-        //                         Self::handle_unpin_of_inactive_subscription(&user, request.file_hash.clone());
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
-
         fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
             // Get all users who requested storage
-            let all_users_who_requested_storage = pallet_ceph::Pallet::<T>::get_storage_request_users();
+            let all_users_who_requested_storage = pallet_ipfs_pin::Pallet::<T>::storage_request_users();
             for user in all_users_who_requested_storage {
                 // Retrieve all fulfilled storage requests for this user
-                let fulfilled_requests = pallet_ceph::Pallet::<T>::get_user_fulfilled_storage_requests(&user.clone());
+                let fulfilled_requests = pallet_ipfs_pin::Pallet::<T>::get_owner_fulfilled_requests(user.clone());
 
                 // Variables to track total file size and fulfilled requests for updating
                 let mut total_file_size_in_bs: u128 = 0;
-                let mut requests_to_update: Vec<pallet_ceph::StorageRequest<T::AccountId, BlockNumberFor<T>>> = Vec::new();
+                let mut requests_to_update: Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> = Vec::new();
 
                 // Calculate total file size for requests older than 1 hour
                 for request in fulfilled_requests {
                     let block_difference = current_block.saturating_sub(request.last_charged_at);
                     if block_difference > T::BlocksPerHour::get().into() {
-                        total_file_size_in_bs += request.file_size_in_bytes as u128;
-                        requests_to_update.push(request);
+                        if let Some(file_size_in_bytes) = pallet_ipfs_pin::Pallet::<T>::get_file_size(request.file_hash.clone()) {
+                            total_file_size_in_bs += file_size_in_bytes as u128;
+                            requests_to_update.push(request);
+                        }
                     }
                 }
 
@@ -1339,7 +1221,7 @@ pub mod pallet {
                     // Update last charged block for each request
                     for mut request in requests_to_update.clone() {
                         request.last_charged_at = current_block;
-                        let _ = pallet_ceph::Pallet::<T>::process_storage_request(&request.user_id.clone(), &request.file_hash.clone(), Some(request));
+                        pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), Some(request));
                     }
                 } else {
                     // Get the current block number
@@ -1364,8 +1246,8 @@ pub mod pallet {
                                     user
                                 );
                             } else {
-                                // delete all storage items  
-                                let _ =pallet_ceph::Pallet::<T>::handle_cancel_subscription(user.clone());
+                                // Cancel the request after grace period
+                                pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), None);
 
                                 // request to delete all backups of user 
                                 Self::move_user_to_backup_delete_requests(&user);
@@ -1378,6 +1260,124 @@ pub mod pallet {
                 }
             }
         }
+
+        // fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
+        //     // Get all users who requested storage
+        //     let all_users_who_requested_storage = pallet_ceph::Pallet::<T>::get_storage_request_users();
+        //     for user in all_users_who_requested_storage {
+        //         // Retrieve all fulfilled storage requests for this user
+        //         let fulfilled_requests = pallet_ceph::Pallet::<T>::get_user_fulfilled_storage_requests(&user.clone());
+
+        //         // Variables to track total file size and fulfilled requests for updating
+        //         let mut total_file_size_in_bs: u128 = 0;
+        //         let mut requests_to_update: Vec<pallet_ceph::StorageRequest<T::AccountId, BlockNumberFor<T>>> = Vec::new();
+
+        //         // Calculate total file size for requests older than 1 hour
+        //         for request in fulfilled_requests {
+        //             let block_difference = current_block.saturating_sub(request.last_charged_at);
+        //             if block_difference > T::BlocksPerHour::get().into() {
+        //                 total_file_size_in_bs += request.file_size_in_bytes as u128;
+        //                 requests_to_update.push(request);
+        //             }
+        //         }
+
+        //         // Skip if no files to charge
+        //         if total_file_size_in_bs == 0 {
+        //             continue;
+        //         }
+
+        //         // Convert total file size to gigabytes
+        //         let total_file_size_in_gbs = total_file_size_in_bs as f64 / 1_073_741_824.0;
+
+        //         // Get the current price per GB from the marketplace pallet
+        //         let price_per_gb = Self::get_price_per_gb();
+                
+        //         let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
+                
+        //         // Round up to the nearest whole number of GBs
+        //         let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
+        //         let charge_amount = price_per_gb * rounded_gbs;                    
+
+        //         if user_free_credits >= charge_amount {
+        //             // Decrease user credits
+        //             CreditsPallet::<T>::decrease_user_credits(&user, charge_amount);
+
+        //             // Handle referral logic
+        //             let mut total_discount = 0u128;
+        //             if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&user) {
+        //                 let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, charge_amount, &mut total_discount);
+        //             }
+                    
+        //             // Calculate the amounts for Compute Rankings and Marketplace
+        //             let total_charge = charge_amount - total_discount;
+        //             let rankings_amount = total_charge
+        //                 .checked_mul(70u32.into())
+        //                 .and_then(|x| x.checked_div(100u32.into()))
+        //                 .unwrap_or_default();
+                                
+        //             let marketplace_amount = total_charge - rankings_amount;
+
+        //             // Mint 70% to Compute Rankings
+        //             let _ = pallet_balances::Pallet::<T>::deposit_creating(
+        //                 &RankingsPallet::<T>::account_id(), 
+        //                 rankings_amount.try_into().unwrap_or_default()
+        //             );
+
+        //             // Deposit remaining 30% amount to marketplace account
+        //             let _ = pallet_balances::Pallet::<T>::deposit_creating(
+        //                 &Self::account_id(), 
+        //                 marketplace_amount.try_into().unwrap_or_default()
+        //             );
+
+        //             // Record transaction
+        //             let _ = Self::record_native_transaction(
+        //                 &user,
+        //                 NativeTransactionType::Subscription,
+        //                 (charge_amount - total_discount).into(),
+        //             );
+
+        //             // Update last charged block for each request
+        //             for mut request in requests_to_update.clone() {
+        //                 request.last_charged_at = current_block;
+        //                 let _ = pallet_ceph::Pallet::<T>::process_storage_request(&request.user_id.clone(), &request.file_hash.clone(), Some(request));
+        //             }
+        //         } else {
+        //             // Get the current block number
+        //             let current_block = frame_system::Pallet::<T>::block_number();
+
+        //             // Iterate through requests to update
+        //             for request in requests_to_update {
+        //                 // Check if the request has exceeded the storage grace period
+        //                 let subscription = UserPlanSubscriptions::<T>::get(&user);
+        //                 if let Some(subscription) = subscription {
+        //                     let blocks_per_hour = T::BlocksPerHour::get();
+        //                     let grace_period_blocks = T::StorageGracePeriod::get();
+                            
+        //                     // Calculate grace period start after hourly charging
+        //                     let grace_period_start = subscription.last_charged_at.saturating_add(blocks_per_hour.into());
+                            
+        //                     // Check if the current block is within the grace period
+        //                     if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
+        //                         // Still within grace period
+        //                         log::info!(
+        //                             "Storage request for user {:?} is in grace period",
+        //                             user
+        //                         );
+        //                     } else {
+        //                         // delete all storage items  
+        //                         let _ =pallet_ceph::Pallet::<T>::handle_cancel_subscription(user.clone());
+
+        //                         // request to delete all backups of user 
+        //                         Self::move_user_to_backup_delete_requests(&user);
+
+        //                         // Handle unpinning for inactive subscription
+        //                         Self::handle_unpin_of_inactive_subscription(&user, request.file_hash.clone());
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
 
         /// Helper function to get the current price per GB
         pub fn get_price_per_gb() -> u128 {
@@ -1407,7 +1407,7 @@ pub mod pallet {
                     file_input.file_name.clone(),
                 )?;
 
-                pallet_ceph::Pallet::<T>::do_create_storage_request(owner.clone(), file_input.file_hash.clone(), file_input.file_name.clone(), None)?;
+                // pallet_ceph::Pallet::<T>::do_create_storage_request(owner.clone(), file_input.file_hash.clone(), file_input.file_name.clone(), None)?;
                 
                 // Emit event for each file
                 Self::deposit_event(Event::PinRequested {

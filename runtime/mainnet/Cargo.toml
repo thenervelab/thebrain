@@ -92,7 +92,7 @@ hippius-crypto-primitives = { workspace = true }
 
 
 pallet-ipfs-pin = { workspace = true }
-pallet-ceph = { workspace = true }
+#pallet-ceph = { workspace = true }
 pallet-bittensor = { workspace = true }
 pallet-registration = { workspace = true }
 pallet-execution-unit = { workspace = true }
@@ -240,7 +240,7 @@ std = [
     "pallet-proxy/std",
 
     "pallet-ipfs-pin/std",
-    "pallet-ceph/std",
+    #"pallet-ceph/std",
 	"pallet-registration/std",
     "pallet-execution-unit/std",
     "pallet-metagraph/std",

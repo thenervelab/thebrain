@@ -26,7 +26,7 @@ serde = { version = "1.0", optional = true, features = ["derive"] }
 pallet-ipfs-pin = { workspace = true, default-features = false }
 sp-io = { default-features = false, workspace = true }
 pallet-compute = { workspace = true, default-features = false }
-pallet-ceph = { workspace = true, default-features = false }
+# pallet-ceph = { workspace = true, default-features = false }
 hex = { workspace = true }
 log = { version = "0.4.22", default-features = false }
 pallet-notifications = { workspace = true }
@@ -63,7 +63,7 @@ std = [
     "pallet-utils/std",
     "pallet-rankings/std",
     "pallet-subaccount/std",
-    "pallet-ceph/std",
+    # "pallet-ceph/std",
     "sp-io/std"
 ]
 runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
