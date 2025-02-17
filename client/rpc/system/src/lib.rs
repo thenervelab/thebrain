@@ -241,6 +241,25 @@ fn get_ceph_status() -> Option<String> {
     None
 }
 
+
+/// Convert storage value with unit to MB
+fn convert_to_mb(value: &str) -> Option<u64> {
+    // Split the value into numeric part and unit
+    let (num_part, unit) = value.split_at(value.trim().len() - 1);
+    
+    // Parse the numeric part
+    num_part.parse::<f64>().ok().map(|x| {
+        // Convert to MB based on unit
+        match unit.to_uppercase().as_str() {
+            "M" | "MB" => x as u64,           // Already in MB
+            "G" | "GB" => (x * 1024.0) as u64, // Convert GB to MB
+            "T" | "TB" => (x * 1024.0 * 1024.0) as u64, // Convert TB to MB
+            "K" | "KB" => (x / 1024.0) as u64, // Convert KB to MB
+            _ => 0, // Unsupported unit
+        }
+    })
+}
+
 /// Function to get Ceph OSD disk space
 fn get_ceph_osd_disk_space() -> (Option<u64>, Option<u64>) {
     if let Ok(output) = Command::new("kubectl")
@@ -264,16 +283,9 @@ fn get_ceph_osd_disk_space() -> (Option<u64>, Option<u64>) {
                 
                 // Ensure we have enough parts and parse carefully
                 if parts.len() >= 3 {
-                    // Parse USED and AVAIL columns, removing 'M' and converting to MB
-                    let used_mb = parts[2].trim_end_matches('M')
-                        .parse::<f64>()
-                        .ok()
-                        .map(|x| x as u64);
-                    
-                    let avail_mb = parts[3].trim_end_matches('G')
-                        .parse::<f64>()
-                        .ok()
-                        .map(|x| (x * 1024.0) as u64);  // Convert GB to MB
+                    // Dynamically convert USED and AVAIL columns to MB
+                    let used_mb = convert_to_mb(parts[2]);
+                    let avail_mb = convert_to_mb(parts[3]);
                     
                     return (avail_mb, used_mb);
                 }
