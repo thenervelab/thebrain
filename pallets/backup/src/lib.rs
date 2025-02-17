@@ -174,20 +174,20 @@ pub mod pallet {
                         match node_info {
                             Some(node_info) => {
                                 if node_info.node_type == NodeType::ComputeMiner {
-                                    // Call periodic Sanpshot Backup
-                                    match Self::periodic_sanpshot_backup(node_info.node_id.clone(), block_number) {
-                                        Ok(_) => log::info!("Snapshot backup handled successfully"),
-                                        Err(e) => log::error!("Error in snapshot backup assignment: {:?}", e),
-                                    }
+                                    // // Call periodic Sanpshot Backup
+                                    // match Self::periodic_sanpshot_backup(node_info.node_id.clone(), block_number) {
+                                    //     Ok(_) => log::info!("Snapshot backup handled successfully"),
+                                    //     Err(e) => log::error!("Error in snapshot backup assignment: {:?}", e),
+                                    // }
 
-                                    // Call periodic Sanpshot Backup
-                                    match Self::periodic_restore_backup_request(node_info.node_id.clone(), block_number) {
-                                        Ok(_) => log::info!("restore backup handled successfully"),
-                                        Err(e) => log::error!("Error in restore backup assignment: {:?}", e),
-                                    }
+                                    // // Call periodic Sanpshot Backup
+                                    // match Self::periodic_restore_backup_request(node_info.node_id.clone(), block_number) {
+                                    //     Ok(_) => log::info!("restore backup handled successfully"),
+                                    //     Err(e) => log::error!("Error in restore backup assignment: {:?}", e),
+                                    // }
 
 
-                                    Self::process_backup_deletion_requests_offchain(node_info.node_id.clone());
+                                    // Self::process_backup_deletion_requests_offchain(node_info.node_id.clone());
 
                                 }
                             }
