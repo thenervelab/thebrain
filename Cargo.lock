@@ -3894,7 +3894,6 @@ dependencies = [
  "pallet-base-fee",
  "pallet-bittensor",
  "pallet-bounties",
- "pallet-ceph",
  "pallet-child-bounties",
  "pallet-collective",
  "pallet-compute",
@@ -3952,6 +3951,7 @@ dependencies = [
  "pallet-session",
  "pallet-staking",
  "pallet-staking-reward-curve",
+ "pallet-storage",
  "pallet-sub-account-precompile",
  "pallet-subaccount",
  "pallet-sudo",
@@ -4023,7 +4023,6 @@ dependencies = [
  "pallet-base-fee",
  "pallet-bittensor",
  "pallet-bounties",
- "pallet-ceph",
  "pallet-child-bounties",
  "pallet-collective",
  "pallet-compute",
@@ -4081,6 +4080,7 @@ dependencies = [
  "pallet-session",
  "pallet-staking",
  "pallet-staking-reward-curve",
+ "pallet-storage",
  "pallet-sub-account-precompile",
  "pallet-subaccount",
  "pallet-sudo",
@@ -7996,6 +7996,20 @@ dependencies = [
  "quote",
  "sp-runtime",
  "syn 2.0.90",
+]
+
+[[package]]
+name = "pallet-storage"
+version = "0.1.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
 ]
 
 [[package]]

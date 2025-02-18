@@ -214,94 +214,94 @@ fn get_vm_pool_disk_type() -> Option<String> {
     None
 }
 
-/// Function to get Ceph status
-fn get_ceph_status() -> Option<String> {
-    if let Ok(output) = Command::new("kubectl")
-        .arg("-n")
-        .arg("rook-ceph")
-        .arg("exec")
-        .arg("deploy/rook-ceph-tools")
-        .arg("--")
-        .arg("ceph")
-        .arg("status")
-        .output() 
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            // Extract health status
-            let health_lines: Vec<&str> = stdout
-                .lines()
-                .filter(|line| line.contains("health:"))
-                .collect();
+// /// Function to get Ceph status
+// fn get_ceph_status() -> Option<String> {
+//     if let Ok(output) = Command::new("kubectl")
+//         .arg("-n")
+//         .arg("rook-ceph")
+//         .arg("exec")
+//         .arg("deploy/rook-ceph-tools")
+//         .arg("--")
+//         .arg("ceph")
+//         .arg("status")
+//         .output() 
+//     {
+//         if output.status.success() {
+//             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+//             // Extract health status
+//             let health_lines: Vec<&str> = stdout
+//                 .lines()
+//                 .filter(|line| line.contains("health:"))
+//                 .collect();
             
-            return health_lines.first()
-                .map(|line| line.trim().replace("health: ", "").to_string());
-        }
-    }
-    None
-}
+//             return health_lines.first()
+//                 .map(|line| line.trim().replace("health: ", "").to_string());
+//         }
+//     }
+//     None
+// }
 
-/// Function to get Ceph OSD disk space
-fn get_ceph_osd_disk_space() -> (Option<u64>, Option<u64>) {
-    if let Ok(output) = Command::new("kubectl")
-        .arg("-n")
-        .arg("rook-ceph")
-        .arg("exec")
-        .arg("deploy/rook-ceph-tools")
-        .arg("--")
-        .arg("ceph")
-        .arg("osd")
-        .arg("status")
-        .output() 
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let lines: Vec<&str> = stdout.lines().collect();
+// /// Function to get Ceph OSD disk space
+// fn get_ceph_osd_disk_space() -> (Option<u64>, Option<u64>) {
+//     if let Ok(output) = Command::new("kubectl")
+//         .arg("-n")
+//         .arg("rook-ceph")
+//         .arg("exec")
+//         .arg("deploy/rook-ceph-tools")
+//         .arg("--")
+//         .arg("ceph")
+//         .arg("osd")
+//         .arg("status")
+//         .output() 
+//     {
+//         if output.status.success() {
+//             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+//             let lines: Vec<&str> = stdout.lines().collect();
             
-            // Skip header line and parse the first data line
-            if lines.len() > 1 {
-                let parts: Vec<&str> = lines[1].split_whitespace().collect();
+//             // Skip header line and parse the first data line
+//             if lines.len() > 1 {
+//                 let parts: Vec<&str> = lines[1].split_whitespace().collect();
                 
-                // Ensure we have enough parts and parse carefully
-                if parts.len() >= 3 {
-                    // Parse USED and AVAIL columns, converting to MB
-                    let used_mb = parts[2].trim_end_matches('M')
-                        .parse::<f64>()
-                        .ok()
-                        .map(|x| x as u64);
+//                 // Ensure we have enough parts and parse carefully
+//                 if parts.len() >= 3 {
+//                     // Parse USED and AVAIL columns, converting to MB
+//                     let used_mb = parts[2].trim_end_matches('M')
+//                         .parse::<f64>()
+//                         .ok()
+//                         .map(|x| x as u64);
                     
-                    let total_mb = parts[3].trim_end_matches('G')
-                        .parse::<f64>()
-                        .ok()
-                        .map(|x| (x * 1024.0) as u64);  // Convert GB to MB
+//                     let total_mb = parts[3].trim_end_matches('G')
+//                         .parse::<f64>()
+//                         .ok()
+//                         .map(|x| (x * 1024.0) as u64);  // Convert GB to MB
                     
-                    return (total_mb, used_mb);
-                }
-            }
-        }
-    }
-    (None, None)
-}
+//                     return (total_mb, used_mb);
+//                 }
+//             }
+//         }
+//     }
+//     (None, None)
+// }
 
-/// Function to get Ceph OSD status
-fn get_ceph_osd_status() -> Option<String> {
-    if let Ok(output) = Command::new("kubectl")
-        .arg("-n")
-        .arg("rook-ceph")
-        .arg("exec")
-        .arg("deploy/rook-ceph-tools")
-        .arg("--")
-        .arg("ceph")
-        .arg("osd")
-        .arg("status")
-        .output() 
-    {
-        if output.status.success() {
-            return Some(String::from_utf8_lossy(&output.stdout).to_string());
-        }
-    }
-    None
-}
+// /// Function to get Ceph OSD status
+// fn get_ceph_osd_status() -> Option<String> {
+//     if let Ok(output) = Command::new("kubectl")
+//         .arg("-n")
+//         .arg("rook-ceph")
+//         .arg("exec")
+//         .arg("deploy/rook-ceph-tools")
+//         .arg("--")
+//         .arg("ceph")
+//         .arg("osd")
+//         .arg("status")
+//         .output() 
+//     {
+//         if output.status.success() {
+//             return Some(String::from_utf8_lossy(&output.stdout).to_string());
+//         }
+//     }
+//     None
+// }
 
 /// Net API implementation.
 pub struct SystemInfoImpl<B: BlockT, C> {

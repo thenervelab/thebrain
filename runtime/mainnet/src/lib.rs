@@ -1425,9 +1425,8 @@ impl pallet_subaccount::Config for Runtime {
 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
 }
 
-impl pallet_ceph::Config for Runtime {
+impl pallet_storage::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type AuthorityId = pallet_ceph::crypto::TestAuthId;
 }
 
 parameter_types! {
@@ -1724,7 +1723,7 @@ construct_runtime!(
 		Credits: pallet_credits = 66,
 		Compute: pallet_compute = 89,
 		ContainerRegistry: pallet_container_registry = 90,
-		Ceph: pallet_ceph = 94
+		Storage: pallet_storage = 94
 	}
 );
 

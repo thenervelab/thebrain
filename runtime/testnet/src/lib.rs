@@ -1454,9 +1454,8 @@ impl pallet_tx_pause::Config for Runtime {
 	type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
 }
 
-impl pallet_ceph::Config for Runtime {
+impl pallet_storage::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type AuthorityId = pallet_ceph::crypto::TestAuthId;
 }
 
 parameter_types! {
@@ -1665,7 +1664,7 @@ construct_runtime!(
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69,
-		Ceph: pallet_ceph = 73
+		Storage: pallet_storage = 72
 	}
 );
 

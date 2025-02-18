@@ -200,7 +200,7 @@ impl SystemInfo {
 
         // Check if it's a private IP (bogon)
         let is_private = is_bogon(body_str);
-        let ip = match extract_value(body_str, "\"ip\"") {
+        let _ip = match extract_value(body_str, "\"ip\"") {
             Some(ip) => ip,
             None => {
                 log::error!("Failed to extract IP from response");
@@ -587,38 +587,38 @@ impl FromStr for SystemInfo {
             None // Default to None if not found
         };
 
-        // Parse Ceph OSD status
-        let ceph_osd_status = if let Some(start) = s.find("\"ceph_osd_status\":\"") {
-            let substr = &s[start + 19..];
-            let end = substr.find('"').unwrap_or(substr.len());
-            Some(substr[..end].as_bytes().to_vec())
-        } else {
-            None
-        };
+        // // Parse Ceph OSD status
+        // let ceph_osd_status = if let Some(start) = s.find("\"ceph_osd_status\":\"") {
+        //     let substr = &s[start + 19..];
+        //     let end = substr.find('"').unwrap_or(substr.len());
+        //     Some(substr[..end].as_bytes().to_vec())
+        // } else {
+        //     None
+        // };
 
-        // Parse Ceph OSD total disk MB
-        let ceph_osd_total_disk_mb = if let Some(start) = s.find("\"ceph_osd_total_disk_mb\":") {
-            let substr = &s[start + 24..];
-            let end = substr.find('}').unwrap_or_else(|| substr.len());
-            substr[..end]
-                .trim()
-                .parse::<u64>()
-                .ok()
-        } else {
-            None
-        };
+        // // Parse Ceph OSD total disk MB
+        // let ceph_osd_total_disk_mb = if let Some(start) = s.find("\"ceph_osd_total_disk_mb\":") {
+        //     let substr = &s[start + 24..];
+        //     let end = substr.find('}').unwrap_or_else(|| substr.len());
+        //     substr[..end]
+        //         .trim()
+        //         .parse::<u64>()
+        //         .ok()
+        // } else {
+        //     None
+        // };
 
-        // Parse Ceph OSD free disk MB
-        let ceph_osd_free_disk_mb = if let Some(start) = s.find("\"ceph_osd_free_disk_mb\":") {
-            let substr = &s[start + 24..];
-            let end = substr.find('}').unwrap_or_else(|| substr.len());
-            substr[..end]
-                .trim()
-                .parse::<u64>()
-                .ok()
-        } else {
-            None
-        };
+        // // Parse Ceph OSD free disk MB
+        // let ceph_osd_free_disk_mb = if let Some(start) = s.find("\"ceph_osd_free_disk_mb\":") {
+        //     let substr = &s[start + 24..];
+        //     let end = substr.find('}').unwrap_or_else(|| substr.len());
+        //     substr[..end]
+        //         .trim()
+        //         .parse::<u64>()
+        //         .ok()
+        // } else {
+        //     None
+        // };
 
         Ok(SystemInfo {
             cpu_model,
@@ -640,9 +640,9 @@ impl FromStr for SystemInfo {
             gpu_memory_mb,
             hypervisor_disk_type,
             vm_pool_disk_type,
-            ceph_osd_status,
-            ceph_osd_total_disk_mb,
-            ceph_osd_free_disk_mb,
+            // ceph_osd_status,
+            // ceph_osd_total_disk_mb,
+            // ceph_osd_free_disk_mb,
         })
     }
 }

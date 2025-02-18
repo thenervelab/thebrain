@@ -95,7 +95,7 @@ hippius-primitives = { workspace = true, features = ["verifying"] }
 hippius-crypto-primitives = { workspace = true }
 
 pallet-ipfs-pin = { workspace = true }
-pallet-ceph = { workspace = true }
+pallet-storage = { workspace = true }
 pallet-utils = { workspace = true }
 pallet-registration = { workspace = true }
 pallet-execution-unit = { workspace = true }
@@ -274,7 +274,7 @@ std = [
     "hippius-crypto-primitives/std",
     
     "pallet-ipfs-pin/std",
-    "pallet-ceph/std",
+    "pallet-storage/std",
 	"pallet-registration/std",
     "pallet-execution-unit/std",
     "pallet-metagraph/std",
