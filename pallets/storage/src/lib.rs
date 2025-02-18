@@ -13,8 +13,11 @@ pub mod pallet {
 	use super::*;
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
+	use scale_info::prelude::vec::Vec;
+	use scale_info::prelude::vec;
 
 	#[pallet::pallet]
+	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
@@ -22,16 +25,24 @@ pub mod pallet {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 	}
 
+	// New storage map for bucket names
 	#[pallet::storage]
-	pub type Something<T> = StorageValue<_, u32>;
+	#[pallet::getter(fn bucket_names)]
+	pub type BucketNames<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		T::AccountId, 
+		Vec<Vec<u8>>, 
+		ValueQuery
+	>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		SomethingStored {
-			something: u32,
-			who: T::AccountId,
-		},
+		BucketNameStored {
+            who: T::AccountId,
+            bucket_name: Vec<u8>,
+        },
 	}
 
 	#[pallet::error]
@@ -42,31 +53,28 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		#[pallet::call_index(0)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
-			let who = ensure_signed(origin)?;
+        // New method to store bucket name
+        #[pallet::call_index(0)]
+        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+        pub fn store_bucket_name(origin: OriginFor<T>,account: T::AccountId,  bucket_name: Vec<u8>) -> DispatchResult {
+            ensure_root(origin)?;
+            
+			// Retrieve the existing bucket names or initialize a new vector
+			BucketNames::<T>::mutate(&account, |buckets| {
+				if buckets.is_empty() {
+					*buckets = vec![bucket_name.clone()];
+				} else {
+					buckets.push(bucket_name.clone());
+				}
+			});
 
-			Something::<T>::put(something);
+			// Deposit an event
+			Self::deposit_event(Event::BucketNameStored {
+				who: account,
+				bucket_name,
+			});
 
-			Self::deposit_event(Event::SomethingStored { something, who });
-
-			Ok(())
-		}
-
-		#[pallet::call_index(1)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
-
-			match Something::<T>::get() {
-				None => Err(Error::<T>::NoneValue.into()),
-				Some(old) => {
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					Something::<T>::put(new);
-					Ok(())
-				},
-			}
-		}
+            Ok(())
+        }
 	}
 }
