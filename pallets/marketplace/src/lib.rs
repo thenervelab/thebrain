@@ -115,7 +115,7 @@ pub mod pallet {
                     pallet_balances::Config + 
                     pallet_notifications::Config +
                     pallet_compute::Config +
-                    // pallet_ceph::Config +
+                    pallet_storage::Config +
                     pallet_rankings::Config +
                     pallet_subaccount::Config +
                     pallet_rankings::Config<pallet_rankings::Instance2>+ 
@@ -1262,32 +1262,46 @@ pub mod pallet {
         }
 
         // fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
-        //     // Get all users who requested storage
-        //     let all_users_who_requested_storage = pallet_ceph::Pallet::<T>::get_storage_request_users();
-        //     for user in all_users_who_requested_storage {
-        //         // Retrieve all fulfilled storage requests for this user
-        //         let fulfilled_requests = pallet_ceph::Pallet::<T>::get_user_fulfilled_storage_requests(&user.clone());
-
-        //         // Variables to track total file size and fulfilled requests for updating
-        //         let mut total_file_size_in_bs: u128 = 0;
-        //         let mut requests_to_update: Vec<pallet_ceph::StorageRequest<T::AccountId, BlockNumberFor<T>>> = Vec::new();
-
-        //         // Calculate total file size for requests older than 1 hour
-        //         for request in fulfilled_requests {
-        //             let block_difference = current_block.saturating_sub(request.last_charged_at);
-        //             if block_difference > T::BlocksPerHour::get().into() {
-        //                 total_file_size_in_bs += request.file_size_in_bytes as u128;
-        //                 requests_to_update.push(request);
+        //     // get total files stores , charge users every hour
+        //     let users_with_buckets = pallet_storage::get_users_with_buckets();
+        //     for user in users_with_buckets {
+        //         let bucket_names = BucketNames::<T>::get(&user);
+        //         // Track total size for the user's buckets
+        //         let mut user_total_size: u64 = 0;
+ 
+        //         // Process the bucket names
+        //         for bucket_name in bucket_names {
+        //             let bucket_name_str = String::from_utf8_lossy(&bucket_name);
+ 
+        //             // Perform HTTP request to list bucket contents
+        //             match Self::get_bucket_size_in_bytes(&bucket_name_str) {
+        //                 Ok((_response, bucket_size)) => {
+        //                     log::info!(
+        //                         "Bucket {} size: {} bytes",
+        //                         bucket_name_str,
+        //                         bucket_size
+        //                     );
+        //                     // Accumulate total size for the user
+        //                     user_total_size += bucket_size;
+        //                 },
+        //                 Err(err) => {
+        //                     log::error!(
+        //                         "Failed to list contents for bucket {}: {:?}",
+        //                         bucket_name_str,
+        //                         err
+        //                     );
+        //                 }
         //             }
         //         }
+ 
 
         //         // Skip if no files to charge
-        //         if total_file_size_in_bs == 0 {
+        //         if user_total_size == 0 {
         //             continue;
         //         }
 
         //         // Convert total file size to gigabytes
-        //         let total_file_size_in_gbs = total_file_size_in_bs as f64 / 1_073_741_824.0;
+        //         let total_file_size_in_gbs = user_total_size as f64 / 1_073_741_824.0;
 
         //         // Get the current price per GB from the marketplace pallet
         //         let price_per_gb = Self::get_price_per_gb();
@@ -1339,7 +1353,7 @@ pub mod pallet {
         //             // Update last charged block for each request
         //             for mut request in requests_to_update.clone() {
         //                 request.last_charged_at = current_block;
-        //                 let _ = pallet_ceph::Pallet::<T>::process_storage_request(&request.user_id.clone(), &request.file_hash.clone(), Some(request));
+        //                 pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), Some(request));
         //             }
         //         } else {
         //             // Get the current block number
@@ -1364,8 +1378,8 @@ pub mod pallet {
         //                             user
         //                         );
         //                     } else {
-        //                         // delete all storage items  
-        //                         let _ =pallet_ceph::Pallet::<T>::handle_cancel_subscription(user.clone());
+        //                         // Cancel the request after grace period
+        //                         pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), None);
 
         //                         // request to delete all backups of user 
         //                         Self::move_user_to_backup_delete_requests(&user);
@@ -1376,6 +1390,8 @@ pub mod pallet {
         //                 }
         //             }
         //         }
+             
+
         //     }
         // }
 

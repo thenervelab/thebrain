@@ -92,7 +92,7 @@ pub mod pallet {
 		}
 
 		// Helper method to list bucket contents
-		fn list_bucket_contents(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
+		fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
 			let url = format!("http://localhost:8888/buckets/{}?list=true", bucket_name);
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
 
@@ -146,41 +146,47 @@ pub mod pallet {
 		}
     }
 
-    // Add offchain worker implementation
-    #[pallet::hooks]
-    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        fn offchain_worker(_block_number: BlockNumberFor<T>) {
-           let users_with_buckets = Self::get_users_with_buckets();
-           for user in users_with_buckets {
-               let bucket_names = BucketNames::<T>::get(&user);
-               // Process the bucket names
-               for bucket_name in bucket_names {
-                   let bucket_name_str = String::from_utf8_lossy(&bucket_name);
-                   log::info!(
-                       "User {:?} has bucket name {}",
-                       user, 
-                       bucket_name_str
-                   );
+    // // Add offchain worker implementation
+    // #[pallet::hooks]
+    // impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+    //     fn offchain_worker(_block_number: BlockNumberFor<T>) {
+    //        let users_with_buckets = Self::get_users_with_buckets();
+    //        for user in users_with_buckets {
+    //            let bucket_names = BucketNames::<T>::get(&user);
+    //            // Track total size for the user's buckets
+    //            let mut user_total_size: u64 = 0;
 
-                   // Perform HTTP request to list bucket contents
-                   match Self::list_bucket_contents(&bucket_name_str) {
-                       Ok((response, total_size)) => {
-                           log::info!(
-                               "Bucket {} total file size: {} bytes",
-                               bucket_name_str,
-                               total_size
-                           );
-                       },
-                       Err(err) => {
-                           log::error!(
-                               "Failed to list contents for bucket {}: {:?}",
-                               bucket_name_str,
-                               err
-                           );
-                       }
-                   }
-               }
-           }
-        }
-    }
+    //            // Process the bucket names
+    //            for bucket_name in bucket_names {
+    //                let bucket_name_str = String::from_utf8_lossy(&bucket_name);
+
+    //                // Perform HTTP request to list bucket contents
+    //                match Self::get_bucket_size_in_bytes(&bucket_name_str) {
+    //                    Ok((_response, bucket_size)) => {
+    //                        log::info!(
+    //                            "Bucket {} size: {} bytes",
+    //                            bucket_name_str,
+    //                            bucket_size
+    //                        );
+    //                        // Accumulate total size for the user
+    //                        user_total_size += bucket_size;
+    //                    },
+    //                    Err(err) => {
+    //                        log::error!(
+    //                            "Failed to list contents for bucket {}: {:?}",
+    //                            bucket_name_str,
+    //                            err
+    //                        );
+    //                    }
+    //                }
+    //            }
+
+    //            // Log total size for the user's buckets
+    //            log::info!(
+    //                "User  total bucket size: {} bytes",
+    //                user_total_size
+    //            );
+    //        }
+    //     }
+    // }
 }

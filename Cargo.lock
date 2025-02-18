@@ -8008,6 +8008,7 @@ dependencies = [
  "log",
  "parity-scale-codec",
  "scale-info",
+ "serde_json",
  "sp-core",
  "sp-io",
  "sp-runtime",

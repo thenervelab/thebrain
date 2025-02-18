@@ -25,6 +25,7 @@ frame-system = { default-features = false, workspace = true }
 log = { version = "0.4.22", default-features = false }
 sp-runtime = { default-features = false, workspace = true }
 sp-io = { default-features = false, workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 sp-core = { workspace = true, default-features = false }
