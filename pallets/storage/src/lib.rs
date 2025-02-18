@@ -15,6 +15,10 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 	use scale_info::prelude::vec::Vec;
 	use scale_info::prelude::vec;
+	use sp_runtime::offchain::Duration;
+	use codec::alloc::string::ToString;
+	use scale_info::prelude::string::String;
+	use sp_runtime::format;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -76,5 +80,107 @@ pub mod pallet {
 
             Ok(())
         }
-	}
+    }
+
+	impl<T: Config> Pallet<T> {
+	    /// Retrieve all users who have at least one bucket
+		pub fn get_users_with_buckets() -> Vec<T::AccountId> {
+			BucketNames::<T>::iter()
+				.filter(|(_, buckets)| !buckets.is_empty())
+				.map(|(account, _)| account)
+				.collect()
+		}
+
+		// Helper method to list bucket contents
+		fn list_bucket_contents(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
+			let url = format!("http://localhost:8888/buckets/{}?list=true", bucket_name);
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
+
+			let request = sp_runtime::offchain::http::Request::get(url.as_str());
+
+			let pending = request
+				.add_header("Accept", "application/json")
+				.deadline(deadline)
+				.send()
+				.map_err(|err| {
+					log::error!("❌ Error making bucket list request: {:?}", err);
+					sp_runtime::offchain::http::Error::IoError
+				})?;
+
+			let response = pending
+				.try_wait(deadline)
+				.map_err(|err| {
+					log::error!("❌ Error getting bucket list response: {:?}", err);
+					sp_runtime::offchain::http::Error::DeadlineReached
+				})??;
+
+			if response.code != 200 {
+				log::error!(
+					"Unexpected status code: {}, bucket list request failed. Response body: {:?}",
+					response.code, 
+					response
+				);
+				return Err(sp_runtime::offchain::http::Error::Unknown);
+			}
+
+			let response_body = response.body();
+			let response_body_vec = response_body.collect::<Vec<u8>>();
+			let response_str = core::str::from_utf8(&response_body_vec)
+				.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+
+			// Parse JSON and calculate total file size
+			let json: serde_json::Value = serde_json::from_str(response_str)
+				.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+
+			// Calculate total file size
+			let total_size = json["Entries"]
+				.as_array()
+				.map(|entries| {
+					entries.iter()
+						.map(|entry| entry["FileSize"].as_u64().unwrap_or(0))
+						.sum::<u64>()
+				})
+				.unwrap_or(0);
+
+			Ok((response_str.to_string(), total_size))
+		}
+    }
+
+    // Add offchain worker implementation
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        fn offchain_worker(_block_number: BlockNumberFor<T>) {
+           let users_with_buckets = Self::get_users_with_buckets();
+           for user in users_with_buckets {
+               let bucket_names = BucketNames::<T>::get(&user);
+               // Process the bucket names
+               for bucket_name in bucket_names {
+                   let bucket_name_str = String::from_utf8_lossy(&bucket_name);
+                   log::info!(
+                       "User {:?} has bucket name {}",
+                       user, 
+                       bucket_name_str
+                   );
+
+                   // Perform HTTP request to list bucket contents
+                   match Self::list_bucket_contents(&bucket_name_str) {
+                       Ok((response, total_size)) => {
+                           log::info!(
+                               "Bucket {} total file size: {} bytes",
+                               bucket_name_str,
+                               total_size
+                           );
+                       },
+                       Err(err) => {
+                           log::error!(
+                               "Failed to list contents for bucket {}: {:?}",
+                               bucket_name_str,
+                               err
+                           );
+                       }
+                   }
+               }
+           }
+        }
+    }
 }
