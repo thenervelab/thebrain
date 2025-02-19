@@ -102,6 +102,11 @@ pub mod pallet {
 				.collect()
 		}
 
+		/// Update the last charged at block number for a given account
+		pub fn update_last_charged_at(account: &T::AccountId, block_number: BlockNumberFor<T>) {
+			LastChargeAt::<T>::insert(account, block_number);
+		}
+
 		// Helper method to list bucket contents
 		fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
 			let file_api_endpoint = "http://46.105.223.238:8888"; 
