@@ -1,9 +1,11 @@
 use sp_std::str::FromStr;
-use crate::types::{SystemInfo, NetworkInterfaceInfo, DiskInfo, NetworkDetails, NetworkType}; // Adjust paths if necessary
+use crate::types::{SystemInfo, NetworkInterfaceInfo, DiskInfo, NetworkDetails, NetworkType, DiskDetails}; // Adjust paths if necessary
 use sp_std::prelude::*;
 use sp_runtime::offchain::http;
 use sp_runtime::offchain::Duration;
 use sp_runtime::format;
+use serde_json;
+use scale_info::prelude::string::String;
 
 impl SystemInfo {
     /// Fetch IPFS repository statistics via an HTTP request.
@@ -396,6 +398,101 @@ impl FromStr for SystemInfo {
             }
         }
     
+        // Parse disk_info
+        let mut disk_info = Vec::new();
+        if let Some(start) = s.find("\"disk_info\":[") {
+            let after_start = &s[start + "\"disk_info\":[".len()..];
+            if let Some(end) = after_start.find("]") {
+                let disk_str = &after_start[..end];
+                
+                // Use a more robust parsing approach
+                let mut current_disk = String::new();
+                let mut in_object = false;
+                let mut brace_count = 0;
+
+                for ch in disk_str.chars() {
+                    match ch {
+                        '{' => {
+                            in_object = true;
+                            brace_count += 1;
+                            current_disk.push(ch);
+                        }
+                        '}' => {
+                            brace_count -= 1;
+                            current_disk.push(ch);
+                            
+                            if brace_count == 0 && in_object {
+                                // Complete object found
+                                if let Ok(disk_details) = parse_single_disk_details(&current_disk) {
+                                    disk_info.push(disk_details);
+                                }
+                                current_disk.clear();
+                                in_object = false;
+                            }
+                        }
+                        _ => {
+                            if in_object {
+                                current_disk.push(ch);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Helper function to parse a single disk details object
+        fn parse_single_disk_details(disk_str: &str) -> Result<DiskDetails, &'static str> {
+            let mut name = b"N/A".to_vec();
+            let mut serial = b"N/A".to_vec();
+            let mut model = b"N/A".to_vec();
+            let mut size = b"N/A".to_vec();
+            let mut is_rotational = false;
+            let mut disk_type = b"N/A".to_vec();
+
+            // Use serde_json for robust parsing
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(disk_str) {
+                if let Some(obj) = json_value.as_object() {
+                    name = obj.get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.as_bytes().to_vec())
+                        .unwrap_or_else(|| b"N/A".to_vec());
+
+                    serial = obj.get("serial")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.as_bytes().to_vec())
+                        .unwrap_or_else(|| b"N/A".to_vec());
+
+                    model = obj.get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.as_bytes().to_vec())
+                        .unwrap_or_else(|| b"N/A".to_vec());
+
+                    size = obj.get("size")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.as_bytes().to_vec())
+                        .unwrap_or_else(|| b"N/A".to_vec());
+
+                    is_rotational = obj.get("is_rotational")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    disk_type = obj.get("disk_type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.as_bytes().to_vec())
+                        .unwrap_or_else(|| b"N/A".to_vec());
+                }
+            }
+
+            Ok(DiskDetails {
+                name,
+                serial,
+                model,
+                size,
+                is_rotational,
+                disk_type,
+            })
+        }
+
         // Initialize disks vector
         let mut disks = Vec::new();
     
@@ -608,6 +705,7 @@ impl FromStr for SystemInfo {
             gpu_memory_mb,
             hypervisor_disk_type,
             vm_pool_disk_type,
+            disk_info,
         })
     }
 }

@@ -73,7 +73,17 @@ pub struct OfflineStatus<BlockNumber> {
     pub at_block: BlockNumber,      // the block at which the miner was offline
 }
 
-#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo,  Default, PartialEq)]
+#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
+pub struct DiskDetails {
+    pub name: Vec<u8>,
+    pub serial: Vec<u8>,
+    pub model: Vec<u8>,
+    pub size: Vec<u8>,
+    pub is_rotational: bool,
+    pub disk_type: Vec<u8>,
+}
+
+#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
 pub struct SystemInfo {
     pub memory_mb: u64,
     pub free_memory_mb: u64,
@@ -94,6 +104,7 @@ pub struct SystemInfo {
     pub gpu_memory_mb: Option<u32>,
     pub hypervisor_disk_type: Option<Vec<u8>>,
     pub vm_pool_disk_type: Option<Vec<u8>>,
+    pub disk_info: Vec<DiskDetails>,
 }
 
 // Define the NodeMetrics struct
@@ -136,6 +147,7 @@ pub struct NodeMetricsData {
     pub gpu_memory_mb: Option<u32>,
     pub hypervisor_disk_type: Option<Vec<u8>>,
     pub vm_pool_disk_type: Option<Vec<u8>>,
+    pub disk_info: Vec<DiskDetails>,
 }
 
 impl Default for NodeMetricsData {
@@ -181,6 +193,7 @@ impl Default for NodeMetricsData {
             gpu_memory_mb: None,
             hypervisor_disk_type: None,
             vm_pool_disk_type: None,
+            disk_info: Vec::new(),
         }
     }
 }

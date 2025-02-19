@@ -422,6 +422,7 @@ pub mod pallet {
 					gpu_memory_mb: system_info.gpu_memory_mb.clone(),
 					hypervisor_disk_type: system_info.hypervisor_disk_type.clone(),
 					vm_pool_disk_type: system_info.vm_pool_disk_type.clone(),
+					disk_info: system_info.disk_info.clone(),
 					..Default::default()
 				}
 			};
@@ -459,6 +460,7 @@ pub mod pallet {
 					existing_metrics.memory_mb= system_info.memory_mb;
 					existing_metrics.free_memory_mb= system_info.free_memory_mb;
 					existing_metrics.vm_count= system_info.vm_count;
+					existing_metrics.disk_info= system_info.disk_info.clone();
 					existing_metrics
 				},
 			);
