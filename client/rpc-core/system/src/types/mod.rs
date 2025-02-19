@@ -18,6 +18,16 @@ pub struct DiskInfo {
     pub free_space_mb: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DiskDetails {
+    pub name: String,
+    pub serial: String,
+    pub model: String,
+    pub size: String,
+    pub is_rotational: bool,
+    pub disk_type: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SystemInfo {
     pub cpu_model: String,
@@ -37,8 +47,5 @@ pub struct SystemInfo {
     pub gpu_memory_mb: Option<u32>,
     pub hypervisor_disk_type: Option<String>,
     pub vm_pool_disk_type: Option<String>,
-    // pub ceph_status: Option<String>,
-    // pub ceph_osd_status: Option<String>,
-    // pub ceph_osd_total_disk_mb: Option<u64>,
-    // pub ceph_osd_free_disk_mb: Option<u64>,
+    pub disk_info: Vec<DiskDetails>,
 }

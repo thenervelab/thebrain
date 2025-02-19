@@ -91,59 +91,59 @@ pub mod pallet {
 				.collect()
 		}
 
-		// Helper method to list bucket contents
-		fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
-			let url = format!("http://localhost:8888/buckets/{}?list=true", bucket_name);
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
+		// // Helper method to list bucket contents
+		// fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
+		// 	let url = format!("http://localhost:8888/buckets/{}?list=true", bucket_name);
+		// 	let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
 
-			let request = sp_runtime::offchain::http::Request::get(url.as_str());
+		// 	let request = sp_runtime::offchain::http::Request::get(url.as_str());
 
-			let pending = request
-				.add_header("Accept", "application/json")
-				.deadline(deadline)
-				.send()
-				.map_err(|err| {
-					log::error!("❌ Error making bucket list request: {:?}", err);
-					sp_runtime::offchain::http::Error::IoError
-				})?;
+		// 	let pending = request
+		// 		.add_header("Accept", "application/json")
+		// 		.deadline(deadline)
+		// 		.send()
+		// 		.map_err(|err| {
+		// 			log::error!("❌ Error making bucket list request: {:?}", err);
+		// 			sp_runtime::offchain::http::Error::IoError
+		// 		})?;
 
-			let response = pending
-				.try_wait(deadline)
-				.map_err(|err| {
-					log::error!("❌ Error getting bucket list response: {:?}", err);
-					sp_runtime::offchain::http::Error::DeadlineReached
-				})??;
+		// 	let response = pending
+		// 		.try_wait(deadline)
+		// 		.map_err(|err| {
+		// 			log::error!("❌ Error getting bucket list response: {:?}", err);
+		// 			sp_runtime::offchain::http::Error::DeadlineReached
+		// 		})??;
 
-			if response.code != 200 {
-				log::error!(
-					"Unexpected status code: {}, bucket list request failed. Response body: {:?}",
-					response.code, 
-					response
-				);
-				return Err(sp_runtime::offchain::http::Error::Unknown);
-			}
+		// 	if response.code != 200 {
+		// 		log::error!(
+		// 			"Unexpected status code: {}, bucket list request failed. Response body: {:?}",
+		// 			response.code, 
+		// 			response
+		// 		);
+		// 		return Err(sp_runtime::offchain::http::Error::Unknown);
+		// 	}
 
-			let response_body = response.body();
-			let response_body_vec = response_body.collect::<Vec<u8>>();
-			let response_str = core::str::from_utf8(&response_body_vec)
-				.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+		// 	let response_body = response.body();
+		// 	let response_body_vec = response_body.collect::<Vec<u8>>();
+		// 	let response_str = core::str::from_utf8(&response_body_vec)
+		// 		.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
 
-			// Parse JSON and calculate total file size
-			let json: serde_json::Value = serde_json::from_str(response_str)
-				.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+		// 	// Parse JSON and calculate total file size
+		// 	let json: serde_json::Value = serde_json::from_str(response_str)
+		// 		.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
 
-			// Calculate total file size
-			let total_size = json["Entries"]
-				.as_array()
-				.map(|entries| {
-					entries.iter()
-						.map(|entry| entry["FileSize"].as_u64().unwrap_or(0))
-						.sum::<u64>()
-				})
-				.unwrap_or(0);
+		// 	// Calculate total file size
+		// 	let total_size = json["Entries"]
+		// 		.as_array()
+		// 		.map(|entries| {
+		// 			entries.iter()
+		// 				.map(|entry| entry["FileSize"].as_u64().unwrap_or(0))
+		// 				.sum::<u64>()
+		// 		})
+		// 		.unwrap_or(0);
 
-			Ok((response_str.to_string(), total_size))
-		}
+		// 	Ok((response_str.to_string(), total_size))
+		// }
     }
 
     // // Add offchain worker implementation

@@ -7685,6 +7685,7 @@ dependencies = [
  "pallet-notifications",
  "pallet-rankings",
  "pallet-registration",
+ "pallet-storage",
  "pallet-subaccount",
  "pallet-utils",
  "parity-scale-codec",

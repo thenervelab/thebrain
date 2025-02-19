@@ -1,7 +1,7 @@
 use jsonrpsee::core::RpcResult;
 use sysinfo::{Disks, Networks, System};
 use std::{fs, process::Command, process::Stdio, sync::Arc, collections::HashSet};
-pub use rpc_core_system::{types::{SystemInfo, NetworkInterfaceInfo, DiskInfo}, SystemInfoApiServer};
+pub use rpc_core_system::{types::{SystemInfo, NetworkInterfaceInfo, DiskInfo, DiskDetails}, SystemInfoApiServer};
 use sp_runtime::traits::Block as BlockT;
 use sp_blockchain::HeaderBackend;
 use fp_rpc::EthereumRuntimeRPCApi;
@@ -214,6 +214,90 @@ fn get_vm_pool_disk_type() -> Option<String> {
     None
 }
 
+fn get_disk_info() -> Result<Vec<DiskDetails>, std::io::Error> {
+    use std::process::Command;
+    use std::io::{Error, ErrorKind};
+    use rpc_core_system::types::DiskDetails;
+
+    // Run lsblk command with verbose output for debugging
+    let output = Command::new("lsblk")
+        .args(&["-o", "NAME,SERIAL,MODEL,UUID,PARTUUID,SIZE,ROTA,TYPE", "-P", "-n"])
+        .output()?;
+
+    // Convert output to string
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    // Log the full output for debugging
+    log::info!("Full lsblk output: {}", output_str);
+
+    let disks: Vec<DiskDetails> = output_str
+        .lines()
+        .filter_map(|line| {
+            // Log each line for debugging
+            log::debug!("Processing line: {}", line);
+
+            // Parse line using key-value pairs
+            let mut name = "N/A".to_string();
+            let mut serial = "N/A".to_string();
+            let mut model = "N/A".to_string();
+            let mut size = "N/A".to_string();
+            let mut rota = "0".to_string();
+            let mut disk_type = "N/A".to_string();
+
+            // Split line into key-value pairs
+            let pairs: Vec<&str> = line.split(' ').collect();
+            for pair in pairs {
+                let kv: Vec<&str> = pair.split('=').collect();
+                if kv.len() == 2 {
+                    let key = kv[0].trim();
+                    let value = kv[1].trim_matches('"');
+                    
+                    match key {
+                        "NAME" => name = value.to_string(),
+                        "SERIAL" => serial = value.to_string(),
+                        "MODEL" => model = value.to_string(),
+                        "SIZE" => size = value.to_string(),
+                        "ROTA" => rota = value.to_string(),
+                        "TYPE" => disk_type = value.to_string(),
+                        _ => {}
+                    }
+                }
+            }
+
+            // Check if this is a disk or partition
+            if disk_type == "disk" || disk_type == "part" {
+                let disk_details = DiskDetails {
+                    name,
+                    serial,
+                    model,
+                    size,
+                    is_rotational: rota == "1",
+                    disk_type,
+                };
+
+                log::info!("Found device: {:?}", disk_details);
+                Some(disk_details)
+            } else {
+                log::debug!("Skipping non-disk/non-partition: {}", line);
+                None
+            }
+        })
+        .collect();
+
+    // Log the number of disks and partitions found
+    log::info!("Total disks and partitions found: {}", disks.len());
+
+    // If no disks or partitions found, return an error with context
+    if disks.is_empty() {
+        Err(Error::new(
+            ErrorKind::NotFound, 
+            "No disk or partition devices found. Check lsblk output and system configuration."
+        ))
+    } else {
+        Ok(disks)
+    }
+}
+
 /// Net API implementation.
 pub struct SystemInfoImpl<B: BlockT, C> {
 	_client: Arc<C>,
@@ -377,6 +461,8 @@ where
         // Add VM pool disk type retrieval
         let vm_pool_disk_type = get_vm_pool_disk_type();
 
+        // Retrieve disk information using lsblk command
+        let disk_info = get_disk_info().unwrap_or_default();
 
         let info = SystemInfo {
             cpu_model,
@@ -396,6 +482,7 @@ where
             gpu_memory_mb,
             hypervisor_disk_type,
             vm_pool_disk_type,
+            disk_info,
         };
 
         Ok(info)

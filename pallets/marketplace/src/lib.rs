@@ -1221,6 +1221,7 @@ pub mod pallet {
                     // Update last charged block for each request
                     for mut request in requests_to_update.clone() {
                         request.last_charged_at = current_block;
+                        // update user subscription last charged at
                         pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), Some(request));
                     }
                 } else {
@@ -1293,7 +1294,6 @@ pub mod pallet {
         //                 }
         //             }
         //         }
- 
 
         //         // Skip if no files to charge
         //         if user_total_size == 0 {
