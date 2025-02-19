@@ -369,7 +369,9 @@ pub mod pallet {
         /// The plan does not match the user's active subscription
         InvalidPlanForSubscription,
         InvalidPlanConfiguration,
-        InvalidOSDiskImageUrl
+        InvalidOSDiskImageUrl,
+        /// No subscription found for the given user
+        NoSubscriptionFound,
 	}
 
 
@@ -1147,11 +1149,11 @@ pub mod pallet {
             for user in all_users_who_requested_storage {
                 // Retrieve all fulfilled storage requests for this user
                 let fulfilled_requests = pallet_ipfs_pin::Pallet::<T>::get_owner_fulfilled_requests(user.clone());
-
+        
                 // Variables to track total file size and fulfilled requests for updating
                 let mut total_file_size_in_bs: u128 = 0;
                 let mut requests_to_update: Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> = Vec::new();
-
+        
                 // Calculate total file size for requests older than 1 hour
                 for request in fulfilled_requests {
                     let block_difference = current_block.saturating_sub(request.last_charged_at);
@@ -1162,15 +1164,15 @@ pub mod pallet {
                         }
                     }
                 }
-
+        
                 // Skip if no files to charge
                 if total_file_size_in_bs == 0 {
                     continue;
                 }
-
+        
                 // Convert total file size to gigabytes
                 let total_file_size_in_gbs = total_file_size_in_bs as f64 / 1_073_741_824.0;
-
+        
                 // Get the current price per GB from the marketplace pallet
                 let price_per_gb = Self::get_price_per_gb();
                 
@@ -1179,11 +1181,11 @@ pub mod pallet {
                 // Round up to the nearest whole number of GBs
                 let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
                 let charge_amount = price_per_gb * rounded_gbs;                    
-
+        
                 if user_free_credits >= charge_amount {
                     // Decrease user credits
                     CreditsPallet::<T>::decrease_user_credits(&user, charge_amount);
-
+        
                     // Handle referral logic
                     let mut total_discount = 0u128;
                     if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&user) {
@@ -1198,36 +1200,34 @@ pub mod pallet {
                         .unwrap_or_default();
                                 
                     let marketplace_amount = total_charge - rankings_amount;
-
+        
                     // Mint 70% to Compute Rankings
                     let _ = pallet_balances::Pallet::<T>::deposit_creating(
                         &RankingsPallet::<T>::account_id(), 
                         rankings_amount.try_into().unwrap_or_default()
                     );
-
+        
                     // Deposit remaining 30% amount to marketplace account
                     let _ = pallet_balances::Pallet::<T>::deposit_creating(
                         &Self::account_id(), 
                         marketplace_amount.try_into().unwrap_or_default()
                     );
-
+        
                     // Record transaction
                     let _ = Self::record_native_transaction(
                         &user,
                         NativeTransactionType::Subscription,
                         (charge_amount - total_discount).into(),
                     );
-
+        
                     // Update last charged block for each request
                     for mut request in requests_to_update.clone() {
                         request.last_charged_at = current_block;
                         // update user subscription last charged at
                         pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), Some(request));
+                        let _ = Self::update_user_subscription_last_charged_at(&user, current_block);
                     }
                 } else {
-                    // Get the current block number
-                    let current_block = frame_system::Pallet::<T>::block_number();
-
                     // Iterate through requests to update
                     for request in requests_to_update {
                         // Check if the request has exceeded the storage grace period
@@ -1249,10 +1249,10 @@ pub mod pallet {
                             } else {
                                 // Cancel the request after grace period
                                 pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), None);
-
+        
                                 // request to delete all backups of user 
                                 Self::move_user_to_backup_delete_requests(&user);
-
+        
                                 // Handle unpinning for inactive subscription
                                 Self::handle_unpin_of_inactive_subscription(&user, request.file_hash.clone());
                             }
@@ -1261,7 +1261,7 @@ pub mod pallet {
                 }
             }
         }
-
+        
         // fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
         //     // get total files stores , charge users every hour
         //     let users_with_buckets = pallet_storage::get_users_with_buckets();
@@ -1432,6 +1432,25 @@ pub mod pallet {
             });
 
             Ok(())
+        }
+
+        /// Update the last charged block for a user's subscription
+        pub fn update_user_subscription_last_charged_at(
+            account: &T::AccountId, 
+            block_number: BlockNumberFor<T>
+        ) -> DispatchResult {
+            // Retrieve the existing subscription
+            UserPlanSubscriptions::<T>::try_mutate(account, |subscription_opt| {
+                // Check if subscription exists
+                if let Some(subscription) = subscription_opt {
+                    // Update the last_charged_at field
+                    subscription.last_charged_at = block_number;
+                    Ok(())
+                } else {
+                    // Return a dispatch error if no subscription exists
+                    Err(DispatchError::Other("No subscription found for user".into()))
+                }
+            })
         }
 
         /// Cancel a user's subscription
