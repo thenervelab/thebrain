@@ -40,6 +40,17 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+	// New storage map for bucket names
+	#[pallet::storage]
+	#[pallet::getter(fn last_charged_at)]
+	pub type LastChargeAt<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		T::AccountId, 
+		BlockNumberFor<T>, 
+		ValueQuery
+	>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -91,102 +102,98 @@ pub mod pallet {
 				.collect()
 		}
 
-		// // Helper method to list bucket contents
-		// fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
-		// 	let url = format!("http://localhost:8888/buckets/{}?list=true", bucket_name);
-		// 	let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
+		// Helper method to list bucket contents
+		fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
+			let file_api_endpoint = "http://46.105.223.238:8888"; 
+			let url = format!("{}/buckets/{}?list=true", file_api_endpoint, bucket_name);
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
 
-		// 	let request = sp_runtime::offchain::http::Request::get(url.as_str());
+			let request = sp_runtime::offchain::http::Request::get(url.as_str());
 
-		// 	let pending = request
-		// 		.add_header("Accept", "application/json")
-		// 		.deadline(deadline)
-		// 		.send()
-		// 		.map_err(|err| {
-		// 			log::error!("❌ Error making bucket list request: {:?}", err);
-		// 			sp_runtime::offchain::http::Error::IoError
-		// 		})?;
+			let pending = request
+				.add_header("Accept", "application/json")
+				.deadline(deadline)
+				.send()
+				.map_err(|err| {
+					log::error!("❌ Error making bucket list request: {:?}", err);
+					sp_runtime::offchain::http::Error::IoError
+				})?;
 
-		// 	let response = pending
-		// 		.try_wait(deadline)
-		// 		.map_err(|err| {
-		// 			log::error!("❌ Error getting bucket list response: {:?}", err);
-		// 			sp_runtime::offchain::http::Error::DeadlineReached
-		// 		})??;
+			let response = pending
+				.try_wait(deadline)
+				.map_err(|err| {
+					log::error!("❌ Error getting bucket list response: {:?}", err);
+					sp_runtime::offchain::http::Error::DeadlineReached
+				})??;
 
-		// 	if response.code != 200 {
-		// 		log::error!(
-		// 			"Unexpected status code: {}, bucket list request failed. Response body: {:?}",
-		// 			response.code, 
-		// 			response
-		// 		);
-		// 		return Err(sp_runtime::offchain::http::Error::Unknown);
-		// 	}
+			if response.code != 200 {
+				log::error!(
+					"Unexpected status code: {}, bucket list request failed. Response body: {:?}",
+					response.code, 
+					response
+				);
+				return Err(sp_runtime::offchain::http::Error::Unknown);
+			}
 
-		// 	let response_body = response.body();
-		// 	let response_body_vec = response_body.collect::<Vec<u8>>();
-		// 	let response_str = core::str::from_utf8(&response_body_vec)
-		// 		.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+			let response_body = response.body();
+			let response_body_vec = response_body.collect::<Vec<u8>>();
+			let response_str = core::str::from_utf8(&response_body_vec)
+				.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
 
-		// 	// Parse JSON and calculate total file size
-		// 	let json: serde_json::Value = serde_json::from_str(response_str)
-		// 		.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+			// Parse JSON and calculate total file size
+			let json: serde_json::Value = serde_json::from_str(response_str)
+				.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
 
-		// 	// Calculate total file size
-		// 	let total_size = json["Entries"]
-		// 		.as_array()
-		// 		.map(|entries| {
-		// 			entries.iter()
-		// 				.map(|entry| entry["FileSize"].as_u64().unwrap_or(0))
-		// 				.sum::<u64>()
-		// 		})
-		// 		.unwrap_or(0);
+			// Calculate total file size
+			let total_size = json["Entries"]
+				.as_array()
+				.map(|entries| {
+					entries.iter()
+						.map(|entry| entry["FileSize"].as_u64().unwrap_or(0))
+						.sum::<u64>()
+				})
+				.unwrap_or(0);
 
-		// 	Ok((response_str.to_string(), total_size))
-		// }
+			Ok((response_str.to_string(), total_size))
+		}
     }
 
-    // // Add offchain worker implementation
-    // #[pallet::hooks]
-    // impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-    //     fn offchain_worker(_block_number: BlockNumberFor<T>) {
-    //        let users_with_buckets = Self::get_users_with_buckets();
-    //        for user in users_with_buckets {
-    //            let bucket_names = BucketNames::<T>::get(&user);
-    //            // Track total size for the user's buckets
-    //            let mut user_total_size: u64 = 0;
+    // Add offchain worker implementation
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        fn offchain_worker(_block_number: BlockNumberFor<T>) {
+           let users_with_buckets = Self::get_users_with_buckets();
+           for user in users_with_buckets {
+               let bucket_names = BucketNames::<T>::get(&user);
+               // Track total size for the user's buckets
+               let mut user_total_size: u64 = 0;
 
-    //            // Process the bucket names
-    //            for bucket_name in bucket_names {
-    //                let bucket_name_str = String::from_utf8_lossy(&bucket_name);
+               // Process the bucket names
+               for bucket_name in bucket_names {
+                   let bucket_name_str = String::from_utf8_lossy(&bucket_name);
 
-    //                // Perform HTTP request to list bucket contents
-    //                match Self::get_bucket_size_in_bytes(&bucket_name_str) {
-    //                    Ok((_response, bucket_size)) => {
-    //                        log::info!(
-    //                            "Bucket {} size: {} bytes",
-    //                            bucket_name_str,
-    //                            bucket_size
-    //                        );
-    //                        // Accumulate total size for the user
-    //                        user_total_size += bucket_size;
-    //                    },
-    //                    Err(err) => {
-    //                        log::error!(
-    //                            "Failed to list contents for bucket {}: {:?}",
-    //                            bucket_name_str,
-    //                            err
-    //                        );
-    //                    }
-    //                }
-    //            }
+                   // Perform HTTP request to list bucket contents
+                   match Self::get_bucket_size_in_bytes(&bucket_name_str) {
+                       Ok((_response, bucket_size)) => {
+                           // Accumulate total size for the user
+                           user_total_size += bucket_size;
+                       },
+                       Err(err) => {
+                           log::error!(
+                               "Failed to list contents for bucket {}: {:?}",
+                               bucket_name_str,
+                               err
+                           );
+                       }
+                   }
+               }
 
-    //            // Log total size for the user's buckets
-    //            log::info!(
-    //                "User  total bucket size: {} bytes",
-    //                user_total_size
-    //            );
-    //        }
-    //     }
-    // }
+               // Log total size for the user's buckets
+               log::info!(
+                   "User  total bucket size: {} bytes",
+                   user_total_size
+               );
+           }
+        }
+    }
 }
