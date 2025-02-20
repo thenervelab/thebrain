@@ -1494,6 +1494,9 @@ pub mod pallet {
 
 					node_metrics_match
 				}) {
+
+					// let _ = pallet_compute::Pallet::<T>::get_miner_compute_request_by_compute_request_id(compute_request.request_id);
+
 					// Assign the compute request to the suitable miner
 					pallet_compute::Pallet::<T>::save_compute_request(
 						suitable_miner.node_id.clone(), 

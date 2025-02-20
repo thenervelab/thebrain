@@ -598,6 +598,7 @@ pub mod pallet {
 
 			let miner_request = MinerComputeRequest {
 				request_id,
+				compute_request_id: request_id,
 				miner_account_id: miner_account_id.clone(),
 				plan_id,
 				job_id: None,
@@ -1129,8 +1130,18 @@ pub mod pallet {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
 
+			let fail_reason_str = String::from_utf8_lossy(&fail_reason).into_owned();
+
+			// Check if the fail reason contains the specific error message
+			let new_status = if fail_reason_str.contains("No Cloud-Init CID provided") {
+				log::warn!("Cloud-Init CID error detected. Setting status to Failed.");
+				ComputeRequestStatus::Failed
+			} else {
+				ComputeRequestStatus::Pending
+			};
+
 			// Find and update the compute request
-			Self::update_compute_request_status(request_id, ComputeRequestStatus::Pending)?;
+			Self::update_compute_request_status(request_id, new_status)?;
 
 			// // Remove the specific compute request from storage
 			// <MinerComputeRequests<T>>::mutate(&node_id, |requests| {
@@ -1148,7 +1159,7 @@ pub mod pallet {
 					},
 					None => Err(Error::<T>::ComputeRequestNotFound)
 				}
-			})?;		
+			})?;
 
 			Ok(().into())
 		}		
@@ -1368,6 +1379,22 @@ pub mod pallet {
         ///
         /// An Option containing the MinerComputeRequest if found
         pub fn get_miner_compute_request_by_id(
+            request_id: u128
+        ) -> Option<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+            // Iterate through all miner compute requests
+            for (_, miner_requests) in MinerComputeRequests::<T>::iter() {
+                // Find a request matching the request ID
+                if let Some(miner_request) = miner_requests.iter()
+                    .find(|req| req.request_id == request_id) 
+                {
+                    return Some(miner_request.clone());
+                }
+            }
+            // No matching request found
+            None
+        }
+
+		pub fn get_miner_compute_request_by_compute_request_id(
             request_id: u128
         ) -> Option<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
             // Iterate through all miner compute requests

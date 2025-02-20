@@ -49,6 +49,7 @@ pub struct MinerComputeRequest<BlockNumber,Hash> {
     pub vnc_port: Option<u64>,
     pub ip_assigned: Option<Vec<u8>>,
     pub request_id: u128,
+    pub compute_request_id: u128,
     pub plan_id: Hash,
     pub created_at: BlockNumber,
     pub fullfilled: bool,
