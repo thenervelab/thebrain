@@ -109,7 +109,7 @@ pub mod pallet {
 
 		// Helper method to list bucket contents
 		fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
-			let file_api_endpoint = "http://46.105.223.238:8888"; 
+			let file_api_endpoint = "http://localhost:8888"; 
 			let url = format!("{}/buckets/{}?list=true", file_api_endpoint, bucket_name);
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
 
