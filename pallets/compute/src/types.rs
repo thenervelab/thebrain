@@ -21,7 +21,6 @@ pub struct ComputeRequest<AccountId, BlockNumberFor, Hash>
     pub plan_id: Hash,
     pub status: ComputeRequestStatus, // Optional: to track request status
     pub created_at: BlockNumberFor,
-    pub last_charged_at: Option<BlockNumberFor>,
     pub owner: AccountId,
     pub selected_image: ImageMetadata,
     pub is_assigned: bool, // Optional: to track if the request is assigned
@@ -49,7 +48,6 @@ pub struct MinerComputeRequest<BlockNumber,Hash> {
     pub vnc_port: Option<u64>,
     pub ip_assigned: Option<Vec<u8>>,
     pub request_id: u128,
-    pub compute_request_id: u128,
     pub plan_id: Hash,
     pub created_at: BlockNumber,
     pub fullfilled: bool,

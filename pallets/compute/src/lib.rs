@@ -598,7 +598,6 @@ pub mod pallet {
 
 			let miner_request = MinerComputeRequest {
 				request_id,
-				compute_request_id: request_id,
 				miner_account_id: miner_account_id.clone(),
 				plan_id,
 				job_id: None,
@@ -1267,7 +1266,6 @@ pub mod pallet {
                 plan_id,
                 status: ComputeRequestStatus::Pending,
                 created_at: current_block,
-                last_charged_at: None,
                 owner: owner.clone(),
                 selected_image,
                 is_assigned: false,	
@@ -1304,7 +1302,7 @@ pub mod pallet {
         pub fn get_unfulfilled_miner_compute_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
             MinerComputeRequests::<T>::get(&node_id)
                 .into_iter()
-                .filter(|request| !request.fullfilled && request.job_id.is_none())
+                .filter(|request| !request.fullfilled && request.job_id.is_none() && request.fail_reason.is_none())
                 .collect()
         }
 
@@ -1312,7 +1310,7 @@ pub mod pallet {
 		pub fn get_pending_job_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
 			MinerComputeRequests::<T>::get(&node_id)
 				.into_iter()
-				.filter(|request| request.job_id.is_some() && !request.fullfilled)
+				.filter(|request| request.job_id.is_some() && !request.fullfilled && request.fail_reason.is_none())
 				.collect()
 		}
 
@@ -1320,15 +1318,15 @@ pub mod pallet {
 		pub fn get_pending_vnc_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
 			MinerComputeRequests::<T>::get(&node_id)
 				.into_iter()
-				.filter(|request| request.job_id.is_some() && request.fullfilled && request.vnc_port.is_none())
+				.filter(|request| request.job_id.is_some() && !request.fullfilled && request.fail_reason.is_none() && request.vnc_port.is_none())
 				.collect()
-		}
+		} 
 
 		/// Helper function to get miner compute requests with a job_id that are not yet fulfilled
 		pub fn get_pending_nebula_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
 			MinerComputeRequests::<T>::get(&node_id)
 				.into_iter()
-				.filter(|request| request.job_id.is_some() && request.fullfilled && request.hypervisor_ip.is_none())
+				.filter(|request| request.job_id.is_some() && request.fullfilled && request.hypervisor_ip.is_none() && request.fail_reason.is_none())
 				.collect()
 		}
 
@@ -1350,7 +1348,7 @@ pub mod pallet {
             for (_, miner_requests) in MinerComputeRequests::<T>::iter() {
                 // Find a request matching the plan ID
                 if let Some(miner_request) = miner_requests.iter()
-                    .find(|req| req.plan_id == plan_id) 
+                    .find(|req| req.plan_id == plan_id && req.fullfilled) 
                 {
                     // Check the corresponding compute request to match the account ID
                     let compute_request_match = ComputeRequests::<T>::get(&account_id)
@@ -1385,7 +1383,7 @@ pub mod pallet {
             for (_, miner_requests) in MinerComputeRequests::<T>::iter() {
                 // Find a request matching the request ID
                 if let Some(miner_request) = miner_requests.iter()
-                    .find(|req| req.request_id == request_id) 
+                    .find(|req| req.request_id == request_id && req.fullfilled) 
                 {
                     return Some(miner_request.clone());
                 }
@@ -1394,21 +1392,24 @@ pub mod pallet {
             None
         }
 
-		pub fn get_miner_compute_request_by_compute_request_id(
-            request_id: u128
-        ) -> Option<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
-            // Iterate through all miner compute requests
-            for (_, miner_requests) in MinerComputeRequests::<T>::iter() {
-                // Find a request matching the request ID
-                if let Some(miner_request) = miner_requests.iter()
-                    .find(|req| req.request_id == request_id) 
-                {
-                    return Some(miner_request.clone());
-                }
-            }
-            // No matching request found
-            None
-        }
+		pub fn get_miner_compute_requests_with_failure(
+			request_id: u128
+		) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+			let mut failed_requests = Vec::new();
+		
+			// Iterate through all miner compute requests
+			for (_, miner_requests) in MinerComputeRequests::<T>::iter() {
+				// Find all requests matching the request ID with a fail reason
+				failed_requests.extend(
+					miner_requests.iter()
+						.filter(|req| req.request_id == request_id && req.fail_reason.is_some())
+						.cloned()
+				);
+			}
+		
+			// Return the vector of failed requests
+			failed_requests
+		}
 
         /// Helper function to find a MinerComputeRequest by account ID and plan ID
         // get reuqets id and node id of minner 
@@ -1416,7 +1417,7 @@ pub mod pallet {
             account_id: T::AccountId, 
             plan_id: T::Hash
         ) -> Option<(u128, Vec<u8>, Option<Vec<u8>>)> {
-            // Reuse the get_miner_compute_request method
+            // Reuse  method
             Self::get_miner_compute_request(account_id, plan_id)
                 .map(|miner_request| (
                     miner_request.request_id, 
@@ -1436,12 +1437,10 @@ pub mod pallet {
 		
 			// Retrieve and modify miner requests
 			let mut miner_requests = MinerComputeRequests::<T>::get(&node_id);
-			let request_index = miner_requests.iter()
-				.position(|req| req.request_id == request_id)
-				.ok_or(Error::<T>::ComputeRequestNotFound)?;
 			
-			miner_requests.remove(request_index);
-			MinerComputeRequests::<T>::insert(&node_id, miner_requests);
+            // Remove all miner requests with the matching request_id
+            miner_requests.retain(|req| req.request_id != request_id);
+            MinerComputeRequests::<T>::insert(&node_id, miner_requests); 
 		
 			// Remove from ComputeRequests more efficiently
 			ComputeRequests::<T>::mutate(&user_id, |requests| {

@@ -1495,15 +1495,24 @@ pub mod pallet {
 					node_metrics_match
 				}) {
 
-					// let _ = pallet_compute::Pallet::<T>::get_miner_compute_request_by_compute_request_id(compute_request.request_id);
+					let failed_requests = pallet_compute::Pallet::<T>::get_miner_compute_requests_with_failure(compute_request.request_id);
 
-					// Assign the compute request to the suitable miner
-					pallet_compute::Pallet::<T>::save_compute_request(
-						suitable_miner.node_id.clone(), 
-						compute_request.plan_id, 
-						compute_request.request_id,
-						compute_request.owner
+					// Check if the suitable miner's node ID is not in the failed requests
+					let is_miner_failed = failed_requests.iter().any(|req| 
+						req.miner_account_id == suitable_miner.node_id
 					);
+					
+                    // only assign if not already assigned
+					if !is_miner_failed {
+					    // Assign the compute request to the suitable miner
+					    pallet_compute::Pallet::<T>::save_compute_request(
+					    	suitable_miner.node_id.clone(), 
+					    	compute_request.plan_id, 
+					    	compute_request.request_id,
+					    	compute_request.owner
+					    );						
+					}
+
 				}
 			}
 		}

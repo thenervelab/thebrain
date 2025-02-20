@@ -87,6 +87,7 @@ pub mod pallet {
     use frame_system::offchain::SigningTypes;
     use frame_system::offchain::SendUnsignedTransaction;
     use frame_support::traits::ExistenceRequirement;
+    use pallet_compute::ComputeRequestStatus;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -1110,18 +1111,27 @@ pub mod pallet {
                                 // Update the storage (Gbs Used , Last Charged at) for this subscription
                                 subscription.last_charged_at = current_block;
                                 UserPlanSubscriptions::<T>::insert(&account_id, subscription.clone());
-                                if pallet_compute::Pallet::<T>::compute_stop_request_exists(&account_id, &subscription.package.id) {
-                                    // boot the vm and delete the stop request
-                                    let _ = pallet_compute::Pallet::<T>::delete_miner_compute_stop_request(
-                                        &compute_request.miner_account_id.clone(),
-                                        &account_id.clone(),
-                                        &subscription.package.id
-                                    );
+
+                                let compute_request = pallet_compute::Pallet::<T>::get_compute_request_by_id(compute_request.request_id);
+
+                                if compute_request.unwrap().status == ComputeRequestStatus::Stopped {
                                     let _ = pallet_compute::Pallet::<T>::add_miner_compute_boot_request(
                                         account_id.clone(),
                                         subscription.package.id
                                     );
                                 }
+                                // if pallet_compute::Pallet::<T>::compute_stop_request_exists(&account_id, &subscription.package.id) {
+                                //     // boot the vm and delete the stop request
+                                //     let _ = pallet_compute::Pallet::<T>::delete_miner_compute_stop_request(
+                                //         &compute_request.miner_account_id.clone(),
+                                //         &account_id.clone(),
+                                //         &subscription.package.id
+                                //     );
+                                //     let _ = pallet_compute::Pallet::<T>::add_miner_compute_boot_request(
+                                //         account_id.clone(),
+                                //         subscription.package.id
+                                //     );
+                                // }
                             } else {
                                 if Self::is_compute_request_in_grace_period(subscription.last_charged_at, current_block) {
                                     // Still within grace period
