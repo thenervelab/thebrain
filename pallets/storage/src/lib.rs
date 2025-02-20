@@ -51,6 +51,8 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+	
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {

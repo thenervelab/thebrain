@@ -45,6 +45,7 @@ pub struct MinerComputeRequest<BlockNumber,Hash> {
     pub miner_account_id: Vec<u8>,
     pub job_id: Option<Vec<u8>>,
     pub hypervisor_ip: Option<Vec<u8>>,
+    pub fail_reason: Option<Vec<u8>>,
     pub vnc_port: Option<u64>,
     pub ip_assigned: Option<Vec<u8>>,
     pub request_id: u128,
@@ -159,6 +160,7 @@ impl<T: Config> SignedPayload<T> for ComputeRequestFulfilledPayload<T> {
 pub struct ComputeRequestFailurePayload<T: Config> {
 	pub node_id: Vec<u8>,
 	pub request_id: u128,
+    pub fail_reason: Vec<u8>,
     pub public: T::Public,
 	pub _marker: PhantomData<T>,
 }

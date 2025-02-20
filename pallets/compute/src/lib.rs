@@ -425,7 +425,7 @@ pub mod pallet {
 						.and_provides(("submit_compute_boot_request_fulfillment", unique_hash)) // Unique key
 						.build()
 				},
-				Call::handle_miner_compute_request_failure { node_id, request_id } => {
+				Call::handle_miner_compute_request_failure { node_id, request_id, fail_reason } => {
 					// Additional validation checks
 					let block_number = <frame_system::Pallet<T>>::block_number();
 					
@@ -604,6 +604,7 @@ pub mod pallet {
 				hypervisor_ip: None,
 				ip_assigned: None,
 				vnc_port: None,
+				fail_reason: None,
 				created_at: current_block,
 				fullfilled: false,
 			};
@@ -1122,7 +1123,8 @@ pub mod pallet {
 		pub fn handle_miner_compute_request_failure(
 			origin: OriginFor<T>,
 			node_id: Vec<u8>,
-			request_id: u128
+			request_id: u128,
+			fail_reason: Vec<u8>
 		) -> DispatchResultWithPostInfo {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
@@ -1130,10 +1132,23 @@ pub mod pallet {
 			// Find and update the compute request
 			Self::update_compute_request_status(request_id, ComputeRequestStatus::Pending)?;
 
-			// Remove the specific compute request from storage
-			<MinerComputeRequests<T>>::mutate(&node_id, |requests| {
-				requests.retain(|req| req.request_id != request_id);
-			});
+			// // Remove the specific compute request from storage
+			// <MinerComputeRequests<T>>::mutate(&node_id, |requests| {
+			// 	requests.retain(|req| req.request_id != request_id);
+			// });
+
+			// Retrieve miner compute requests for the given node ID
+			MinerComputeRequests::<T>::mutate(node_id.clone(), |requests| {
+				// Find the request with the matching request_id
+				match requests.iter_mut().find(|r| r.request_id == request_id) {
+					Some(request) => {
+						// Mark the request as fulfilled
+						request.fail_reason = Some(fail_reason.clone());						
+						Ok(())
+					},
+					None => Err(Error::<T>::ComputeRequestNotFound)
+				}
+			})?;		
 
 			Ok(().into())
 		}		
@@ -1466,7 +1481,8 @@ pub mod pallet {
 		
 		pub fn call_handle_miner_compute_request_failure(
 			node_id: Vec<u8>,
-			request_id: u128
+			request_id: u128,
+			fail_reason: Vec<u8>
 		) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"Compute::handle_miner_compute_request_failure_lock",
@@ -1491,6 +1507,7 @@ pub mod pallet {
 						ComputeRequestFailurePayload {
 							node_id: node_id.clone(),
 							request_id: request_id.clone(),
+							fail_reason: fail_reason.clone(),
 							public: account.public.clone(),
 							_marker: PhantomData,
 						}
@@ -1500,6 +1517,7 @@ pub mod pallet {
 						Call::handle_miner_compute_request_failure {
 							node_id: payload.node_id,
 							request_id: payload.request_id,
+							fail_reason: payload.fail_reason,
 						}
 					},
 				);
@@ -2610,24 +2628,35 @@ pub mod pallet {
 									// Mark the request as fulfilled
 									Self::mark_compute_request_fulfilled_offchain(node_id.clone(), miner_request.request_id);
 								},
+								"InProgress"=>{
+									log::warn!(
+										"Unknown VM Job Status - Job ID: {}, Name: {}, Status: {}",
+										job_id, name, status
+									);
+								},
+								"Pending"=>{
+									log::warn!(
+										"Unknown VM Job Status - Job ID: {}, Name: {}, Status: {}",
+										job_id, name, status
+									);
+								},
 								"Failed" => {
 									let error_msg = json_response
 										.get("error")
 										.and_then(|v| v.as_str())
 										.unwrap_or("Unknown error");
-									// Mark This Request as Failed
-									log::error!(
-										"VM Job Failed - Job ID: {}, Name: {}, Error: {}",
-										job_id, name, error_msg
-									);
+									
 									// Update the status to Pending again so it can be reassigned to another miner 
-									Self::call_handle_miner_compute_request_failure(node_id.clone(), miner_request.request_id);
+									Self::call_handle_miner_compute_request_failure(node_id.clone(), miner_request.request_id, error_msg.as_bytes().to_vec());
 								},
 								_ => {
-									log::warn!(
-										"Unknown VM Job Status - Job ID: {}, Name: {}, Status: {}",
-										job_id, name, status
-									);
+									let error_msg = json_response
+										.get("error")
+										.and_then(|v| v.as_str())
+										.unwrap_or("Unknown error");
+									
+									// Update the status to Pending again so it can be reassigned to another miner 
+									Self::call_handle_miner_compute_request_failure(node_id.clone(), miner_request.request_id, error_msg.as_bytes().to_vec());
 								}
 							}
 						} else {

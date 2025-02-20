@@ -1622,7 +1622,6 @@ pub mod pallet {
             } else {
 				log::error!("❌ Could not acquire lock for updating metrics data");
 			};
-
 		}
 
    }
