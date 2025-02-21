@@ -213,8 +213,15 @@ pub mod pallet {
 		_, 
 		Blake2_128Concat, 
 		Vec<u8>, // OS Name (e.g., "ubuntu", "fedora")
-		Vec<u8>, // URL for the OS disk image
+		ImageDetails, // URL for the OS disk image
 	>;
+    
+    #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo)]
+    pub struct ImageDetails {
+        pub url: Vec<u8>,
+        pub description: Vec<u8>,
+        pub name: Vec<u8>,
+    }
 
     #[pallet::storage]
     #[pallet::getter(fn cdn_locations)]
@@ -695,7 +702,9 @@ pub mod pallet {
         pub fn set_os_disk_image_url(
             origin: OriginFor<T>,
             os_name: Vec<u8>,
-            url: Vec<u8>
+            url: Vec<u8>,
+            name: Vec<u8>,
+            description: Vec<u8>
         ) -> DispatchResultWithPostInfo {
             // Ensure only sudo can set the URL
             ensure_root(origin)?;
@@ -703,13 +712,19 @@ pub mod pallet {
             // Validate the URL (basic check)
             ensure!(!url.is_empty(), Error::<T>::InvalidOSDiskImageUrl);
 
+            let os_details = ImageDetails {
+                url,
+                name,
+                description
+            };
+
             // Store the URL for the specified OS
-            OSDiskImageUrls::<T>::insert(os_name.clone(), url.clone());
+            OSDiskImageUrls::<T>::insert(os_name.clone(), os_details.clone());
 
             // Emit an event
             Self::deposit_event(Event::OSDiskImageUrlSet { 
                 os_name, 
-                url 
+                url: os_details.url 
             });
 
             Ok(().into())
@@ -895,7 +910,7 @@ pub mod pallet {
             // Convert marketplace ImageMetadata to compute pallet ImageMetadata
             let compute_image_metadata = pallet_compute::ImageMetadata {
                 name: selected_image_name.clone(),
-                image_url,
+                image_url: image_url.url,
             };
 
             // Determine the price (using the price from the plan)
