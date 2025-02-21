@@ -577,6 +577,7 @@ pub mod pallet {
             plan_technical_description: Vec<u8>,
             // miner_id: Option<Vec<u8>>,
             price: u128,
+            name: Vec<u8>,
             // created_date: Vec<u8>,
         ) -> DispatchResult {
             // Ensure the caller is sudo
@@ -594,6 +595,7 @@ pub mod pallet {
                 plan_technical_description,
                 is_suspended: false, // By default, the plan is active
                 price,
+                name,
             };
 
             // Insert the new plan into storage

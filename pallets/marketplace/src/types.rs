@@ -57,6 +57,7 @@ pub struct Plan<Hash> {
     pub plan_technical_description: Vec<u8>, // JSON with technical details
     pub is_suspended: bool,
     pub price: u128,
+    pub name: Vec<u8>,
 }
 
 #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
