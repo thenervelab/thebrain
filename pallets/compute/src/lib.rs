@@ -879,7 +879,7 @@ pub mod pallet {
 
 
 		// Extrinsic to request compute boot for a specific plan
-		#[pallet::call_index(19)]
+		#[pallet::call_index(20)]
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
 		pub fn force_request_compute_delete(
 			origin: OriginFor<T>,
@@ -890,11 +890,11 @@ pub mod pallet {
 			ensure_root(origin)?;
 
 			// Call the compute pallet's stop request function
-			Self::add_delete_miner_compute_request(plan_id, account_id)?;
+			Self::add_delete_miner_compute_request(plan_id, account_id.clone())?;
 
 			// Emit an event 
 			Self::deposit_event(Event::ComputeDeleteRequested { 
-				owner: account_id,
+				owner: account_id.clone(),
 				caller: account_id, 
 				plan_id
 			});
