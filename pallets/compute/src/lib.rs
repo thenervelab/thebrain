@@ -388,7 +388,7 @@ pub mod pallet {
 						.build()
 				},
 
-				Call::update_miner_compute_request { node_id, request_id, job_id } => {
+				Call::update_miner_compute_request { node_id, request_id, job_id, ip } => {
 					// Additional validation checks
 					let block_number = <frame_system::Pallet<T>>::block_number();
 					
@@ -396,6 +396,7 @@ pub mod pallet {
 					data.extend_from_slice(&block_number.encode());
 					data.extend_from_slice(node_id);
 					data.extend_from_slice(job_id);
+					data.extend_from_slice(ip);
 					data.extend_from_slice(&request_id.encode());
 					data.extend_from_slice(&Self::get_current_timestamp().encode());
 					let unique_hash = sp_io::hashing::blake2_256(&data);
@@ -448,7 +449,7 @@ pub mod pallet {
 						.and_provides(("handle_miner_compute_request_failure",unique_hash))
 						.build()					
 				},
-				Call::mark_compute_request_fulfilled { node_id, request_id, vm_name: _ } => {
+				Call::mark_compute_request_fulfilled { node_id, request_id} => {
 					// Additional validation checks
 					let block_number = <frame_system::Pallet<T>>::block_number();
 					
@@ -636,6 +637,7 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			request_id: u128,
 			job_id: Vec<u8>,
+			ip: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
@@ -652,7 +654,7 @@ pub mod pallet {
 						if let Some((owner, _)) = Self::find_compute_request_by_id(request_id) {
 							// Emit event to indicate request fulfillment
 							Self::deposit_event(Event::ComputeRequestFulfilled {
-								node: node_id,
+								node: node_id.clone(),
 								request_id,
 								owner
 							});
@@ -663,6 +665,10 @@ pub mod pallet {
 					None => Err(Error::<T>::ComputeRequestNotFound)
 				}
 			})?;
+
+
+			// Handle the result of assign_ip and convert the error
+			Self::assign_ip(node_id.clone(), job_id.clone(), request_id, ip.clone())?;
 			
 			Ok(().into())
 		}
@@ -1054,7 +1060,6 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			node_id: Vec<u8>,
 			request_id: u128,
-			vm_name: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
@@ -1086,8 +1091,6 @@ pub mod pallet {
 				}
 			})?;
 
-			// Handle the result of assign_ip and convert the error
-			Self::assign_ip(node_id.clone(), vm_name.clone(), request_id)?;
 			
 			Ok(().into())
 		}
@@ -1240,38 +1243,33 @@ pub mod pallet {
 		pub fn assign_ip(
 			node_id: Vec<u8>,
 			vm_uuid: Vec<u8>,
-			request_id: u128
-
-
+			request_id: u128,
+			ip: Vec<u8>,
 		) -> DispatchResult {
 			// Check if the VM already has an assigned IP
 			ensure!(!AssignedIps::<T>::get().contains(&vm_uuid), Error::<T>::VmAlreadyHasIp);
 		
-			// Get the first available IP
+			// Get the current list of available IPs
 			let mut available_ips = AvailableIps::<T>::get();
-			if let Some(ip) = available_ips.pop() {
-				// Update storage
-				AvailableIps::<T>::put(available_ips);
-		
-				let mut current_assigned_ips = AssignedIps::<T>::get();
-				current_assigned_ips.push(vm_uuid.clone());
-				AssignedIps::<T>::put(current_assigned_ips);
-				IpToVm::<T>::insert(&ip, &vm_uuid);
-				VmToIp::<T>::insert(&vm_uuid, &ip);
-		
-				// Find and update the MinerComputeRequest with the assigned IP
-				MinerComputeRequests::<T>::mutate(node_id.clone(), |requests| {
-					for request in requests.iter_mut() {
-						if request.request_id == request_id {
-							request.ip_assigned = Some(ip.clone());
-							break;
-						}
-					}
-				});
-		
-				// Emit event
-				Self::deposit_event(Event::IpAssigned { vm_uuid, ip });
+
+			// Remove the specified IP from the available IPs
+			if let Some(pos) = available_ips.iter().position(|x| *x == ip) {
+				available_ips.remove(pos); // Remove the IP if found
+			} else {
+				log::warn!("IP not found in available IPs");
 			}
+
+			// Update storage with the new list of available IPs
+			AvailableIps::<T>::put(available_ips);
+
+			let mut current_assigned_ips = AssignedIps::<T>::get();
+			current_assigned_ips.push(vm_uuid.clone());
+			AssignedIps::<T>::put(current_assigned_ips);
+			IpToVm::<T>::insert(&ip, &vm_uuid);
+			VmToIp::<T>::insert(&vm_uuid, &ip);
+	
+			// Emit event
+			Self::deposit_event(Event::IpAssigned { vm_uuid, ip });
 		
 			Ok(())
 		}
@@ -1602,7 +1600,6 @@ pub mod pallet {
 		pub fn mark_compute_request_fulfilled_offchain(
 			node_id: Vec<u8>,
 			request_id: u128,
-			vm_name: Vec<u8>,
 		) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"Compute::mark_compute_request_fulfilled_lock",
@@ -1627,7 +1624,6 @@ pub mod pallet {
 						ComputeRequestFulfilledPayload {
 							node_id: node_id.clone(),
 							request_id: request_id.clone(),
-							vm_name: vm_name.clone(),
 							public: account.public.clone(),
 							_marker: PhantomData,
 						}
@@ -1637,7 +1633,6 @@ pub mod pallet {
 						Call::mark_compute_request_fulfilled {
 							node_id: payload.node_id,
 							request_id: payload.request_id,
-							vm_name: payload.vm_name,
 						}
 					},
 				);
@@ -2108,6 +2103,7 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			request_id: u128,
 			job_id: Vec<u8>,
+			ip: Vec<u8>,
 		) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"Compute::update_miner_compute_request_lock",
@@ -2133,6 +2129,7 @@ pub mod pallet {
 							node_id: node_id.clone(),
 							request_id: request_id.clone(),
 							job_id: job_id.clone(),
+							ip: ip.clone(),
 							public: account.public.clone(),
 							_marker: PhantomData,
 						}
@@ -2142,7 +2139,8 @@ pub mod pallet {
 						Call::update_miner_compute_request {
 							node_id: payload.node_id,
 							request_id: payload.request_id,
-							job_id: job_id.clone(),
+							job_id: payload.job_id,
+							ip: payload.ip,
 						}
 					},
 				);
@@ -2204,108 +2202,117 @@ pub mod pallet {
 							.cloned()
 					});
 
-				if let Some(compute_request) = compute_request {
-					// Parse technical description and create VM
-					match serde_json::from_slice::<TechnicalDescription>(&compute_request.plan_technical_description) {
-						Ok(tech_desc) => {
-							let url = "http://localhost:3030/start-vm";
-							let json_payload = if compute_request.cloud_init_cid.is_none() {
-								serde_json::json!({
-									"memory": format!("{}M", tech_desc.ram_gb * 1024),
-									"vcpus": format!("{}", tech_desc.cpu_cores),
-									"disk_size": format!("{}Gi", tech_desc.storage_gb),
-									"is_sev_enabled": tech_desc.is_sev_enabled,
-									"inbound_bandwidth": tech_desc.inbound_bandwidth,
-									"outbound_bandwidth": tech_desc.outbound_bandwidth,
-									"gpu": tech_desc.gpu,
-									"gpu_type": tech_desc.gpu_type,
-									"image_url": String::from_utf8_lossy(&compute_request.selected_image.image_url).to_string(),
-									"os_variant": String::from_utf8_lossy(&compute_request.selected_image.name).to_string(),
-								})
-							} else {
-								serde_json::json!({
-									"memory": format!("{}M", tech_desc.ram_gb * 1024),
-									"vcpus": format!("{}", tech_desc.cpu_cores),
-									"disk_size": format!("{}Gi", tech_desc.storage_gb),
-									"is_sev_enabled": tech_desc.is_sev_enabled,
-									"inbound_bandwidth": tech_desc.inbound_bandwidth,
-									"outbound_bandwidth": tech_desc.outbound_bandwidth,
-									"gpu": tech_desc.gpu,
-									"gpu_type": tech_desc.gpu_type,
-									"image_url": String::from_utf8_lossy(&compute_request.selected_image.image_url).to_string(),
-									"os_variant": String::from_utf8_lossy(&compute_request.selected_image.name).to_string(),
-									"cloud_init_path": String::from_utf8_lossy(&compute_request.cloud_init_cid.unwrap()).to_string()
-								})
-							};
-
-							let json_string = json_payload.to_string();
-							let content_length = json_string.len();
-
-							log::info!("JSON Payload: {}", json_string);
-
-							let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(100_000));
-							let request = sp_runtime::offchain::http::Request::post(url, vec![json_string]);
-
-							let pending = request
-								.add_header("Content-Type", "application/json")
-								.add_header("Content-Length", &content_length.to_string())
-								.deadline(deadline)
-								.send()
-								.map_err(|err| {
-									log::error!("❌ Error making Request: {:?}", err);
-									sp_runtime::offchain::http::Error::IoError
-								})?;
-
-							let response = pending
-								.try_wait(deadline)
-								.map_err(|err| {
-									log::error!("❌ Error getting Response: {:?}", err);
-									sp_runtime::offchain::http::Error::DeadlineReached
-								})??;
-
-							if response.code != 202 {
-								log::error!(
-									"Unexpected status code: {}, VM creation failed. Response body: {:?}",
-									response.code, response
-								);
-								return Err(sp_runtime::offchain::http::Error::Unknown);
-							}
-
-							let response_body = response.body();
-							let response_body_vec = response_body.collect::<Vec<u8>>();
-							let response_str = core::str::from_utf8(&response_body_vec)
-								.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
-							
-							match serde_json::from_str::<serde_json::Value>(response_str) {
-								Ok(json_response) => {
-									if let (Some(job_id), Some(_name), Some(_status)) = (
-										json_response.get("job_id").and_then(|v| v.as_str()),
-										json_response.get("name").and_then(|v| v.as_str()),
-										json_response.get("status").and_then(|v| v.as_str())
-									) {
-										Self::update_miner_compute_request_offchain(
-											node_id.clone(),
-											miner_request.request_id,
-											job_id.as_bytes().to_vec(),
-										);
-									} else {
-										log::warn!("Missing expected fields in VM creation response");
-									}
-								},
-								Err(e) => {
-									log::error!("Failed to parse VM creation response JSON: {:?}", e);
+				let mut available_ips = AvailableIps::<T>::get();
+				if let Some(ip) = available_ips.pop() {
+					if let Some(compute_request) = compute_request {
+						// Parse technical description and create VM
+						match serde_json::from_slice::<TechnicalDescription>(&compute_request.plan_technical_description) {
+							Ok(tech_desc) => {
+								let url = "http://localhost:3030/start-vm";
+								let json_payload = if compute_request.cloud_init_cid.is_none() {
+									serde_json::json!({
+										"memory": format!("{}M", tech_desc.ram_gb * 1024),
+										"vcpus": format!("{}", tech_desc.cpu_cores),
+										"disk_size": format!("{}Gi", tech_desc.storage_gb),
+										"is_sev_enabled": tech_desc.is_sev_enabled,
+										"inbound_bandwidth": tech_desc.inbound_bandwidth,
+										"outbound_bandwidth": tech_desc.outbound_bandwidth,
+										"gpu": tech_desc.gpu,
+										"gpu_type": tech_desc.gpu_type,
+										"image_url": String::from_utf8_lossy(&compute_request.selected_image.image_url).to_string(),
+										"os_variant": String::from_utf8_lossy(&compute_request.selected_image.name).to_string(),
+										"assigned_ip" : String::from_utf8_lossy(&ip).to_string(),
+									})
+								} else {
+									serde_json::json!({
+										"memory": format!("{}M", tech_desc.ram_gb * 1024),
+										"vcpus": format!("{}", tech_desc.cpu_cores),
+										"disk_size": format!("{}Gi", tech_desc.storage_gb),
+										"is_sev_enabled": tech_desc.is_sev_enabled,
+										"inbound_bandwidth": tech_desc.inbound_bandwidth,
+										"outbound_bandwidth": tech_desc.outbound_bandwidth,
+										"gpu": tech_desc.gpu,
+										"gpu_type": tech_desc.gpu_type,
+										"image_url": String::from_utf8_lossy(&compute_request.selected_image.image_url).to_string(),
+										"os_variant": String::from_utf8_lossy(&compute_request.selected_image.name).to_string(),
+										"cloud_init_path": String::from_utf8_lossy(&compute_request.cloud_init_cid.unwrap()).to_string(),
+										"assigned_ip" : String::from_utf8_lossy(&ip).to_string(),
+									})
+								};
+	
+								let json_string = json_payload.to_string();
+								let content_length = json_string.len();
+	
+								log::info!("JSON Payload: {}", json_string);
+	
+								let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(100_000));
+								let request = sp_runtime::offchain::http::Request::post(url, vec![json_string]);
+	
+								let pending = request
+									.add_header("Content-Type", "application/json")
+									.add_header("Content-Length", &content_length.to_string())
+									.deadline(deadline)
+									.send()
+									.map_err(|err| {
+										log::error!("❌ Error making Request: {:?}", err);
+										sp_runtime::offchain::http::Error::IoError
+									})?;
+	
+								let response = pending
+									.try_wait(deadline)
+									.map_err(|err| {
+										log::error!("❌ Error getting Response: {:?}", err);
+										sp_runtime::offchain::http::Error::DeadlineReached
+									})??;
+	
+								if response.code != 202 {
+									log::error!(
+										"Unexpected status code: {}, VM creation failed. Response body: {:?}",
+										response.code, response
+									);
 									return Err(sp_runtime::offchain::http::Error::Unknown);
 								}
+	
+								let response_body = response.body();
+								let response_body_vec = response_body.collect::<Vec<u8>>();
+								let response_str = core::str::from_utf8(&response_body_vec)
+									.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+								
+								match serde_json::from_str::<serde_json::Value>(response_str) {
+									Ok(json_response) => {
+										if let (Some(job_id), Some(_name), Some(_status)) = (
+											json_response.get("job_id").and_then(|v| v.as_str()),
+											json_response.get("name").and_then(|v| v.as_str()),
+											json_response.get("status").and_then(|v| v.as_str())
+										) {
+											Self::update_miner_compute_request_offchain(
+												node_id.clone(),
+												miner_request.request_id,
+												job_id.as_bytes().to_vec(),
+												ip.clone(),
+											);
+										} else {
+											log::warn!("Missing expected fields in VM creation response");
+										}
+									},
+									Err(e) => {
+										log::error!("Failed to parse VM creation response JSON: {:?}", e);
+										return Err(sp_runtime::offchain::http::Error::Unknown);
+									}
+								}
+							}
+							Err(e) => {
+								log::error!(
+									"Failed to parse technical description for request ID {}: {:?}",
+									miner_request.request_id,
+									e
+								);
 							}
 						}
-						Err(e) => {
-							log::error!(
-								"Failed to parse technical description for request ID {}: {:?}",
-								miner_request.request_id,
-								e
-							);
-						}
 					}
+				}
+				else{
+					log::info!("No available IP addresses to allocate VM");
 				}
 			}
 			Ok(())
@@ -2693,7 +2700,7 @@ pub mod pallet {
 							match status {
 								"Completed" => {
 									// Mark the request as fulfilled
-									Self::mark_compute_request_fulfilled_offchain(node_id.clone(), miner_request.request_id, job_id.as_bytes().to_vec());
+									Self::mark_compute_request_fulfilled_offchain(node_id.clone(), miner_request.request_id);
 								},
 								"InProgress"=>{
 									log::warn!(
