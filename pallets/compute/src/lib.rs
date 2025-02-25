@@ -116,6 +116,10 @@ pub mod pallet {
 	pub(super) type IpToVm<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, Vec<u8>>;	
 
 	#[pallet::storage]
+	#[pallet::getter(fn vm_to_ip)]
+	pub(super) type VmToIp<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, Vec<u8>>;
+
+	#[pallet::storage]
 	#[pallet::getter(fn next_request_id)]
 	pub type NextRequestId<T: Config> = StorageValue<_, u128, ValueQuery>;
 
@@ -1195,21 +1199,23 @@ pub mod pallet {
 		pub fn generate_release_ip_request_and_update_storage(
 			vm_name: Vec<u8>,
 		) -> DispatchResult {
+			// Get the IP associated with the VM name
+			let ip = VmToIp::<T>::get(&vm_name).ok_or(Error::<T>::VmHasNoIp)?;
+			
 			// Get current assigned IPs
 			let mut current_assigned_ips = AssignedIps::<T>::get();
 			
 			// Find and remove the VM UUID from assigned IPs
 			let ip_index = current_assigned_ips.iter().position(|x| *x == vm_name)
 				.ok_or(Error::<T>::VmHasNoIp)?;
-			let ip = current_assigned_ips[ip_index].clone();
 			current_assigned_ips.remove(ip_index);
 			
 			// Update the storage with the modified list
 			AssignedIps::<T>::put(current_assigned_ips);
 		
 			// Remove the reverse mapping
-			IpToVm::<T>::remove(&ip);
-
+			VmToIp::<T>::remove(&vm_name);
+		
 			let ip_release_request = IpReleaseRequest {
 				vm_name: vm_name.clone(),
 				ip: ip.clone(),
@@ -1223,7 +1229,7 @@ pub mod pallet {
 		
 			// Emit event
 			Self::deposit_event(Event::IpReturned { vm_uuid: vm_name, ip });
-		
+			
 			Ok(())
 		}
 
@@ -1246,6 +1252,7 @@ pub mod pallet {
 				current_assigned_ips.push(vm_uuid.clone());
 				AssignedIps::<T>::put(current_assigned_ips);
 				IpToVm::<T>::insert(&ip, &vm_uuid);
+				VmToIp::<T>::insert(&vm_uuid, &ip);
 		
 				// Find and update the MinerComputeRequest with the assigned IP
 				MinerComputeRequests::<T>::mutate(node_id.clone(), |requests| {
