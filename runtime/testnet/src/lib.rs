@@ -2940,7 +2940,7 @@ impl_runtime_apis! {
 				metrics_opt.map(|metrics| {
 					rpc_primitives_node_metrics::NodeMetricsData {
 						miner_id: String::from_utf8_lossy(&metrics.miner_id).into_owned(),
-						bandwidth_mbps: metrics.bandwidth_mbps,
+						bandwidth_bytes: metrics.bandwidth_mbps,
 						current_storage_bytes: metrics.current_storage_bytes,
 						total_storage_bytes: metrics.total_storage_bytes,
 						geolocation: String::from_utf8_lossy(&metrics.geolocation).into_owned(),
@@ -3000,10 +3000,10 @@ impl_runtime_apis! {
 						ipfs_storage_max: metrics.ipfs_storage_max,
 						cpu_model: String::from_utf8_lossy(&metrics.cpu_model).into_owned(),
 						cpu_cores: metrics.cpu_cores,
-						memory_mb: metrics.memory_mb,
-						free_memory_mb: metrics.free_memory_mb,
+						memory_bytes: metrics.memory_mb,
+						free_memory_bytes: metrics.free_memory_mb,
 						gpu_name: metrics.gpu_name.map(|gpu| String::from_utf8_lossy(&gpu).into_owned()),
-						gpu_memory_mb: metrics.gpu_memory_mb,
+						gpu_memory_bytes: metrics.gpu_memory_mb,
 						hypervisor_disk_type: metrics.hypervisor_disk_type.map(|hdt| String::from_utf8_lossy(&hdt).into_owned()),
 						vm_pool_disk_type: metrics.vm_pool_disk_type.map(|vpdt| String::from_utf8_lossy(&vpdt).into_owned()),
 					}

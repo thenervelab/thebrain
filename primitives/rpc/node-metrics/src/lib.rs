@@ -27,7 +27,7 @@ decl_runtime_apis! {
 #[derive( Clone,Serialize, Deserialize, TypeInfo, Encode, Decode)]
 pub struct NodeMetricsData {
     pub miner_id: String,
-    pub bandwidth_mbps: u32, // will come  from node specs
+    pub bandwidth_bytes: u32, // will come  from node specs
     pub current_storage_bytes: u64, // will come from node specs
     pub total_storage_bytes: u64, // will come from node specs
     pub geolocation: String, // will come from node specs
@@ -57,10 +57,10 @@ pub struct NodeMetricsData {
     pub ipfs_storage_max: u64,
     pub cpu_model: String,
     pub cpu_cores: u32,
-    pub memory_mb: u64,
-    pub free_memory_mb: u64,
+    pub memory_bytes: u64,
+    pub free_memory_bytes: u64,
     pub gpu_name: Option<String>,
-    pub gpu_memory_mb: Option<u32>,
+    pub gpu_memory_bytes: Option<u32>,
     pub hypervisor_disk_type: Option<String>,
     pub vm_pool_disk_type: Option<String>,
 }

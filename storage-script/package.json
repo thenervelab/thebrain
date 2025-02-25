@@ -10,7 +10,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@polkadot/api": "^15.0.2",
+    "@polkadot/api": "^15.6.1",
     "dotenv": "^16.4.7"
   }
 }
