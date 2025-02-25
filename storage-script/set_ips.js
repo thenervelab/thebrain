@@ -53,23 +53,24 @@ async function addAvailableIp(api, seedPhrase, ip) {
       throw error;
     }
   }
-  
-  async function setAvailableIps(api, seedPhrase) {
-    const startIp = 0x0A000080; // 10.0.80.1
-    const endIp = 0x0A00007FFF; // 10.0.127.255
+
+async function setAvailableIps(api, seedPhrase) {
+    const startIp = (10 << 24) | (0 << 16) | (80 << 8) | 1; // 10.0.80.1
+    const endIp = (10 << 24) | (0 << 16) | (127 << 8) | 255; // 10.0.127.255
 
     for (let ip = startIp; ip <= endIp; ip++) {
         const ipStr = `${(ip >> 24) & 0xFF}.${(ip >> 16) & 0xFF}.${(ip >> 8) & 0xFF}.${ip & 0xFF}`;
 
-        if (ipStr !== "10.0.80.1" && ipStr !== "10.0.80.2") {
-            // Convert nodeId to proper format
-            const ipBytes = api.createType("Vec<u8>", ipStr);
+        // Convert nodeId to proper format
+        console.log(`Adding IP: ${ipStr}`);
+        const ipBytes = api.createType("Vec<u8>", ipStr);
         
-            // Ensure the byte array is in the correct format (Vec<u8>)
-            await addAvailableIp(api, seedPhrase, ipBytes);
-        }
+        // Ensure the byte array is in the correct format (Vec<u8>)
+        await addAvailableIp(api, seedPhrase, ipBytes);
+        
     }
 }
+
 
 // Load environment variables from the .env file
 dotenv.config();
@@ -78,6 +79,7 @@ dotenv.config();
 (async () => {
   const seedPhrase = "brick end genuine caution author bulk school rose trap ramp garden milk";
   const wsProvider = new WsProvider("wss://testnet.hippius.com"); // Replace with your node's WebSocket URL
+  console.log("Connecting to the local Substrate chain...");
   const api = await ApiPromise.create({ provider: wsProvider });
 
   console.log("Connected to the local Substrate chain");

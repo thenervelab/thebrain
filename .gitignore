@@ -11,6 +11,8 @@ pwasm-libc/target/
 pwasm-alloc/Cargo.lock
 pwasm-libc/Cargo.lock
 node/runtime/wasm/target/
+/storage-scripts/target/
+/storage-scripts/Cargo.lock
 **/._*
 **/.criterion/
 .vscode
