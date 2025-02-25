@@ -4,72 +4,69 @@ const dotenv = require("dotenv");
 
 async function addAvailableIp(api, seedPhrase, ip) {
     try {
-        // Create a keyring instance
-        const keyring = new Keyring({ type: "sr25519" });
+      // Create a keyring instance
+      const keyring = new Keyring({ type: "sr25519" });
+  
+      // Use the seed phrase to create the Sudo account keypair
+      const sudoKeyPair = keyring.addFromUri(seedPhrase);
+  
+      console.log(`Sudo account address: ${sudoKeyPair.address}`);
+      console.log(`Calling add_available_ip with sudo for IP: ${ip}`);
+  
+      // Check if the provided account is the Sudo account
+      const sudoKey = (await api.query.sudo.key()).toString();
+      if (sudoKey !== sudoKeyPair.address) {
+        throw new Error("The provided account is not the Sudo account");
+      }
 
-        // Use the seed phrase to create the Sudo account keypair
-        const sudoKeyPair = keyring.addFromUri(seedPhrase);
+      // Create the add_available_ip extrinsic call
+      const call = api.tx.compute.addAvailableIp(ip);
 
-        console.log(`Sudo account address: ${sudoKeyPair.address}`);
-
-        // Check if the provided account is the Sudo account
-        const sudoKey = (await api.query.sudo.key()).toString();
-        if (sudoKey !== sudoKeyPair.address) {
-            throw new Error("The provided account is not the Sudo account");
-        }
-
-        // Convert IP to little-endian byte array
-        const ipBytes = new Uint8Array([
-            ip & 0xff,
-            (ip >> 8) & 0xff,
-            (ip >> 16) & 0xff,
-            (ip >> 24) & 0xff
-        ]);
-
-        console.log(`Calling add_available_ip with sudo for IP: ${Array.from(ipBytes).join(".")}`);
-
-        // Create the add_available_ip extrinsic call
-        const call = api.tx.compute.addAvailableIp(ipBytes);
-
-        // Wrap the call in a sudo extrinsic since it's restricted to root
-        const sudoCall = api.tx.sudo.sudo(call);
-
-        // Send the sudo call
-        await new Promise((resolve, reject) => {
-            sudoCall.signAndSend(sudoKeyPair, ({ status, dispatchError }) => {
-                if (status.isInBlock) {
-                    console.log(`Extrinsic included in block: ${status.asInBlock}`);
-                } else if (status.isFinalized) {
-                    console.log(`Extrinsic finalized in block: ${status.asFinalized}`);
-                    resolve();
-                }
-
-                if (dispatchError) {
-                    if (dispatchError.isModule) {
-                        const decoded = api.registry.findMetaError(dispatchError.asModule);
-                        const { docs, method, section } = decoded;
-                        console.error(`Error: ${section}.${method}: ${docs.join(" ")}`);
-                        reject(new Error(`Dispatch error: ${section}.${method}`));
-                    } else {
-                        console.error(`Error: ${dispatchError.toString()}`);
-                        reject(new Error(`Dispatch error: ${dispatchError.toString()}`));
-                    }
-                }
-            });
+      // Wrap the call in a sudo extrinsic since it's restricted to root
+      const sudoCall = api.tx.sudo.sudo(call);
+  
+      // Send the sudo call
+      await new Promise((resolve, reject) => {
+        sudoCall.signAndSend(sudoKeyPair, ({ status, dispatchError }) => {
+          if (status.isInBlock) {
+            console.log(`Extrinsic included in block: ${status.asInBlock}`);
+          } else if (status.isFinalized) {
+            console.log(`Extrinsic finalized in block: ${status.asFinalized}`);
+            resolve();
+          }
+  
+          if (dispatchError) {
+            if (dispatchError.isModule) {
+              const decoded = api.registry.findMetaError(dispatchError.asModule);
+              const { docs, method, section } = decoded;
+              console.error(`Error: ${section}.${method}: ${docs.join(" ")}`);
+              reject(new Error(`Dispatch error: ${section}.${method}`));
+            } else {
+              console.error(`Error: ${dispatchError.toString()}`);
+              reject(new Error(`Dispatch error: ${dispatchError.toString()}`));
+            }
+          }
         });
+      });
     } catch (error) {
-        console.error("Error in addAvailableIp:", error);
-        throw error;
+      console.error("Error in addAvailableIp:", error);
+      throw error;
     }
-}
-
-async function setAvailableIps(api, seedPhrase) {
-    const startIp = 0x0a000080; // 10.0.128.0
-    const endIp = 0x0a00007fff; // 10.0.127.255
+  }
+  
+  async function setAvailableIps(api, seedPhrase) {
+    const startIp = 0x0A000080; // 10.0.80.1
+    const endIp = 0x0A00007FFF; // 10.0.127.255
 
     for (let ip = startIp; ip <= endIp; ip++) {
-        if (ip !== 0x0a000080 && ip !== 0x0a000081) {
-            await addAvailableIp(api, seedPhrase, ip);
+        const ipStr = `${(ip >> 24) & 0xFF}.${(ip >> 16) & 0xFF}.${(ip >> 8) & 0xFF}.${ip & 0xFF}`;
+
+        if (ipStr !== "10.0.80.1" && ipStr !== "10.0.80.2") {
+            // Convert nodeId to proper format
+            const ipBytes = api.createType("Vec<u8>", ipStr);
+        
+            // Ensure the byte array is in the correct format (Vec<u8>)
+            await addAvailableIp(api, seedPhrase, ipBytes);
         }
     }
 }
