@@ -81,3 +81,30 @@ Comprehensive error handling for scenarios like:
 - `pallet_balances`
 - `pallet_staking`
 - `pallet_utils`
+
+
+# Node Metrics RPC API
+
+## Overview
+The Node Metrics RPC API provides a way to retrieve metrics for active nodes of different types within the network. This API is particularly useful for monitoring and managing node performance.
+
+## RPC Method: [get_active_nodes_metrics_by_type](cci:1://file:///home/faiz/Documents/GitHub/thebrain/pallets/execution-unit/src/lib.rs:2004:2-2010:3)
+
+### Description
+This method retrieves metrics for active nodes of a specified type. The response includes detailed information about the nodes, such as their performance metrics.
+
+### Endpoint
+
+Example Request:
+curl -X POST http://testnet.hippius.com \
+-H "Content-Type: application/json" \
+-d '{
+    "jsonrpc": "2.0",
+    "method": "get_active_nodes_metrics_by_type",
+    "params": [
+        {
+            "type": "StorageMiner"
+        }
+    ],
+    "id": 1
+}'
