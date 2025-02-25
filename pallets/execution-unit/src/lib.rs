@@ -1499,7 +1499,7 @@ pub mod pallet {
 
 					// Check if the suitable miner's node ID is not in the failed requests
 					let is_miner_failed = failed_requests.iter().any(|req| 
-						req.miner_account_id == suitable_miner.node_id
+						req.miner_node_id == suitable_miner.node_id
 					);
 					
                     // only assign if not already assigned
@@ -1532,7 +1532,7 @@ pub mod pallet {
 				// all miners who have pinned this file 
 				let request_pinned_by_miners = IpfsPinPallet::<T>::get_pin_requests_by_file_hash(&request.file_hash.clone());
 				for miner_request in request_pinned_by_miners {
-					let miner_node_id: Vec<u8> = miner_request.miner_account_id;
+					let miner_node_id: Vec<u8> = miner_request.miner_node_id;
 					match pallet_registration::Pallet::<T>::get_registered_node(miner_node_id.clone()) {
 						Ok(node_info) => {
 							let mut total_pin_checks = 0;

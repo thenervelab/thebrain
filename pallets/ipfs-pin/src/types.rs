@@ -26,7 +26,7 @@ pub struct StorageRequest<AccountId, BlockNumberFor> {
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct PinRequest<BlockNumber> {
-    pub miner_account_id: Vec<u8>,
+    pub miner_node_id: Vec<u8>,
     pub file_hash: FileHash,
     pub is_pinned: bool,
     pub created_at: BlockNumber,

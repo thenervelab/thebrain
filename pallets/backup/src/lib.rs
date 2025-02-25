@@ -218,7 +218,7 @@ pub mod pallet {
                     continue;
                 }
                 let minner_compute_request = minner_compute_request.unwrap();
-                if minner_compute_request.miner_account_id == node_id{
+                if minner_compute_request.miner_node_id == node_id{
                     let compute_request = pallet_compute::Pallet::<T>::get_compute_request_by_id(restore_request.minner_request_id as u128);
 
                     if let Some(compute_request) = compute_request {
@@ -310,7 +310,7 @@ pub mod pallet {
                         if !minner_compute_request.fullfilled {
                             continue;
                         }
-                        if minner_compute_request.miner_account_id == node_id{
+                        if minner_compute_request.miner_node_id == node_id{
                             // do call snapshot endpoint
                             let url = "http://localhost:3030/create-snapshot";
                 			// Use job ID to generate VM name consistently

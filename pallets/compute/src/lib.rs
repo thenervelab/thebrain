@@ -306,13 +306,13 @@ pub mod pallet {
 	
 		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
 			match call {
-				Call::submit_compute_request_assignment { miner_account_id, plan_id, request_id, owner: _ } => {
+				Call::submit_compute_request_assignment { miner_node_id, plan_id, request_id, owner: _ } => {
 					// Additional validation checks
 					let block_number = <frame_system::Pallet<T>>::block_number();
 
 					let mut data = Vec::new();
 					data.extend_from_slice(&block_number.encode());
-					data.extend_from_slice(miner_account_id);
+					data.extend_from_slice(miner_node_id);
 					data.extend_from_slice(&plan_id.encode());
 					data.extend_from_slice(&request_id.encode());
 					data.extend_from_slice(&Self::get_current_timestamp().encode());
@@ -572,7 +572,7 @@ pub mod pallet {
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
 		pub fn submit_compute_request_assignment(
 			origin: OriginFor<T>,
-			miner_account_id: Vec<u8>,
+			miner_node_id: Vec<u8>,
 			plan_id: T::Hash,
 			request_id: u128,
 			owner: T::AccountId
@@ -603,7 +603,7 @@ pub mod pallet {
 
 			let miner_request = MinerComputeRequest {
 				request_id,
-				miner_account_id: miner_account_id.clone(),
+				miner_node_id: miner_node_id.clone(),
 				plan_id,
 				job_id: None,
 				hypervisor_ip: None,
@@ -615,13 +615,13 @@ pub mod pallet {
 			};
 
 			// Update storage
-			MinerComputeRequests::<T>::mutate(miner_account_id.clone(), |requests| {
+			MinerComputeRequests::<T>::mutate(miner_node_id.clone(), |requests| {
 				requests.push(miner_request.clone());
 			});
 
 			// Emit event (optional)
 			Self::deposit_event(Event::ComputeRequestSubmitted {
-				miner: miner_account_id,
+				miner: miner_node_id,
 				request_id: request_id,
 				owner: owner
 			});
@@ -1457,7 +1457,7 @@ pub mod pallet {
             Self::get_miner_compute_request(account_id, plan_id)
                 .map(|miner_request| (
                     miner_request.request_id, 
-                    miner_request.miner_account_id,
+                    miner_request.miner_node_id,
 					miner_request.job_id
                 ))
         }
@@ -1521,7 +1521,7 @@ pub mod pallet {
 		
 			// Create deletion request
 			let deletion_request = MinerComputeDeletionRequest {
-				miner_account_id: node_id.clone(),
+				miner_node_id: node_id.clone(),
 				request_id,
 				job_id,
 				user_id: user_id.clone(),
@@ -1651,7 +1651,7 @@ pub mod pallet {
 
 		// Your save_compute_request function
 		pub fn save_compute_request(
-			miner_account_id: Vec<u8>,
+			miner_node_id: Vec<u8>,
 			plan_id: T::Hash,
 			request_id: u128,
 			owner: T::AccountId
@@ -1679,7 +1679,7 @@ pub mod pallet {
 					|account| {
 						// Create a payload with all necessary data for the update_rankings call
 						ComputeRequestAssignmentPayload {
-							miner_account_id: miner_account_id.clone(),
+							miner_node_id: miner_node_id.clone(),
 							plan_id: plan_id.clone(),
 							request_id: request_id.clone(),
 							owner: owner.clone(),
@@ -1690,7 +1690,7 @@ pub mod pallet {
 					|payload, _signature| {
 						// Construct the call with the payload and signature
 						Call::submit_compute_request_assignment {
-							miner_account_id: payload.miner_account_id,
+							miner_node_id: payload.miner_node_id,
 							plan_id: payload.plan_id,
 							request_id: payload.request_id,
 							owner: payload.owner,
@@ -2399,7 +2399,7 @@ pub mod pallet {
 							Self::perform_vm_operation("boot", miner_request.job_id.unwrap(), 10_000)?;
 			
 							Self::call_submit_compute_boot_request_fulfillment(
-								miner_request.miner_account_id,
+								miner_request.miner_node_id,
 								miner_request.request_id,
 							);
 						}else{
@@ -2424,7 +2424,7 @@ pub mod pallet {
 					Self::perform_vm_operation("reboot", miner_request.job_id.unwrap(), 10_000)?;
 	
 					Self::call_submit_compute_reboot_request_fulfillment(
-						miner_request.miner_account_id,
+						miner_request.miner_node_id,
 						miner_request.request_id,
 					);
 				}
@@ -2481,7 +2481,7 @@ pub mod pallet {
 					}							
 	
 					Self::call_submit_compute_resize_request_fulfillment(
-						miner_request.miner_account_id,
+						miner_request.miner_node_id,
 						miner_request.request_id,
 					);
 				}
@@ -2771,11 +2771,11 @@ pub mod pallet {
 			plan_id: T::Hash
 		) -> DispatchResult {
 			// Attempt to find the request details and minner node id
-			let (request_id, miner_account_id, job_id) = Self::find_miner_compute_request(user_id.clone(), plan_id.clone())
+			let (request_id, miner_node_id, job_id) = Self::find_miner_compute_request(user_id.clone(), plan_id.clone())
 			.ok_or(Error::<T>::ComputeRequestNotFound)?;
 			
 			// Retrieve existing stop requests for the user
-			let mut user_stop_requests = MinerComputeStopRequests::<T>::get(&miner_account_id);
+			let mut user_stop_requests = MinerComputeStopRequests::<T>::get(&miner_node_id);
 			
 			// Check if a request with the same plan_id already exists
 			let request_exists = user_stop_requests.iter()
@@ -2784,7 +2784,7 @@ pub mod pallet {
 			// Only add if no existing unfulfilled request for this plan exists
 			if !request_exists {
 				let stop_request = MinerComputeStopRequest {
-					miner_account_id: miner_account_id.clone(),
+					miner_node_id: miner_node_id.clone(),
 					request_id,
 					job_id,
 					user_id: user_id.clone(),
@@ -2797,7 +2797,7 @@ pub mod pallet {
 				user_stop_requests.push(stop_request);
 
 				// Update storage
-				MinerComputeStopRequests::<T>::insert(&miner_account_id, user_stop_requests);
+				MinerComputeStopRequests::<T>::insert(&miner_node_id, user_stop_requests);
 			} else {
 				log::info!(
 					"Compute stop request for plan {:?} already exists",
@@ -2814,11 +2814,11 @@ pub mod pallet {
 			plan_id: T::Hash
 		) -> DispatchResult {
 			// Attempt to find the request details and minner node id
-			let (request_id, miner_account_id, job_id) = Self::find_miner_compute_request(user_id.clone(), plan_id.clone())
+			let (request_id, miner_node_id, job_id) = Self::find_miner_compute_request(user_id.clone(), plan_id.clone())
 				.ok_or(Error::<T>::ComputeRequestNotFound)?;
 			
 			// Retrieve existing boot requests for the miner
-			let mut user_boot_requests = MinerComputeBootRequests::<T>::get(&miner_account_id);
+			let mut user_boot_requests = MinerComputeBootRequests::<T>::get(&miner_node_id);
 			
 			// Check if a request with the same plan_id already exists
 			let request_exists = user_boot_requests.iter()
@@ -2827,7 +2827,7 @@ pub mod pallet {
 			// Only add if no existing unfulfilled request for this plan exists
 			if !request_exists {
 				let boot_request = MinerComputeBootRequest {
-					miner_account_id: miner_account_id.clone(),
+					miner_node_id: miner_node_id.clone(),
 					request_id,
 					job_id,
 					user_id: user_id.clone(),
@@ -2840,7 +2840,7 @@ pub mod pallet {
 				user_boot_requests.push(boot_request);
 
 				// Update storage
-				MinerComputeBootRequests::<T>::insert(&miner_account_id, user_boot_requests);
+				MinerComputeBootRequests::<T>::insert(&miner_node_id, user_boot_requests);
 			} else {
 				log::info!(
 					"Compute boot request for plan {:?} already exists",
@@ -2858,11 +2858,11 @@ pub mod pallet {
 			resize_gbs: u32
 		) -> DispatchResult {
 			// Attempt to find the request details and minner node id
-			let (request_id, miner_account_id, job_id) = Self::find_miner_compute_request(user_id.clone(), plan_id.clone())
+			let (request_id, miner_node_id, job_id) = Self::find_miner_compute_request(user_id.clone(), plan_id.clone())
 				.ok_or(Error::<T>::ComputeRequestNotFound)?;
 			
 			// Retrieve existing resize requests for the miner
-			let mut user_resize_requests = MinerComputeResizeRequests::<T>::get(&miner_account_id);
+			let mut user_resize_requests = MinerComputeResizeRequests::<T>::get(&miner_node_id);
 			
 			// Check if a request with the same plan_id already exists
 			let request_exists = user_resize_requests.iter()
@@ -2871,7 +2871,7 @@ pub mod pallet {
 			// Only add if no existing unfulfilled request for this plan exists
 			if !request_exists {
 				let resize_request = MinerComputeResizeRequest {
-					miner_account_id: miner_account_id.clone(),
+					miner_node_id: miner_node_id.clone(),
 					request_id,
 					job_id,
 					user_id: user_id.clone(),
@@ -2885,7 +2885,7 @@ pub mod pallet {
 				user_resize_requests.push(resize_request);
 
 				// Update storage
-				MinerComputeResizeRequests::<T>::insert(&miner_account_id, user_resize_requests);
+				MinerComputeResizeRequests::<T>::insert(&miner_node_id, user_resize_requests);
 			} else {
 				log::info!(
 					"Compute resize request for plan {:?} already exists",
@@ -2947,13 +2947,13 @@ pub mod pallet {
 			plan_id: &T::Hash
 		) -> bool {
 			// Attempt to find the miner account id for the compute request
-			let miner_account_id = match Self::find_miner_compute_request(user_id.clone(), plan_id.clone()) {
+			let miner_node_id = match Self::find_miner_compute_request(user_id.clone(), plan_id.clone()) {
 				Some((_, miner_id, _)) => miner_id,
 				None => return false
 			};
 			
 			// Retrieve existing boot requests for the miner
-			let user_boot_requests = MinerComputeBootRequests::<T>::get(&miner_account_id);
+			let user_boot_requests = MinerComputeBootRequests::<T>::get(&miner_node_id);
 			
 			// Check if an unfulfilled boot request exists
 			user_boot_requests.iter()
@@ -2966,13 +2966,13 @@ pub mod pallet {
 			plan_id: &T::Hash
 		) -> Option<MinerComputeStopRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
 			// Attempt to find the miner account id for the compute request
-			let miner_account_id = match Self::find_miner_compute_request(user_id.clone(), plan_id.clone()) {
+			let miner_node_id = match Self::find_miner_compute_request(user_id.clone(), plan_id.clone()) {
 				Some((_, miner_id, _)) => miner_id,
 				None => return None
 			};
 			
 			// Retrieve existing stop requests for the miner
-			let user_stop_requests = MinerComputeStopRequests::<T>::get(&miner_account_id);
+			let user_stop_requests = MinerComputeStopRequests::<T>::get(&miner_node_id);
 			
 			// Find and return the first unfulfilled stop request matching the plan_id
 			user_stop_requests.into_iter()
@@ -3039,11 +3039,11 @@ pub mod pallet {
 			plan_id: T::Hash
 		) -> DispatchResult {
 			// Attempt to find the request details and minner node id
-			let (request_id, miner_account_id, job_id) = Self::find_miner_compute_request(user_id.clone(), plan_id.clone())
+			let (request_id, miner_node_id, job_id) = Self::find_miner_compute_request(user_id.clone(), plan_id.clone())
 				.ok_or(Error::<T>::ComputeRequestNotFound)?;
 			
 			// Retrieve existing reboot requests for the miner
-			let mut user_reboot_requests = MinerComputeRebootRequests::<T>::get(&miner_account_id);
+			let mut user_reboot_requests = MinerComputeRebootRequests::<T>::get(&miner_node_id);
 			
 			// Check if a request with the same plan_id already exists
 			let request_exists = user_reboot_requests.iter()
@@ -3052,7 +3052,7 @@ pub mod pallet {
 			// Only add if no existing unfulfilled request for this plan exists
 			if !request_exists {
 				let reboot_request = MinerComputeRebootRequest {
-					miner_account_id: miner_account_id.clone(),
+					miner_node_id: miner_node_id.clone(),
 					request_id,
 					job_id,	
 					user_id: user_id.clone(),
@@ -3065,7 +3065,7 @@ pub mod pallet {
 				user_reboot_requests.push(reboot_request);
 
 				// Update storage
-				MinerComputeRebootRequests::<T>::insert(&miner_account_id, user_reboot_requests);
+				MinerComputeRebootRequests::<T>::insert(&miner_node_id, user_reboot_requests);
 			} else {
 				log::info!(
 					"Compute reboot request for plan {:?} already exists",

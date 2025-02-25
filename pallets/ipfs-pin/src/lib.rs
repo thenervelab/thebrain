@@ -276,7 +276,7 @@ pub mod pallet {
 
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
 			let request = PinRequest {
-				miner_account_id: node_identity.clone(),
+				miner_node_id: node_identity.clone(),
 				file_hash: file_hash.clone(),
 				is_pinned: false,
 				created_at: current_block_number,
@@ -285,7 +285,7 @@ pub mod pallet {
 			let mut file_hashes_pinned_by_minner = FileStored::<T>::get(node_identity.clone());
 			// Check if there is already a pin request for this miner and file hash
 			let already_pinned = file_hashes_pinned_by_minner.iter().any(|request| {
-				request.miner_account_id == node_identity && request.file_hash == file_hash
+				request.miner_node_id == node_identity && request.file_hash == file_hash
 			});
 			// Ensure that there is no duplicate pin request
 			ensure!(

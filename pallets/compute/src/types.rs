@@ -41,7 +41,7 @@ pub enum ComputeRequestStatus {
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct MinerComputeRequest<BlockNumber,Hash> {
-    pub miner_account_id: Vec<u8>,
+    pub miner_node_id: Vec<u8>,
     pub job_id: Option<Vec<u8>>,
     pub hypervisor_ip: Option<Vec<u8>>,
     pub fail_reason: Option<Vec<u8>>,
@@ -56,7 +56,7 @@ pub struct MinerComputeRequest<BlockNumber,Hash> {
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct MinerComputeDeletionRequest<BlockNumber,Hash, AccountId> {
-    pub miner_account_id: Vec<u8>,
+    pub miner_node_id: Vec<u8>,
     pub job_id: Option<Vec<u8>>,
     pub request_id: u128,
     pub user_id: AccountId,
@@ -68,7 +68,7 @@ pub struct MinerComputeDeletionRequest<BlockNumber,Hash, AccountId> {
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct MinerComputeStopRequest<BlockNumber,Hash, AccountId> {
-    pub miner_account_id: Vec<u8>,
+    pub miner_node_id: Vec<u8>,
     pub job_id: Option<Vec<u8>>,
     pub request_id: u128,
     pub user_id: AccountId,
@@ -80,7 +80,7 @@ pub struct MinerComputeStopRequest<BlockNumber,Hash, AccountId> {
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct MinerComputeBootRequest<BlockNumber,Hash, AccountId> {
-    pub miner_account_id: Vec<u8>,
+    pub miner_node_id: Vec<u8>,
     pub job_id: Option<Vec<u8>>,
     pub request_id: u128,
     pub user_id: AccountId,
@@ -92,7 +92,7 @@ pub struct MinerComputeBootRequest<BlockNumber,Hash, AccountId> {
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct MinerComputeRebootRequest<BlockNumber,Hash, AccountId> {
-    pub miner_account_id: Vec<u8>,
+    pub miner_node_id: Vec<u8>,
     pub job_id: Option<Vec<u8>>,
     pub request_id: u128,
     pub user_id: AccountId,
@@ -113,7 +113,7 @@ pub struct IpReleaseRequest<BlockNumber> {
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct MinerComputeResizeRequest<BlockNumber,Hash, AccountId> {
-    pub miner_account_id: Vec<u8>,
+    pub miner_node_id: Vec<u8>,
     pub job_id: Option<Vec<u8>>,
     pub request_id: u128,
     pub user_id: AccountId,
@@ -125,7 +125,7 @@ pub struct MinerComputeResizeRequest<BlockNumber,Hash, AccountId> {
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub struct ComputeRequestAssignmentPayload<T: Config>  {
-    pub miner_account_id: Vec<u8>,
+    pub miner_node_id: Vec<u8>,
     pub plan_id: T::Hash,
     pub request_id: u128,
     pub owner: T::AccountId,
