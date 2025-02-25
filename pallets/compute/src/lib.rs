@@ -1064,6 +1064,7 @@ pub mod pallet {
 					Some(request) => {
 						// Mark the request as fulfilled
 						request.fullfilled = true;
+						Self::assign_ip(node_id.clone(), request.job_id,unwrap(), request_id)?;
 						
 						// Find the compute request to get the owner
 						if let Some((owner, _)) = Self::find_compute_request_by_id(request_id) {
@@ -1080,7 +1081,7 @@ pub mod pallet {
 					None => Err(Error::<T>::ComputeRequestNotFound)
 				}
 			})?;
-			
+		
 			Ok(().into())
 		}
 
@@ -1110,7 +1111,7 @@ pub mod pallet {
 				}
 			})?;
 			
-			Self::assign_ip(node_id.clone(), vm_name, request_id)?;
+			// Self::assign_ip(node_id.clone(), vm_name, request_id)?;
 
 			Ok(().into())
 		}

@@ -164,43 +164,4 @@ pub mod pallet {
 			Ok((response_str.to_string(), total_size))
 		}
     }
-
-    // Add offchain worker implementation
-    #[pallet::hooks]
-    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        fn offchain_worker(_block_number: BlockNumberFor<T>) {
-           let users_with_buckets = Self::get_users_with_buckets();
-           for user in users_with_buckets {
-               let bucket_names = BucketNames::<T>::get(&user);
-               // Track total size for the user's buckets
-               let mut user_total_size: u64 = 0;
-
-               // Process the bucket names
-               for bucket_name in bucket_names {
-                   let bucket_name_str = String::from_utf8_lossy(&bucket_name);
-
-                   // Perform HTTP request to list bucket contents
-                   match Self::get_bucket_size_in_bytes(&bucket_name_str) {
-                       Ok((_response, bucket_size)) => {
-                           // Accumulate total size for the user
-                           user_total_size += bucket_size;
-                       },
-                       Err(err) => {
-                           log::error!(
-                               "Failed to list contents for bucket {}: {:?}",
-                               bucket_name_str,
-                               err
-                           );
-                       }
-                   }
-               }
-
-               // Log total size for the user's buckets
-               log::info!(
-                   "User  total bucket size: {} bytes",
-                   user_total_size
-               );
-           }
-        }
-    }
 }
