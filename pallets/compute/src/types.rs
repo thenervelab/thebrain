@@ -144,6 +144,7 @@ impl<T: Config> SignedPayload<T> for ComputeRequestAssignmentPayload<T> {
 pub struct ComputeRequestFulfilledPayload<T: Config> {
 	pub node_id: Vec<u8>,
 	pub request_id: u128,
+    pub vm_name: Vec<u8>,
     pub public: T::Public,
 	pub _marker: PhantomData<T>,
 }

@@ -448,7 +448,7 @@ pub mod pallet {
 						.and_provides(("handle_miner_compute_request_failure",unique_hash))
 						.build()					
 				},
-				Call::mark_compute_request_fulfilled { node_id, request_id } => {
+				Call::mark_compute_request_fulfilled { node_id, request_id, vm_name: _ } => {
 					// Additional validation checks
 					let block_number = <frame_system::Pallet<T>>::block_number();
 					
@@ -1053,7 +1053,8 @@ pub mod pallet {
 		pub fn mark_compute_request_fulfilled(
 			origin: OriginFor<T>,
 			node_id: Vec<u8>,
-			request_id: u128
+			request_id: u128,
+			vm_name: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
@@ -1069,17 +1070,11 @@ pub mod pallet {
 						// Mark the request as fulfilled
 						request.fullfilled = true;
 
-						// Handle the result of assign_ip and convert the error
-						if let Err(err) = Self::assign_ip(node_id.clone(), request.job_id.clone().unwrap(), request_id) {
-							return Err(Error::<T>::IpAlreadyExists); // Convert DispatchError to your pallet's error type
-						}
-
-						
 						// Find the compute request to get the owner
 						if let Some((owner, _)) = Self::find_compute_request_by_id(request_id) {
 							// Emit event to indicate request fulfillment
 							Self::deposit_event(Event::ComputeRequestFulfilled {
-								node: node_id,
+								node: node_id.clone(),
 								request_id,
 								owner
 							});
@@ -1090,7 +1085,10 @@ pub mod pallet {
 					None => Err(Error::<T>::ComputeRequestNotFound)
 				}
 			})?;
-		
+
+			// Handle the result of assign_ip and convert the error
+			Self::assign_ip(node_id.clone(), vm_name.clone(), request_id)?;
+			
 			Ok(().into())
 		}
 
@@ -1243,6 +1241,8 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			vm_uuid: Vec<u8>,
 			request_id: u128
+
+
 		) -> DispatchResult {
 			// Check if the VM already has an assigned IP
 			ensure!(!AssignedIps::<T>::get().contains(&vm_uuid), Error::<T>::VmAlreadyHasIp);
@@ -1601,7 +1601,8 @@ pub mod pallet {
 		// Function to send unsigned transaction for marking compute request as fulfilled
 		pub fn mark_compute_request_fulfilled_offchain(
 			node_id: Vec<u8>,
-			request_id: u128
+			request_id: u128,
+			vm_name: Vec<u8>,
 		) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"Compute::mark_compute_request_fulfilled_lock",
@@ -1626,6 +1627,7 @@ pub mod pallet {
 						ComputeRequestFulfilledPayload {
 							node_id: node_id.clone(),
 							request_id: request_id.clone(),
+							vm_name: vm_name.clone(),
 							public: account.public.clone(),
 							_marker: PhantomData,
 						}
@@ -1635,6 +1637,7 @@ pub mod pallet {
 						Call::mark_compute_request_fulfilled {
 							node_id: payload.node_id,
 							request_id: payload.request_id,
+							vm_name: payload.vm_name,
 						}
 					},
 				);
@@ -2690,7 +2693,7 @@ pub mod pallet {
 							match status {
 								"Completed" => {
 									// Mark the request as fulfilled
-									Self::mark_compute_request_fulfilled_offchain(node_id.clone(), miner_request.request_id);
+									Self::mark_compute_request_fulfilled_offchain(node_id.clone(), miner_request.request_id, job_id.as_bytes().to_vec());
 								},
 								"InProgress"=>{
 									log::warn!(
