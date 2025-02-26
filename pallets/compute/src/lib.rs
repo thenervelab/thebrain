@@ -649,6 +649,7 @@ pub mod pallet {
 					Some(request) => {
 						// Mark the request as fulfilled
 						request.job_id = Some(job_id.clone());
+						request.ip_assigned = Some(ip.clone());
 						
 						// Find the compute request to get the owner
 						if let Some((owner, _)) = Self::find_compute_request_by_id(request_id) {
