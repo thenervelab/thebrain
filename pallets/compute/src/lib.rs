@@ -142,7 +142,7 @@ pub mod pallet {
         _,
         Blake2_128Concat,
         Vec<u8>,
-        Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>>,
+        Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>>,
         ValueQuery
     >;
 
@@ -600,10 +600,13 @@ pub mod pallet {
 
 			// Find the compute request by iterating through all requests
 			Self::update_compute_request_status(request_id, ComputeRequestStatus::InProgress)?;
+			
+			let node_info = NodeRegistration::<T>::get(&miner_node_id.clone());
 
 			let miner_request = MinerComputeRequest {
 				request_id,
 				miner_node_id: miner_node_id.clone(),
+				miner_account_id: node_info.unwrap().owner.clone(),
 				plan_id,
 				job_id: None,
 				hypervisor_ip: None,
@@ -1336,7 +1339,7 @@ pub mod pallet {
 		}
 		
 		/// Retrieve unfulfilled MinerComputeRequests for a specific node
-        pub fn get_unfulfilled_miner_compute_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+        pub fn get_unfulfilled_miner_compute_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
             MinerComputeRequests::<T>::get(&node_id)
                 .into_iter()
                 .filter(|request| !request.fullfilled && request.job_id.is_none() && request.fail_reason.is_none())
@@ -1344,7 +1347,7 @@ pub mod pallet {
         }
 
 		/// Helper function to get miner compute requests with a job_id that are not yet fulfilled
-		pub fn get_pending_job_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+		pub fn get_pending_job_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
 			MinerComputeRequests::<T>::get(&node_id)
 				.into_iter()
 				.filter(|request| request.job_id.is_some() && !request.fullfilled && request.fail_reason.is_none())
@@ -1352,7 +1355,7 @@ pub mod pallet {
 		}
 
 		/// Helper function to get miner compute requests with a job_id that are not yet fulfilled
-		pub fn get_pending_vnc_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+		pub fn get_pending_vnc_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
 			MinerComputeRequests::<T>::get(&node_id)
 				.into_iter()
 				.filter(|request| request.job_id.is_some() && !request.fullfilled && request.fail_reason.is_none() && request.vnc_port.is_none())
@@ -1360,7 +1363,7 @@ pub mod pallet {
 		} 
 
 		/// Helper function to get miner compute requests with a job_id that are not yet fulfilled
-		pub fn get_pending_nebula_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+		pub fn get_pending_nebula_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
 			MinerComputeRequests::<T>::get(&node_id)
 				.into_iter()
 				.filter(|request| request.job_id.is_some() && request.fullfilled && request.hypervisor_ip.is_none() && request.fail_reason.is_none())
@@ -1380,7 +1383,7 @@ pub mod pallet {
         pub fn get_miner_compute_request(
             account_id: T::AccountId, 
             plan_id: T::Hash
-        ) -> Option<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+        ) -> Option<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
             // Iterate through all miner compute requests
             for (_, miner_requests) in MinerComputeRequests::<T>::iter() {
                 // Find a request matching the plan ID
@@ -1415,7 +1418,7 @@ pub mod pallet {
         /// An Option containing the MinerComputeRequest if found
         pub fn get_miner_compute_request_by_id(
             request_id: u128
-        ) -> Option<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+        ) -> Option<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
             // Iterate through all miner compute requests
             for (_, miner_requests) in MinerComputeRequests::<T>::iter() {
                 // Find a request matching the request ID
@@ -1431,7 +1434,7 @@ pub mod pallet {
 
 		pub fn get_miner_compute_requests_with_failure(
 			request_id: u128
-		) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash>> {
+		) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
 			let mut failed_requests = Vec::new();
 		
 			// Iterate through all miner compute requests

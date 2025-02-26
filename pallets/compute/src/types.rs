@@ -40,8 +40,9 @@ pub enum ComputeRequestStatus {
 
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
-pub struct MinerComputeRequest<BlockNumber,Hash> {
+pub struct MinerComputeRequest<BlockNumber,Hash, AccountId> {
     pub miner_node_id: Vec<u8>,
+    pub miner_account_id: AccountId,
     pub job_id: Option<Vec<u8>>,
     pub hypervisor_ip: Option<Vec<u8>>,
     pub fail_reason: Option<Vec<u8>>,
