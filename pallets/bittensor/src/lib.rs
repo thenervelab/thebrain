@@ -47,7 +47,8 @@ pub mod pallet {
                       + pallet_rankings::Config 
                       + pallet_rankings::Config<pallet_rankings::Instance2>
                       + pallet_rankings::Config<pallet_rankings::Instance3>
-                      + pallet_rankings::Config<pallet_rankings::Instance4> {
+                      + pallet_rankings::Config<pallet_rankings::Instance4> 
+                      + pallet_rankings::Config<pallet_rankings::Instance5> {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
         #[pallet::constant]
@@ -540,7 +541,7 @@ pub mod pallet {
 
                 all_dests_on_bittensor, 
                 all_weights_on_bitensor) :
-                (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) = 
+                (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) = 
                 Self::calculate_weights_for_nodes();
             
             // update rankings in ranking pallet for both instances
