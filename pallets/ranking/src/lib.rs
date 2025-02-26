@@ -398,7 +398,7 @@ pub mod pallet {
 								NodeType::ComputeMiner => compute_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
 								NodeType::StorageMiner => storage_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
 								NodeType::GpuMiner => gpu_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
-								NodeType::Storages3 => storage_s3_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
+								NodeType::StorageS3 => storage_s3_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
 								_ => {} // Ignore validator nodes
 							}
 						}
