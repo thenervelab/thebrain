@@ -917,8 +917,10 @@ impl pallet_bittensor::Config for Runtime {
 parameter_types! {
     pub const ResgisterPalletId: PalletId = PalletId(*b"register");
     pub const StorageMinerInitialFee: Balance = 100_000_000_000; // 100 tokens
+	pub const StorageMiners3InitialFee: Balance = 100_000_000_000; // 100 tokens
     pub const ValidatorInitialFee: Balance = 200_000_000_000; // 200 tokens
     pub const ComputeMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
+	pub const GpuMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
 }
 
 impl pallet_registration::Config for Runtime {
@@ -931,9 +933,10 @@ impl pallet_registration::Config for Runtime {
 	type StorageMinerInitialFee = StorageMinerInitialFee;
     type ValidatorInitialFee = ValidatorInitialFee;
     type ComputeMinerInitialFee = ComputeMinerInitialFee;
+	type StorageMiners3InitialFee = StorageMiners3InitialFee;
+    type GpuMinerInitialFee = GpuMinerInitialFee;
 	type BlocksPerDay = BlocksPerDay;
 }
-
 
 parameter_types! {
 	pub const BlocksPerDay: u32 = HOURS as u32 * 24;
@@ -2298,8 +2301,9 @@ impl_runtime_apis! {
 			let pallet_node_type = match node_type {
 				rpc_primitives_node_metrics::NodeType::Validator => pallet_registration::NodeType::Validator,
 				rpc_primitives_node_metrics::NodeType::StorageMiner => pallet_registration::NodeType::StorageMiner,
+				rpc_primitives_node_metrics::NodeType::StorageS3 => pallet_registration::NodeType::StorageS3,   
 				rpc_primitives_node_metrics::NodeType::ComputeMiner => pallet_registration::NodeType::ComputeMiner,
-				rpc_primitives_node_metrics::NodeType::GpuMiner => pallet_registration::NodeType::GpuMiner,
+				rpc_primitives_node_metrics::NodeType::GpuMiner => pallet_registration::NodeType::GpuMiner,   
 			};
 
 			let node_metrics = <pallet_execution_unit::Pallet<Runtime>>::get_active_nodes_metrics_by_type(pallet_node_type);

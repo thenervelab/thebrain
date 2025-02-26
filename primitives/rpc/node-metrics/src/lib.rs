@@ -13,6 +13,7 @@ use serde::{Serialize, Deserialize};
 pub enum NodeType {
     Validator,
     StorageMiner,
+    StorageS3,
     ComputeMiner,
     GpuMiner
 }

@@ -165,6 +165,15 @@ impl NodeMetricsData {
                 .saturating_add(network_score.saturating_mul(5))
                 .saturating_add(diversity_score.saturating_mul(5))
             ) as u32,
+            NodeType::StorageS3 => (
+                availability_score.saturating_mul(35)
+                .saturating_add(performance_score.saturating_mul(5))
+                .saturating_add(reliability_score.saturating_mul(10))
+                .saturating_add(capacity_score.saturating_mul(15)) // Capacity score only for storage
+                .saturating_add(storage_usage_score.saturating_mul(25)) // Capacity score only for storage
+                .saturating_add(network_score.saturating_mul(5))
+                .saturating_add(diversity_score.saturating_mul(5))
+            ) as u32,
             NodeType::ComputeMiner => (
                 availability_score.saturating_mul(35)
                 .saturating_add(performance_score.saturating_mul(5))

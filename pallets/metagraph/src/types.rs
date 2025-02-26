@@ -12,6 +12,9 @@ use sp_core::crypto::AccountId32;
 pub enum Role {
     Validator,
     StorageMiner,
+    StorageS3,
+    ComputeMiner,
+    GpuMiner,
     None,
 }
 // use sp_std::vec::Vec;

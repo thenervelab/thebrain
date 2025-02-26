@@ -724,6 +724,7 @@ impl<T: Config> MetagraphInfoProvider for Pallet<T> {
                     types::Role::Validator => pallet_utils::Role::Validator,
                     types::Role::StorageMiner => pallet_utils::Role::StorageMiner,
                     types::Role::None => pallet_utils::Role::None,
+                    _ => pallet_utils::Role::None,
                 },
                 substrate_address: uid.substrate_address,
             })

@@ -6,6 +6,7 @@ use parity_scale_codec::{Encode,Decode};
 pub enum NodeType {
     Validator,
     StorageMiner,
+    StorageS3,
     ComputeMiner,
     GpuMiner
 }

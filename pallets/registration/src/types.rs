@@ -17,6 +17,7 @@ pub struct NodeInfo<BlockNumber,AccountId> {
 pub enum NodeType {
     Validator,
     StorageMiner,
+    StorageS3,
     ComputeMiner,
     GpuMiner
 }

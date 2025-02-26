@@ -78,6 +78,11 @@ pub mod pallet {
         type ComputeMinerInitialFee: Get<BalanceOf<Self>>;
 
         #[pallet::constant]
+        type GpuMinerInitialFee: Get<BalanceOf<Self>>;
+        #[pallet::constant]
+        type StorageMiners3InitialFee: Get<BalanceOf<Self>>;
+
+        #[pallet::constant]
         type BlocksPerDay: Get<u32>;
     }
 
@@ -667,6 +672,14 @@ pub mod pallet {
                 NodeType::ComputeMiner, 
                 T::ComputeMinerInitialFee::get()
             );
+            CurrentNodeTypeFee::<T>::insert(
+                NodeType::StorageS3, 
+                T::StorageMiners3InitialFee::get()
+            );
+            CurrentNodeTypeFee::<T>::insert(
+                NodeType::GpuMiner, 
+                T::GpuMinerInitialFee::get()
+            );            
         }
 
         /// Calculate dynamic fee for a node type
