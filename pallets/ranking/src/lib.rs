@@ -173,10 +173,18 @@ pub mod pallet {
 		_,
 		Blake2_128Concat,
 		Vec<u8>, // node id
-		Vec<u16>, // Vec of (timestamp, weight)
+		Vec<RewardsRecordDetails<T,I>>, // Vec of (timestamp, weight, amount)
 	>;
 
-
+	#[derive(Encode, Decode, Clone, TypeInfo)]
+	pub struct RewardsRecordDetails<T: Config<I>, I: 'static = ()> {
+		pub node_types: NodeType,
+		pub weight: u16,
+		pub amount: u128,
+		pub block_number: BlockNumberFor<T>,
+		pub _marker: PhantomData<I>, // Marker for unused type parameter
+	}
+	
 	// Validate unsigned transactions implementation
 	#[pallet::validate_unsigned]
 	impl<T: Config<I>, I: 'static> ValidateUnsigned for Pallet<T, I> {
@@ -453,13 +461,23 @@ pub mod pallet {
 									}
 		
 									// Update historical weights
-									RewardsRecord::<T,I>::mutate(node_id , |weights| {
-										let weights = weights.get_or_insert_with(Vec::new);
-										weights.push(reward_u128 as u16);
+									RewardsRecord::<T,I>::mutate(node_id , |records| {
+										let records = records.get_or_insert_with(Vec::new);
+										
+										// Get current block number
+										let current_block = frame_system::Pallet::<T>::block_number();
+										
+										records.push(RewardsRecordDetails {
+											node_types: node_info.node_type,
+											weight: reward_u128 as u16,
+											amount: reward_u128,
+											block_number: current_block,
+											_marker: PhantomData,
+										});
 										
 										// Optionally: Keep only last N entries
-										if weights.len() > 100 {
-											weights.remove(0);
+										if records.len() > 100 {
+											records.remove(0);
 										}
 									});
 								}
@@ -516,13 +534,23 @@ pub mod pallet {
 									}
 		
 									// Update historical weights
-									RewardsRecord::<T,I>::mutate(node_id , |weights| {
-										let weights = weights.get_or_insert_with(Vec::new);
-										weights.push(reward_u128 as u16);
+									RewardsRecord::<T,I>::mutate(node_id , |records| {
+										let records = records.get_or_insert_with(Vec::new);
+										
+										// Get current block number
+										let current_block = frame_system::Pallet::<T>::block_number();
+										
+										records.push(RewardsRecordDetails {
+											node_types: node_info.node_type,
+											weight: reward_u128 as u16,
+											amount: reward_u128,
+											block_number: current_block,
+											_marker: PhantomData,
+										});
 										
 										// Optionally: Keep only last N entries
-										if weights.len() > 100 {
-											weights.remove(0);
+										if records.len() > 100 {
+											records.remove(0);
 										}
 									});
 								}
@@ -579,13 +607,23 @@ pub mod pallet {
 									}
 		
 									// Update historical weights
-									RewardsRecord::<T,I>::mutate(node_id , |weights| {
-										let weights = weights.get_or_insert_with(Vec::new);
-										weights.push(reward_u128 as u16);
+									RewardsRecord::<T,I>::mutate(node_id , |records| {
+										let records = records.get_or_insert_with(Vec::new);
+										
+										// Get current block number
+										let current_block = frame_system::Pallet::<T>::block_number();
+										
+										records.push(RewardsRecordDetails {
+											node_types: node_info.node_type,
+											weight: reward_u128 as u16,
+											amount: reward_u128,
+											block_number: current_block,
+											_marker: PhantomData,
+										});
 										
 										// Optionally: Keep only last N entries
-										if weights.len() > 100 {
-											weights.remove(0);
+										if records.len() > 100 {
+											records.remove(0);
 										}
 									});
 								}
@@ -639,13 +677,23 @@ pub mod pallet {
 									}
 		
 									// Update historical weights
-									RewardsRecord::<T,I>::mutate(node_id , |weights| {
-										let weights = weights.get_or_insert_with(Vec::new);
-										weights.push(reward_u128 as u16);
+									RewardsRecord::<T,I>::mutate(node_id , |records| {
+										let records = records.get_or_insert_with(Vec::new);
+										
+										// Get current block number
+										let current_block = frame_system::Pallet::<T>::block_number();
+										
+										records.push(RewardsRecordDetails {
+											node_types: node_info.node_type,
+											weight: reward_u128 as u16,
+											amount: reward_u128,
+											block_number: current_block,
+											_marker: PhantomData,
+										});
 										
 										// Optionally: Keep only last N entries
-										if weights.len() > 100 {
-											weights.remove(0);
+										if records.len() > 100 {
+											records.remove(0);
 										}
 									});
 								}
