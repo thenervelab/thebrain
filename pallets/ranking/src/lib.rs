@@ -384,6 +384,7 @@ pub mod pallet {
 					let mut compute_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
 					let mut storage_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
 					let mut gpu_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
+					let mut storage_s3_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
 	
 					for ranking in ranked_list.iter() {
 						if distribution_count >= Self::rank_distribution_limit() {
@@ -397,6 +398,7 @@ pub mod pallet {
 								NodeType::ComputeMiner => compute_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
 								NodeType::StorageMiner => storage_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
 								NodeType::GpuMiner => gpu_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
+								NodeType::Storages3Miner => storage_s3_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
 								_ => {} // Ignore validator nodes
 							}
 						}
@@ -479,6 +481,69 @@ pub mod pallet {
 								let reward = if let Some(ratio) = weight_u128
 									.checked_mul(total_balance.saturated_into())
 									.and_then(|r| r.checked_div(gpu_miner_total_weight)) 
+								{
+									// Convert to proper decimal representation
+									// If your chain uses 18 decimals, the reward should be multiplied by 10^18
+									let decimal_factor: u128 = 10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+									let reward_with_decimals = ratio.checked_mul(decimal_factor)
+										.unwrap_or_default();
+									BalanceOf::<T>::saturated_from(reward_with_decimals)
+								} else {
+									BalanceOf::<T>::zero()
+								};
+		
+								if !reward.is_zero() {
+									// Burn the equivalent amount from their free balance
+									let _ = pallet_balances::Pallet::<T>::burn(
+										frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
+										reward,
+										false, // keep_alive set to false to allow burning entire balance
+									);
+		
+									// Convert reward to u128 first
+									let reward_u128: u128 = reward.saturated_into();
+										
+									// Try to convert to staking balance type
+									if let Ok(staking_reward) = reward_u128.try_into() {
+										let _ = pallet_staking::Pallet::<T>::bond_extra(
+											frame_system::RawOrigin::Signed(account.clone()).into(),
+											staking_reward
+										);
+										Self::deposit_event(Event::RewardDistributed {
+											account: account.clone(),
+											amount: reward
+										});
+									}
+		
+									// Update historical weights
+									RewardsRecord::<T,I>::mutate(node_id , |weights| {
+										let weights = weights.get_or_insert_with(Vec::new);
+										weights.push(reward_u128 as u16);
+										
+										// Optionally: Keep only last N entries
+										if weights.len() > 100 {
+											weights.remove(0);
+										}
+									});
+								}
+								weight_used = weight_used.saturating_add(T::DbWeight::get().reads_writes(3, 1));
+							}
+						}				
+					}
+					// if instance id is 5 the distribute to s3 miner nodes
+					else if T::InstanceID::get() == 5 {
+						// Calculate total weights for each type
+						let s3_miner_total_weight: u128 = storage_s3_miner_node.iter()
+							.map(|(_, weight, _node_id)| *weight as u128)
+							.sum();
+
+						// Distribute to s3 miner nodes
+						if !s3_miner_total_weight.is_zero() {
+							for (account, weight, node_id) in storage_s3_miner_node {
+								let weight_u128 = weight as u128;
+								let reward = if let Some(ratio) = weight_u128
+									.checked_mul(total_balance.saturated_into())
+									.and_then(|r| r.checked_div(s3_miner_total_weight)) 
 								{
 									// Convert to proper decimal representation
 									// If your chain uses 18 decimals, the reward should be multiplied by 10^18
