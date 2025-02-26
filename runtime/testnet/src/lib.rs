@@ -1190,6 +1190,7 @@ parameter_types! {
 	pub const RankingsInstanceId2: u16 = 2;
 	pub const RankingsInstanceId3: u16 = 3;
 	pub const RankingsInstanceId4: u16 = 4;
+	pub const RankingsInstanceId5: u16 = 5;
 }
 
 // First ranking pallet implementation remains the same
@@ -1232,6 +1233,17 @@ impl pallet_rankings::Config<pallet_rankings::Instance4> for Runtime {
     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 	type InstanceID = RankingsInstanceId4;
+	type AuthorityId = pallet_rankings::crypto::TestAuthId;
+	type BlocksPerEra = BlocksPerEra;
+}
+
+// Add a Fourth ranking pallet implementation
+impl pallet_rankings::Config<pallet_rankings::Instance5> for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type PalletId = FourthRankingPalletId;
+    type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
+    type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
+	type InstanceID = RankingsInstanceId5;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
 }
@@ -1664,6 +1676,7 @@ construct_runtime!(
         RankingCompute: pallet_rankings::<Instance2> = 68,
 		RankingValidators: pallet_rankings::<Instance3> = 70,
 		RankingGpu: pallet_rankings::<Instance4> = 71,
+		RankingS3: pallet_rankings::<Instance5> = 73,
 		Backup: pallet_backup = 64,	
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,
