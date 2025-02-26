@@ -1043,7 +1043,7 @@ impl pallet_rankings::Config<pallet_rankings::Instance4> for Runtime {
 }
 
 // Add a second ranking pallet implementation
-impl pallet_rankings::Config<pallet_rankings::Instance4> for Runtime {
+impl pallet_rankings::Config<pallet_rankings::Instance5> for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type PalletId = FourthRankingPalletId;
     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
@@ -1729,7 +1729,7 @@ construct_runtime!(
         RankingCompute: pallet_rankings::<Instance2> = 91,
 		RankingValidators: pallet_rankings::<Instance3> = 92,
 		RankingGpu: pallet_rankings::<Instance4> = 93,
-		RankingS3: pallet_rankings::<Instance5> = 95,
+		RankingS3: pallet_rankings::<Instance5> = 97,
 		Utils: pallet_utils = 64,
 		Backup: pallet_backup = 65,
 		Credits: pallet_credits = 66,

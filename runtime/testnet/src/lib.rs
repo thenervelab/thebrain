@@ -1676,7 +1676,7 @@ construct_runtime!(
         RankingCompute: pallet_rankings::<Instance2> = 68,
 		RankingValidators: pallet_rankings::<Instance3> = 70,
 		RankingGpu: pallet_rankings::<Instance4> = 71,
-		RankingS3: pallet_rankings::<Instance5> = 73,
+		RankingS3: pallet_rankings::<Instance5> = 77,
 		Backup: pallet_backup = 64,	
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,
