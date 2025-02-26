@@ -181,8 +181,15 @@ pub mod pallet {
 		pub node_types: NodeType,
 		pub weight: u16,
 		pub amount: u128,
+		pub account: AccountId,
 		pub block_number: BlockNumberFor<T>,
 		pub _marker: PhantomData<I>, // Marker for unused type parameter
+	}
+
+	#[derive(Encode, Decode, Clone, TypeInfo)]
+	pub struct MinerRewardSummary<AccountId> {
+		pub account: AccountId,
+		pub reward: u128,
 	}
 	
 	// Validate unsigned transactions implementation
@@ -366,6 +373,64 @@ pub mod pallet {
 			Ok(())
 		}
 
+		// Helper function to get total rewards for a specific account across all nodes
+		pub fn get_total_node_rewards(account: T::AccountId) -> u128 {
+			// Iterate through all nodes' reward records
+			RewardsRecord::<T, I>::iter()
+				.map(|(_, records)| {
+					// Sum up all the reward amounts for the specific account
+					records.iter()
+						.filter(|record| record.account == account)
+						.map(|record| record.amount)
+						.sum::<u128>()
+				})
+				.sum()
+		}
+
+		// Helper function to get total distributed rewards for miners of a specific node type
+		pub fn get_miners_total_rewards(node_type: NodeType) -> Vec<MinerRewardSummary<T::AccountId>> {
+			// Use a HashMap to aggregate rewards by account
+			let mut reward_map: std::collections::HashMap<T::AccountId, u128> = std::collections::HashMap::new();
+
+			// Iterate through all nodes' reward records
+			RewardsRecord::<T, I>::iter()
+				.for_each(|(node_id, records)| {
+					// Check if the node type matches the requested type
+					if let Some(node_info) = Self::get_node_info(&node_id) {
+						if node_info.node_type == node_type {
+							// Aggregate rewards for each account
+							records.iter()
+								.for_each(|record| {
+									*reward_map.entry(record.account.clone()).or_insert(0) += record.amount;
+								});
+						}
+					}
+				});
+
+			// Convert the HashMap to a Vec of MinerRewardSummary
+			reward_map.into_iter()
+				.map(|(account, reward)| MinerRewardSummary { account, reward })
+				.collect()
+		}
+
+		// Helper function to get total distributed rewards for a specific node type
+		pub fn get_total_distributed_rewards_by_node_type(node_type: NodeType) -> u128 {
+			// Iterate through all nodes' reward records
+			RewardsRecord::<T, I>::iter()
+				.filter_map(|(node_id, records)| {
+					// Check if the node type matches the requested type
+					Self::get_node_info(&node_id)
+						.filter(|node_info| node_info.node_type == node_type)
+						.map(|_| {
+							// Sum total rewards for this node type
+							records.iter()
+								.map(|record| record.amount)
+								.sum::<u128>()
+						})
+				})
+				.sum()
+		}
+
 	    /// The account ID of the marketplace pallet
 		pub fn account_id() -> T::AccountId {
 			<T as pallet::Config<I>>::PalletId::get().into_account_truncating()
@@ -471,6 +536,7 @@ pub mod pallet {
 											node_types: node_info.node_type,
 											weight: reward_u128 as u16,
 											amount: reward_u128,
+											account: account.clone(),
 											block_number: current_block,
 											_marker: PhantomData,
 										});
@@ -544,6 +610,7 @@ pub mod pallet {
 											node_types: node_info.node_type,
 											weight: reward_u128 as u16,
 											amount: reward_u128,
+											account: account.clone(),
 											block_number: current_block,
 											_marker: PhantomData,
 										});
@@ -617,6 +684,7 @@ pub mod pallet {
 											node_types: node_info.node_type,
 											weight: reward_u128 as u16,
 											amount: reward_u128,
+											account: account.clone(),
 											block_number: current_block,
 											_marker: PhantomData,
 										});
@@ -687,6 +755,7 @@ pub mod pallet {
 											node_types: node_info.node_type,
 											weight: reward_u128 as u16,
 											amount: reward_u128,
+											account: account.clone(),
 											block_number: current_block,
 											_marker: PhantomData,
 										});
