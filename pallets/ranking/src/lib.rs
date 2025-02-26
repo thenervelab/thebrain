@@ -175,7 +175,7 @@ pub mod pallet {
 		Vec<u8>, // node id
 		Vec<RewardsRecordDetails<T,I>>, // Vec of (timestamp, weight, amount)
 	>;
-
+	
 	#[derive(Encode, Decode, Clone, TypeInfo)]
 	pub struct RewardsRecordDetails<T: Config<I>, I: 'static = ()> {
 		pub node_types: NodeType,
@@ -435,6 +435,201 @@ pub mod pallet {
 		pub fn account_id() -> T::AccountId {
 			<T as pallet::Config<I>>::PalletId::get().into_account_truncating()
 		}
+
+		// Helper function to get pending rewards for a specific account
+		pub fn get_account_pending_rewards(account: T::AccountId) -> Vec<MinerRewardSummary<Vec<u8>>> {
+			// Get the sorted list of rankings
+			let ranked_list = RankedList::<T,I>::get();
+			
+			// Get pallet's account balance
+			let pallet_account = Self::account_id();
+			let total_balance = pallet_balances::Pallet::<T>::free_balance(&pallet_account);
+
+			// Separate nodes by type
+			let mut compute_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
+			let mut storage_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
+			let mut gpu_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
+			let mut storage_s3_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
+
+			for ranking in ranked_list.iter() {
+				if let Ok(node_info) = pallet_registration::Pallet::<T>::get_registered_node(ranking.node_id.clone()) {
+					if node_info.owner == account {
+						match node_info.node_type {
+							NodeType::ComputeMiner => compute_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
+							NodeType::StorageMiner => storage_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
+							NodeType::GpuMiner => gpu_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
+							NodeType::StorageS3 => storage_s3_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
+							_ => {}
+						}
+					}
+				}
+			}
+
+			let mut pending_rewards = Vec::new();
+
+			// Calculate pending rewards for each node type
+			if T::InstanceID::get() == 2 && !compute_miner_node.is_empty() {
+				let compute_miner_total_weight: u128 = compute_miner_node.iter()
+					.map(|(_, weight, _)| *weight as u128)
+					.sum();
+
+				for (_, weight, node_id) in compute_miner_node {
+					let weight_u128 = weight as u128;
+					let reward = if let Some(ratio) = weight_u128
+						.checked_mul(total_balance.saturated_into())
+						.and_then(|r| r.checked_div(compute_miner_total_weight)) 
+					{
+						let decimal_factor: u128 = 10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+						let reward_with_decimals = ratio.checked_mul(decimal_factor)
+							.unwrap_or_default();
+						reward_with_decimals
+					} else {
+						0
+					};
+
+					pending_rewards.push(MinerRewardSummary {
+						account: node_id,
+						reward,
+					});
+				}
+			} else if T::InstanceID::get() == 4 && !gpu_miner_node.is_empty() {
+				let gpu_miner_total_weight: u128 = gpu_miner_node.iter()
+					.map(|(_, weight, _)| *weight as u128)
+					.sum();
+
+				for (_, weight, node_id) in gpu_miner_node {
+					let weight_u128 = weight as u128;
+					let reward = if let Some(ratio) = weight_u128
+						.checked_mul(total_balance.saturated_into())
+						.and_then(|r| r.checked_div(gpu_miner_total_weight)) 
+					{
+						let decimal_factor: u128 = 10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+						let reward_with_decimals = ratio.checked_mul(decimal_factor)
+							.unwrap_or_default();
+						reward_with_decimals
+					} else {
+						0
+					};
+
+					pending_rewards.push(MinerRewardSummary {
+						account: node_id,
+						reward,
+					});
+				}
+			} else if T::InstanceID::get() == 5 && !storage_s3_miner_node.is_empty() {
+				let s3_miner_total_weight: u128 = storage_s3_miner_node.iter()
+					.map(|(_, weight, _)| *weight as u128)
+					.sum();
+
+				for (_, weight, node_id) in storage_s3_miner_node {
+					let weight_u128 = weight as u128;
+					let reward = if let Some(ratio) = weight_u128
+						.checked_mul(total_balance.saturated_into())
+						.and_then(|r| r.checked_div(s3_miner_total_weight)) 
+					{
+						let decimal_factor: u128 = 10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+						let reward_with_decimals = ratio.checked_mul(decimal_factor)
+							.unwrap_or_default();
+						reward_with_decimals
+					} else {
+						0
+					};
+
+					pending_rewards.push(MinerRewardSummary {
+						account: node_id,
+						reward,
+					});
+				}
+			} else if !storage_miner_node.is_empty() {
+				let storage_miner_total_weight: u128 = storage_miner_node.iter()
+					.map(|(_, weight, _)| *weight as u128)
+					.sum();
+
+				for (_, weight, node_id) in storage_miner_node {
+					let weight_u128 = weight as u128;
+					let reward = if let Some(ratio) = weight_u128
+						.checked_mul(total_balance.saturated_into())
+						.and_then(|r| r.checked_div(storage_miner_total_weight)) 
+					{
+						let decimal_factor: u128 = 10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+						let reward_with_decimals = ratio.checked_mul(decimal_factor)
+							.unwrap_or_default();
+						reward_with_decimals
+					} else {
+						0
+					};
+
+					pending_rewards.push(MinerRewardSummary {
+						account: node_id,
+						reward,
+					});
+				}
+			}
+
+			pending_rewards
+		}
+
+		// Helper function to get list of miners with their pending rewards for a specific node type
+		pub fn get_miners_pending_rewards(node_type: NodeType) -> Vec<MinerRewardSummary<T::AccountId>> {
+			// Get the sorted list of rankings
+			let ranked_list = RankedList::<T,I>::get();
+			
+			// Get pallet's account balance
+			let pallet_account = Self::account_id();
+			let total_balance = pallet_balances::Pallet::<T>::free_balance(&pallet_account);
+
+			// Separate nodes by type
+			let mut target_nodes: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
+
+			for ranking in ranked_list.iter() {
+				if let Ok(node_info) = pallet_registration::Pallet::<T>::get_registered_node(ranking.node_id.clone()) {
+					if node_info.node_type == node_type {
+						target_nodes.push((node_info.owner, ranking.weight, node_info.node_id));
+					}
+				}
+			}
+			
+			// Use a HashMap to aggregate pending rewards by account
+			let mut pending_reward_map: std::collections::HashMap<T::AccountId, u128> = std::collections::HashMap::new();
+
+			// Calculate total weight
+			let total_weight: u128 = target_nodes.iter()
+				.map(|(_, weight, _)| *weight as u128)
+				.sum();
+
+			// Calculate rewards for each account
+			for (account, weight, _) in target_nodes {
+				let weight_u128 = weight as u128;
+				let reward = if let Some(ratio) = weight_u128
+					.checked_mul(total_balance.saturated_into())
+					.and_then(|r| r.checked_div(total_weight)) 
+				{
+					let decimal_factor: u128 = 10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+					let reward_with_decimals = ratio.checked_mul(decimal_factor)
+						.unwrap_or_default();
+					reward_with_decimals
+				} else {
+					0
+				};
+
+				*pending_reward_map.entry(account).or_insert(0) += reward;
+			}
+
+			// Convert the HashMap to a Vec of MinerRewardSummary
+			pending_reward_map.into_iter()
+				.map(|(account, reward)| MinerRewardSummary { account, reward })
+				.collect()
+		}
+	}
+
+	#[derive(Encode, Decode, Clone, TypeInfo)]
+	pub struct PendingRewardDetails<T: Config<I>, I: 'static = ()> {
+		pub node_type: NodeType,
+		pub node_id: Vec<u8>,
+		pub weight: u16,
+		pub pending_amount: u128,
+		pub block_number: BlockNumberFor<T>,
+		pub _marker: PhantomData<I>,
 	}
 
 	#[pallet::hooks]
