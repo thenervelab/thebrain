@@ -1258,7 +1258,7 @@ pub mod pallet {
                             pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), Some(request));
                             let _ = Self::update_user_subscription_last_charged_at(&user, current_block);
                         }
-                        Self::update_storage_last_charged_at(&user);
+                        let _ = Self::update_storage_last_charged_at(&user);
                     } else {
                         // Iterate through requests to update
                         for request in requests_to_update {

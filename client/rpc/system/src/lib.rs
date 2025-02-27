@@ -10,12 +10,14 @@ use if_addrs::IfAddr;
 
 /// Function to count running VMs
 fn count_kvm_vms() -> Option<usize> {
-    if let Ok(output) = Command::new("virsh").arg("list").arg("--all").output() {
+    if let Ok(output) = Command::new("kubectl")
+        .args(&["get", "vms", "--all-namespaces", "--no-headers"])
+        .output() 
+    {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            // Parse the output to count lines representing VMs
+            // Use wc -l equivalent by counting non-empty lines
             let vm_count = stdout.lines()
-                .skip(2) // Skip header lines
                 .filter(|line| !line.trim().is_empty())
                 .count();
             return Some(vm_count);
