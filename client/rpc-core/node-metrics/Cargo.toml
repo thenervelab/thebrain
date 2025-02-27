@@ -15,6 +15,7 @@ jsonrpsee = { workspace = true, features = [ "macros", "server" ] }
 client-evm-tracing = { workspace = true }
 rpc-core-types = { workspace = true }
 sp-std = { workspace = true }
+sp-runtime = { workspace = true, features = ["std"] }
 
 rpc-primitives-node-metrics = { workspace = true, features = ["std"] }
 

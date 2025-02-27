@@ -438,7 +438,7 @@ pub mod pallet {
 		}
 
 		// Helper function to get pending rewards for a specific account
-		pub fn get_account_pending_rewards(account: T::AccountId) -> Vec<MinerRewardSummary<Vec<u8>>> {
+		pub fn get_account_pending_rewards(account: T::AccountId) -> Vec<MinerRewardSummary<T::AccountId>> {
 			// Get the sorted list of rankings
 			let ranked_list = RankedList::<T,I>::get();
 			
@@ -474,7 +474,7 @@ pub mod pallet {
 					.map(|(_, weight, _)| *weight as u128)
 					.sum();
 
-				for (_, weight, node_id) in compute_miner_node {
+				for (owner, weight, node_id) in compute_miner_node {
 					let weight_u128 = weight as u128;
 					let reward = if let Some(ratio) = weight_u128
 						.checked_mul(total_balance.saturated_into())
@@ -489,7 +489,7 @@ pub mod pallet {
 					};
 
 					pending_rewards.push(MinerRewardSummary {
-						account: node_id,
+						account: owner,
 						reward,
 					});
 				}
@@ -498,7 +498,7 @@ pub mod pallet {
 					.map(|(_, weight, _)| *weight as u128)
 					.sum();
 
-				for (_, weight, node_id) in gpu_miner_node {
+				for (owner, weight, node_id) in gpu_miner_node {
 					let weight_u128 = weight as u128;
 					let reward = if let Some(ratio) = weight_u128
 						.checked_mul(total_balance.saturated_into())
@@ -513,7 +513,7 @@ pub mod pallet {
 					};
 
 					pending_rewards.push(MinerRewardSummary {
-						account: node_id,
+						account: owner,
 						reward,
 					});
 				}
@@ -522,7 +522,7 @@ pub mod pallet {
 					.map(|(_, weight, _)| *weight as u128)
 					.sum();
 
-				for (_, weight, node_id) in storage_s3_miner_node {
+				for (owner, weight, node_id) in storage_s3_miner_node {
 					let weight_u128 = weight as u128;
 					let reward = if let Some(ratio) = weight_u128
 						.checked_mul(total_balance.saturated_into())
@@ -537,7 +537,7 @@ pub mod pallet {
 					};
 
 					pending_rewards.push(MinerRewardSummary {
-						account: node_id,
+						account: owner,
 						reward,
 					});
 				}
@@ -546,7 +546,7 @@ pub mod pallet {
 					.map(|(_, weight, _)| *weight as u128)
 					.sum();
 
-				for (_, weight, node_id) in storage_miner_node {
+				for (owner, weight, node_id) in storage_miner_node {
 					let weight_u128 = weight as u128;
 					let reward = if let Some(ratio) = weight_u128
 						.checked_mul(total_balance.saturated_into())
@@ -561,7 +561,7 @@ pub mod pallet {
 					};
 
 					pending_rewards.push(MinerRewardSummary {
-						account: node_id,
+						account: owner,
 						reward,
 					});
 				}
@@ -573,7 +573,7 @@ pub mod pallet {
 		// Helper function to get list of miners with their pending rewards for a specific node type
 		pub fn get_miners_pending_rewards(node_type: NodeType) -> Vec<MinerRewardSummary<T::AccountId>> {
 			// Get the sorted list of rankings
-			let ranked_list = RankedList::<T,I>::get();
+			let ranked_list = RankedList::<T,I>::get(); 
 			
 			// Get pallet's account balance
 			let pallet_account = Self::account_id();

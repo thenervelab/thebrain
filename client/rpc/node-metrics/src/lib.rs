@@ -4,10 +4,11 @@ use sp_blockchain::HeaderBackend;
 use sp_runtime::traits::Block as BlockT;
 use std::sync::Arc;
 pub use rpc_core_node_metrics::{NodeMetricsApiServer};
-use rpc_primitives_node_metrics::{NodeType,NodeMetricsData};
+use rpc_primitives_node_metrics::{NodeType, NodeMetricsData, MinerRewardSummary};
 use rpc_primitives_node_metrics::NodeMetricsRuntimeApi;
 use fc_rpc::internal_err;
 use sp_std::vec::Vec;
+use sp_runtime::AccountId32;
 
 /// Net API implementation.
 pub struct NodeMetricsImpl<B: BlockT, C> {
@@ -40,4 +41,35 @@ where
 			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
 		})
     }
+
+
+	fn get_total_node_rewards(&self, account: AccountId32) -> RpcResult<u128> {       
+		
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_total_node_rewards(best_hash, account).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
+	fn get_total_distributed_rewards_by_node_type(&self, node_type: NodeType) -> RpcResult<u128>{
+		
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_total_distributed_rewards_by_node_type(best_hash, node_type).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
+	fn get_miners_total_rewards(&self, node_type: NodeType) -> RpcResult<Vec<MinerRewardSummary>>{
+		
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_miners_total_rewards(best_hash, node_type).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
 }

@@ -6,7 +6,7 @@ use scale_info::TypeInfo;
 use parity_scale_codec::{Encode,Decode};
 use sp_std::vec::Vec;
 use scale_info::prelude::string::String;
-
+use sp_runtime::AccountId32;
 use serde::{Serialize, Deserialize};
 
 #[derive( Serialize, Deserialize, TypeInfo, Encode, Decode)]
@@ -21,7 +21,17 @@ pub enum NodeType {
 decl_runtime_apis! {
     pub trait NodeMetricsRuntimeApi {
         fn get_active_nodes_metrics_by_type(node_type: NodeType) -> Vec<Option<NodeMetricsData>>;
+        fn get_total_distributed_rewards_by_node_type(node_type: NodeType) -> u128;
+        fn get_total_node_rewards(account: AccountId32) -> u128;
+        fn get_miners_total_rewards(node_type: NodeType) -> Vec<MinerRewardSummary>;
     }
+}
+
+
+#[derive( Serialize,Clone,  Deserialize, TypeInfo, Encode, Decode)]
+pub struct MinerRewardSummary {
+    pub account: AccountId32,
+    pub reward: u128,
 }
 
 // Define the NodeMetrics struct
