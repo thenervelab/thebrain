@@ -2637,7 +2637,7 @@ pub mod pallet {
 								node_id.clone(),
 								miner_request.request_id,
 								vnc_port,
-								vm_name.as_bytes().to_vec()
+								miner_request.job_id.unwrap()
 							);
 						} else {
 							log::warn!("Missing expected fields in VNC port response");
