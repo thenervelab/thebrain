@@ -2584,12 +2584,9 @@ pub mod pallet {
 			let miner_requests = Self::get_pending_vnc_requests(node_id.clone());
 
 			for miner_request in miner_requests {
-				// Use job ID to generate VM name consistently
-				let vm_name = format!("vm-{}", String::from_utf8_lossy(&miner_request.job_id.unwrap()).split('-').next().unwrap());
-				log::info!("VM Name: {}", vm_name);
 				let url = format!(
 					"http://localhost:3030/vm-vnc-port/{}",
-					vm_name.clone()
+					String::from_utf8_lossy(&miner_request.job_id.unwrap())
 				);
 				log::info!("URL for vnc request is : {}", url);
 				let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
