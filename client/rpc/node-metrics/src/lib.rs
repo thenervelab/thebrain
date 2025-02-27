@@ -73,7 +73,6 @@ where
 		})
 	}
 
-
 	fn get_account_pending_rewards(&self, account: AccountId32) -> RpcResult<Vec<MinerRewardSummary>>{
 		
 		let api = self.client.runtime_api();
@@ -90,6 +89,16 @@ where
 		let best_hash = self.client.info().best_hash;
 
 		api.get_miners_pending_rewards(best_hash, node_type).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
+	fn calculate_total_file_size(&self, account: AccountId32) -> RpcResult<u128>{
+		
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.calculate_total_file_size(best_hash, account).map_err(|err| {
 			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
 		})
 	}

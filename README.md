@@ -198,7 +198,45 @@ Returns a list of `MinerRewardSummary` objects representing pending rewards.
 }
 ```
 
-## Notes
+### 7. `calculate_total_file_size`
+
+#### Description
+Calculates the total file size for all approved and pinned files owned by a specific account.
+
+#### Parameters
+- `account` (AccountId32): The account to calculate total file size for
+
+#### Response
+Returns the total file size in bytes as a `u128` value.
+
+#### Behavior
+- Considers only approved storage requests
+- Counts each unique file hash only once
+- Uses the file size of the first pinned request for each unique file hash
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "calculate_total_file_size",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
+
+#### Example Response
+```json
+{
+    "jsonrpc": "2.0",
+    "result": 1073741824,
+    "id": 1
+}
+```
+
+### Notes
 - All methods return `RpcResult`, which handles potential errors
 - Ensure proper authentication and authorization when using these RPC methods
 - Reward values are represented in the network's base currency unit
+- The returned value represents the total bytes of unique files owned by the account
+- Only files with approved storage requests are included
+- Duplicate file hashes are counted only once

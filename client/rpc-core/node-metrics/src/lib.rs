@@ -26,4 +26,7 @@ pub trait NodeMetricsApi {
 
 	#[method(name = "get_miners_pending_rewards")]
 	fn get_miners_pending_rewards(&self, node_type: NodeType) -> RpcResult<Vec<MinerRewardSummary>>;
+
+	#[method(name = "calculate_total_file_size")]
+	fn calculate_total_file_size(&self, account: AccountId32) -> RpcResult<u128>;
 }

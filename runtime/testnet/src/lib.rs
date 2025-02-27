@@ -3094,6 +3094,10 @@ impl_runtime_apis! {
 			})
 			.collect()
 		}
+
+		fn calculate_total_file_size(account: AccountId32) -> u128 {
+			<pallet_ipfs_pin::Pallet<Runtime>>::calculate_total_file_size(&account)
+		}
 	}
 
 
