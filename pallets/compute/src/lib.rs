@@ -2624,7 +2624,7 @@ pub mod pallet {
 				match serde_json::from_str::<serde_json::Value>(response_str) {
 					Ok(json_response) => {
 						if let (Some(name), Some(vnc_port)) = (
-							json_response.get("name").and_then(|v| v.as_str()),
+							json_response.get("vm_name").and_then(|v| v.as_str()),
 							json_response.get("vnc_port").and_then(|v| v.as_u64())
 						) {
 							// Log the VNC port
