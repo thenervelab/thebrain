@@ -1117,7 +1117,6 @@ pub mod pallet {
 				// Find the request with the matching request_id
 				match requests.iter_mut().find(|r| r.request_id == request_id) {
 					Some(request) => {
-						// Mark the request as fulfilled
 						request.vnc_port = Some(vnc_port.clone());						
 						Ok(())
 					},
@@ -1358,7 +1357,7 @@ pub mod pallet {
 		pub fn get_pending_vnc_requests(node_id: Vec<u8>) -> Vec<MinerComputeRequest<BlockNumberFor<T>, T::Hash, T::AccountId>> {
 			MinerComputeRequests::<T>::get(&node_id)
 				.into_iter()
-				.filter(|request| request.job_id.is_some() && !request.fullfilled && request.fail_reason.is_none() && request.vnc_port.is_none())
+				.filter(|request| request.job_id.is_some() && request.fail_reason.is_none() && request.vnc_port.is_none())
 				.collect()
 		} 
 
