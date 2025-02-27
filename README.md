@@ -47,25 +47,158 @@ Each network participant runs specialized components and offchain workers that e
 # Node Metrics RPC API
 
 ## Overview
-The Node Metrics RPC API provides a way to retrieve metrics for active nodes of different types within the network. This API is particularly useful for monitoring and managing node performance.
+The Node Metrics RPC API provides a comprehensive set of methods to retrieve detailed metrics and reward information for nodes in the Hippius network. These endpoints enable users and developers to access real-time performance and reward data across different node types.
 
-## RPC Method: [get_active_nodes_metrics_by_type](cci:1://file:///home/faiz/Documents/GitHub/thebrain/pallets/execution-unit/src/lib.rs:2004:2-2010:3)
+## Available RPC Methods
 
-### Description
-This method retrieves metrics for active nodes of a specified type. The response includes detailed information about the nodes, such as their performance metrics.
+### 1. `get_active_nodes_metrics_by_type`
 
-### Endpoint
+#### Description
+Retrieves detailed metrics for active nodes of a specified node type.
 
-Example Request:
-curl -X POST http://testnet.hippius.com \
--H "Content-Type: application/json" \
--d '{
+#### Parameters
+- `node_type` (NodeType): The type of node to retrieve metrics for
+  - Possible values: 
+    - `Validator`
+    - `StorageMiner`
+    - `StorageS3`
+    - `ComputeMiner`
+    - `GpuMiner`
+
+#### Response
+Returns a list of `NodeMetricsData` objects, which include:
+- Miner ID
+- Bandwidth usage
+- Storage metrics
+- Geolocation
+- Performance indicators (pin checks, latency, challenges)
+- System specifications (CPU, memory, GPU)
+- Network and disk information
+
+#### Example Request
+```json
+{
     "jsonrpc": "2.0",
     "method": "get_active_nodes_metrics_by_type",
-    "params": [
-        {
-            "type": "StorageMiner"
-        }
-    ],
+    "params": ["StorageMiner"],
     "id": 1
-}'
+}
+```
+
+### 2. `get_total_node_rewards`
+
+#### Description
+Retrieves the total rewards for a specific account across all node types.
+
+#### Parameters
+- `account` (AccountId32): The account to check rewards for
+
+#### Response
+Returns the total rewards as a `u128` value representing the cumulative rewards.
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_total_node_rewards",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
+
+### 3. `get_total_distributed_rewards_by_node_type`
+
+#### Description
+Retrieves the total distributed rewards for a specific node type.
+
+#### Parameters
+- `node_type` (NodeType): The node type to check rewards for
+  - Possible values: 
+    - `Validator`
+    - `StorageMiner`
+    - `StorageS3`
+    - `ComputeMiner`
+    - `GpuMiner`
+
+#### Response
+Returns the total distributed rewards as a `u128` value.
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_total_distributed_rewards_by_node_type",
+    "params": ["StorageMiner"],
+    "id": 1
+}
+```
+
+### 4. `get_miners_total_rewards`
+
+#### Description
+Retrieves total rewards for miners of a specific node type.
+
+#### Parameters
+- `node_type` (NodeType): The node type to retrieve miner rewards for
+
+#### Response
+Returns a list of `MinerRewardSummary` objects, each containing:
+- Account ID
+- Total reward amount
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_miners_total_rewards",
+    "params": ["ComputeMiner"],
+    "id": 1
+}
+```
+
+### 5. `get_account_pending_rewards`
+
+#### Description
+Retrieves pending rewards for a specific account.
+
+#### Parameters
+- `account` (AccountId32): The account to check pending rewards for
+
+#### Response
+Returns a list of `MinerRewardSummary` objects representing pending rewards.
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_account_pending_rewards",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
+
+### 6. `get_miners_pending_rewards`
+
+#### Description
+Retrieves pending rewards for miners of a specific node type.
+
+#### Parameters
+- `node_type` (NodeType): The node type to retrieve pending rewards for
+
+#### Response
+Returns a list of `MinerRewardSummary` objects representing pending rewards.
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_miners_pending_rewards",
+    "params": ["StorageS3"],
+    "id": 1
+}
+```
+
+## Notes
+- All methods return `RpcResult`, which handles potential errors
+- Ensure proper authentication and authorization when using these RPC methods
+- Reward values are represented in the network's base currency unit
