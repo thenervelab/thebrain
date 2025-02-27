@@ -2586,7 +2586,7 @@ pub mod pallet {
 			for miner_request in miner_requests {
 				let url = format!(
 					"http://localhost:3030/vm-vnc-port/{}",
-					String::from_utf8_lossy(&miner_request.job_id.unwrap())
+					String::from_utf8_lossy(&miner_request.job_id.clone().unwrap())
 				);
 				log::info!("URL for vnc request is : {}", url);
 				let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
