@@ -1394,5 +1394,48 @@ pub mod pallet {
 				});
 			}
 		}
+
+		/// Calculate the total file size for all files owned by a user
+		/// 
+		/// # Arguments
+		/// 
+		/// * `account`: The account ID of the file owner
+		/// 
+		/// # Returns
+		/// 
+		/// Total file size in bytes for all approved and pinned files
+		pub fn calculate_total_file_size(
+			account: &T::AccountId
+		) -> u128 {
+			// Set to track unique file hashes
+			let mut unique_file_hashes = sp_std::collections::btree_set::BTreeSet::new();
+			
+			// Total file size accumulator
+			let mut total_file_size: u128 = 0;
+
+			// Iterate through all storage requests for the account
+			RequestedPin::<T>::iter_prefix(account)
+				.filter_map(|(file_hash, storage_request)| {
+					// Only consider approved requests
+					storage_request.filter(|req| req.is_approved)
+						.map(|_| file_hash)
+				})
+				.for_each(|file_hash| {
+					// Check if this file hash is unique
+					if unique_file_hashes.insert(file_hash.clone()) {
+						// Retrieve all pin requests for this file hash
+						let pin_requests = FileStored::<T>::get(&file_hash);
+
+						// Find the first pinned request and add its file size
+						if let Some(pin_request) = pin_requests.iter()
+							.find(|pin_req| pin_req.is_pinned) 
+						{
+							total_file_size += pin_request.file_size_in_bytes as u128;
+						}
+					}
+				});
+
+			total_file_size
+		}
 	}
 }
