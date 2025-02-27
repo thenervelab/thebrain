@@ -78,7 +78,7 @@ pub mod pallet {
 		offchain::{Duration, storage_lock::{BlockAndTime,StorageLock}}
 	};
 	use pallet_registration::NodeType;
-	// use sp_core::crypto::Ss58Codec;
+	use sp_std::collections::btree_map::BTreeMap;
 
 	const LOCK_BLOCK_EXPIRATION: u32 = 3;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
@@ -373,62 +373,64 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// // Helper function to get total rewards for a specific account across all nodes
-		// pub fn get_total_node_rewards(account: T::AccountId) -> u128 {
-		// 	// Iterate through all nodes' reward records
-		// 	RewardsRecord::<T>::iter()
-		// 		.map(|(_, records)| {
-		// 			// Sum up all the reward amounts for the specific account
-		// 			records.iter()
-		// 				.filter(|record| record.account == account)
-		// 				.map(|record| record.amount)
-		// 				.sum::<u128>()
-		// 		})
-		// 		.sum()
-		// }
+		// Helper function to get total rewards for a specific account across all nodes
+		pub fn get_total_node_rewards(account: T::AccountId) -> u128 {
+			// Iterate through all nodes' reward records
+			RewardsRecord::<T, I>::iter()
+				.map(|(_, records)| {
+					// Sum up all the reward amounts for the specific account
+					records.iter()
+						.filter(|record| record.account == account.clone())
+						.map(|record| record.amount)
+						.sum::<u128>()
+				})
+				.sum()
+		}
 
-		// // Helper function to get total distributed rewards for miners of a specific node type
-		// pub fn get_miners_total_rewards(node_type: NodeType) -> Vec<MinerRewardSummary<T::AccountId>> {
-		// 	// Use a HashMap to aggregate rewards by account
-		// 	let mut reward_map: std::collections::HashMap<T::AccountId, u128> = std::collections::HashMap::new();
+		// Helper function to get total distributed rewards for miners of a specific node type
+		pub fn get_miners_total_rewards(node_type: NodeType) -> Vec<MinerRewardSummary<T::AccountId>> {
+			// Use a BTreeMap to aggregate rewards by account
+			let mut reward_map: BTreeMap<T::AccountId, u128> = BTreeMap::new();
 
-		// 	// Iterate through all nodes' reward records
-		// 	RewardsRecord::<T>::iter()
-		// 		.for_each(|(node_id, records)| {
-		// 			// Check if the node type matches the requested type
-		// 			if let Ok(node_info) = pallet_registration::Pallet::<T>::get_registered_node(ranking.node_id.clone()) {
-		// 				if node_info.node_type == node_type {
-		// 					// Aggregate rewards for each account
-		// 					records.iter()
-		// 						.for_each(|record| {
-		// 							*reward_map.entry(record.account.clone()).or_insert(0) += record.amount;
-		// 						});
-		// 				}
-		// 			}
-		// 		});
+			// Iterate through all nodes' reward records
+			RewardsRecord::<T, I>::iter()
+				.for_each(|(node_id, records)| {
+					// Check if the node type matches the requested type
+					if let Ok(node_info) = pallet_registration::Pallet::<T>::get_registered_node(node_id.clone()) {
+						if node_info.node_type == node_type {
+							// Aggregate rewards for each account
+							records.iter()
+								.for_each(|record| {
+									*reward_map.entry(record.account.clone()).or_insert(0) += record.amount;
+								});
+						}
+					}
+				});
 
-		// 	// Convert the HashMap to a Vec of MinerRewardSummary
-		// 	reward_map.into_iter()
-		// 		.map(|(account, reward)| MinerRewardSummary { account, reward })
-		// 		.collect()
-		// }
+			// Convert the BTreeMap to a Vec of MinerRewardSummary
+			reward_map.into_iter()
+				.map(|(account, reward)| MinerRewardSummary { account, reward })
+				.collect()
+		}
 
-		// // Helper function to get total distributed rewards for a specific node type
-		// pub fn get_total_distributed_rewards_by_node_type(node_type: NodeType) -> u128 {
-		// 	// Iterate through all nodes' reward records
-		// 	RewardsRecord::<T>::iter()
-		// 		.filter_map(|(node_id, records)| {
-		// 			Self::get_node_info(&node_id)
-		// 				// .filter(|node_info| node_info.node_type == node_type)
-		// 				.map(|_| {
-		// 					// Sum total rewards for this node type
-		// 					records.iter() 
-		// 						.map(|record| record.amount)
-		// 						.sum::<u128>()
-		// 				})
-		// 		})
-		// 		.sum()
-		// }
+		// Helper function to get total distributed rewards for a specific node type
+		pub fn get_total_distributed_rewards_by_node_type(node_type: NodeType) -> u128 {
+			// Iterate through all nodes' reward records
+			RewardsRecord::<T, I>::iter()
+				.filter_map(|(node_id, records)| {
+					// Get the registered node information
+					pallet_registration::Pallet::<T>::get_registered_node(node_id.clone())
+						.ok()
+						.filter(|node_info| node_info.node_type == node_type)
+						.map(|_| {
+							// Sum total rewards for this node type
+							records.iter() 
+								.map(|record| record.amount)
+								.sum::<u128>()
+						})
+				})
+				.sum()
+		}
 
 	    /// The account ID of the marketplace pallet
 		pub fn account_id() -> T::AccountId {
@@ -458,7 +460,7 @@ pub mod pallet {
 							NodeType::StorageMiner => storage_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
 							NodeType::GpuMiner => gpu_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
 							NodeType::StorageS3 => storage_s3_miner_node.push((node_info.owner, ranking.weight, node_info.node_id)),
-							_ => {}
+							_ => {} // Ignore validator nodes
 						}
 					}
 				}
@@ -589,8 +591,8 @@ pub mod pallet {
 			}
 
 			// Use sp_std::collections::btree_map::BTreeMap for WASM compatibility
-			let mut pending_reward_map: sp_std::collections::btree_map::BTreeMap<T::AccountId, u128> = 
-				sp_std::collections::btree_map::BTreeMap::new();
+			let mut pending_reward_map: BTreeMap<T::AccountId, u128> = 
+				BTreeMap::new();
 
 			// Calculate total weight
 			let total_weight: u128 = target_nodes.iter()
