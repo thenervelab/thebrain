@@ -24,6 +24,8 @@ decl_runtime_apis! {
         fn get_total_distributed_rewards_by_node_type(node_type: NodeType) -> u128;
         fn get_total_node_rewards(account: AccountId32) -> u128;
         fn get_miners_total_rewards(node_type: NodeType) -> Vec<MinerRewardSummary>;
+        fn get_account_pending_rewards( account: AccountId32) -> Vec<MinerRewardSummary>;
+        fn get_miners_pending_rewards( node_type: NodeType) -> Vec<MinerRewardSummary>;
     }
 }
 

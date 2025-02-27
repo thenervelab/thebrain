@@ -20,4 +20,10 @@ pub trait NodeMetricsApi {
 
 	#[method(name = "get_miners_total_rewards")]
 	fn get_miners_total_rewards(&self, node_type: NodeType) -> RpcResult<Vec<MinerRewardSummary>>;
+
+	#[method(name = "get_account_pending_rewards")]
+	fn get_account_pending_rewards(&self, account: AccountId32) -> RpcResult<Vec<MinerRewardSummary>>;
+
+	#[method(name = "get_miners_pending_rewards")]
+	fn get_miners_pending_rewards(&self, node_type: NodeType) -> RpcResult<Vec<MinerRewardSummary>>;
 }

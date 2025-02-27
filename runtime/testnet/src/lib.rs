@@ -3065,6 +3065,35 @@ impl_runtime_apis! {
 			})
 			.collect()
 		}
+
+		fn get_account_pending_rewards( account: AccountId32) -> Vec<rpc_primitives_node_metrics::MinerRewardSummary>{
+			<pallet_rankings::Pallet<Runtime>>::get_account_pending_rewards(account)
+			.into_iter()
+			.map(|summary| rpc_primitives_node_metrics::MinerRewardSummary {
+				account: summary.account.clone(),
+				reward: summary.reward,
+			})
+			.collect()
+		}
+
+		fn get_miners_pending_rewards(node_type: rpc_primitives_node_metrics::NodeType) -> Vec<rpc_primitives_node_metrics::MinerRewardSummary>{
+			// Convert RPC NodeType to Pallet NodeType
+			let pallet_node_type = match node_type {
+				rpc_primitives_node_metrics::NodeType::Validator => pallet_registration::NodeType::Validator,
+				rpc_primitives_node_metrics::NodeType::StorageMiner => pallet_registration::NodeType::StorageMiner,
+				rpc_primitives_node_metrics::NodeType::StorageS3 => pallet_registration::NodeType::StorageS3,   
+				rpc_primitives_node_metrics::NodeType::ComputeMiner => pallet_registration::NodeType::ComputeMiner,
+				rpc_primitives_node_metrics::NodeType::GpuMiner => pallet_registration::NodeType::GpuMiner,   
+			};
+			
+			<pallet_rankings::Pallet<Runtime>>::get_miners_pending_rewards(pallet_node_type)
+			.into_iter()
+			.map(|summary| rpc_primitives_node_metrics::MinerRewardSummary {
+				account: summary.account.clone(),
+				reward: summary.reward,
+			})
+			.collect()
+		}
 	}
 
 
