@@ -16,6 +16,15 @@ pub mod pallet {
     use super::*;
     use sp_std::collections::btree_set::BTreeSet;
     use pallet_credits::Pallet as CreditsPallet;
+    use frame_support::{
+        pallet_prelude::*,
+        traits::{
+            tokens::Balance,
+            Get,
+            PalletId,
+        },
+        weights::Weight,
+    };
 
     #[pallet::pallet]
     #[pallet::without_storage_info]
@@ -25,6 +34,9 @@ pub mod pallet {
     pub trait Config: frame_system::Config + pallet_credits::Config {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type MinConfirmations: Get<u32>; // e.g., 2 or 3
+        /// The pallet's id, used for deriving its sovereign account ID.
+        #[pallet::constant]
+        type PalletId: Get<PalletId>;
     }
 
     #[pallet::storage]
@@ -90,7 +102,6 @@ pub mod pallet {
         #[pallet::weight(Weight::from_parts(10_000, 0))]
         pub fn confirm_mint_alpha(
             origin: OriginFor<T>,
-            user: T::AccountId,
             amount: u64,
             proof: Vec<u8>, // Encoded (block_hash, event_index)
         ) -> DispatchResult {
@@ -100,31 +111,33 @@ pub mod pallet {
             // Prevent double-spending
             ensure!(!ProcessedEvents::<T>::contains_key(&proof), Error::<T>::DoubleSpendDetected);
 
-            let (pending_user, pending_amount, mut confirmations) =
-                PendingMints::<T>::get(&proof).unwrap_or((user.clone(), amount, BTreeSet::new()));
+            let (_, pending_amount, mut confirmations) =
+                PendingMints::<T>::get(&proof).unwrap_or((Self::get_pallet_account(), amount, BTreeSet::new()));
 
-            // Ensure consistent user and amount
-            ensure!(pending_user == user && pending_amount == amount, Error::<T>::InvalidProof);
+            // Ensure consistent amount
+            ensure!(pending_amount == amount, Error::<T>::InvalidProof);
 
             // Add confirmation
             ensure!(!confirmations.contains(&operator), Error::<T>::AlreadyConfirmed);
             confirmations.insert(operator);
 
             if confirmations.len() as u32 >= T::MinConfirmations::get() {
-                // Threshold met, execute mint
-                let new_balance = AlphaBalances::<T>::get(&user).saturating_add(amount);
-                AlphaBalances::<T>::insert(&user, new_balance);
+                // Threshold met, execute mint to pallet account
+                let pallet_account = Self::get_pallet_account();
+                let current_balance = AlphaBalances::<T>::get(&pallet_account);
+                let new_balance = current_balance.saturating_add(amount);
+                AlphaBalances::<T>::insert(&pallet_account, new_balance);
                 ProcessedEvents::<T>::insert(&proof, true);
                 PendingMints::<T>::remove(&proof);
                 
                 // Increase total alpha in pool
                 TotalAlphaInPool::<T>::mutate(|total| *total += amount as u128);
                 
-                Self::deposit_event(Event::AlphaMinted(user, amount));
+                Self::deposit_event(Event::AlphaMinted(pallet_account, amount));
             } else {
                 // Still pending
-                PendingMints::<T>::insert(&proof, (user.clone(), amount, confirmations));
-                Self::deposit_event(Event::AlphaMintPending(proof, user, amount));
+                PendingMints::<T>::insert(&proof, (Self::get_pallet_account(), amount, confirmations));
+                Self::deposit_event(Event::AlphaMintPending(proof, Self::get_pallet_account(), amount));
             }
             Ok(())
         }
@@ -246,8 +259,9 @@ pub mod pallet {
             Ok(())
         }
 
+        // Calculate the alpha price in terms of Credits equivalent
         pub fn calculate_alpha_price(credits_to_withdraw: u128) -> Option<u128> {
-            let total_credits = Self::total_credits_purchased();
+            let total_credits = CreditsPallet::<T>::total_credits_purchased();
             let total_alpha = Self::total_alpha_in_pool();
     
             // Ensure we have Alpha in the pool to calculate
@@ -264,5 +278,14 @@ pub mod pallet {
             Some(alpha_to_burn)
         }
         
+        pub fn account_id() -> T::AccountId {
+            <T as pallet::Config>::PalletId::get().into_account_truncating()
+        }
+
+        /// Get the current balance of the marketplace pallet
+        pub fn balance() -> BalanceOf<T> {
+            pallet_balances::Pallet::<T>::free_balance(&Self::account_id())
+        }
+
     }
 }
