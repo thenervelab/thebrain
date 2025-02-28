@@ -471,68 +471,68 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Lock a specified amount of credits for an account
-        ///
-        /// - `origin`: The account locking the credits
-        /// - `amount`: The amount of credits to lock
-        #[pallet::call_index(8)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn lock_credits(
-            origin: OriginFor<T>,
-            amount: u128,
-        ) -> DispatchResult {
-            // Ensure the caller is signed
-            let who = ensure_signed(origin)?;          
+        // /// Lock a specified amount of credits for an account
+        // ///
+        // /// - `origin`: The account locking the credits
+        // /// - `amount`: The amount of credits to lock
+        // #[pallet::call_index(8)]
+        // #[pallet::weight((0, Pays::No))]
+        // pub fn lock_credits(
+        //     origin: OriginFor<T>,
+        //     amount: u128,
+        // ) -> DispatchResult {
+        //     // Ensure the caller is signed
+        //     let who = ensure_signed(origin)?;          
             
-            // Get current block number
-            let current_block = frame_system::Pallet::<T>::block_number();
+        //     // Get current block number
+        //     let current_block = frame_system::Pallet::<T>::block_number();
 
-            // Check if there's an active lock period
-            let lock_period = Self::current_lock_period()
-                .ok_or(Error::<T>::NoActiveLockPeriod)?;
+        //     // Check if there's an active lock period
+        //     let lock_period = Self::current_lock_period()
+        //         .ok_or(Error::<T>::NoActiveLockPeriod)?;
 
-            // Validate current block is within the lock period
-            ensure!(
-                current_block >= lock_period.start_block && 
-                current_block <= lock_period.end_block, 
-                Error::<T>::OutsideLockPeriod
-            );
+        //     // Validate current block is within the lock period
+        //     ensure!(
+        //         current_block >= lock_period.start_block && 
+        //         current_block <= lock_period.end_block, 
+        //         Error::<T>::OutsideLockPeriod
+        //     );
 
-            // Ensure the account has sufficient free credits
-            let current_free_credits = Self::free_credits(&who);
-            ensure!(current_free_credits >= amount, Error::<T>::InsufficientFreeCredits);
+        //     // Ensure the account has sufficient free credits
+        //     let current_free_credits = Self::free_credits(&who);
+        //     ensure!(current_free_credits >= amount, Error::<T>::InsufficientFreeCredits);
 
-            // Check if the locked amount meets the minimum lock amount requirement
-            let min_lock_amount = Self::min_lock_amount()
-            .ok_or(Error::<T>::MinLockAmountNotSet)?;
-            ensure!(amount >= min_lock_amount, Error::<T>::InsufficientLockAmount);
+        //     // Check if the locked amount meets the minimum lock amount requirement
+        //     let min_lock_amount = Self::min_lock_amount()
+        //     .ok_or(Error::<T>::MinLockAmountNotSet)?;
+        //     ensure!(amount >= min_lock_amount, Error::<T>::InsufficientLockAmount);
 
-            // Generate a unique ID
-            let locked_credit_id = Self::generate_unique_id();
+        //     // Generate a unique ID
+        //     let locked_credit_id = Self::generate_unique_id();
 
-            // Create the locked credit struct
-            let locked_credit = LockedCredit {
-                owner: who.clone(),
-                amount_locked: amount,
-                is_fulfilled: false,
-                tx_hash: None,
-                created_at: frame_system::Pallet::<T>::block_number(),
-                id: locked_credit_id,
-                is_migrated: false,
-            };
+        //     // Create the locked credit struct
+        //     let locked_credit = LockedCredit {
+        //         owner: who.clone(),
+        //         amount_locked: amount,
+        //         is_fulfilled: false,
+        //         tx_hash: None,
+        //         created_at: frame_system::Pallet::<T>::block_number(),
+        //         id: locked_credit_id,
+        //         is_migrated: false,
+        //     };
 
-            // Update locked credits
-            LockedCredits::<T>::mutate(&who, |credits| {
-                credits.push(locked_credit);
-            });
+        //     // Update locked credits
+        //     LockedCredits::<T>::mutate(&who, |credits| {
+        //         credits.push(locked_credit);
+        //     });
 
-            // Reduce free credits
-            FreeCredits::<T>::mutate(&who, |free| *free -= amount);
+        //     // Reduce free credits
+        //     FreeCredits::<T>::mutate(&who, |free| *free -= amount);
 
-            Self::deposit_event(Event::CreditLocked{who, amount, id: locked_credit_id});
+        //     Self::deposit_event(Event::CreditLocked{who, amount, id: locked_credit_id});
 
-            Ok(())
-        }
+        //     Ok(())
+        // }
 
         /// Mark a locked credit as fulfilled by providing a transaction hash
         ///
