@@ -82,7 +82,7 @@ use sp_runtime::{
 		TransactionPriority, TransactionSource, TransactionValidity, TransactionValidityError,
 	},
 	ApplyExtrinsicResult, FixedPointNumber, FixedU128, Perquintill, RuntimeDebug,
-	SaturatedConversion,
+
 };
 use sp_std::{prelude::*, vec::Vec};
 #[cfg(feature = "std")]
@@ -90,6 +90,7 @@ use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
 use static_assertions::const_assert;
 use frame_support::traits::ExistenceRequirement;
+use sp_runtime::SaturatedConversion;
 
 pub use frame_support::{
 	construct_runtime,
@@ -148,6 +149,7 @@ use hippius_primitives::{
 		TIP_REPORT_DEPOSIT_BASE, TREASURY_PALLET_ID,
 	},
 };
+use hex_literal::hex;
 // pub use hippius_services::PalletServicesConstraints;
 
 // Precompiles
@@ -1103,6 +1105,11 @@ impl pallet_ipfs_pin::Config for Runtime {
 	type AuthorityId = pallet_ipfs_pin::crypto::TestAuthId;
 }
 
+impl pallet_alpha_bridge::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type MinConfirmations = frame_support::traits::ConstU32<2>; // 2-of-3
+}
+
 parameter_types! {
     pub const VersionKeyStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555d8cb0c0627a5cd77797c62415dbef9620100";
 	pub const BittensorCallSubmission : u32 = 20;
@@ -1681,7 +1688,8 @@ construct_runtime!(
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69,
-		Storage: pallet_storage = 72
+		Storage: pallet_storage = 72,
+		AlphaBridge: pallet_alpha_bridge = 73
 	}
 );
 

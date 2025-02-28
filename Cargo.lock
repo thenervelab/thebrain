@@ -3879,12 +3879,14 @@ dependencies = [
  "frame-system",
  "frame-system-benchmarking",
  "frame-system-rpc-runtime-api",
+ "hex-literal 0.4.1",
  "hippius-crypto-primitives",
  "hippius-primitives",
  "log",
  "num_enum",
  "pallet-account-profile",
  "pallet-account-profile-precompile",
+ "pallet-alpha-bridge",
  "pallet-assets",
  "pallet-authorship",
  "pallet-babe",
@@ -4014,6 +4016,7 @@ dependencies = [
  "num_enum",
  "pallet-account-profile",
  "pallet-account-profile-precompile",
+ "pallet-alpha-bridge",
  "pallet-assets",
  "pallet-authorship",
  "pallet-babe",
@@ -6659,6 +6662,22 @@ dependencies = [
  "precompile-utils",
  "scale-info",
  "serde",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+ "sp-std 14.0.0",
+]
+
+[[package]]
+name = "pallet-alpha-bridge"
+version = "0.1.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "pallet-credits",
+ "parity-scale-codec",
+ "scale-info",
  "sp-core",
  "sp-io",
  "sp-runtime",

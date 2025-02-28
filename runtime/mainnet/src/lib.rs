@@ -901,6 +901,12 @@ impl pallet_ipfs_pin::Config for Runtime {
 	type AuthorityId = pallet_ipfs_pin::crypto::TestAuthId;
 }
 
+
+impl pallet_alpha_bridge::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type MinConfirmations = frame_support::traits::ConstU32<2>; // 2-of-3
+}
+
 parameter_types! {
     pub const VersionKeyStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555d8cb0c0627a5cd77797c62415dbef9621300";
 	pub const BittensorCallSubmission : u32 = 20;
@@ -1735,7 +1741,8 @@ construct_runtime!(
 		Credits: pallet_credits = 66,
 		Compute: pallet_compute = 89,
 		ContainerRegistry: pallet_container_registry = 90,
-		Storage: pallet_storage = 94
+		Storage: pallet_storage = 94,
+		AlphaBridge: pallet_alpha_bridge = 76
 	}
 );
 

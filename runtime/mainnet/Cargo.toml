@@ -92,6 +92,7 @@ hippius-crypto-primitives = { workspace = true }
 
 
 pallet-ipfs-pin = { workspace = true }
+pallet-alpha-bridge = { workspace = true }
 pallet-storage = { workspace = true }
 pallet-bittensor = { workspace = true }
 pallet-registration = { workspace = true }
@@ -148,6 +149,7 @@ pallet-evm-precompile-verify-ecdsa-secp256r1-signature = { workspace = true }
 pallet-evm-precompile-verify-ecdsa-stark-signature = { workspace = true }
 pallet-evm-precompile-verify-bls381-signature = { workspace = true }
 precompile-utils = { workspace = true }
+hex-literal = { workspace = true }
 
 evm-tracer = { workspace = true }
 rpc-primitives-debug = { workspace = true }
@@ -240,6 +242,7 @@ std = [
     "pallet-proxy/std",
 
     "pallet-ipfs-pin/std",
+    "pallet-alpha-bridge/std",
     "pallet-storage/std",
 	"pallet-registration/std",
     "pallet-execution-unit/std",
