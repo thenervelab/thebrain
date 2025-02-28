@@ -184,7 +184,7 @@ pub mod pallet {
 
     /// Storage to track the last charged timestamp for each user
     #[pallet::storage]
-    pub(super) type LastChargedAt<T: Config> = StorageMap<
+    pub(super) type StorageLastChargedAt<T: Config> = StorageMap<
         _,
         Blake2_128Concat,
         T::AccountId,
@@ -811,8 +811,6 @@ pub mod pallet {
 				marketplace_amount.try_into().unwrap_or_default()
 			);	
 
-            let _ = Self::update_storage_last_charged_at(&owner.clone());
-
 			// Emit event for marketplace account reward
 			RankingsPallet::<T>::deposit_event(pallet_rankings::Event::RewardDistributed {
 				account: Self::account_id(),
@@ -1175,7 +1173,7 @@ pub mod pallet {
             let all_users_who_requested_storage = pallet_ipfs_pin::Pallet::<T>::storage_request_users();
             for user in all_users_who_requested_storage {
                 // Check if the time difference is greater than 1 hour
-                let last_charged_at = LastChargedAt::<T>::get(user.clone());
+                let last_charged_at = StorageLastChargedAt::<T>::get(user.clone());
                 let block_difference = current_block.saturating_sub(last_charged_at);
                 if block_difference > T::BlocksPerHour::get().into() {
                     // Retrieve all fulfilled storage requests for this user
@@ -1256,7 +1254,6 @@ pub mod pallet {
                             request.last_charged_at = current_block;
                             // update user subscription last charged at
                             pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), Some(request));
-                            let _ = Self::update_user_subscription_last_charged_at(&user, current_block);
                         }
                         let _ = Self::update_storage_last_charged_at(&user);
                     } else {
@@ -1550,7 +1547,7 @@ pub mod pallet {
         /// Helper function to remove the last charged timestamp for a user
         pub fn remove_storage_last_charged_at(who: &T::AccountId)  {
             // Remove the last charged timestamp for the user
-            LastChargedAt::<T>::remove(who);
+            StorageLastChargedAt::<T>::remove(who);
         }
 
         /// Remove a specific account from BackupDeleteRequests if it exists
@@ -1622,7 +1619,7 @@ pub mod pallet {
             let now = <frame_system::Pallet<T>>::block_number();
 
             // Update the last charged timestamp for the user
-            LastChargedAt::<T>::insert(who, now);
+            StorageLastChargedAt::<T>::insert(who, now);
 
             Ok(())
         }
