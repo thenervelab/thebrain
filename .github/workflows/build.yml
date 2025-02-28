@@ -1,0 +1,53 @@
+name: Build and Deploy Hippius
+
+on:
+  push:
+    branches:
+      - main  # Change this if your branch is different
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y clang cmake pkg-config libssl-dev git
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Build Substrate Node
+        run: cargo build --release
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: hippius-binary
+          path: target/release/hippius
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Built Binary
+        uses: actions/download-artifact@v3
+        with:
+          name: hippius-binary
+          path: hippius
+
+      - name: Set Up SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 141.94.106.80 >> ~/.ssh/known_hosts
+
+      - name: Deploy to Server via rsync
+        run: rsync -avz hippius/ root@141.94.106.80:/var/www/html/

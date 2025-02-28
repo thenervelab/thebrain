@@ -75,7 +75,7 @@ fn generate_session_keys(
 
 pub fn local_benchmarking_config(chain_id: u64) -> Result<ChainSpec, String> {
 	let mut properties = sc_chain_spec::Properties::new();
-	properties.insert("tokenSymbol".into(), "tCREDIT".into());
+	properties.insert("tokenSymbol".into(), "tHIP".into());
 	properties.insert("tokenDecimals".into(), 18u32.into());
 	properties.insert("ss58Format".into(), 42.into());
 
@@ -106,7 +106,7 @@ pub fn local_benchmarking_config(chain_id: u64) -> Result<ChainSpec, String> {
 pub fn local_testnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 	let mut properties = sc_chain_spec::Properties::new();
 
-	properties.insert("tokenSymbol".into(), "tCREDIT".into());
+	properties.insert("tokenSymbol".into(), "tHIP".into());
 	properties.insert("tokenDecimals".into(), 18u32.into());
 	properties.insert("ss58Format".into(), TESTNET_LOCAL_SS58_PREFIX.into());
 
@@ -137,7 +137,7 @@ pub fn local_testnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 pub fn hippius_testnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 	let _boot_nodes = get_bootnodes();
 	let mut properties = sc_chain_spec::Properties::new();
-	properties.insert("tokenSymbol".into(), "tCREDIT".into());
+	properties.insert("tokenSymbol".into(), "tHip".into());
 	properties.insert("tokenDecimals".into(), 18u32.into());
 	properties.insert("ss58Format".into(), 42.into());
 
