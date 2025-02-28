@@ -42,12 +42,12 @@ pub fn get_from_seed<TPublic: Public>(seed: &str) -> <TPublic::Pair as Pair>::Pu
 type AccountPublic = <Signature as Verify>::Signer;
 
 /// Generate an account ID from seed.
-pub fn get_account_id_from_seed<TPublic: Public>(seed: &str) -> AccountId
-where
-	AccountPublic: From<<TPublic::Pair as Pair>::Public>,
-{
-	AccountPublic::from(get_from_seed::<TPublic>(seed)).into_account()
-}
+// pub fn get_account_id_from_seed<TPublic: Public>(seed: &str) -> AccountId
+// where
+// 	AccountPublic: From<<TPublic::Pair as Pair>::Public>,
+// {
+// 	AccountPublic::from(get_from_seed::<TPublic>(seed)).into_account()
+// }
 
 /// Generate an babe authority key.
 pub fn authority_keys_from_seed(stash: &str) -> (AccountId, BabeId, GrandpaId, ImOnlineId) {
@@ -77,6 +77,9 @@ pub fn local_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 	properties.insert("tokenDecimals".into(), 18u32.into());
 	properties.insert("ss58Format".into(), hippius_primitives::MAINNET_SS58_PREFIX.into());
 
+	let authority = get_authority_keys();
+    let account_id = authority.0.clone();
+
 	let endowment: Balance = 10_000_000 * UNIT;
 	Ok(ChainSpec::builder(WASM_BINARY.expect("WASM not available"), Default::default())
 		.with_name("Local Hippius Mainnet")
@@ -84,25 +87,19 @@ pub fn local_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 		.with_chain_type(ChainType::Local)
 		.with_properties(properties)
 		.with_genesis_config_patch(mainnet_genesis(
-			// Initial validators
-			vec![authority_keys_from_seed("Alice"), authority_keys_from_seed("Bob")],
+			// Initial PoA authorities
+			vec![authority.clone()],
 			// Endowed accounts
-			vec![
-				(get_account_id_from_seed::<sr25519::Public>("Alice"), endowment),
-				(get_account_id_from_seed::<sr25519::Public>("Bob"), endowment),
-				(get_account_id_from_seed::<sr25519::Public>("Charlie"), endowment),
-				(get_account_id_from_seed::<sr25519::Public>("Alice//stash"), endowment),
-				(get_account_id_from_seed::<sr25519::Public>("Bob//stash"), endowment),
-				(get_account_id_from_seed::<sr25519::Public>("Charlie//stash"), endowment),
-			],
+			vec![(account_id.clone(), ENDOWMENT)],
 			// Sudo account
-			get_account_id_from_seed::<sr25519::Public>("Alice"),
+			account_id.clone(),
 			// EVM chain ID
 			chain_id,
-			
 			vec![
+
 			],
-			Default::default(),
+			// endowed evm accounts
+			vec![],
 		))
 		.build())
 }
@@ -123,15 +120,14 @@ pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 		.with_chain_type(ChainType::Live)
 		.with_properties(properties)
 		.with_genesis_config_patch(mainnet_genesis(
-			// Initial validators
-			// get_initial_authorities(),
+			// Initial PoA authorities
+			vec![authority.clone()],
 			// Endowed accounts
 			vec![(account_id.clone(), ENDOWMENT)],
 			// Sudo account
-			// get_root_key(),
+			account_id.clone(),
 			// EVM chain ID
 			chain_id,
-
 
 			vec![
 
