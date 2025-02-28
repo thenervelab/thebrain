@@ -82,6 +82,7 @@ pub mod pallet {
         AlphaBurned(u64, T::AccountId, u64, T::AccountId),        // (nonce, user, amount, bittensor_coldkey)
         BurnFinalized(u64, Vec<u8>, Vec<u8>),                     // (nonce, block_hash, extrinsic_id)
         AlphaBurnRejected(u64, T::AccountId, u64, T::AccountId),  // (nonce, user, amount, bittensor_coldkey)
+        AlphaDeposited(T::AccountId, T::AccountId, u64),          // (pallet_account, user, amount)
     }
 
     #[pallet::error]
@@ -287,5 +288,32 @@ pub mod pallet {
             pallet_balances::Pallet::<T>::free_balance(&Self::account_id())
         }
 
+        /// Helper function to deposit alpha to a user's account, reducing from pool
+        pub fn deposit_creating(
+            user: &T::AccountId, 
+            amount: u64
+        ) -> DispatchResult {
+            // Get the pallet's account
+            let pallet_account = Self::get_pallet_account();
+
+            // Check pallet account has sufficient balance
+            let pallet_balance = AlphaBalances::<T>::get(&pallet_account);
+            ensure!(pallet_balance >= amount as u128, Error::<T>::InsufficientBalance);
+
+            // Reduce pallet account balance
+            AlphaBalances::<T>::mutate(&pallet_account, |balance| *balance -= amount as u128);
+
+            // Increase user's alpha balance
+            let user_balance = AlphaBalances::<T>::get(user);
+            AlphaBalances::<T>::insert(user, user_balance + amount);
+
+            // Decrease total alpha in pool
+            TotalAlphaInPool::<T>::mutate(|total| *total -= amount as u128);
+
+            // Emit event
+            Self::deposit_event(Event::AlphaDeposited(pallet_account, user.clone(), amount));
+
+            Ok(())
+        }
     }
 }
