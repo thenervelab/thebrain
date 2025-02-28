@@ -69,6 +69,7 @@ pub mod pallet {
         AlphaBurnPending(u64, T::AccountId, u64, T::AccountId),   // (nonce, user, amount, bittensor_coldkey)
         AlphaBurned(u64, T::AccountId, u64, T::AccountId),        // (nonce, user, amount, bittensor_coldkey)
         BurnFinalized(u64, Vec<u8>, Vec<u8>),                     // (nonce, block_hash, extrinsic_id)
+        AlphaBurnRejected(u64, T::AccountId, u64, T::AccountId),  // (nonce, user, amount, bittensor_coldkey)
     }
 
     #[pallet::error]
@@ -204,6 +205,39 @@ pub mod pallet {
             }
             Ok(())
         }
+
+        /// Operator rejects a pending burn request and restores the user's alpha balance
+        #[pallet::call_index(3)]
+        #[pallet::weight(Weight::from_parts(10_000, 0))]
+        pub fn reject_burn_request(
+            origin: OriginFor<T>,
+            nonce: u64,
+        ) -> DispatchResult {
+            let operator = ensure_signed(origin)?;
+            CreditsPallet::<T>::ensure_is_authority(&operator)?;
+
+            // Retrieve the pending burn request
+            let Some((user, amount, coldkey, _, _)) = 
+                PendingBurns::<T>::get(&nonce) 
+            else { 
+                return Err(Error::<T>::BurnNotPending.into()) 
+            };
+
+            // Restore the user's alpha balance
+            let current_balance = AlphaBalances::<T>::get(&user);
+            AlphaBalances::<T>::insert(&user, current_balance + amount);
+
+            // Revert the total alpha in pool reduction
+            TotalAlphaInPool::<T>::mutate(|total| *total += amount as u128);
+
+            // Remove the pending burn request
+            PendingBurns::<T>::remove(&nonce);
+
+            // Emit an event for the burn request rejection
+            Self::deposit_event(Event::AlphaBurnRejected(nonce, user, amount, coldkey));
+
+            Ok(())
+        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -211,5 +245,24 @@ pub mod pallet {
             // Placeholder: Operators manually verify Bittensor event
             Ok(())
         }
+
+        pub fn calculate_alpha_price(credits_to_withdraw: u128) -> Option<u128> {
+            let total_credits = Self::total_credits_purchased();
+            let total_alpha = Self::total_alpha_in_pool();
+    
+            // Ensure we have Alpha in the pool to calculate
+            if total_alpha == 0 {
+                return None; // No Alpha available, withdrawal not possible, cant calculate price
+            }
+
+            // Calculate Alpha price in terms of Credits
+            let alpha_price_in_credits = total_credits.checked_div(total_alpha)?;
+    
+            // Calculate the amount of Alpha to burn
+            let alpha_to_burn = credits_to_withdraw.checked_div(alpha_price_in_credits)?;
+    
+            Some(alpha_to_burn)
+        }
+        
     }
 }
