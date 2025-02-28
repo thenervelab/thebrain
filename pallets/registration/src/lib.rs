@@ -306,7 +306,6 @@ pub mod pallet {
                         CreditsPallet::<T>::decrease_user_credits(&who.clone(), fee_u128);
                         // Deposit charge to marketplace account
                         let _ = pallet_balances::Pallet::<T>::deposit_creating(&Self::account_id(), fee);
-
                     }
 
                     // Update fee after successful registration

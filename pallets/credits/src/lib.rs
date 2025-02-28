@@ -185,6 +185,11 @@ pub mod pallet {
     #[pallet::getter(fn referred_users)]
     pub type ReferredUsers<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, Vec<u8>>;
 
+    // This storage is used for pool price tracking, Alpha
+    #[pallet::storage]
+    #[pallet::getter(fn total_credits_purchased)]
+    pub type TotalCreditsPurchased<T> = StorageValue<_, u128, ValueQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -360,6 +365,9 @@ pub mod pallet {
             // Update free credits
             FreeCredits::<T>::insert(&who, free + amount);
 
+            // Increase total credits purchased
+            TotalCreditsPurchased::<T>::mutate(|total| *total += amount);
+
             // Helper function to insert a referral code for a user
             Self::insert_referral_code(&who.clone(), code)?;
 
@@ -384,6 +392,9 @@ pub mod pallet {
         
             // Update free credits
             FreeCredits::<T>::insert(&who, free - amount);
+
+            // Increase total credits purchased
+            TotalCreditsPurchased::<T>::mutate(|total| *total -= amount);
 
             Self::deposit_event(Event::BurnedAccountCredits{who, amount: free - amount});
         
@@ -646,6 +657,9 @@ pub mod pallet {
 		pub fn increase_user_credits(account: &T::AccountId, credits_to_increase: u128) {
 			FreeCredits::<T>::mutate(&account, |credits| *credits += credits_to_increase);
 
+            // Increase total credits purchased
+            TotalCreditsPurchased::<T>::mutate(|total| *total += credits_to_increase);
+
             Self::deposit_event(Event::MinetdAccountCredits {
                 who: account.clone(),
                 amount: credits_to_increase
@@ -654,6 +668,9 @@ pub mod pallet {
 
         pub fn decrease_user_credits(account: &T::AccountId, credits_to_decrease: u128) {
 			FreeCredits::<T>::mutate(&account, |credits| *credits -= credits_to_decrease);
+
+            // Increase total credits purchased
+            TotalCreditsPurchased::<T>::mutate(|total| *total -= credits_to_decrease);
 
             Self::deposit_event(Event::BurnedAccountCredits {
                 who: account.clone(),

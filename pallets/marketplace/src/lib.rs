@@ -1298,10 +1298,8 @@ pub mod pallet {
         //     // get total files stores , charge users every hour
         //     let users_with_buckets = pallet_storage::get_users_with_buckets();
         //     for user in users_with_buckets {
-
         //         // last_charged_at
         //         let last_charged_at = pallet_storage::last_charged_at(user);
-
         //         let block_difference = current_block.saturating_sub(last_charged_at);
         //         if block_difference > T::BlocksPerHour::get().into() {
         //             // check user last charged_at and if the hour has passed 

@@ -16,7 +16,6 @@ pub mod pallet {
     use super::*;
     use sp_std::collections::btree_set::BTreeSet;
     use pallet_credits::Pallet as CreditsPallet;
-    // use sp_runtime::SaturatedConversion;
 
     #[pallet::pallet]
     #[pallet::without_storage_info]
@@ -57,6 +56,10 @@ pub mod pallet {
         ),
         OptionQuery,
     >;
+
+    #[pallet::storage]
+    #[pallet::getter(fn total_alpha_in_pool)]
+    pub type TotalAlphaInPool<T> = StorageValue<_, u128, ValueQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -112,6 +115,10 @@ pub mod pallet {
                 AlphaBalances::<T>::insert(&user, new_balance);
                 ProcessedEvents::<T>::insert(&proof, true);
                 PendingMints::<T>::remove(&proof);
+                
+                // Increase total alpha in pool
+                TotalAlphaInPool::<T>::mutate(|total| *total += amount as u128);
+                
                 Self::deposit_event(Event::AlphaMinted(user, amount));
             } else {
                 // Still pending
@@ -136,6 +143,10 @@ pub mod pallet {
 
             // Burn alpha immediately but mark as pending
             AlphaBalances::<T>::insert(&user, balance - amount);
+            
+            // Decrease total alpha in pool
+            TotalAlphaInPool::<T>::mutate(|total| *total -= amount as u128);
+            
             PendingBurns::<T>::insert(
                 &nonce,
                 (

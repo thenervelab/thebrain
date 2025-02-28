@@ -904,7 +904,7 @@ impl pallet_ipfs_pin::Config for Runtime {
 
 impl pallet_alpha_bridge::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type MinConfirmations = frame_support::traits::ConstU32<2>; // 2-of-3
+	type MinConfirmations = frame_support::traits::ConstU32<1>; // 2-of-3
 }
 
 parameter_types! {
