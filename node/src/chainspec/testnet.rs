@@ -12,7 +12,7 @@
 
 #![allow(clippy::type_complexity)]
 
-use crate::testnet_fixtures::get_bootnodes;
+// use crate::testnet_fixtures::get_bootnodes;
 use pallet_im_online::sr25519::AuthorityId as ImOnlineId;
 use sc_consensus_grandpa::AuthorityId as GrandpaId;
 use sc_service::ChainType;
@@ -135,7 +135,7 @@ pub fn local_testnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 }
 
 pub fn hippius_testnet_config(chain_id: u64) -> Result<ChainSpec, String> {
-	let _boot_nodes = get_bootnodes();
+	// let _boot_nodes = get_bootnodes();
 	let mut properties = sc_chain_spec::Properties::new();
 	properties.insert("tokenSymbol".into(), "tHip".into());
 	properties.insert("tokenDecimals".into(), 18u32.into());

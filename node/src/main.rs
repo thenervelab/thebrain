@@ -10,9 +10,9 @@ mod benchmarking;
 mod cli;
 mod command;
 mod eth;
-mod mainnet_fixtures;
+// mod mainnet_fixtures;
 mod rpc;
-mod testnet_fixtures;
+// mod testnet_fixtures;
 mod utils;
 
 // manual seal build

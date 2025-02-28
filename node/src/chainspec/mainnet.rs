@@ -12,7 +12,7 @@
 
 #![allow(clippy::type_complexity)]
 
-use crate::mainnet_fixtures::{get_bootnodes, get_initial_authorities, get_root_key};
+// use crate::mainnet_fixtures::{get_bootnodes, get_initial_authorities, get_root_key};
 use hex_literal::hex;
 use pallet_im_online::sr25519::AuthorityId as ImOnlineId;
 use parity_scale_codec::alloc::collections::BTreeMap;
@@ -108,7 +108,7 @@ pub fn local_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 }
 
 pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
-	let _boot_nodes = get_bootnodes();
+	// let _boot_nodes = get_bootnodes();
 	let mut properties = sc_chain_spec::Properties::new();
 	properties.insert("tokenSymbol".into(), "HIP".into());
 	properties.insert("tokenDecimals".into(), 18u32.into());
@@ -124,11 +124,11 @@ pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 		.with_properties(properties)
 		.with_genesis_config_patch(mainnet_genesis(
 			// Initial validators
-			get_initial_authorities(),
+			// get_initial_authorities(),
 			// Endowed accounts
 			vec![(account_id.clone(), ENDOWMENT)],
 			// Sudo account
-			get_root_key(),
+			// get_root_key(),
 			// EVM chain ID
 			chain_id,
 
