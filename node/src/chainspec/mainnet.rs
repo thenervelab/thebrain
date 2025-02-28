@@ -19,8 +19,8 @@ use parity_scale_codec::alloc::collections::BTreeMap;
 use sc_consensus_grandpa::AuthorityId as GrandpaId;
 use sc_service::ChainType;
 use sp_consensus_babe::AuthorityId as BabeId;
-use sp_core::{sr25519, Pair, Public, H160};
-use sp_runtime::traits::{ IdentifyAccount, Verify};
+use sp_core::{ Pair, Public, H160};
+use sp_runtime::traits::{  Verify};
 use hippius_primitives::types::Signature;
 use hippius_runtime::{
 	AccountId, Balance, Perbill, StakerStatus,  UNIT,
@@ -32,14 +32,14 @@ use crate::chainspec::testnet::ENDOWMENT;
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
 pub type ChainSpec = sc_service::GenericChainSpec;
 
-/// Generate a crypto pair from seed.
-pub fn get_from_seed<TPublic: Public>(seed: &str) -> <TPublic::Pair as Pair>::Public {
-	TPublic::Pair::from_string(&format!("//{seed}"), None)
-		.expect("static values are valid; qed")
-		.public()
-}
+// /// Generate a crypto pair from seed.
+// pub fn get_from_seed<TPublic: Public>(seed: &str) -> <TPublic::Pair as Pair>::Public {
+// 	TPublic::Pair::from_string(&format!("//{seed}"), None)
+// 		.expect("static values are valid; qed")
+// 		.public()
+// }
 
-type AccountPublic = <Signature as Verify>::Signer;
+// type AccountPublic = <Signature as Verify>::Signer;
 
 /// Generate an account ID from seed.
 // pub fn get_account_id_from_seed<TPublic: Public>(seed: &str) -> AccountId
@@ -49,15 +49,15 @@ type AccountPublic = <Signature as Verify>::Signer;
 // 	AccountPublic::from(get_from_seed::<TPublic>(seed)).into_account()
 // }
 
-/// Generate an babe authority key.
-pub fn authority_keys_from_seed(stash: &str) -> (AccountId, BabeId, GrandpaId, ImOnlineId) {
-	(
-		get_account_id_from_seed::<sr25519::Public>(stash),
-		get_from_seed::<BabeId>(stash),
-		get_from_seed::<GrandpaId>(stash),
-		get_from_seed::<ImOnlineId>(stash),
-	)
-}
+// /// Generate an babe authority key.
+// pub fn authority_keys_from_seed(stash: &str) -> (AccountId, BabeId, GrandpaId, ImOnlineId) {
+// 	(
+// 		get_account_id_from_seed::<sr25519::Public>(stash),
+// 		get_from_seed::<BabeId>(stash),
+// 		get_from_seed::<GrandpaId>(stash),
+// 		get_from_seed::<ImOnlineId>(stash),
+// 	)
+// }
 
 /// Generate the session keys from individual elements.
 ///
@@ -80,7 +80,7 @@ pub fn local_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 	let authority = get_authority_keys();
     let account_id = authority.0.clone();
 
-	let endowment: Balance = 10_000_000 * UNIT;
+	// let endowment: Balance = 10_000_000 * UNIT;
 	Ok(ChainSpec::builder(WASM_BINARY.expect("WASM not available"), Default::default())
 		.with_name("Local Hippius Mainnet")
 		.with_id("local-hippius-mainnet")

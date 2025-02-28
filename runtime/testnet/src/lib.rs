@@ -149,7 +149,7 @@ use hippius_primitives::{
 		TIP_REPORT_DEPOSIT_BASE, TREASURY_PALLET_ID,
 	},
 };
-use hex_literal::hex;
+// use hex_literal::hex;
 // pub use hippius_services::PalletServicesConstraints;
 
 // Precompiles
