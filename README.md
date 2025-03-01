@@ -246,6 +246,7 @@ Returns a list of `UserFile` objects, each containing:
 - `file_hash`: The unique hash of the file
 - `file_name`: The name of the file
 - `miner_ids`: A list of miner node IDs that have pinned the file
+- `file_size`: The size of the file in bytes
 
 #### Example Request
 ```json
@@ -268,14 +269,16 @@ Returns a list of `UserFile` objects, each containing:
             "miner_ids": [
                 "0xabcd...",
                 "0xefgh..."
-            ]
+            ],
+            "file_size": 1024
         },
         {
             "file_hash": "0x5678...",
             "file_name": "document.pdf",
             "miner_ids": [
                 "0xijkl..."
-            ]
+            ],
+            "file_size": 2048
         }
     ],
     "id": 1
@@ -284,8 +287,9 @@ Returns a list of `UserFile` objects, each containing:
 
 #### Notes
 - Returns detailed information about files owned by the account
-- Includes the file hash, name, and the list of miner nodes that have pinned the file
-- Useful for tracking file distribution and replication across the network
+- Includes the file hash, name, file size, and the list of miner nodes that have pinned the file
+- File size is represented in bytes
+- Useful for tracking file distribution, replication, and storage usage across the network
 
 ### Notes
 - All methods return `RpcResult`, which handles potential errors
