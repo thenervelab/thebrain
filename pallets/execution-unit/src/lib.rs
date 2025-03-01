@@ -1619,7 +1619,7 @@ pub mod pallet {
 											match Self::fetch_ipfs_file_size(file_hash.clone()) {
 												Ok(file_size) => {
 													// Check if miner has enough storage
-													if file_size <= available_storage {
+													if (file_size s u64) <= available_storage  {
 														if let (Some(file_hash_str), Some(miner_id_str)) = (
 															sp_std::str::from_utf8(&file_hash).ok(),
 															sp_std::str::from_utf8(&miner.node_id).ok(),
@@ -1644,7 +1644,7 @@ pub mod pallet {
 													} else {
 														log::info!(
 															"Miner {:?} does not have enough storage. Available: {} bytes, Required: {} bytes", 
-															sp_std::str::from_utf8(&miner.node_id).unwrap_or(b"Unknown"),
+															sp_std::str::from_utf8(&miner.node_id).unwrap_or("Unknown"),
 															available_storage,
 															file_size
 														);
@@ -1658,7 +1658,7 @@ pub mod pallet {
 										} else {
 											log::warn!(
 												"No metrics found for miner {:?}", 
-												sp_std::str::from_utf8(&miner.node_id).unwrap_or(b"Unknown")
+												sp_std::str::from_utf8(&miner.node_id).unwrap_or("Unknown")
 											);
 										}
 									}
@@ -1683,7 +1683,7 @@ pub mod pallet {
 										match Self::fetch_ipfs_file_size(file_hash.clone()) {
 											Ok(file_size) => {
 												// Check if miner has enough storage
-												if file_size <= available_storage {
+												if (file_size as u64) <= available_storage {
 													if let (Some(file_hash_str), Some(miner_id_str)) = (
 														sp_std::str::from_utf8(&file_hash).ok(),
 														sp_std::str::from_utf8(&miner.node_id).ok(),
@@ -1708,7 +1708,7 @@ pub mod pallet {
 												} else {
 													log::info!(
 														"Miner {:?} does not have enough storage. Available: {} bytes, Required: {} bytes", 
-														sp_std::str::from_utf8(&miner.node_id).unwrap_or(b"Unknown"),
+														sp_std::str::from_utf8(&miner.node_id).unwrap_or("Unknown"),
 														available_storage,
 														file_size
 													);
@@ -1722,7 +1722,7 @@ pub mod pallet {
 									} else {
 										log::warn!(
 											"No metrics found for miner {:?}", 
-											sp_std::str::from_utf8(&miner.node_id).unwrap_or(b"Unknown")
+											sp_std::str::from_utf8(&miner.node_id).unwrap_or("Unknown")
 										);
 									}
 								}
