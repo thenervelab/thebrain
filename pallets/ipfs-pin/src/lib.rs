@@ -1439,5 +1439,34 @@ pub mod pallet {
 
 			total_file_size
 		}
+
+		/// Retrieves all files for a given account with their pinning information
+		///
+		/// # Arguments
+		///
+		/// * `account`: The account address to retrieve files for
+		///
+		/// # Returns
+		///
+		/// A vector of UserFile structs containing file details and pinning miners
+		pub fn get_user_files(account: T::AccountId) -> Vec<UserFile> {
+			RequestedPin::<T>::iter_prefix(account)
+				.filter_map(|(file_hash, storage_request)| {
+					storage_request.map(|req| {
+						// Find miners who have pinned this file
+						let miner_ids = FileStored::<T>::get(file_hash.clone())
+							.iter()
+							.map(|pin_req| pin_req.miner_node_id.clone())
+							.collect();
+
+						UserFile {
+							file_hash,
+							file_name: req.file_name,
+							miner_ids,
+						}
+					})
+				})
+				.collect()
+		}
 	}
 }

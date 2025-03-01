@@ -27,9 +27,16 @@ decl_runtime_apis! {
         fn get_account_pending_rewards(account: AccountId32) -> Vec<MinerRewardSummary>;
         fn get_miners_pending_rewards(node_type: NodeType) -> Vec<MinerRewardSummary>;
         fn calculate_total_file_size(account: AccountId32) -> u128;
+        fn get_user_files(account: AccountId32) -> Vec<UserFile>;
     }
 }
 
+#[derive( Serialize, Clone,  Deserialize, TypeInfo, Encode, Decode)]
+pub struct UserFile {
+    pub file_hash: FileHash,
+    pub file_name: FileName,
+    pub miner_ids: Vec<Vec<u8>>,
+}
 
 #[derive( Serialize,Clone,  Deserialize, TypeInfo, Encode, Decode)]
 pub struct MinerRewardSummary {

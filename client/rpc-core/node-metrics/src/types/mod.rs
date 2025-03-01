@@ -17,3 +17,10 @@ pub struct MinerRewardSummary {
     pub account: AccountId32,
     pub reward: u128,
 }
+
+#[derive( Serialize, Clone,  Deserialize, TypeInfo, Encode, Decode)]
+pub struct UserFile {
+    pub file_hash: FileHash,
+    pub file_name: FileName,
+    pub miner_ids: Vec<Vec<u8>>,
+}

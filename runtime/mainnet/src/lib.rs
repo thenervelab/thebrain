@@ -2476,6 +2476,16 @@ impl_runtime_apis! {
 		fn calculate_total_file_size(account: AccountId32) -> u128 {
 			<pallet_ipfs_pin::Pallet<Runtime>>::calculate_total_file_size(&account)
 		}
+
+		fn get_user_files(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserFile> {
+			<pallet_ipfs_pin::Pallet<Runtime>>::get_user_files(&account)
+			.into_iter()
+			.map(|file| rpc_primitives_node_metrics::UserFile {
+				hash: file.hash.clone(),
+				size: file.size,
+			})
+			.collect()
+		}
 	}
 
 	impl rpc_primitives_debug::DebugRuntimeApi<Block> for Runtime {

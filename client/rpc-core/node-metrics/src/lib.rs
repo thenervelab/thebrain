@@ -3,7 +3,7 @@ use sp_std::vec::Vec;
 pub mod types;
 use sp_runtime::AccountId32;
 
-use rpc_primitives_node_metrics::{NodeType, NodeMetricsData, MinerRewardSummary};
+use rpc_primitives_node_metrics::{NodeType, NodeMetricsData, MinerRewardSummary, UserFile};
 
 /// Net rpc interface.
 #[rpc(server)]
@@ -29,4 +29,7 @@ pub trait NodeMetricsApi {
 
 	#[method(name = "calculate_total_file_size")]
 	fn calculate_total_file_size(&self, account: AccountId32) -> RpcResult<u128>;
+
+	#[method(name = "get_user_files")]
+	fn get_user_files(&self, account: AccountId32) -> RpcResult<Vec<UserFile>>;
 }
