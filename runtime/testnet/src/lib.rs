@@ -1105,9 +1105,16 @@ impl pallet_ipfs_pin::Config for Runtime {
 	type AuthorityId = pallet_ipfs_pin::crypto::TestAuthId;
 }
 
+parameter_types! {
+    pub const AlphaPalletId: PalletId = PalletId(*b"Alpha123");
+}
+
+
 impl pallet_alpha_bridge::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type MinConfirmations = frame_support::traits::ConstU32<1>; // 2-of-3
+	type Balance = Balance;
+	type PalletId = AlphaPalletId;
 }
 
 parameter_types! {

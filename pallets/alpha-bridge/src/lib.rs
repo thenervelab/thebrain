@@ -10,34 +10,39 @@ pub use pallet::*;
 use frame_support::{pallet_prelude::*};
 use frame_system::pallet_prelude::*;
 use sp_std::prelude::*;
+use frame_support::sp_runtime::traits::AccountIdConversion;
 
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
     use sp_std::collections::btree_set::BTreeSet;
     use pallet_credits::Pallet as CreditsPallet;
+    use sp_runtime::traits::AtLeast32BitUnsigned;
+   
     use frame_support::{
         pallet_prelude::*,
-        traits::{
-            tokens::Balance,
-            Get,
-            PalletId,
-        },
-        weights::Weight,
+        traits::{ReservableCurrency, Currency},
+        PalletId,
     };
-
     #[pallet::pallet]
     #[pallet::without_storage_info]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
-    pub trait Config: frame_system::Config + pallet_credits::Config {
+    pub trait Config: frame_system::Config + pallet_credits::Config  + pallet_balances::Config {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type MinConfirmations: Get<u32>; // e.g., 2 or 3
         /// The pallet's id, used for deriving its sovereign account ID.
         #[pallet::constant]
         type PalletId: Get<PalletId>;
+
+        /// The balance type used for this pallet.
+        type Balance: Parameter + Member + AtLeast32BitUnsigned + Default + Copy+ TryFrom<BalanceOf<Self>>
+        + Into<<Self as pallet_balances::Config>::Balance>;
     }
+
+    // New pallet_balances balance type
+    pub type BalanceOf<T> = <T as pallet_balances::Config>::Balance;
 
     #[pallet::storage]
     pub type AlphaBalances<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u64, ValueQuery>;
@@ -113,7 +118,7 @@ pub mod pallet {
             ensure!(!ProcessedEvents::<T>::contains_key(&proof), Error::<T>::DoubleSpendDetected);
 
             let (_, pending_amount, mut confirmations) =
-                PendingMints::<T>::get(&proof).unwrap_or((Self::get_pallet_account(), amount, BTreeSet::new()));
+                PendingMints::<T>::get(&proof).unwrap_or((Self::account_id(), amount, BTreeSet::new()));
 
             // Ensure consistent amount
             ensure!(pending_amount == amount, Error::<T>::InvalidProof);
@@ -124,7 +129,7 @@ pub mod pallet {
 
             if confirmations.len() as u32 >= T::MinConfirmations::get() {
                 // Threshold met, execute mint to pallet account
-                let pallet_account = Self::get_pallet_account();
+                let pallet_account = Self::account_id();
                 let current_balance = AlphaBalances::<T>::get(&pallet_account);
                 let new_balance = current_balance.saturating_add(amount);
                 AlphaBalances::<T>::insert(&pallet_account, new_balance);
@@ -137,8 +142,8 @@ pub mod pallet {
                 Self::deposit_event(Event::AlphaMinted(pallet_account, amount));
             } else {
                 // Still pending
-                PendingMints::<T>::insert(&proof, (Self::get_pallet_account(), amount, confirmations));
-                Self::deposit_event(Event::AlphaMintPending(proof, Self::get_pallet_account(), amount));
+                PendingMints::<T>::insert(&proof, (Self::account_id(), amount, confirmations));
+                Self::deposit_event(Event::AlphaMintPending(proof, Self::account_id(), amount));
             }
             Ok(())
         }
@@ -255,10 +260,10 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
-        fn verify_bridge_proof(_proof: &[u8], _user: &T::AccountId, _amount: u64) -> Result<(), Error<T>> {
-            // Placeholder: Operators manually verify Bittensor event
-            Ok(())
-        }
+        // fn verify_bridge_proof(_proof: &[u8], _user: &T::AccountId, _amount: u64) -> Result<(), Error<T>> {
+        //     // Placeholder: Operators manually verify Bittensor event
+        //     Ok(())
+        // }
 
         // Calculate the alpha price in terms of Credits equivalent
         pub fn calculate_alpha_price(credits_to_withdraw: u128) -> Option<u128> {
@@ -294,14 +299,14 @@ pub mod pallet {
             amount: u64
         ) -> DispatchResult {
             // Get the pallet's account
-            let pallet_account = Self::get_pallet_account();
+            let pallet_account = Self::account_id();
 
             // Check pallet account has sufficient balance
             let pallet_balance = AlphaBalances::<T>::get(&pallet_account);
-            ensure!(pallet_balance >= amount as u128, Error::<T>::InsufficientBalance);
+            ensure!(pallet_balance >= amount, Error::<T>::InsufficientBalance);
 
             // Reduce pallet account balance
-            AlphaBalances::<T>::mutate(&pallet_account, |balance| *balance -= amount as u128);
+            AlphaBalances::<T>::mutate(&pallet_account, |balance| *balance -= amount);
 
             // Increase user's alpha balance
             let user_balance = AlphaBalances::<T>::get(user);

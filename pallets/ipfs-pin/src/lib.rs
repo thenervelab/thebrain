@@ -1222,7 +1222,8 @@ pub mod pallet {
 		pub fn process_storage_request(
 			owner: T::AccountId,
 			file_hash: FileHash,
-			file_name: FileName
+			file_name: FileName,
+			miner_ids: Option<Vec<u8>>,
 		) -> Result<(), Error<T>> {
 			let current_block = frame_system::Pallet::<T>::block_number();
 
@@ -1247,6 +1248,7 @@ pub mod pallet {
 				file_hash: update_hash.clone(),
 				file_name,
 				is_approved: false,
+				miner_ids: miner_ids.clone(),
 				last_charged_at: current_block,
 			};
 

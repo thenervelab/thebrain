@@ -339,7 +339,7 @@ pub mod pallet {
                 file_hash: cid.clone(),
             };
 
-            let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(&who.clone(), &vec![file_input.clone()]);
+            let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(&who.clone(), &vec![file_input.clone()], None);
 
             // Emit both events
             Self::deposit_event(Event::ManifestDigestUpdated(
@@ -399,7 +399,7 @@ pub mod pallet {
             };
 
             // adding req inside marketplace pallet 
-            let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(&who.clone(), &vec![file_input.clone()]);
+            let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(&who.clone(), &vec![file_input.clone()], None);
 
             // Emit an event for successful storage
             Self::deposit_event(Event::DigestInfoStored {

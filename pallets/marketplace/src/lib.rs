@@ -57,6 +57,7 @@ mod benchmarking;
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
+    use frame_support::traits::Len;
     use frame_support::{
         pallet_prelude::*,
         traits::{ReservableCurrency, Currency},
@@ -88,6 +89,7 @@ pub mod pallet {
     use frame_system::offchain::SendUnsignedTransaction;
     use frame_support::traits::ExistenceRequirement;
     use pallet_compute::ComputeRequestStatus;
+    use sp_runtime::traits::Zero;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -521,8 +523,34 @@ pub mod pallet {
 		pub fn storage_request(
 			origin: OriginFor<T>,
 			files_input: Vec<FileInput>,
+            miner_ids: Option<Vec<u8>>
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
+
+            // Check if a specific miner is requested and charge an additional fee
+            if miner_ids.is_some() {
+                // Define a fixed fee for requesting a specific miner
+                let specific_miner_fee = Self::specific_miner_request_fee();
+
+                let length_as_balance: <T as pallet::Config>::Balance = TryFrom::try_from(miner_ids.len() as u128)
+                .unwrap_or_else(|_| Zero::zero());
+            
+                let total_fee = specific_miner_fee.saturating_mul(length_as_balance.into());
+
+                // Ensure the payer has sufficient balance
+                ensure!(
+                    <pallet_balances::Pallet<T>>::free_balance(&caller) >= total_fee,
+                    Error::<T>::InsufficientBalance
+                );
+
+                // Charge the specific miner request fee
+                <pallet_balances::Pallet<T>>::transfer(
+                    &caller.clone(), 
+                    &Self::account_id(), 
+                    total_fee, 
+                    ExistenceRequirement::KeepAlive
+                )?;
+            }
 
             // Check if the account is a sub-account, and if so, use the main account
             let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
@@ -530,7 +558,7 @@ pub mod pallet {
                 Err(_) => caller.clone(), // If not a sub-account, use the original account
             };
 
-            Self::process_storage_requests(&owner.clone(), &files_input.clone())?;
+            Self::process_storage_requests(&owner.clone(), &files_input.clone(), miner_ids)?;
 
             // Emit an event for the storage request
             Self::deposit_event(Event::StorageRequestAdded {
@@ -1214,7 +1242,7 @@ pub mod pallet {
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
                         CreditsPallet::<T>::decrease_user_credits(&user, charge_amount);
-            
+
                         // Handle referral logic
                         let mut total_discount = 0u128;
                         if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&user) {
@@ -1229,26 +1257,26 @@ pub mod pallet {
                             .unwrap_or_default();
                                     
                         let marketplace_amount = total_charge - rankings_amount;
-            
+
                         // Mint 70% to Storage Rankings
                         let _ = pallet_balances::Pallet::<T>::deposit_creating(
                             &RankingsPallet::<T>::account_id(), 
                             rankings_amount.try_into().unwrap_or_default()
                         );
-            
+
                         // Deposit remaining 30% amount to marketplace account
                         let _ = pallet_balances::Pallet::<T>::deposit_creating(
                             &Self::account_id(), 
                             marketplace_amount.try_into().unwrap_or_default()
                         );
-            
+
                         // Record transaction
                         let _ = Self::record_native_transaction(
                             &user,
                             NativeTransactionType::Subscription,
                             (charge_amount - total_discount).into(),
                         );
-            
+
                         // Update last charged block for each request
                         for mut request in requests_to_update.clone() {
                             request.last_charged_at = current_block;
@@ -1430,7 +1458,8 @@ pub mod pallet {
         /// Process storage requests for given file hashes
         pub fn process_storage_requests(
             owner: &T::AccountId, 
-            file_inputs: &[FileInput]
+            file_inputs: &[FileInput],
+            miner_ids: Option<Vec<u8>>
         ) -> DispatchResult {
             // Process each file hash
             for file_input in file_inputs.iter() {
@@ -1439,10 +1468,9 @@ pub mod pallet {
                     owner.clone(), 
                     file_input.file_hash.clone(),
                     file_input.file_name.clone(),
+                    miner_ids.clone()
                 )?;
 
-                // pallet_ceph::Pallet::<T>::do_create_storage_request(owner.clone(), file_input.file_hash.clone(), file_input.file_name.clone(), None)?;
-                
                 // Emit event for each file
                 Self::deposit_event(Event::PinRequested {
                     who: owner.clone(),

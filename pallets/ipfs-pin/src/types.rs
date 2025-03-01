@@ -21,6 +21,7 @@ pub struct StorageRequest<AccountId, BlockNumberFor> {
     pub file_name: FileName,
     pub is_approved: bool,
     pub last_charged_at: BlockNumberFor,
+    pub miner_ids: Option<Vec<u8>>, // Optional if they have selected a miner
 }
 
 // This will store info related storage request

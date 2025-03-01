@@ -721,7 +721,7 @@ pub mod pallet {
                 file_hash: snapshot_cid.clone(),
             };
 
-            let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(&account_id.clone(), &vec![file_input.clone()]);
+            let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(&account_id.clone(), &vec![file_input.clone()], None);
 
             Self::deposit_event(Event::SnapshotAdded { node_id, snapshot_cid });
 
