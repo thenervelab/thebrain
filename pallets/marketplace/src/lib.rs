@@ -523,7 +523,7 @@ pub mod pallet {
 		pub fn storage_request(
 			origin: OriginFor<T>,
 			files_input: Vec<FileInput>,
-            miner_ids: Option<Vec<u8>>
+            miner_ids: Option<Vec<Vec<u8>>>
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
 
@@ -1459,7 +1459,7 @@ pub mod pallet {
         pub fn process_storage_requests(
             owner: &T::AccountId, 
             file_inputs: &[FileInput],
-            miner_ids: Option<Vec<u8>>
+            miner_ids: Option<Vec<Vec<u8>>>
         ) -> DispatchResult {
             // Process each file hash
             for file_input in file_inputs.iter() {

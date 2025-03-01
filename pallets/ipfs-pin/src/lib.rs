@@ -1223,7 +1223,7 @@ pub mod pallet {
 			owner: T::AccountId,
 			file_hash: FileHash,
 			file_name: FileName,
-			miner_ids: Option<Vec<u8>>,
+            miner_ids: Option<Vec<Vec<u8>>>,
 		) -> Result<(), Error<T>> {
 			let current_block = frame_system::Pallet::<T>::block_number();
 

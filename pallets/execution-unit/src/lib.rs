@@ -1403,19 +1403,19 @@ pub mod pallet {
 			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
 
 			let pending = request
-				.deadline(deadline)
-				.send()
-				.map_err(|err| {
-					log::info!("Error sending ping request: {:?}", err);
-					sp_runtime::offchain::http::Error::IoError
-				})?;
+			.deadline(deadline)
+			.send()
+			.map_err(|err| {
+				log::info!("Error sending ping request: {:?}", err);
+				sp_runtime::offchain::http::Error::IoError
+			})?;
 
 			let response = pending
-				.try_wait(deadline)
-				.map_err(|err| {
-					log::info!("Error waiting for ping response: {:?}", err);
-					sp_runtime::offchain::http::Error::DeadlineReached
-				})??;
+			.try_wait(deadline)
+			.map_err(|err| {
+				log::info!("Error waiting for ping response: {:?}", err);
+				sp_runtime::offchain::http::Error::DeadlineReached
+			})??;
 
 			// Check if the response code is 200 (OK)
 			if response.code == 200 {
@@ -1590,7 +1590,7 @@ pub mod pallet {
 		}
 
 		pub fn process_pending_storage_requests(node_id: Vec<u8>, block_number: BlockNumberFor<T>) {
-			let active_stroage_miners = pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
+			let active_storage_miners = pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
 			let pending_storage_requests = pallet_ipfs_pin::Pallet::<T>::get_pending_storage_requests();
 		
 			for storage_request in pending_storage_requests {
@@ -1599,38 +1599,135 @@ pub mod pallet {
 				if !pallet_ipfs_pin::Pallet::<T>::is_file_blacklisted(&file_hash) {
 					// should be an approved request
 					if storage_request.is_approved{
-						// assigning to minners
-						for miner in active_stroage_miners.clone() {
-							let is_pinned = pallet_ipfs_pin::Pallet::<T>::is_file_already_pinned_by_storage_miner(
-								miner.node_id.clone(), 
-								file_hash.clone()
-							);										
-							if !is_pinned {
-								if let (Some(file_hash_str), Some(miner_id_str)) = (
-									sp_std::str::from_utf8(&file_hash).ok(),
-									sp_std::str::from_utf8(&miner.node_id).ok(),
-								) {
-									log::info!("Assigning file {:?} to miner {:?}", file_hash_str, miner_id_str);
-								}
-								match Self::fetch_ipfs_file_size(file_hash.clone()) {
-									Ok(file_size) => {
-										pallet_ipfs_pin::Pallet::<T>::store_ipfs_pin_request(
-											storage_request.owner.clone(),
-											file_hash.clone(), 
-											miner.node_id.clone(),
-											file_size
-										);
-									},
-									Err(e) => {
-										log::error!("Failed to fetch file size: {:?}", e);
-										continue;
+						// First, try to assign to miners specified in miner_ids
+						let mut assigned = false;
+						if let Some(request_miner_ids) = &storage_request.miner_ids {
+							for miner in active_storage_miners.clone() {
+								// Check if this miner's node_id is in the requested miner_ids
+								if request_miner_ids.iter().any(|id| *id == miner.node_id) {
+									let is_pinned = pallet_ipfs_pin::Pallet::<T>::is_file_already_pinned_by_storage_miner(
+										miner.node_id.clone(), 
+										file_hash.clone()
+									);										
+									if !is_pinned {
+										// Retrieve node metrics to check available storage
+										if let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
+											// Calculate available storage
+											let available_storage = node_metrics.total_storage_bytes.saturating_sub(node_metrics.current_storage_bytes);
+
+											// Fetch file size
+											match Self::fetch_ipfs_file_size(file_hash.clone()) {
+												Ok(file_size) => {
+													// Check if miner has enough storage
+													if file_size <= available_storage {
+														if let (Some(file_hash_str), Some(miner_id_str)) = (
+															sp_std::str::from_utf8(&file_hash).ok(),
+															sp_std::str::from_utf8(&miner.node_id).ok(),
+														) {
+															log::info!(
+																"Assigning file {:?} to specified miner {:?}. Available storage: {} bytes, File size: {} bytes", 
+																file_hash_str, 
+																miner_id_str,
+																available_storage,
+																file_size
+															);
+														}
+
+														pallet_ipfs_pin::Pallet::<T>::store_ipfs_pin_request(
+															storage_request.owner.clone(),
+															file_hash.clone(), 
+															miner.node_id.clone(),
+															file_size
+														);
+														assigned = true;
+														break;
+													} else {
+														log::info!(
+															"Miner {:?} does not have enough storage. Available: {} bytes, Required: {} bytes", 
+															sp_std::str::from_utf8(&miner.node_id).unwrap_or(b"Unknown"),
+															available_storage,
+															file_size
+														);
+													}
+												},
+												Err(e) => {
+													log::error!("Failed to fetch file size: {:?}", e);
+													continue;
+												}
+											}
+										} else {
+											log::warn!(
+												"No metrics found for miner {:?}", 
+												sp_std::str::from_utf8(&miner.node_id).unwrap_or(b"Unknown")
+											);
+										}
 									}
 								}
-							}else{
-								// if pinned already then check if it is pinned till now if not we
-								log::info!("already pinned by miner , no need to assign ");
 							}
 						}
+
+						// If not assigned to specified miners, fall back to general assignment
+						if !assigned {
+							for miner in active_storage_miners.clone() {
+								let is_pinned = pallet_ipfs_pin::Pallet::<T>::is_file_already_pinned_by_storage_miner(
+									miner.node_id.clone(), 
+									file_hash.clone()
+								);										
+								if !is_pinned {
+									// Retrieve node metrics to check available storage
+									if let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
+										// Calculate available storage
+										let available_storage = node_metrics.total_storage_bytes.saturating_sub(node_metrics.current_storage_bytes);
+
+										// Fetch file size
+										match Self::fetch_ipfs_file_size(file_hash.clone()) {
+											Ok(file_size) => {
+												// Check if miner has enough storage
+												if file_size <= available_storage {
+													if let (Some(file_hash_str), Some(miner_id_str)) = (
+														sp_std::str::from_utf8(&file_hash).ok(),
+														sp_std::str::from_utf8(&miner.node_id).ok(),
+													) {
+														log::info!(
+															"Assigning file {:?} to specified miner {:?}. Available storage: {} bytes, File size: {} bytes", 
+															file_hash_str, 
+															miner_id_str,
+															available_storage,
+															file_size
+														);
+													}
+
+													pallet_ipfs_pin::Pallet::<T>::store_ipfs_pin_request(
+														storage_request.owner.clone(),
+														file_hash.clone(), 
+														miner.node_id.clone(),
+														file_size
+													);
+													assigned = true;
+													break;
+												} else {
+													log::info!(
+														"Miner {:?} does not have enough storage. Available: {} bytes, Required: {} bytes", 
+														sp_std::str::from_utf8(&miner.node_id).unwrap_or(b"Unknown"),
+														available_storage,
+														file_size
+													);
+												}
+											},
+											Err(e) => {
+												log::error!("Failed to fetch file size: {:?}", e);
+												continue;
+											}
+										}
+									} else {
+										log::warn!(
+											"No metrics found for miner {:?}", 
+											sp_std::str::from_utf8(&miner.node_id).unwrap_or(b"Unknown")
+										);
+									}
+								}
+							}
+						}						
 					}else{
 						// check if file size is less then free space or not 
 						match Self::fetch_ipfs_file_size(file_hash.clone()) {
@@ -2011,4 +2108,3 @@ pub mod pallet {
 		}
 	}
 }
-

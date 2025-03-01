@@ -21,7 +21,7 @@ use sc_service::ChainType;
 use sp_consensus_babe::AuthorityId as BabeId;
 use sp_core::{ Pair, Public, H160};
 use sp_runtime::traits::{  Verify};
-use hippius_primitives::types::Signature;
+// use hippius_primitives::types::Signature;
 use hippius_runtime::{
 	AccountId, Balance, Perbill, StakerStatus,  UNIT,
 	WASM_BINARY,
