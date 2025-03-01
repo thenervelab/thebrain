@@ -2478,7 +2478,7 @@ impl_runtime_apis! {
 		}
 
 		fn get_user_files(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserFile> {
-			<pallet_ipfs_pin::Pallet<Runtime>>::get_user_files(&account)
+			<pallet_ipfs_pin::Pallet<Runtime>>::get_user_files(account)
 			.into_iter()
 			.map(|file| rpc_primitives_node_metrics::UserFile {
 				file_hash: file.file_hash.clone(),
