@@ -1619,7 +1619,7 @@ pub mod pallet {
 											match Self::fetch_ipfs_file_size(file_hash.clone()) {
 												Ok(file_size) => {
 													// Check if miner has enough storage
-													if (file_size s u64) <= available_storage  {
+													if (file_size as u64) <= available_storage  {
 														if let (Some(file_hash_str), Some(miner_id_str)) = (
 															sp_std::str::from_utf8(&file_hash).ok(),
 															sp_std::str::from_utf8(&miner.node_id).ok(),
