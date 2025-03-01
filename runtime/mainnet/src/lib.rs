@@ -2481,8 +2481,10 @@ impl_runtime_apis! {
 			<pallet_ipfs_pin::Pallet<Runtime>>::get_user_files(&account)
 			.into_iter()
 			.map(|file| rpc_primitives_node_metrics::UserFile {
-				hash: file.hash.clone(),
-				size: file.size,
+				file_hash: file.file_hash.clone(),
+				file_name: file.file_name.clone(),
+				miner_ids: file.miner_ids.clone(),
+				file_size: file.file_size,
 			})
 			.collect()
 		}
