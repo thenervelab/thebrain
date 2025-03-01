@@ -25,3 +25,10 @@ pub struct UserFile {
     pub miner_ids: Vec<Vec<u8>>,
     pub file_size: u32,  // Added file size field
 }
+
+/// Represents a bucket with its name and size
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
+pub struct UserBucket {
+	pub bucket_name: Vec<u8>,
+	pub bucket_size: Vec<u128>,
+}

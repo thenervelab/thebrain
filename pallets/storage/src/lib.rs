@@ -40,6 +40,17 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+	// New storage map for bucket size for names
+	#[pallet::storage]
+	#[pallet::getter(fn bucket_size)]
+	pub type BucketSize<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		Vec<u8>, 
+		Vec<u128>, 
+		ValueQuery
+	>;
+
 	// New storage map for bucket names
 	#[pallet::storage]
 	#[pallet::getter(fn last_charged_at)]
@@ -50,8 +61,13 @@ pub mod pallet {
 		BlockNumberFor<T>, 
 		ValueQuery
 	>;
-
 	
+	/// Represents a bucket with its name and size
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
+	pub struct UserBucket {
+		pub bucket_name: Vec<u8>,
+		pub bucket_size: Vec<u128>,
+	}
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -107,6 +123,34 @@ pub mod pallet {
 		/// Update the last charged at block number for a given account
 		pub fn update_last_charged_at(account: &T::AccountId, block_number: BlockNumberFor<T>) {
 			LastChargeAt::<T>::insert(account, block_number);
+		}
+
+		/// Retrieves all buckets for a given user with their names and sizes
+		///
+		/// # Arguments
+		///
+		/// * `account`: The account address to retrieve buckets for
+		///
+		/// # Returns
+		///
+		/// A vector of UserBucket structs containing bucket details
+		pub fn get_user_buckets(account: T::AccountId) -> Vec<UserBucket> {
+			// Get all bucket names for the user
+			let bucket_names = Self::bucket_names(&account);
+
+			// Map bucket names to UserBucket structs with their sizes
+			bucket_names
+				.into_iter()
+				.map(|bucket_name| {
+					// Retrieve the size for each bucket
+					let bucket_size = Self::bucket_size(&bucket_name);
+
+					UserBucket {
+						bucket_name,
+						bucket_size,
+					}
+				})
+				.collect()
 		}
 
 		// Helper method to list bucket contents

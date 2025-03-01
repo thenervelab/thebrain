@@ -3125,6 +3125,16 @@ impl_runtime_apis! {
 			})
 			.collect()
 		}
+
+		fn get_user_buckets(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserBucket> {
+			<pallet_storage::Pallet<Runtime>>::get_user_buckets(account)
+			.into_iter()
+			.map(|bucket| rpc_primitives_node_metrics::UserBucket {
+				bucket_name: bucket.bucket_name.clone(),
+				bucket_size: bucket.bucket_size.clone(),
+			})
+			.collect()
+		}
 	}
 
 
