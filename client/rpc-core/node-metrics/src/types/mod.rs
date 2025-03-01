@@ -20,8 +20,8 @@ pub struct MinerRewardSummary {
 
 #[derive( Serialize, Clone,  Deserialize, TypeInfo, Encode, Decode)]
 pub struct UserFile {
-    pub file_hash: FileHash,
-    pub file_name: FileName,
+    pub file_hash: Vec<u8>,
+    pub file_name: Vec<u8>,
     pub miner_ids: Vec<Vec<u8>>,
     pub file_size: u32,  // Added file size field
 }
