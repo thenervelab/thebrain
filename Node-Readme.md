@@ -79,6 +79,55 @@ Marketplace Revenue (100%) ├── Staking Rewards (20%) │ └── Distrib
   - Progressive Slashing Rates
 - **Minimum Performance Threshold**
 
+## 🌐 Node Metrics RPC API
+
+### 9. `get_user_buckets`
+
+#### Description
+Retrieves all buckets owned by a specific account, including their names and sizes.
+
+#### Parameters
+- `account` (AccountId32): The account to retrieve buckets for
+
+#### Response
+Returns a list of `UserBucket` objects, each containing:
+- `bucket_name`: The name of the bucket (as a byte vector)
+- `bucket_size`: The size of the bucket (as a vector of u128 values)
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_user_buckets",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
+
+#### Example Response
+```json
+{
+    "jsonrpc": "2.0",
+    "result": [
+        {
+            "bucket_name": "personal_docs",
+            "bucket_size": [1024, 2048, 4096]
+        },
+        {
+            "bucket_name": "project_files",
+            "bucket_size": [8192, 16384]
+        }
+    ],
+    "id": 1
+}
+```
+
+#### Notes
+- Returns detailed information about buckets owned by the account
+- `bucket_name` is a byte vector representing the bucket's identifier
+- `bucket_size` is a vector of u128 values, potentially representing different size metrics
+- Useful for tracking storage allocation and bucket management across the network
+
 ## 📦 Installation & Setup
 
 ### Prerequisites
