@@ -233,6 +233,60 @@ Returns the total file size in bytes as a `u128` value.
 }
 ```
 
+### 8. `get_user_files`
+
+#### Description
+Retrieves all files owned by a specific account, including their file hashes, names, and the miner node IDs that have pinned these files.
+
+#### Parameters
+- `account` (AccountId32): The account to retrieve files for
+
+#### Response
+Returns a list of `UserFile` objects, each containing:
+- `file_hash`: The unique hash of the file
+- `file_name`: The name of the file
+- `miner_ids`: A list of miner node IDs that have pinned the file
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_user_files",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
+
+#### Example Response
+```json
+{
+    "jsonrpc": "2.0",
+    "result": [
+        {
+            "file_hash": "0x1234...",
+            "file_name": "example.txt",
+            "miner_ids": [
+                "0xabcd...",
+                "0xefgh..."
+            ]
+        },
+        {
+            "file_hash": "0x5678...",
+            "file_name": "document.pdf",
+            "miner_ids": [
+                "0xijkl..."
+            ]
+        }
+    ],
+    "id": 1
+}
+```
+
+#### Notes
+- Returns detailed information about files owned by the account
+- Includes the file hash, name, and the list of miner nodes that have pinned the file
+- Useful for tracking file distribution and replication across the network
+
 ### Notes
 - All methods return `RpcResult`, which handles potential errors
 - Ensure proper authentication and authorization when using these RPC methods
