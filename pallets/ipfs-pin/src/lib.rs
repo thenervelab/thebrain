@@ -1459,10 +1459,14 @@ pub mod pallet {
 							.map(|pin_req| pin_req.miner_node_id.clone())
 							.collect();
 
+						// Retrieve file size from FileSize storage, default to 0 if not found
+						let file_size = Self::file_size(&file_hash).unwrap_or(0);
+
 						UserFile {
 							file_hash,
 							file_name: req.file_name,
 							miner_ids,
+							file_size,
 						}
 					})
 				})

@@ -23,4 +23,5 @@ pub struct UserFile {
     pub file_hash: FileHash,
     pub file_name: FileName,
     pub miner_ids: Vec<Vec<u8>>,
+    pub file_size: u32,  // Added file size field
 }
