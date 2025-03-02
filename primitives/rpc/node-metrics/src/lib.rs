@@ -29,7 +29,34 @@ decl_runtime_apis! {
         fn calculate_total_file_size(account: AccountId32) -> u128;
         fn get_user_files(account: AccountId32) -> Vec<UserFile>;
         fn get_user_buckets(account: AccountId32) -> Vec<UserBucket>;
+        fn get_user_vms(account: AccountId32) -> Vec<UserVmDetails<AccountId32,  u32, [u8; 32]>>;
     }
+}
+
+/// Struct to represent VM details for a user
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]
+pub struct UserVmDetails<AccountId, BlockNumber, Hash> {
+    pub request_id: u128,
+    pub status: ComputeRequestStatus,
+    pub plan_id: Hash,
+    pub created_at: BlockNumber,
+    pub miner_node_id: Option<Vec<u8>>,
+    pub miner_account_id: Option<AccountId>,
+    pub hypervisor_ip: Option<Vec<u8>>,
+    pub vnc_port: Option<u64>,
+    pub ip_assigned: Option<Vec<u8>>,
+    pub error: Option<Vec<u8>>,
+    pub is_fulfilled: bool,
+}
+
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]
+pub enum ComputeRequestStatus {
+    Pending,
+    Stopped,
+    InProgress,
+    Running,
+    Failed,      // Task encountered an error
+    Cancelled,   // Task was cancelled
 }
 
 /// Represents a bucket with its name and size

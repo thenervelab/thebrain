@@ -1453,10 +1453,12 @@ pub mod pallet {
 			RequestedPin::<T>::iter_prefix(account)
 				.filter_map(|(file_hash, storage_request)| {
 					storage_request.map(|req| {
-						// Find miners who have pinned this file
-						let miner_ids = FileStored::<T>::get(file_hash.clone())
-							.iter()
-							.map(|pin_req| pin_req.miner_node_id.clone())
+						// Find miners who have pinned this file by iterating through all FileStored entries
+						let miner_ids = FileStored::<T>::iter()
+							.filter(|(_, pin_requests)| 
+								pin_requests.iter().any(|pin_req| pin_req.file_hash == file_hash)
+							)
+							.map(|(node_id, _)| node_id)
 							.collect();
 
 						// Retrieve file size from FileSize storage, default to 0 if not found

@@ -3,7 +3,7 @@ use sp_std::vec::Vec;
 pub mod types;
 use sp_runtime::AccountId32;
 
-use rpc_primitives_node_metrics::{NodeType, NodeMetricsData, MinerRewardSummary, UserFile, UserBucket};
+use rpc_primitives_node_metrics::{NodeType, NodeMetricsData, MinerRewardSummary, UserFile, UserBucket, UserVmDetails};
 
 /// Net rpc interface.
 #[rpc(server)]
@@ -35,4 +35,7 @@ pub trait NodeMetricsApi {
 
 	#[method(name = "get_user_buckets")]
 	fn get_user_buckets(&self, account: AccountId32) -> RpcResult<Vec<UserBucket>>;
+
+	#[method(name = "get_user_vms")]
+	fn get_user_vms(&self, account: AccountId32) -> RpcResult<Vec<UserVmDetails<AccountId32, u32, [u8; 32]>>>;
 }

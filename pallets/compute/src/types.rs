@@ -297,3 +297,19 @@ impl<T: Config> SignedPayload<T> for MinnerResizeComputeRequestPayload<T> {
         self.public.clone()
     }
 }
+
+/// Struct to represent VM details for a user
+#[derive(Encode, Decode, TypeInfo, RuntimeDebug)]
+pub struct UserVmDetails<AccountId, BlockNumber, Hash> {
+    pub request_id: u128,
+    pub status: ComputeRequestStatus,
+    pub plan_id: Hash,
+    pub created_at: BlockNumber,
+    pub miner_node_id: Option<Vec<u8>>,
+    pub miner_account_id: Option<AccountId>,
+    pub hypervisor_ip: Option<Vec<u8>>,
+    pub vnc_port: Option<u64>,
+    pub ip_assigned: Option<Vec<u8>>,
+    pub error: Option<Vec<u8>>,
+    pub is_fulfilled: bool,
+}

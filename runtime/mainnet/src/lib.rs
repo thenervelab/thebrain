@@ -2498,6 +2498,32 @@ impl_runtime_apis! {
 			})
 			.collect()
 		}
+
+		fn get_user_vms(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserVmDetails<AccountId32,  u32, [u8; 32]>> {
+			Compute::get_user_vms(account)
+			.into_iter()
+			.map(|vm| rpc_primitives_node_metrics::UserVmDetails {
+				request_id: vm.request_id,
+				status: match vm.status {
+					pallet_compute::ComputeRequestStatus::Pending => rpc_primitives_node_metrics::ComputeRequestStatus::Pending,
+					pallet_compute::ComputeRequestStatus::Stopped => rpc_primitives_node_metrics::ComputeRequestStatus::Stopped,
+					pallet_compute::ComputeRequestStatus::InProgress => rpc_primitives_node_metrics::ComputeRequestStatus::InProgress,
+					pallet_compute::ComputeRequestStatus::Running => rpc_primitives_node_metrics::ComputeRequestStatus::Running,
+					pallet_compute::ComputeRequestStatus::Failed => rpc_primitives_node_metrics::ComputeRequestStatus::Failed,
+					pallet_compute::ComputeRequestStatus::Cancelled => rpc_primitives_node_metrics::ComputeRequestStatus::Cancelled,
+				},
+				plan_id: vm.plan_id.into(),
+				created_at: vm.created_at as u32,
+				miner_node_id: vm.miner_node_id,
+				miner_account_id: vm.miner_account_id,
+				hypervisor_ip: vm.hypervisor_ip,
+				vnc_port: vm.vnc_port,
+				ip_assigned: vm.ip_assigned,
+				error: vm.error,
+				is_fulfilled: vm.is_fulfilled,
+			})
+			.collect()
+		}
 	}
 
 	impl rpc_primitives_debug::DebugRuntimeApi<Block> for Runtime {
