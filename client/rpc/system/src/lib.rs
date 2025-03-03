@@ -277,7 +277,7 @@ fn get_disk_info() -> Result<Vec<DiskDetails>, std::io::Error> {
                     disk_type,
                 };
 
-                log::info!("Found device: {:?}", disk_details);
+                // log::info!("Found device: {:?}", disk_details);
                 Some(disk_details)
             } else {
                 log::debug!("Skipping non-disk/non-partition: {}", line);
@@ -287,7 +287,7 @@ fn get_disk_info() -> Result<Vec<DiskDetails>, std::io::Error> {
         .collect();
 
     // Log the number of disks and partitions found
-    log::info!("Total disks and partitions found: {}", disks.len());
+    // log::info!("Total disks and partitions found: {}", disks.len());
 
     // If no disks or partitions found, return an error with context
     if disks.is_empty() {

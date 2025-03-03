@@ -1436,10 +1436,24 @@ pub mod pallet {
 					Ok(specs_str) => {
 						match serde_json::from_str::<serde_json::Value>(specs_str) {
 							Ok(json) => json,
-							Err(_) => continue, // Skip if JSON parsing fails
+							Err(e) => {
+								log::error!(
+									"Failed to parse plan technical description JSON: {:?}, raw string: {}",
+									e,
+									specs_str
+								);
+								continue; // Skip if JSON parsing fails
+							}
 						}
 					},
-					Err(_) => continue, // Skip if UTF-8 conversion fails
+					Err(e) => {
+						log::error!(
+							"Failed to convert plan technical description to UTF-8: {:?}, raw bytes: {:?}",
+							e,
+							compute_request.plan_technical_description
+						);
+						continue; // Skip if UTF-8 conversion fails
+					}
 				};
 
 				// Find a suitable miner with matching or exceeding specs
