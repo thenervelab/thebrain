@@ -2226,7 +2226,7 @@ pub mod pallet {
 										"os_variant": String::from_utf8_lossy(&compute_request.selected_image.name).to_string(),
 										"assigned_ip" : String::from_utf8_lossy(&ip).to_string(),
 										"substrate_request_id": format!("{}", miner_request.request_id),
-										"end_user_account": compute_request.owner.encode().to_string(),
+										"end_user_account": String::from_utf8_lossy(&compute_request.owner.encode()).to_string(),
 									})
 								} else {
 									serde_json::json!({
@@ -2243,7 +2243,7 @@ pub mod pallet {
 										"cloud_init_path": String::from_utf8_lossy(&compute_request.cloud_init_cid.unwrap()).to_string(),
 										"assigned_ip" : String::from_utf8_lossy(&ip).to_string(),
 										"substrate_request_id": format!("{}", miner_request.request_id),
-										"end_user_account": compute_request.owner.encode().to_string(),
+										"end_user_account": String::from_utf8_lossy(&compute_request.owner.encode()).to_string(),
 									})
 								};
 	
