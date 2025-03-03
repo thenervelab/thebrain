@@ -2225,6 +2225,8 @@ pub mod pallet {
 										"image_url": String::from_utf8_lossy(&compute_request.selected_image.image_url).to_string(),
 										"os_variant": String::from_utf8_lossy(&compute_request.selected_image.name).to_string(),
 										"assigned_ip" : String::from_utf8_lossy(&ip).to_string(),
+										"substrate_request_id": format!("{}", miner_request.request_id),
+										"end_user_account":  compute_request.owner.to_string(),
 									})
 								} else {
 									serde_json::json!({
@@ -2240,6 +2242,8 @@ pub mod pallet {
 										"os_variant": String::from_utf8_lossy(&compute_request.selected_image.name).to_string(),
 										"cloud_init_path": String::from_utf8_lossy(&compute_request.cloud_init_cid.unwrap()).to_string(),
 										"assigned_ip" : String::from_utf8_lossy(&ip).to_string(),
+										"substrate_request_id": format!("{}", miner_request.request_id),
+										"end_user_account":  compute_request.owner.to_string(),
 									})
 								};
 	
@@ -3177,11 +3181,11 @@ pub mod pallet {
 									Err(e) => log::error!("Error in reboot request handling: {:?}", e),
 								}
 
-								// handle resize requests of minners 
-								match Self::handle_resize_request_assignment(node_info.node_id.clone()) {
-									Ok(_) => log::info!("resize Request handled successfully"),
-									Err(e) => log::error!("Error in resize request handling: {:?}", e),
-								}
+								// // handle resize requests of minners 
+								// match Self::handle_resize_request_assignment(node_info.node_id.clone()) {
+								// 	Ok(_) => log::info!("resize Request handled successfully"),
+								// 	Err(e) => log::error!("Error in resize request handling: {:?}", e),
+								// }
 							}
 						}
 						None => {}
