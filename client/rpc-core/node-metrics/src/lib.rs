@@ -12,6 +12,9 @@ pub trait NodeMetricsApi {
 	#[method(name = "get_active_nodes_metrics_by_type")]
 	fn get_active_nodes_metrics_by_type(&self, node_type: NodeType) -> RpcResult<Vec<Option<NodeMetricsData>>>;
 
+	#[method(name = "get_node_metrics")]
+	fn get_node_metrics(&self, node_id: Vec<u8>) -> RpcResult<Option<NodeMetricsData>>;
+
 	#[method(name = "get_total_node_rewards")]
 	fn get_total_node_rewards(&self, account: AccountId32) -> RpcResult<u128>;
 

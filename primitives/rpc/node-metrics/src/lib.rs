@@ -30,6 +30,7 @@ decl_runtime_apis! {
         fn get_user_files(account: AccountId32) -> Vec<UserFile>;
         fn get_user_buckets(account: AccountId32) -> Vec<UserBucket>;
         fn get_user_vms(account: AccountId32) -> Vec<UserVmDetails<AccountId32,  u32, [u8; 32]>>;
+        fn get_node_metrics(node_id: Vec<u8>) -> Option<NodeMetricsData>;
     }
 }
 

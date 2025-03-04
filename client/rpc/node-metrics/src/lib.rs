@@ -42,6 +42,15 @@ where
 		})
     }
 
+	fn get_node_metrics(&self, node_id: Vec<u8>) -> RpcResult<Option<NodeMetricsData>>{
+
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_node_metrics(best_hash, node_id).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
 
 	fn get_total_node_rewards(&self, account: AccountId32) -> RpcResult<u128> {       
 		
