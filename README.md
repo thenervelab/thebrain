@@ -292,14 +292,6 @@ Returns a list of `UserFile` objects, each containing:
 - File size is represented in bytes
 - Useful for tracking file distribution, replication, and storage usage across the network
 
-### Notes
-- All methods return `RpcResult`, which handles potential errors
-- Ensure proper authentication and authorization when using these RPC methods
-- Reward values are represented in the network's base currency unit
-- The returned value represents the total bytes of unique files owned by the account
-- Only files with approved storage requests are included
-- Duplicate file hashes are counted only once
-
 ### 9. `get_user_buckets`
 
 #### Description
@@ -341,17 +333,17 @@ Returns a list of `UserBucket` objects, each containing:
 }
 ```
 
-### 10. [get_user_vms](cci:1://file:///home/faiz/Documents/GitHub/thebrain/client/rpc/node-metrics/src/lib.rs:125:1-133:2)
+### 10. `get_user_vms`
 
 #### Description
 Retrieves all virtual machines (VMs) owned by a specific account, including their current status, deployment details, and associated miner information.
 
 #### Parameters
-- [account](cci:1://file:///home/faiz/Documents/GitHub/thebrain/client/rpc/node-metrics/src/lib.rs:75:1-83:2) (AccountId32): The account to retrieve VM details for
+- `account` (AccountId32): The account to retrieve VM details for.
 
 #### Response
-Returns a list of [UserVmDetails](cci:2://file:///home/faiz/Documents/GitHub/thebrain/primitives/rpc/node-metrics/src/lib.rs:37:0-49:1) objects, each containing:
-- `request_id`: Unique identifier for the VM request (u128)
+Returns a list of `UserVmDetails` objects, each containing:
+- `request_id`: Unique identifier for the VM request (u128).
 - `status`: Current status of the VM, which can be:
   - `Pending`
   - `Stopped`
@@ -359,15 +351,15 @@ Returns a list of [UserVmDetails](cci:2://file:///home/faiz/Documents/GitHub/the
   - `Running`
   - `Failed`
   - `Cancelled`
-- `plan_id`: Identifier for the compute plan
-- `created_at`: Timestamp of VM request creation
-- `miner_node_id`: Optional ID of the miner hosting the VM
-- `miner_account_id`: Optional account ID of the miner
-- `hypervisor_ip`: Optional IP address of the hypervisor
-- `vnc_port`: Optional VNC port for accessing the VM
-- `ip_assigned`: Optional IP address assigned to the VM
-- `error`: Optional error message if the VM deployment failed
-- `is_fulfilled`: Boolean indicating if the VM request has been fulfilled
+- `plan_id`: Identifier for the compute plan.
+- `created_at`: Timestamp of VM request creation.
+- `miner_node_id`: Optional ID of the miner hosting the VM.
+- `miner_account_id`: Optional account ID of the miner.
+- `hypervisor_ip`: Optional IP address of the hypervisor.
+- `vnc_port`: Optional VNC port for accessing the VM.
+- `ip_assigned`: Optional IP address assigned to the VM.
+- `error`: Optional error message if the VM deployment failed.
+- `is_fulfilled`: Boolean indicating if the VM request has been fulfilled.
 
 #### Example Request
 ```json
@@ -377,9 +369,16 @@ Returns a list of [UserVmDetails](cci:2://file:///home/faiz/Documents/GitHub/the
     "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
     "id": 1
 }
+```
 
 #### Notes
-- Returns detailed information about buckets owned by the account
-- `bucket_name` is a byte vector representing the bucket's identifier
-- `bucket_size` is a vector of u128 values, potentially representing different size metrics
-- Useful for tracking storage allocation and bucket management across the network
+- Returns detailed information about VMs owned by the account.
+- Useful for tracking VM deployment and management across the network.
+
+### Notes
+- All methods return `RpcResult`, which handles potential errors
+- Ensure proper authentication and authorization when using these RPC methods
+- Reward values are represented in the network's base currency unit
+- The returned value represents the total bytes of unique files owned by the account
+- Only files with approved storage requests are included
+- Duplicate file hashes are counted only once
