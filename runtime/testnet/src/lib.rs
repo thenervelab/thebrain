@@ -3140,15 +3140,15 @@ impl_runtime_apis! {
 		}
 
 		fn get_hypervisor_ip( hypervisor_id: Vec<u8>) -> Option<Vec<u8>>{
-			<pallet_ip::Pallet<Runtime>>::get_hypervisor_ip(&hypervisor_id)
+			<pallet_ip::Pallet<Runtime>>::get_hypervisor_ip(hypervisor_id)
 		}    
 
         fn get_vm_ip( vm_id: Vec<u8>) -> Option<Vec<u8>>{
-			<pallet_ip::Pallet<Runtime>>::get_vm_ip(&vm_id)
+			<pallet_ip::Pallet<Runtime>>::get_vm_ip(vm_id)
 		}    
 		
         fn get_storage_miner_ip( miner_id: Vec<u8>) -> Option<Vec<u8>>{
-			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(&miner_id)
+			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(miner_id)
 		}    
 
 		fn get_total_distributed_rewards_by_node_type(node_type: rpc_primitives_node_metrics::NodeType) -> u128 {
