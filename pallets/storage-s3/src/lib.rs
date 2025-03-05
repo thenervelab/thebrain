@@ -51,6 +51,17 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+	// New storage map for bandwidth size for users
+	#[pallet::storage]
+	#[pallet::getter(fn user_bandwidth)]
+	pub type UserBandwidth<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		T::AccountId, // user identifier 
+		u128,   // bandwidth size in bytes 
+		ValueQuery
+	>;
+
 	// New storage map for bucket names
 	#[pallet::storage]
 	#[pallet::getter(fn last_charged_at)]
@@ -80,6 +91,10 @@ pub mod pallet {
 			bucket_name: Vec<u8>,
 			size: u128,
 		},
+		UserBandwidthSet {
+			user_id: T::AccountId,
+			bandwidth: u128,
+		},
 	}
 
 	#[pallet::error]
@@ -88,6 +103,8 @@ pub mod pallet {
 		StorageOverflow,
 		InvalidBucketName,
 		BucketSizeTooLarge,
+		InvalidUserId,
+		BandwidthTooLarge,
 	}
 
 	#[pallet::call]
@@ -145,6 +162,33 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		#[pallet::call_index(2)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::Yes))]
+		pub fn set_user_bandwidth(
+			origin: OriginFor<T>,
+			user_id: T::AccountId,
+			bandwidth: u128,
+		) -> DispatchResult {
+			// Ensure the caller is the root/sudo account
+			ensure_root(origin)?;
+
+			// Optional: Add a maximum bandwidth limit if needed
+			// For example, limit to 1 TB per month (1024 * 1024 * 1024 * 1024 bytes)
+			const MAX_USER_BANDWIDTH: u128 = 1_099_511_627_776;
+			ensure!(bandwidth <= MAX_USER_BANDWIDTH, Error::<T>::BandwidthTooLarge);
+
+			// Set the user bandwidth in storage
+			UserBandwidth::<T>::insert(&user_id, bandwidth);
+
+			// Emit an event about the user bandwidth being set
+			Self::deposit_event(Event::UserBandwidthSet {
+				user_id,
+				bandwidth,
+			});
+
+			Ok(())
+		}
     }
 
 	impl<T: Config> Pallet<T> {
@@ -152,6 +196,14 @@ pub mod pallet {
 		pub fn get_users_with_buckets() -> Vec<T::AccountId> {
 			BucketNames::<T>::iter()
 				.filter(|(_, buckets)| !buckets.is_empty())
+				.map(|(account, _)| account)
+				.collect()
+		}
+
+		/// Retrieve all users who have at least one bucket
+		pub fn get_users_with_bandwidth() -> Vec<T::AccountId> {
+			UserBandwidth::<T>::iter()
+				.filter(|(_, bandwidth)| *bandwidth > 0)
 				.map(|(account, _)| account)
 				.collect()
 		}
