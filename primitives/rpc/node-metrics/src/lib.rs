@@ -32,9 +32,9 @@ decl_runtime_apis! {
         fn get_user_vms(account: AccountId32) -> Vec<UserVmDetails<AccountId32,  u32, [u8; 32]>>;
         fn get_node_metrics(node_id: Vec<u8>) -> Option<NodeMetricsData>;
         fn get_client_ip(client_id: AccountId32) -> Option<Vec<u8>>;
-        fn get_hypervisor_ip( hypervisor_id: &Vec<u8>) -> Option<Vec<u8>>;    
-        fn get_vm_ip( vm_id: &Vec<u8>) -> Option<Vec<u8>>;
-        fn get_storage_miner_ip( miner_id: &Vec<u8>) -> Option<Vec<u8>>;
+        fn get_hypervisor_ip( hypervisor_id: Vec<u8>) -> Option<Vec<u8>>;    
+        fn get_vm_ip( vm_id: Vec<u8>) -> Option<Vec<u8>>;
+        fn get_storage_miner_ip( miner_id: Vec<u8>) -> Option<Vec<u8>>;
     }
 }
 

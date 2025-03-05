@@ -153,7 +153,7 @@ where
 	}
 
 
-	fn get_hypervisor_ip(&self, hypervisor_id: &Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
+	fn get_hypervisor_ip(&self, hypervisor_id: Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
 		let api = self.client.runtime_api();
 		let best_hash = self.client.info().best_hash;
 
@@ -162,7 +162,7 @@ where
 		})
 	}
 
-	fn get_vm_ip(&self, vm_id: &Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
+	fn get_vm_ip(&self, vm_id: Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
 		let api = self.client.runtime_api();
 		let best_hash = self.client.info().best_hash;
 
@@ -171,7 +171,7 @@ where
 		})
 	}
 
-	fn get_storage_miner_ip(&self, miner_id: &Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
+	fn get_storage_miner_ip(&self, miner_id: Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
 		
 		let api = self.client.runtime_api();
 		let best_hash = self.client.info().best_hash;

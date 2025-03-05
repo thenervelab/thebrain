@@ -2501,15 +2501,15 @@ impl_runtime_apis! {
 		}
 
 
-		fn get_hypervisor_ip(&self, hypervisor_id: &Vec<u8>) -> Option<Vec<u8>>{
+		fn get_hypervisor_ip( hypervisor_id: Vec<u8>) -> Option<Vec<u8>>{
 			<pallet_ip::Pallet<Runtime>>::get_hypervisor_ip(&client_id)
 		}    
 
-        fn get_vm_ip(&self, vm_id: &Vec<u8>) -> Option<Vec<u8>>{
+        fn get_vm_ip( vm_id: Vec<u8>) -> Option<Vec<u8>>{
 			<pallet_ip::Pallet<Runtime>>::get_vm_ip(&client_id)
 		}    
-		
-        fn get_storage_miner_ip(&self, miner_id: &Vec<u8>) -> Option<Vec<u8>>{
+
+        fn get_storage_miner_ip( miner_id: Vec<u8>) -> Option<Vec<u8>>{
 			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(&client_id)
 		}    
 
