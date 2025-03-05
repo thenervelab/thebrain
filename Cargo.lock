@@ -6896,6 +6896,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "log",
+ "pallet-ip",
  "pallet-registration",
  "pallet-subaccount",
  "pallet-utils",

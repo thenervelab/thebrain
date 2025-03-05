@@ -111,6 +111,17 @@ pub mod pallet {
 		}
 	}
 
+	#[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
+			// Call the method to handle pending IP release requests
+			Self::handle_pending_ip_release_requests(current_block);
+			
+			// Return the weight consumed by this operation
+			// You might want to adjust the weight based on the number of requests processed
+			Weight::from_parts(10_000, 0)
+		}
+	}
 
 
 	impl<T: Config> Pallet<T> {

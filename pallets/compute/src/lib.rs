@@ -53,6 +53,7 @@ pub mod pallet {
 	use frame_system::offchain::Signer;
 	use frame_system::offchain::SendUnsignedTransaction;
 	use pallet_utils::Pallet as UtilsPallet;
+	use pallet_ip::Pallet as IpPallet;
 	use serde::{Serialize, Deserialize};
 	use pallet_registration::{NodeRegistration, NodeType};
 	use sp_runtime::format;
@@ -89,7 +90,7 @@ pub mod pallet {
     #[pallet::config]
     pub trait Config: frame_system::Config  + SendTransactionTypes<Call<Self>> 
 					+ frame_system::offchain::SigningTypes + pallet_registration::Config + pallet_utils::Config
-					+ pallet_subaccount::Config{
+					+ pallet_subaccount::Config + pallet_ip::Config{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		/// The identifier type for an offchain worker.
@@ -101,23 +102,6 @@ pub mod pallet {
 		/// The block interval for offchain worker operations
 		type IpReleasePeriod: Get<u64>;
 	}
-
-    /// Pool of available IP addresses
-	#[pallet::storage]
-	#[pallet::getter(fn available_ips)]
-	pub(super) type AvailableIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
-	
-	#[pallet::storage]
-	#[pallet::getter(fn assigned_ips)]
-	pub(super) type AssignedIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
-	
-	#[pallet::storage]
-	#[pallet::getter(fn ip_to_vm)]
-	pub(super) type IpToVm<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, Vec<u8>>;	
-
-	#[pallet::storage]
-	#[pallet::getter(fn vm_to_ip)]
-	pub(super) type VmToIp<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, Vec<u8>>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn next_request_id)]
@@ -186,15 +170,6 @@ pub mod pallet {
 		Blake2_128Concat,
 		Vec<u8>,
 		Vec<MinerComputeRebootRequest<BlockNumberFor<T>, T::Hash, T::AccountId>>,
-		ValueQuery
-	>;
-
-	// Storage for IP Release Requests
-	#[pallet::storage]
-	#[pallet::getter(fn ip_release_requests)]
-	pub type IpReleaseRequests<T: Config> = StorageValue<
-		_,
-		Vec<IpReleaseRequest<BlockNumberFor<T>>>,
 		ValueQuery
 	>;
 
@@ -538,35 +513,6 @@ pub mod pallet {
 	
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-		#[pallet::call_index(2)]
-		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
-		pub fn add_available_ip(
-			origin: OriginFor<T>,
-			ip: Vec<u8>, // IP address as a vector of bytes
-		) -> DispatchResult {
-			// Ensure the caller has the appropriate permission
-			let _who = ensure_root(origin)?;
-		
-			// Retrieve the current list of available IPs
-			let mut available_ips = AvailableIps::<T>::get();
-		
-			// Ensure the IP is not already in the list
-			ensure!(
-				!available_ips.contains(&ip),
-				Error::<T>::IpAlreadyExists
-			);
-		
-			// Add the new IP to the list
-			available_ips.push(ip.clone());
-			AvailableIps::<T>::put(available_ips);
-		
-			// Emit an event
-			Self::deposit_event(Event::IpAdded { ip });
-		
-			Ok(())
-		}
-
-
 		/// Submit compute request assignment via unsigned transaction
 		#[pallet::call_index(3)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
@@ -672,7 +618,7 @@ pub mod pallet {
 
 
 			// Handle the result of assign_ip and convert the error
-			Self::assign_ip(node_id.clone(), job_id.clone(), request_id, ip.clone())?;
+			IpPallet::<T>::assign_ip(node_id.clone(), job_id.clone(), request_id, ip.clone())?;
 			
 			Ok(().into())
 		}
@@ -747,7 +693,7 @@ pub mod pallet {
 			}
 
 			// release Ip back to the available pool
-			Self::generate_release_ip_request_and_update_storage(vm_name)?;
+			IpPallet::<T>::generate_release_ip_request_and_update_storage(vm_name)?;
 
 			// Emit an event about the compute deletion request removal
 			if let Some((owner, _)) = Self::find_compute_request_by_id(request_id) {
@@ -1205,79 +1151,8 @@ pub mod pallet {
     }
 
 	impl<T: Config> Pallet<T> {
-		pub fn generate_release_ip_request_and_update_storage(
-			vm_name: Vec<u8>,
-		) -> DispatchResult {
-			// Get the IP associated with the VM name
-			let ip = VmToIp::<T>::get(&vm_name).ok_or(Error::<T>::VmHasNoIp)?;
-			
-			// Get current assigned IPs
-			let mut current_assigned_ips = AssignedIps::<T>::get();
-			
-			// Find and remove the VM UUID from assigned IPs
-			let ip_index = current_assigned_ips.iter().position(|x| *x == vm_name)
-				.ok_or(Error::<T>::VmHasNoIp)?;
-			current_assigned_ips.remove(ip_index);
-			
-			// Update the storage with the modified list
-			AssignedIps::<T>::put(current_assigned_ips);
-		
-			// Remove the reverse mapping
-			VmToIp::<T>::remove(&vm_name);
-		
-			let ip_release_request = IpReleaseRequest {
-				vm_name: vm_name.clone(),
-				ip: ip.clone(),
-				created_at: frame_system::Pallet::<T>::block_number()
-			};
-			
-			// Add the request to the IpReleaseRequests storage
-			IpReleaseRequests::<T>::mutate(|requests| {
-				requests.push(ip_release_request);
-			});
-		
-			// Emit event
-			Self::deposit_event(Event::IpReturned { vm_uuid: vm_name, ip });
-			
-			Ok(())
-		}
 
-		/// Allocate the next available IP address to a user
-		pub fn assign_ip(
-			node_id: Vec<u8>,
-			vm_uuid: Vec<u8>,
-			request_id: u128,
-			ip: Vec<u8>,
-		) -> DispatchResult {
-			// Check if the VM already has an assigned IP
-			ensure!(!AssignedIps::<T>::get().contains(&vm_uuid), Error::<T>::VmAlreadyHasIp);
-		
-			// Get the current list of available IPs
-			let mut available_ips = AvailableIps::<T>::get();
-
-			// Remove the specified IP from the available IPs
-			if let Some(pos) = available_ips.iter().position(|x| *x == ip) {
-				available_ips.remove(pos); // Remove the IP if found
-			} else {
-				log::warn!("IP not found in available IPs");
-			}
-
-			// Update storage with the new list of available IPs
-			AvailableIps::<T>::put(available_ips);
-
-			let mut current_assigned_ips = AssignedIps::<T>::get();
-			current_assigned_ips.push(vm_uuid.clone());
-			AssignedIps::<T>::put(current_assigned_ips);
-			IpToVm::<T>::insert(&ip, &vm_uuid);
-			VmToIp::<T>::insert(&vm_uuid, &ip);
-	
-			// Emit event
-			Self::deposit_event(Event::IpAssigned { vm_uuid, ip });
-		
-			Ok(())
-		}
-
-        /// Helper method to create a new compute request
+		/// Helper method to create a new compute request
         pub fn create_compute_request(
             owner: T::AccountId,
 			plan_technical_description: Vec<u8>,
@@ -2200,7 +2075,7 @@ pub mod pallet {
 							.cloned()
 					});
 
-				let mut available_ips = AvailableIps::<T>::get();
+				let mut available_ips = IpPallet::<T>::available_ips();
 				if let Some(ip) = available_ips.pop() {
 					if let Some(compute_request) = compute_request {
 						// Parse technical description and create VM
@@ -2434,78 +2309,62 @@ pub mod pallet {
 			Ok(())
 		}
 		
-		fn handle_resize_request_assignment(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
-			let miner_requests = Self::miner_compute_resize_requests(node_id.clone());
+		// fn handle_resize_request_assignment(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
+		// 	let miner_requests = Self::miner_compute_resize_requests(node_id.clone());
 		
-			for miner_request in miner_requests {
-				// if not stopped then stop the vm 
+		// 	for miner_request in miner_requests {
+		// 		// if not stopped then stop the vm 
 
-				if !miner_request.fullfilled {
-					let url = "http://localhost:3030/resize-disk";
-					let json_payload =
-						serde_json::json!({
-							"vm_name": String::from_utf8_lossy(&miner_request.job_id.unwrap()),
-							"new_size": format!("{}G", miner_request.resize_gbs),
+		// 		if !miner_request.fullfilled {
+		// 			let url = "http://localhost:3030/resize-disk";
+		// 			let json_payload =
+		// 				serde_json::json!({
+		// 					"vm_name": String::from_utf8_lossy(&miner_request.job_id.unwrap()),
+		// 					"new_size": format!("{}G", miner_request.resize_gbs),
 
-						});
+		// 				});
 
-					let json_string = json_payload.to_string();
-					let content_length = json_string.len();
+		// 			let json_string = json_payload.to_string();
+		// 			let content_length = json_string.len();
 
-					log::info!("JSON Resize Payload: {}", json_string);
+		// 			log::info!("JSON Resize Payload: {}", json_string);
 
-					let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
-					let request = sp_runtime::offchain::http::Request::post(url, vec![json_string]);
+		// 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
+		// 			let request = sp_runtime::offchain::http::Request::post(url, vec![json_string]);
 
-					let pending = request
-						.add_header("Content-Type", "application/json")
-						.add_header("Content-Length", &content_length.to_string())
-						.deadline(deadline)
-						.send()
-						.map_err(|err| {
-							log::error!("❌ Error making Request: {:?}", err);
-							sp_runtime::offchain::http::Error::IoError
-						})?;
+		// 			let pending = request
+		// 				.add_header("Content-Type", "application/json")
+		// 				.add_header("Content-Length", &content_length.to_string())
+		// 				.deadline(deadline)
+		// 				.send()
+		// 				.map_err(|err| {
+		// 					log::error!("❌ Error making Request: {:?}", err);
+		// 					sp_runtime::offchain::http::Error::IoError
+		// 				})?;
 
-					let response = pending
-						.try_wait(deadline)
-						.map_err(|err| {
-							log::error!("❌ Error getting Response: {:?}", err);
-							sp_runtime::offchain::http::Error::DeadlineReached
-						})??;
+		// 			let response = pending
+		// 				.try_wait(deadline)
+		// 				.map_err(|err| {
+		// 					log::error!("❌ Error getting Response: {:?}", err);
+		// 					sp_runtime::offchain::http::Error::DeadlineReached
+		// 				})??;
 
-					if response.code != 200 {
-						log::error!(
-							"Unexpected status code: {}, VM creation failed. Response body: {:?}",
-							response.code, response
-						);
-						return Err(sp_runtime::offchain::http::Error::Unknown);
-					}							
+		// 			if response.code != 200 {
+		// 				log::error!(
+		// 					"Unexpected status code: {}, VM creation failed. Response body: {:?}",
+		// 					response.code, response
+		// 				);
+		// 				return Err(sp_runtime::offchain::http::Error::Unknown);
+		// 			}							
 	
-					Self::call_submit_compute_resize_request_fulfillment(
-						miner_request.miner_node_id,
-						miner_request.request_id,
-					);
-				}
-			}
-			Ok(())
-		}
-
-		fn handle_pending_ip_release_requests(current_block: BlockNumberFor<T>){
-			IpReleaseRequests::<T>::mutate(|requests| {
-				requests.retain(|request| {
-					if request.created_at + (T::IpReleasePeriod::get() as u32).into() <= current_block {
-						// If the request is old enough, add its IP back to available IPs
-						let mut available_ips = AvailableIps::<T>::get();
-						available_ips.push(request.ip.clone());
-						AvailableIps::<T>::put(available_ips);
-						false // Remove this request from the vector
-					} else {
-						true // Keep this request in the vector
-					}
-				});
-			});
-		}
+		// 			Self::call_submit_compute_resize_request_fulfillment(
+		// 				miner_request.miner_node_id,
+		// 				miner_request.request_id,
+		// 			);
+		// 		}
+		// 	}
+		// 	Ok(())
+		// }
 		
 		// fn handle_pending_nebula_requests(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
 		// 	let miner_requests = Self::get_pending_nebula_requests(node_id.clone());
@@ -3111,15 +2970,7 @@ pub mod pallet {
 
 	#[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-		fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
-			// Call the method to handle pending IP release requests
-			Self::handle_pending_ip_release_requests(current_block);
-			
-			// Return the weight consumed by this operation
-			// You might want to adjust the weight based on the number of requests processed
-			Weight::from_parts(10_000, 0)
-		}
-
+		
         fn offchain_worker(block_number: BlockNumberFor<T>) {
             // Only proceed if the block number is divisible by the configured interval
             if block_number % T::OffchainWorkerInterval::get().into() != 0u32.into() {

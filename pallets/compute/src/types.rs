@@ -102,15 +102,6 @@ pub struct MinerComputeRebootRequest<BlockNumber,Hash, AccountId> {
     pub fullfilled: bool,
 }
 
-
-// This will store info related storage request
-#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
-pub struct IpReleaseRequest<BlockNumber> {
-    pub vm_name: Vec<u8>,
-    pub ip: Vec<u8>,
-    pub created_at: BlockNumber
-}
-
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 pub struct MinerComputeResizeRequest<BlockNumber,Hash, AccountId> {
