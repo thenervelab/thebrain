@@ -376,7 +376,7 @@ pub mod pallet {
             let mut vm_available_ips = IpPallet::<T>::available_client_ips();
 
             if let Some(ip) = vm_available_ips.pop() {
-                IpPallet::<T>::assign_ip_to_client(&who, ip)
+                IpPallet::<T>::assign_ip_to_client(&who, ip);
             }
 
             Self::deposit_event(Event::MinetdAccountCredits{who, amount: free + amount});
