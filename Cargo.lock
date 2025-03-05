@@ -6936,6 +6936,7 @@ dependencies = [
  "frame-system",
  "log",
  "pallet-balances",
+ "pallet-ip",
  "parity-scale-codec",
  "scale-info",
  "sp-core",

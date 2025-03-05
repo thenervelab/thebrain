@@ -20,7 +20,7 @@ async function addAvailableIp(api, seedPhrase, ip) {
       }
 
       // Create the add_available_ip extrinsic call
-      const call = api.tx.compute.addAvailableIp(ip);
+      const call = api.tx.palletIp.addAvailableIp(ip);
 
       // Wrap the call in a sudo extrinsic since it's restricted to root
       const sudoCall = api.tx.sudo.sudo(call);

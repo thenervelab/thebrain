@@ -56,16 +56,8 @@ pub mod pallet {
 	pub(super) type VmAvailableIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
 	
 	#[pallet::storage]
-	#[pallet::getter(fn assigned_ips)]
-	pub(super) type AssignedIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
-	
-	#[pallet::storage]
-	#[pallet::getter(fn ip_to_vm)]
-	pub(super) type IpToVm<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, Vec<u8>>;	
-
-	#[pallet::storage]
-	#[pallet::getter(fn vm_to_ip)]
-	pub(super) type VmToIp<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, Vec<u8>>;
+	#[pallet::getter(fn vm_assigned_ips)]
+	pub(super) type AssignedVmIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn assigned_client_ips)]
@@ -111,7 +103,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		#[pallet::call_index(0)]
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
-		pub fn add_available_ip(
+		pub fn add_available_vm_ip(
 			origin: OriginFor<T>,
 			ip: Vec<u8>, // IP address as a vector of bytes
 		) -> DispatchResult {
@@ -339,11 +331,14 @@ pub mod pallet {
 		pub fn generate_vm_release_ip_request_and_update_storage(
 			vm_name: Vec<u8>,
 		) -> DispatchResult {
-			// Get the IP associated with the VM name
-			let ip = VmToIp::<T>::get(&vm_name).ok_or(Error::<T>::VmHasNoIp)?;
+			// Get the role type for the VM
+			let role_type = RoleType::Vm(vm_name.clone());
+
+			// Get the IP associated with the VM name using RoleToIp
+			let ip = RoleToIp::<T>::get(&role_type).ok_or(Error::<T>::VmHasNoIp)?;
 			
 			// Get current assigned IPs
-			let mut current_assigned_ips = AssignedIps::<T>::get();
+			let mut current_assigned_ips = AssignedVmIps::<T>::get();
 			
 			// Find and remove the VM UUID from assigned IPs
 			let ip_index = current_assigned_ips.iter().position(|x| *x == vm_name)
@@ -351,16 +346,17 @@ pub mod pallet {
 			current_assigned_ips.remove(ip_index);
 			
 			// Update the storage with the modified list
-			AssignedIps::<T>::put(current_assigned_ips);
+			AssignedVmIps::<T>::put(current_assigned_ips);
 		
-			// Remove the reverse mapping
-			VmToIp::<T>::remove(&vm_name);
+			// Remove the role-to-IP and IP-to-role mappings
+			RoleToIp::<T>::remove(&role_type);
+			IpToRole::<T>::remove(&ip);
 		
 			let ip_release_request = IpReleaseRequest {
 				vm_name: vm_name.clone(),
 				ip: ip.clone(),
 				created_at: frame_system::Pallet::<T>::block_number(),
-				role_type: RoleType::Vm(vm_name.clone()),
+				role_type: role_type.clone(),
 			};
 			
 			// Add the request to the IpReleaseRequests storage
@@ -397,14 +393,19 @@ pub mod pallet {
 			// Update storage with the new list of available IPs
 			VmAvailableIps::<T>::put(vm_available_ips);
 
-			let mut current_assigned_ips = AssignedIps::<T>::get();
+			let mut current_assigned_ips = AssignedVmIps::<T>::get();
 			current_assigned_ips.push(vm_uuid.clone());
-			AssignedIps::<T>::put(current_assigned_ips);
-			IpToVm::<T>::insert(&ip, &vm_uuid);
-			VmToIp::<T>::insert(&vm_uuid, &ip);
+			AssignedVmIps::<T>::put(current_assigned_ips);
+
+			// Use new role-based storage
+			let role_type = RoleType::Vm(vm_uuid.clone());
+			IpToRole::<T>::insert(&ip, &role_type);
+			RoleToIp::<T>::insert(&role_type, &ip);
 	
 			// Emit event
-			Self::deposit_event(Event::IpAssigned { ip });
+			Self::deposit_event(Event::IpAssigned { 
+				ip 
+			});
 		 
 			Ok(())
 		}
