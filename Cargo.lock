@@ -3954,7 +3954,7 @@ dependencies = [
  "pallet-session",
  "pallet-staking",
  "pallet-staking-reward-curve",
- "pallet-storage",
+ "pallet-storage-s3",
  "pallet-sub-account-precompile",
  "pallet-subaccount",
  "pallet-sudo",
@@ -4085,7 +4085,7 @@ dependencies = [
  "pallet-session",
  "pallet-staking",
  "pallet-staking-reward-curve",
- "pallet-storage",
+ "pallet-storage-s3",
  "pallet-sub-account-precompile",
  "pallet-subaccount",
  "pallet-sudo",
@@ -7704,7 +7704,7 @@ dependencies = [
  "pallet-notifications",
  "pallet-rankings",
  "pallet-registration",
- "pallet-storage",
+ "pallet-storage-s3",
  "pallet-subaccount",
  "pallet-utils",
  "parity-scale-codec",
@@ -8019,7 +8019,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-storage"
+name = "pallet-storage-s3"
 version = "0.1.0"
 dependencies = [
  "frame-benchmarking",

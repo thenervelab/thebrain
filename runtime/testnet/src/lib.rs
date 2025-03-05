@@ -1493,7 +1493,7 @@ impl pallet_tx_pause::Config for Runtime {
 	type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
 }
 
-impl pallet_storage::Config for Runtime {
+impl pallet_storage_s3::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 }
 
@@ -1704,7 +1704,7 @@ construct_runtime!(
 		Credits: pallet_credits = 65,
 		Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69,
-		Storage: pallet_storage = 72,
+		Storage: pallet_storage_s3 = 72,
 		AlphaBridge: pallet_alpha_bridge = 73,	
 		PalletIp: pallet_ip = 74
 		
@@ -3230,7 +3230,7 @@ impl_runtime_apis! {
 		}
 
 		fn get_user_buckets(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserBucket> {
-			<pallet_storage::Pallet<Runtime>>::get_user_buckets(account)
+			<pallet_storage_s3::Pallet<Runtime>>::get_user_buckets(account)
 			.into_iter()
 			.map(|bucket| rpc_primitives_node_metrics::UserBucket {
 				bucket_name: bucket.bucket_name.clone(),

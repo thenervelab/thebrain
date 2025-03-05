@@ -47,7 +47,7 @@ pub mod pallet {
 		_, 
 		Blake2_128Concat, 
 		Vec<u8>, 
-		Vec<u128>, 
+		u128, // size in bytes 
 		ValueQuery
 	>;
 
@@ -76,12 +76,18 @@ pub mod pallet {
             who: T::AccountId,
             bucket_name: Vec<u8>,
         },
+		BucketSizeSet {
+			bucket_name: Vec<u8>,
+			size: u128,
+		},
 	}
 
 	#[pallet::error]
 	pub enum Error<T> {
 		NoneValue,
 		StorageOverflow,
+		InvalidBucketName,
+		BucketSizeTooLarge,
 	}
 
 	#[pallet::call]
@@ -109,6 +115,36 @@ pub mod pallet {
 
             Ok(())
         }
+
+		#[pallet::call_index(1)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::Yes))]
+		pub fn set_bucket_size(
+			origin: OriginFor<T>,
+			bucket_name: Vec<u8>,
+			size: u128,
+		) -> DispatchResult {
+			// Ensure the caller is the root/sudo account
+			ensure_root(origin)?;
+
+			// Validate bucket name is not empty
+			ensure!(!bucket_name.is_empty(), Error::<T>::InvalidBucketName);
+
+			// Optional: Add a maximum size limit if needed
+			// For example, limit to 1 TB (1024 * 1024 * 1024 * 1024 bytes)
+			const MAX_BUCKET_SIZE: u128 = 1_099_511_627_776;
+			ensure!(size <= MAX_BUCKET_SIZE, Error::<T>::BucketSizeTooLarge);
+
+			// Set the bucket size in storage
+			BucketSize::<T>::insert(&bucket_name, size);
+
+			// Emit an event about the bucket size being set
+			Self::deposit_event(Event::BucketSizeSet {
+				bucket_name,
+				size,
+			});
+
+			Ok(())
+		}
     }
 
 	impl<T: Config> Pallet<T> {
@@ -147,65 +183,65 @@ pub mod pallet {
 
 					UserBucket {
 						bucket_name,
-						bucket_size,
+						bucket_size: vec![bucket_size],
 					}
 				})
 				.collect()
 		}
 
-		// Helper method to list bucket contents
-		fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
-			let file_api_endpoint = "http://localhost:8888"; 
-			let url = format!("{}/buckets/{}?list=true", file_api_endpoint, bucket_name);
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
+		// // Helper method to list bucket contents
+		// fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
+		// 	let file_api_endpoint = "http://localhost:8888"; 
+		// 	let url = format!("{}/buckets/{}?list=true", file_api_endpoint, bucket_name);
+		// 	let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5000)); // 5 seconds timeout
 
-			let request = sp_runtime::offchain::http::Request::get(url.as_str());
+		// 	let request = sp_runtime::offchain::http::Request::get(url.as_str());
 
-			let pending = request
-				.add_header("Accept", "application/json")
-				.deadline(deadline)
-				.send()
-				.map_err(|err| {
-					log::error!("❌ Error making bucket list request: {:?}", err);
-					sp_runtime::offchain::http::Error::IoError
-				})?;
+		// 	let pending = request
+		// 		.add_header("Accept", "application/json")
+		// 		.deadline(deadline)
+		// 		.send()
+		// 		.map_err(|err| {
+		// 			log::error!("❌ Error making bucket list request: {:?}", err);
+		// 			sp_runtime::offchain::http::Error::IoError
+		// 		})?;
 
-			let response = pending
-				.try_wait(deadline)
-				.map_err(|err| {
-					log::error!("❌ Error getting bucket list response: {:?}", err);
-					sp_runtime::offchain::http::Error::DeadlineReached
-				})??;
+		// 	let response = pending
+		// 		.try_wait(deadline)
+		// 		.map_err(|err| {
+		// 			log::error!("❌ Error getting bucket list response: {:?}", err);
+		// 			sp_runtime::offchain::http::Error::DeadlineReached
+		// 		})??;
 
-			if response.code != 200 {
-				log::error!(
-					"Unexpected status code: {}, bucket list request failed. Response body: {:?}",
-					response.code, 
-					response
-				);
-				return Err(sp_runtime::offchain::http::Error::Unknown);
-			}
+		// 	if response.code != 200 {
+		// 		log::error!(
+		// 			"Unexpected status code: {}, bucket list request failed. Response body: {:?}",
+		// 			response.code, 
+		// 			response
+		// 		);
+		// 		return Err(sp_runtime::offchain::http::Error::Unknown);
+		// 	}
 
-			let response_body = response.body();
-			let response_body_vec = response_body.collect::<Vec<u8>>();
-			let response_str = core::str::from_utf8(&response_body_vec)
-				.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+		// 	let response_body = response.body();
+		// 	let response_body_vec = response_body.collect::<Vec<u8>>();
+		// 	let response_str = core::str::from_utf8(&response_body_vec)
+		// 		.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
 
-			// Parse JSON and calculate total file size
-			let json: serde_json::Value = serde_json::from_str(response_str)
-				.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
+		// 	// Parse JSON and calculate total file size
+		// 	let json: serde_json::Value = serde_json::from_str(response_str)
+		// 		.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
 
-			// Calculate total file size
-			let total_size = json["Entries"]
-				.as_array()
-				.map(|entries| {
-					entries.iter()
-						.map(|entry| entry["FileSize"].as_u64().unwrap_or(0))
-						.sum::<u64>()
-				})
-				.unwrap_or(0);
+		// 	// Calculate total file size
+		// 	let total_size = json["Entries"]
+		// 		.as_array()
+		// 		.map(|entries| {
+		// 			entries.iter()
+		// 				.map(|entry| entry["FileSize"].as_u64().unwrap_or(0))
+		// 				.sum::<u64>()
+		// 		})
+		// 		.unwrap_or(0);
 
-			Ok((response_str.to_string(), total_size))
-		}
+		// 	Ok((response_str.to_string(), total_size))
+		// }
     }
 }

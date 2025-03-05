@@ -1456,7 +1456,7 @@ impl pallet_subaccount::Config for Runtime {
 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
 }
 
-impl pallet_storage::Config for Runtime {
+impl pallet_storage_s3::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 }
 
@@ -1755,7 +1755,7 @@ construct_runtime!(
 		Credits: pallet_credits = 66,
 		Compute: pallet_compute = 89,
 		ContainerRegistry: pallet_container_registry = 90,
-		Storage: pallet_storage = 94,
+		Storage: pallet_storage_s3 = 94,
 		AlphaBridge: pallet_alpha_bridge = 76,
 		PalletIp: pallet_ip = 77
 	}
@@ -2594,7 +2594,7 @@ impl_runtime_apis! {
 		}
 
 		fn get_user_buckets(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserBucket> {
-			<pallet_storage::Pallet<Runtime>>::get_user_buckets(account)
+			<pallet_storage_s3::Pallet<Runtime>>::get_user_buckets(account)
 			.into_iter()
 			.map(|bucket| rpc_primitives_node_metrics::UserBucket {
 				bucket_name: bucket.bucket_name.clone(),
