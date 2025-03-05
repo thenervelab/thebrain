@@ -2,7 +2,7 @@
 const { ApiPromise, WsProvider, Keyring } = require("@polkadot/api");
 const dotenv = require("dotenv");
 
-async function addAvailableIp(api, seedPhrase, ip) {
+async function addAvailableIp(api, seedPhrase, ip, addMethod = 'addAvailableVmIp') {
     try {
       // Create a keyring instance
       const keyring = new Keyring({ type: "sr25519" });
@@ -11,7 +11,7 @@ async function addAvailableIp(api, seedPhrase, ip) {
       const sudoKeyPair = keyring.addFromUri(seedPhrase);
   
       console.log(`Sudo account address: ${sudoKeyPair.address}`);
-      console.log(`Calling add_available_ip with sudo for IP: ${ip}`);
+      console.log(`Calling ${addMethod} with sudo for IP: ${ip}`);
   
       // Check if the provided account is the Sudo account
       const sudoKey = (await api.query.sudo.key()).toString();
@@ -19,8 +19,8 @@ async function addAvailableIp(api, seedPhrase, ip) {
         throw new Error("The provided account is not the Sudo account");
       }
 
-      // Create the add_available_ip extrinsic call
-      const call = api.tx.palletIp.addAvailableIp(ip);
+      // Create the appropriate extrinsic call based on the method
+      const call = api.tx.palletIp[addMethod](ip);
 
       // Wrap the call in a sudo extrinsic since it's restricted to root
       const sudoCall = api.tx.sudo.sudo(call);
@@ -49,25 +49,51 @@ async function addAvailableIp(api, seedPhrase, ip) {
         });
       });
     } catch (error) {
-      console.error("Error in addAvailableIp:", error);
+      console.error(`Error in addAvailableIp for method ${addMethod}:`, error);
       throw error;
     }
   }
 
 async function setAvailableIps(api, seedPhrase) {
-    const startIp = (10 << 24) | (0 << 16) | (80 << 8) | 1; // 10.0.80.1
-    const endIp = (10 << 24) | (0 << 16) | (127 << 8) | 255; // 10.0.127.255
+    const ipRanges = [
+      {
+          name: 'Clients',
+          start: (10 << 24) | (0 << 16) | (16 << 8) | 1,    // 10.0.16.1
+          end: (10 << 24) | (0 << 16) | (79 << 8) | 255,    // 10.0.79.255
+          addMethod: 'addAvailableClientIp'
+      },
+      {
+          name: 'VMs',
+          start: (10 << 24) | (0 << 16) | (80 << 8) | 1,    // 10.0.80.1
+          end: (10 << 24) | (0 << 16) | (127 << 8) | 255,   // 10.0.127.255
+          addMethod: 'addAvailableVmIp'
+      },
+      {
+        name: 'Hypervisors',
+        start: (10 << 24) | (0 << 16) | (1 << 8) | 1,     // 10.0.1.1
+        end: (10 << 24) | (0 << 16) | (15 << 8) | 255,    // 10.0.15.255
+        addMethod: 'addAvailableHypervisorIp'
+      },
+      {
+          name: 'Storage Miners',
+          start: (10 << 24) | (0 << 16) | (128 << 8) | 1,   // 10.0.128.1
+          end: (10 << 24) | (0 << 16) | (143 << 8) | 255,   // 10.0.143.255
+          addMethod: 'addAvailableStorageMinerIp'
+      }
+    ];
 
-    for (let ip = startIp; ip <= endIp; ip++) {
-        const ipStr = `${(ip >> 24) & 0xFF}.${(ip >> 16) & 0xFF}.${(ip >> 8) & 0xFF}.${ip & 0xFF}`;
-
-        // Convert nodeId to proper format
-        console.log(`Adding IP: ${ipStr}`);
-        const ipBytes = api.createType("Vec<u8>", ipStr);
-        
-        // Ensure the byte array is in the correct format (Vec<u8>)
-        await addAvailableIp(api, seedPhrase, ipBytes);
-        
+    for (const range of ipRanges) {
+        console.log(`Adding ${range.name} IPs...`);
+        for (let ip = range.start; ip <= range.end; ip++) {
+            const ipStr = `${(ip >> 24) & 0xFF}.${(ip >> 16) & 0xFF}.${(ip >> 8) & 0xFF}.${ip & 0xFF}`;
+            
+            // Convert IP to proper format
+            const ipBytes = api.createType("Vec<u8>", ipStr);
+            
+            // Use the appropriate method for each role type
+            await addAvailableIp(api, seedPhrase, ipBytes, range.addMethod);
+        }
+        console.log(`Finished adding ${range.name} IPs`);
     }
 }
 
@@ -78,7 +104,10 @@ dotenv.config();
 // Example usage
 (async () => {
   const seedPhrase = "brick end genuine caution author bulk school rose trap ramp garden milk";
-  const wsProvider = new WsProvider("wss://testnet.hippius.com"); // Replace with your node's WebSocket URL
+  // const wsProvider = new WsProvider("wss://testnet.hippius.com"); // Replace with your node's WebSocket URL
+  const wsProvider = new WsProvider("ws://127.0.0.1:9944"); // Replace with your node's WebSocket URL
+  
+  
   console.log("Connecting to the local Substrate chain...");
   const api = await ApiPromise.create({ provider: wsProvider });
 
