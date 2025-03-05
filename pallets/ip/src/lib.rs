@@ -122,6 +122,90 @@ pub mod pallet {
 		
 			Ok(())
 		}
+
+		#[pallet::call_index(1)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn add_available_hypervisor_ip(
+			origin: OriginFor<T>,
+			ip: Vec<u8>, // IP address as a vector of bytes
+		) -> DispatchResult {
+			// Ensure the caller has the appropriate permission
+			let _who = ensure_root(origin)?;
+		
+			// Retrieve the current list of available Hypervisor IPs
+			let mut available_hypervisor_ips = AvailableHypervisorIps::<T>::get();
+		
+			// Ensure the IP is not already in the list
+			ensure!(
+				!available_hypervisor_ips.contains(&ip),
+				Error::<T>::IpAlreadyExists
+			);
+		
+			// Add the new IP to the list
+			available_hypervisor_ips.push(ip.clone());
+			AvailableHypervisorIps::<T>::put(available_hypervisor_ips);
+		
+			// Emit an event
+			Self::deposit_event(Event::IpAdded { ip });
+		
+			Ok(())
+		}
+
+		#[pallet::call_index(2)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn add_available_client_ip(
+			origin: OriginFor<T>,
+			ip: Vec<u8>, // IP address as a vector of bytes
+		) -> DispatchResult {
+			// Ensure the caller has the appropriate permission
+			let _who = ensure_root(origin)?;
+		
+			// Retrieve the current list of available Client IPs
+			let mut available_client_ips = AvailableClientIps::<T>::get();
+		
+			// Ensure the IP is not already in the list
+			ensure!(
+				!available_client_ips.contains(&ip),
+				Error::<T>::IpAlreadyExists
+			);
+		
+			// Add the new IP to the list
+			available_client_ips.push(ip.clone());
+			AvailableClientIps::<T>::put(available_client_ips);
+		
+			// Emit an event
+			Self::deposit_event(Event::IpAdded { ip });
+		
+			Ok(())
+		}
+
+		#[pallet::call_index(3)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn add_available_storage_miner_ip(
+			origin: OriginFor<T>,
+			ip: Vec<u8>, // IP address as a vector of bytes
+		) -> DispatchResult {
+			// Ensure the caller has the appropriate permission
+			let _who = ensure_root(origin)?;
+		
+			// Retrieve the current list of available Storage Miner IPs
+			let mut available_storage_miner_ips = AvailableStorageMinerIps::<T>::get();
+		
+			// Ensure the IP is not already in the list
+			ensure!(
+				!available_storage_miner_ips.contains(&ip),
+				Error::<T>::IpAlreadyExists
+			);
+		
+			// Add the new IP to the list
+			available_storage_miner_ips.push(ip.clone());
+			AvailableStorageMinerIps::<T>::put(available_storage_miner_ips);
+		
+			// Emit an event
+			Self::deposit_event(Event::IpAdded { ip });
+		
+			Ok(())
+		}
 	}
 
 	#[pallet::hooks]
