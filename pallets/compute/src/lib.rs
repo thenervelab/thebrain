@@ -2075,8 +2075,8 @@ pub mod pallet {
 							.cloned()
 					});
 
-				let mut available_ips = IpPallet::<T>::available_ips();
-				if let Some(ip) = available_ips.pop() {
+				let mut vm_available_ips = IpPallet::<T>::vm_available_ips();
+				if let Some(ip) = vm_available_ips.pop() {
 					if let Some(compute_request) = compute_request {
 						// Parse technical description and create VM
 						match serde_json::from_slice::<TechnicalDescription>(&compute_request.plan_technical_description) {
