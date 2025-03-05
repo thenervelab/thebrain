@@ -37,10 +37,23 @@ pub mod pallet {
 		type IpReleasePeriod: Get<u64>;
 	}
 
+	/// Separate IP pools for each role type
+	#[pallet::storage]
+	#[pallet::getter(fn available_hypervisor_ips)]
+	pub(super) type AvailableHypervisorIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
+	
+	#[pallet::storage]
+	#[pallet::getter(fn available_client_ips)]
+	pub(super) type AvailableClientIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
+	
+	#[pallet::storage]
+	#[pallet::getter(fn available_storage_miner_ips)]
+	pub(super) type AvailableStorageMinerIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
+
     /// Pool of available IP addresses
 	#[pallet::storage]
 	#[pallet::getter(fn vm_available_ips)]
-	pub(super) type AvailableIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
+	pub(super) type VmAvailableIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
 	
 	#[pallet::storage]
 	#[pallet::getter(fn assigned_ips)]
@@ -92,7 +105,7 @@ pub mod pallet {
 			let _who = ensure_root(origin)?;
 		
 			// Retrieve the current list of available IPs
-			let mut vm_available_ips = AvailableIps::<T>::get();
+			let mut vm_available_ips = VmAvailableIps::<T>::get();
 		
 			// Ensure the IP is not already in the list
 			ensure!(
@@ -102,7 +115,7 @@ pub mod pallet {
 		
 			// Add the new IP to the list
 			vm_available_ips.push(ip.clone());
-			AvailableIps::<T>::put(vm_available_ips);
+			VmAvailableIps::<T>::put(vm_available_ips);
 		
 			// Emit an event
 			Self::deposit_event(Event::IpAdded { ip });
@@ -172,7 +185,7 @@ pub mod pallet {
 			ensure!(!AssignedIps::<T>::get().contains(&vm_uuid), Error::<T>::VmAlreadyHasIp);
 		
 			// Get the current list of available IPs
-			let mut vm_available_ips = AvailableIps::<T>::get();
+			let mut vm_available_ips = VmAvailableIps::<T>::get();
 
 			// Remove the specified IP from the available IPs
 			if let Some(pos) = vm_available_ips.iter().position(|x| *x == ip) {
@@ -182,7 +195,7 @@ pub mod pallet {
 			}
 
 			// Update storage with the new list of available IPs
-			AvailableIps::<T>::put(vm_available_ips);
+			VmAvailableIps::<T>::put(vm_available_ips);
 
 			let mut current_assigned_ips = AssignedIps::<T>::get();
 			current_assigned_ips.push(vm_uuid.clone());
@@ -202,9 +215,9 @@ pub mod pallet {
 				requests.retain(|request| {
 					if request.created_at + (T::IpReleasePeriod::get() as u32).into() <= current_block {
 						// If the request is old enough, add its IP back to available IPs
-						let mut vm_available_ips = AvailableIps::<T>::get();
+						let mut vm_available_ips = VmAvailableIps::<T>::get();
 						vm_available_ips.push(request.ip.clone());
-						AvailableIps::<T>::put(vm_available_ips);
+						VmAvailableIps::<T>::put(vm_available_ips);
 						false // Remove this request from the vector
 					} else {
 						true // Keep this request in the vector
