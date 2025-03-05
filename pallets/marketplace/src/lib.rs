@@ -123,7 +123,10 @@ pub mod pallet {
                     pallet_storage_s3::Config +
                     pallet_rankings::Config +
                     pallet_subaccount::Config +
-                    pallet_rankings::Config<pallet_rankings::Instance2>+ 
+                    pallet_rankings::Config<pallet_rankings::Instance2> +
+                    pallet_rankings::Config<pallet_rankings::Instance3> +
+                    pallet_rankings::Config<pallet_rankings::Instance4> +
+                    pallet_rankings::Config<pallet_rankings::Instance5> +
 					SendTransactionTypes<Call<Self>> + 
 					frame_system::offchain::SigningTypes 
         {
@@ -1001,7 +1004,7 @@ pub mod pallet {
             
             // Mint 70% to Compute Rankings
             let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                &RankingsPallet::<T>::account_id(), 
+                &pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id(), 
                 rankings_amount.try_into().unwrap_or_default()
             );
             
@@ -1385,7 +1388,7 @@ pub mod pallet {
 
                         // Mint 70% to Compute Rankings
                         let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                            &RankingsPallet::<T>::account_id(), 
+                            &pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id(), 
                             rankings_amount.try_into().unwrap_or_default()
                         );
 
