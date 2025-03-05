@@ -70,6 +70,7 @@ pub mod pallet {
     use frame_system::offchain::{Signer,SignedPayload, SendUnsignedTransaction};
     use sp_core::hashing;
     use sp_runtime::format;
+	use pallet_ip::Pallet as IpPallet;
     // use frame_support::traits::OnRuntimeUpgrade;
 
 	#[pallet::pallet]
@@ -77,7 +78,8 @@ pub mod pallet {
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config + pallet_balances::Config + SendTransactionTypes<Call<Self>> + frame_system::offchain::SigningTypes{
+	pub trait Config: frame_system::Config + pallet_balances::Config + SendTransactionTypes<Call<Self>> + 
+    frame_system::offchain::SigningTypes + pallet_ip::Config {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
     	/// The identifier type for an offchain worker.
@@ -370,6 +372,12 @@ pub mod pallet {
 
             // Helper function to insert a referral code for a user
             Self::insert_referral_code(&who.clone(), code)?;
+
+            let mut vm_available_ips = IpPallet::<T>::available_client_ips();
+
+            if let Some(ip) = vm_available_ips.pop() {
+                IpPallet::<T>::assign_ip_to_client(&who, ip)
+            }
 
             Self::deposit_event(Event::MinetdAccountCredits{who, amount: free + amount});
 

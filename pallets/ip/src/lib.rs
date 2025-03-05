@@ -67,6 +67,18 @@ pub mod pallet {
 	#[pallet::getter(fn vm_to_ip)]
 	pub(super) type VmToIp<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, Vec<u8>>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn assigned_client_ips)]
+	pub(super) type AssignedClientIps<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn ip_to_role)]
+	pub(super) type IpToRole<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, RoleType<T::AccountId>>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn role_to_ip)]
+	pub(super) type RoleToIp<T: Config> = StorageMap<_, Blake2_128Concat, RoleType<T::AccountId>, Vec<u8>>;
+
 	// Storage for IP Release Requests
 	#[pallet::storage]
 	#[pallet::getter(fn ip_release_requests)]
@@ -79,10 +91,11 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		IpAssigned { vm_uuid: Vec<u8>, ip: Vec<u8> },
+		IpAssigned {  ip: Vec<u8> },
 		IpReturned { vm_uuid: Vec<u8>, ip: Vec<u8> },
 		IpRetrieved { vm_uuid: Vec<u8>, ip: Vec<u8> },
 		IpAdded {ip: Vec<u8>},
+		IpRemoved {ip: Vec<u8>},
 	}
 
 	#[pallet::error]
@@ -91,6 +104,7 @@ pub mod pallet {
 		VmAlreadyHasIp,
 		VmHasNoIp,
 		IpAlreadyExists,
+		RoleAlreadyHasIp,
 	}
 
 	#[pallet::call]
@@ -206,6 +220,106 @@ pub mod pallet {
 		
 			Ok(())
 		}
+
+		#[pallet::call_index(4)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn remove_available_vm_ip(
+			origin: OriginFor<T>,
+			ip: Vec<u8>, // IP address as a vector of bytes
+		) -> DispatchResult {
+			// Ensure the caller has the appropriate permission
+			let _who = ensure_root(origin)?;
+		
+			// Retrieve the current list of available VM IPs
+			let mut vm_available_ips = VmAvailableIps::<T>::get();
+		
+			// Find and remove the IP from the list
+			let ip_index = vm_available_ips.iter().position(|x| *x == ip)
+				.ok_or(Error::<T>::NoAvailableIp)?;
+			
+			vm_available_ips.remove(ip_index);
+			VmAvailableIps::<T>::put(vm_available_ips);
+		
+			// Emit an event
+			Self::deposit_event(Event::IpRemoved { ip });
+		
+			Ok(())
+		}
+
+		#[pallet::call_index(5)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn remove_available_hypervisor_ip(
+			origin: OriginFor<T>,
+			ip: Vec<u8>, // IP address as a vector of bytes
+		) -> DispatchResult {
+			// Ensure the caller has the appropriate permission
+			let _who = ensure_root(origin)?;
+		
+			// Retrieve the current list of available Hypervisor IPs
+			let mut available_hypervisor_ips = AvailableHypervisorIps::<T>::get();
+		
+			// Find and remove the IP from the list
+			let ip_index = available_hypervisor_ips.iter().position(|x| *x == ip)
+				.ok_or(Error::<T>::NoAvailableIp)?;
+			
+			available_hypervisor_ips.remove(ip_index);
+			AvailableHypervisorIps::<T>::put(available_hypervisor_ips);
+		
+			// Emit an event
+			Self::deposit_event(Event::IpRemoved { ip });
+		
+			Ok(())
+		}
+
+		#[pallet::call_index(6)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn remove_available_client_ip(
+			origin: OriginFor<T>,
+			ip: Vec<u8>, // IP address as a vector of bytes
+		) -> DispatchResult {
+			// Ensure the caller has the appropriate permission
+			let _who = ensure_root(origin)?;
+		
+			// Retrieve the current list of available Client IPs
+			let mut available_client_ips = AvailableClientIps::<T>::get();
+		
+			// Find and remove the IP from the list
+			let ip_index = available_client_ips.iter().position(|x| *x == ip)
+				.ok_or(Error::<T>::NoAvailableIp)?;
+			
+			available_client_ips.remove(ip_index);
+			AvailableClientIps::<T>::put(available_client_ips);
+		
+			// Emit an event
+			Self::deposit_event(Event::IpRemoved { ip });
+		
+			Ok(())
+		}
+
+		#[pallet::call_index(7)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn remove_available_storage_miner_ip(
+			origin: OriginFor<T>,
+			ip: Vec<u8>, // IP address as a vector of bytes
+		) -> DispatchResult {
+			// Ensure the caller has the appropriate permission
+			let _who = ensure_root(origin)?;
+		
+			// Retrieve the current list of available Storage Miner IPs
+			let mut available_storage_miner_ips = AvailableStorageMinerIps::<T>::get();
+		
+			// Find and remove the IP from the list
+			let ip_index = available_storage_miner_ips.iter().position(|x| *x == ip)
+				.ok_or(Error::<T>::NoAvailableIp)?;
+			
+			available_storage_miner_ips.remove(ip_index);
+			AvailableStorageMinerIps::<T>::put(available_storage_miner_ips);
+		
+			// Emit an event
+			Self::deposit_event(Event::IpRemoved { ip });
+		
+			Ok(())
+		}
 	}
 
 	#[pallet::hooks]
@@ -266,17 +380,19 @@ pub mod pallet {
 			ip: Vec<u8>,
 		) -> DispatchResult {
 			// Check if the VM already has an assigned IP
-			ensure!(!AssignedIps::<T>::get().contains(&vm_uuid), Error::<T>::VmAlreadyHasIp);
+			ensure!(
+				!RoleToIp::<T>::contains_key(&RoleType::Vm(vm_uuid.clone())), 
+				Error::<T>::VmAlreadyHasIp
+			);
 		
 			// Get the current list of available IPs
 			let mut vm_available_ips = VmAvailableIps::<T>::get();
 
 			// Remove the specified IP from the available IPs
-			if let Some(pos) = vm_available_ips.iter().position(|x| *x == ip) {
-				vm_available_ips.remove(pos); // Remove the IP if found
-			} else {
-				log::warn!("IP not found in available IPs");
-			}
+			let ip_index = vm_available_ips.iter().position(|x| *x == ip)
+				.ok_or(Error::<T>::NoAvailableIp)?;
+			
+			vm_available_ips.remove(ip_index);
 
 			// Update storage with the new list of available IPs
 			VmAvailableIps::<T>::put(vm_available_ips);
@@ -288,11 +404,51 @@ pub mod pallet {
 			VmToIp::<T>::insert(&vm_uuid, &ip);
 	
 			// Emit event
-			Self::deposit_event(Event::IpAssigned { vm_uuid, ip });
+			Self::deposit_event(Event::IpAssigned { ip });
 		 
 			Ok(())
 		}
 
+		/// Allocate the next available IP address to a client
+		pub fn assign_ip_to_client(
+			client_id: T::AccountId,
+			ip: Vec<u8>,
+		) -> DispatchResult {
+			// Check if the client already has an assigned IP
+			ensure!(
+				!RoleToIp::<T>::contains_key(&RoleType::Client(client_id.clone())), 
+				Error::<T>::RoleAlreadyHasIp
+			);
+		
+			// Get the current list of available Client IPs
+			let mut available_client_ips = AvailableClientIps::<T>::get();
+
+			// Remove the specified IP from the available IPs
+			let ip_index = available_client_ips.iter().position(|x| *x == ip)
+				.ok_or(Error::<T>::NoAvailableIp)?;
+			
+			available_client_ips.remove(ip_index);
+
+			// Update storage with the new list of available Client IPs
+			AvailableClientIps::<T>::put(available_client_ips);
+
+			// Update assigned IPs
+			let mut current_assigned_client_ips = AssignedClientIps::<T>::get();
+			current_assigned_client_ips.push(ip.clone());
+			AssignedClientIps::<T>::put(current_assigned_client_ips);
+
+			// Create role-IP mappings
+			let role_type = RoleType::Client(client_id.clone());
+			IpToRole::<T>::insert(&ip, &role_type);
+			RoleToIp::<T>::insert(&role_type, &ip);
+	
+			// Emit event
+			Self::deposit_event(Event::IpAssigned { 
+				ip 
+			});
+		 
+			Ok(())
+		}
 
 		fn handle_pending_ip_release_requests(current_block: BlockNumberFor<T>){
 			IpReleaseRequests::<T>::mutate(|requests| {

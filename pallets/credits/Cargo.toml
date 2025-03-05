@@ -26,6 +26,7 @@ pallet-balances = { workspace = true, default-features = false }
 sp-runtime = { default-features = false, workspace = true }
 sp-core = { default-features = false, workspace = true }
 log = { version = "0.4.22", default-features = false }
+pallet-ip = { workspace = true, default-features = false }
 
 [dev-dependencies]
 sp-core = { workspace = true }
@@ -43,8 +44,9 @@ std = [
 	"pallet-balances/std",
 	"sp-runtime/std",
 	"sp-core/std",
-
+	"pallet-ip/std",
 ]
+
 runtime-benchmarks = [
 	"frame-benchmarking/runtime-benchmarks",
 	"frame-support/runtime-benchmarks",
