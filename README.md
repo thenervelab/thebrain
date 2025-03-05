@@ -420,6 +420,131 @@ or
 - Useful for retrieving a client's network-assigned IP
 - Part of the IP management system in the Hippius network
 
+### 12. `get_hypervisor_ip`
+
+#### Description
+Retrieves the IP address assigned to a specific hypervisor.
+
+#### Parameters
+- `hypervisor_id` (Vec<u8>): The unique identifier of the hypervisor
+
+#### Response
+Returns an optional IP address as a `Vec<u8>`:
+- If an IP is assigned to the hypervisor, returns the IP address
+- If no IP is assigned, returns `null`
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_hypervisor_ip",
+    "params": ["hypervisor_unique_id"],
+    "id": 1
+}
+```
+
+#### Example Responses
+```json
+{
+    "jsonrpc": "2.0",
+    "result": "10.0.1.42",
+    "id": 1
+}
+```
+or 
+```json
+{
+    "jsonrpc": "2.0",
+    "result": null,
+    "id": 1
+}
+```
+
+### 13. `get_vm_ip`
+
+#### Description
+Retrieves the IP address assigned to a specific virtual machine (VM).
+
+#### Parameters
+- `vm_id` (Vec<u8>): The unique identifier of the VM
+
+#### Response
+Returns an optional IP address as a `Vec<u8>`:
+- If an IP is assigned to the VM, returns the IP address
+- If no IP is assigned, returns `null`
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_vm_ip",
+    "params": ["vm_unique_id"],
+    "id": 1
+}
+```
+
+#### Example Responses
+```json
+{
+    "jsonrpc": "2.0",
+    "result": "10.0.80.42",
+    "id": 1
+}
+```
+or 
+```json
+{
+    "jsonrpc": "2.0",
+    "result": null,
+    "id": 1
+}
+```
+
+### 14. `get_storage_miner_ip`
+
+#### Description
+Retrieves the IP address assigned to a specific storage miner.
+
+#### Parameters
+- `miner_id` (Vec<u8>): The unique identifier of the storage miner
+
+#### Response
+Returns an optional IP address as a `Vec<u8>`:
+- If an IP is assigned to the storage miner, returns the IP address
+- If no IP is assigned, returns `null`
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_storage_miner_ip",
+    "params": ["miner_unique_id"],
+    "id": 1
+}
+```
+
+#### Example Responses
+```json
+{
+    "jsonrpc": "2.0",
+    "result": "10.0.128.42",
+    "id": 1
+}
+```
+or 
+```json
+{
+    "jsonrpc": "2.0",
+    "result": null,
+    "id": 1
+}
+```
+
+#### Notes
+- These methods are part of the IP management system in the Hippius network
+- Useful for retrieving network-assigned IP addresses for different node types
+- Returns `null` if no IP has been assigned to the specified node
+
 ### Notes
 - All methods return `RpcResult`, which handles potential errors
 - Ensure proper authentication and authorization when using these RPC methods

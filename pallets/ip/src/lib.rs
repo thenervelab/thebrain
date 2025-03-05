@@ -475,5 +475,32 @@ pub mod pallet {
 			// Retrieve the IP associated with this client role
 			RoleToIp::<T>::get(&client_role)
 		}
+
+		/// Helper function to get the IP associated with a hypervisor, if any
+		pub fn get_hypervisor_ip(hypervisor_id: &Vec<u8>) -> Option<Vec<u8>> {
+			// Create a role type for the hypervisor
+			let hypervisor_role = RoleType::Hypervisor(hypervisor_id.clone());
+			
+			// Retrieve the IP associated with this hypervisor role
+			RoleToIp::<T>::get(&hypervisor_role)
+		}
+
+		/// Helper function to get the IP associated with a VM, if any
+		pub fn get_vm_ip(vm_id: &Vec<u8>) -> Option<Vec<u8>> {
+			// Create a role type for the VM
+			let vm_role = RoleType::Vm(vm_id.clone());
+			
+			// Retrieve the IP associated with this VM role
+			RoleToIp::<T>::get(&vm_role)
+		}
+
+		/// Helper function to get the IP associated with a storage miner, if any
+		pub fn get_storage_miner_ip(miner_id: &Vec<u8>) -> Option<Vec<u8>> {
+			// Create a role type for the storage miner
+			let miner_role = RoleType::StorageMiner(miner_id.clone());
+			
+			// Retrieve the IP associated with this storage miner role
+			RoleToIp::<T>::get(&miner_role)
+		}
 	}
 }

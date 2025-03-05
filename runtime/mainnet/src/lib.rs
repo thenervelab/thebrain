@@ -2500,6 +2500,19 @@ impl_runtime_apis! {
 			<pallet_ip::Pallet<Runtime>>::get_client_ip(&client_id)
 		}
 
+
+		fn get_hypervisor_ip(&self, hypervisor_id: &Vec<u8>) -> Option<Vec<u8>>{
+			<pallet_ip::Pallet<Runtime>>::get_hypervisor_ip(&client_id)
+		}    
+
+        fn get_vm_ip(&self, vm_id: &Vec<u8>) -> Option<Vec<u8>>{
+			<pallet_ip::Pallet<Runtime>>::get_vm_ip(&client_id)
+		}    
+		
+        fn get_storage_miner_ip(&self, miner_id: &Vec<u8>) -> Option<Vec<u8>>{
+			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(&client_id)
+		}    
+
 		fn get_total_distributed_rewards_by_node_type(node_type: rpc_primitives_node_metrics::NodeType) -> u128 {
 			// Convert RPC NodeType to Pallet NodeType
 			let pallet_node_type = match node_type {

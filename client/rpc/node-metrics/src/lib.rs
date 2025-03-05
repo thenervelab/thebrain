@@ -152,4 +152,33 @@ where
 		})
 	}
 
+
+	fn get_hypervisor_ip(&self, hypervisor_id: &Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_hypervisor_ip(best_hash, hypervisor_id).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
+	fn get_vm_ip(&self, vm_id: &Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_vm_ip(best_hash, vm_id).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
+	fn get_storage_miner_ip(&self, miner_id: &Vec<u8>) -> RpcResult<Option<Vec<u8>>>{
+		
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_storage_miner_ip(best_hash, miner_id).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
 }
