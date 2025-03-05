@@ -150,6 +150,7 @@ pallet-evm-precompile-verify-ecdsa-stark-signature = { workspace = true }
 pallet-evm-precompile-verify-bls381-signature = { workspace = true }
 precompile-utils = { workspace = true }
 hex-literal = { workspace = true }
+pallet-ip = { workspace = true }
 
 evm-tracer = { workspace = true }
 rpc-primitives-debug = { workspace = true }
@@ -240,6 +241,7 @@ std = [
     "sp-storage/std",
     "pallet-assets/std",
     "pallet-proxy/std",
+    "pallet-ip/std",
 
     "pallet-ipfs-pin/std",
     "pallet-alpha-bridge/std",

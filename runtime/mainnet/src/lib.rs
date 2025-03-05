@@ -960,6 +960,15 @@ impl pallet_backup::Config for Runtime {
 	type BlocksPerDay = BlocksPerBackupCheck ;
 }
 
+parameter_types! {
+	pub const IpReleasePeriod: u64 = 15 * DAYS;
+}
+
+impl pallet_ip::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+	type IpReleasePeriod = IpReleasePeriod;
+}
+
 use pallet_credits::crypto::TestAuthId; // Adjust the path as necessary
 
 impl pallet_credits::Config for Runtime {
@@ -970,14 +979,14 @@ impl pallet_credits::Config for Runtime {
 }
 
 parameter_types! {
-	pub const IpReleasePeriod: u64 = 15 * DAYS;
+	pub const ComputeIpReleasePeriod: u64 = 15 * DAYS;
 }
 
 impl pallet_compute::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AuthorityId = pallet_compute::crypto::TestAuthId;
 	type OffchainWorkerInterval = ConstU32<19>;
-	type IpReleasePeriod = IpReleasePeriod;
+	type IpReleasePeriod = ComputeIpReleasePeriod;
 }
 
 parameter_types! {
@@ -1747,7 +1756,8 @@ construct_runtime!(
 		Compute: pallet_compute = 89,
 		ContainerRegistry: pallet_container_registry = 90,
 		Storage: pallet_storage = 94,
-		AlphaBridge: pallet_alpha_bridge = 76
+		AlphaBridge: pallet_alpha_bridge = 76,
+		PalletIp: pallet_ip = 77
 	}
 );
 

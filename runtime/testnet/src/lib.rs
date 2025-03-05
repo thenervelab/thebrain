@@ -1118,6 +1118,15 @@ impl pallet_alpha_bridge::Config for Runtime {
 }
 
 parameter_types! {
+	pub const IpReleasePeriod: u64 = 15 * DAYS;
+}
+
+impl pallet_ip::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+	type IpReleasePeriod = IpReleasePeriod;
+}
+
+parameter_types! {
     pub const VersionKeyStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555d8cb0c0627a5cd77797c62415dbef9620100";
 	pub const BittensorCallSubmission : u32 = 20;
 }
@@ -1174,14 +1183,14 @@ impl pallet_credits::Config for Runtime {
 }
 
 parameter_types! {
-	pub const IpReleasePeriod: u64 = 15 * DAYS;
+	pub const ComputeIpReleasePeriod: u64 = 15 * DAYS;
 }
 
 impl pallet_compute::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AuthorityId = pallet_compute::crypto::TestAuthId;
 	type OffchainWorkerInterval = ConstU32<19>;
-	type IpReleasePeriod = IpReleasePeriod;
+	type IpReleasePeriod = ComputeIpReleasePeriod;
 }
 
 parameter_types! {
@@ -1696,7 +1705,9 @@ construct_runtime!(
 		Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69,
 		Storage: pallet_storage = 72,
-		AlphaBridge: pallet_alpha_bridge = 73
+		AlphaBridge: pallet_alpha_bridge = 73,	
+		PalletIp: pallet_ip = 74
+		
 	}
 );
 

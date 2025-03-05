@@ -45,6 +45,7 @@ pub mod pallet {
 	use sp_runtime::SaturatedConversion;
 	use frame_system::{pallet_prelude::*,offchain::{AppCrypto,SendTransactionTypes}};
     use sp_std::vec::Vec;
+	use sp_std::vec;
 	use crate::types::*;
 	use sp_runtime::offchain::storage_lock::StorageLock;
 	use sp_runtime::offchain::Duration;
@@ -56,7 +57,6 @@ pub mod pallet {
 	use pallet_registration::{NodeRegistration, NodeType};
 	use sp_runtime::format;
 	use scale_info::prelude::string::String;
-	use sp_std::vec;
 	use codec::alloc::string::ToString;
 	use frame_system::offchain::SigningTypes;
 	use pallet_subaccount::traits::SubAccounts;
@@ -1275,11 +1275,6 @@ pub mod pallet {
 			Self::deposit_event(Event::IpAssigned { vm_uuid, ip });
 		
 			Ok(())
-		}
-		
-		// Add this method to initialize available IPs
-		pub fn initialize_available_ips(ips: Vec<Vec<u8>>) {
-			AvailableIps::<T>::put(ips);
 		}
 
         /// Helper method to create a new compute request

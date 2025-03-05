@@ -3937,6 +3937,7 @@ dependencies = [
  "pallet-im-online",
  "pallet-indices",
  "pallet-insecure-randomness-collective-flip",
+ "pallet-ip",
  "pallet-ipfs-pin",
  "pallet-marketplace",
  "pallet-metagraph",
@@ -4067,6 +4068,7 @@ dependencies = [
  "pallet-im-online",
  "pallet-indices",
  "pallet-insecure-randomness-collective-flip",
+ "pallet-ip",
  "pallet-ipfs-pin",
  "pallet-marketplace",
  "pallet-metagraph",
@@ -6853,27 +6855,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-ceph"
-version = "0.1.0"
-dependencies = [
- "frame-benchmarking",
- "frame-support",
- "frame-system",
- "log",
- "pallet-assets",
- "pallet-registration",
- "pallet-timestamp",
- "pallet-treasury",
- "pallet-utils",
- "parity-scale-codec",
- "scale-info",
- "sp-core",
- "sp-io",
- "sp-runtime",
- "sp-std 14.0.0",
-]
-
-[[package]]
 name = "pallet-child-bounties"
 version = "36.0.0"
 source = "git+https://github.com/paritytech/polkadot-sdk?branch=stable2407#f2081f6657f011634a483e3a4c91e54150c974c7"
@@ -7665,6 +7646,22 @@ dependencies = [
  "safe-mix",
  "scale-info",
  "sp-runtime",
+]
+
+[[package]]
+name = "pallet-ip"
+version = "0.1.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+ "sp-std 14.0.0",
 ]
 
 [[package]]
