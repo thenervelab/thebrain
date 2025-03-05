@@ -59,7 +59,7 @@ pub mod pallet {
 	#[pallet::getter(fn ip_release_requests)]
 	pub type IpReleaseRequests<T: Config> = StorageValue<
 		_,
-		Vec<IpReleaseRequest<BlockNumberFor<T>>>,
+		Vec<IpReleaseRequest<BlockNumberFor<T>, T::AccountId>>,
 		ValueQuery
 	>;
 
@@ -125,7 +125,7 @@ pub mod pallet {
 
 
 	impl<T: Config> Pallet<T> {
-		pub fn generate_release_ip_request_and_update_storage(
+		pub fn generate_vm_release_ip_request_and_update_storage(
 			vm_name: Vec<u8>,
 		) -> DispatchResult {
 			// Get the IP associated with the VM name
@@ -148,7 +148,8 @@ pub mod pallet {
 			let ip_release_request = IpReleaseRequest {
 				vm_name: vm_name.clone(),
 				ip: ip.clone(),
-				created_at: frame_system::Pallet::<T>::block_number()
+				created_at: frame_system::Pallet::<T>::block_number(),
+				role_type: RoleType::Vm(vm_name.clone()),
 			};
 			
 			// Add the request to the IpReleaseRequests storage
@@ -163,10 +164,8 @@ pub mod pallet {
 		}
 
 		/// Allocate the next available IP address to a user
-		pub fn assign_ip(
-			node_id: Vec<u8>,
+		pub fn assign_ip_to_vm(
 			vm_uuid: Vec<u8>,
-			request_id: u128,
 			ip: Vec<u8>,
 		) -> DispatchResult {
 			// Check if the VM already has an assigned IP

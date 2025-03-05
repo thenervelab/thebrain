@@ -618,7 +618,7 @@ pub mod pallet {
 
 
 			// Handle the result of assign_ip and convert the error
-			IpPallet::<T>::assign_ip(node_id.clone(), job_id.clone(), request_id, ip.clone())?;
+			IpPallet::<T>::assign_ip_to_vm(job_id.clone(), ip.clone())?;
 			
 			Ok(().into())
 		}
@@ -693,7 +693,7 @@ pub mod pallet {
 			}
 
 			// release Ip back to the available pool
-			IpPallet::<T>::generate_release_ip_request_and_update_storage(vm_name)?;
+			IpPallet::<T>::generate_vm_release_ip_request_and_update_storage(vm_name)?;
 
 			// Emit an event about the compute deletion request removal
 			if let Some((owner, _)) = Self::find_compute_request_by_id(request_id) {
