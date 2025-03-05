@@ -3135,6 +3135,10 @@ impl_runtime_apis! {
 			<pallet_rankings::Pallet<Runtime>>::get_total_node_rewards(account)
 		}
 
+		fn get_client_ip(client_id: AccountId32) -> Option<Vec<u8>>{
+			<pallet_ip::Pallet<Runtime>>::get_client_ip(&client_id)
+		}
+
 		fn get_total_distributed_rewards_by_node_type(node_type: rpc_primitives_node_metrics::NodeType) -> u128 {
 			// Convert RPC NodeType to Pallet NodeType
 			let pallet_node_type = match node_type {

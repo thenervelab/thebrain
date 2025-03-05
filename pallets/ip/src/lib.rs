@@ -466,6 +466,14 @@ pub mod pallet {
 				});
 			});
 		}
-		
+
+		/// Helper function to get the IP associated with a client, if any
+		pub fn get_client_ip(client_id: &T::AccountId) -> Option<Vec<u8>> {
+			// Create a role type for the client
+			let client_role = RoleType::Client(client_id.clone());
+			
+			// Retrieve the IP associated with this client role
+			RoleToIp::<T>::get(&client_role)
+		}
 	}
 }

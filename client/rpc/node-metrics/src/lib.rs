@@ -141,4 +141,15 @@ where
 			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
 		})
 	}
+
+
+	fn get_client_ip(&self, client_id: AccountId32) -> RpcResult<Option<Vec<u8>>>{
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_client_ip(best_hash, client_id).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
 }

@@ -41,4 +41,7 @@ pub trait NodeMetricsApi {
 
 	#[method(name = "get_user_vms")]
 	fn get_user_vms(&self, account: AccountId32) -> RpcResult<Vec<UserVmDetails<AccountId32, u32, [u8; 32]>>>;
+
+	#[method(name = "get_client_ip")]
+	fn get_client_ip(&self, client_id: AccountId32) -> RpcResult<Option<Vec<u8>>>;
 }

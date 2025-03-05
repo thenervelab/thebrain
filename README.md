@@ -375,6 +375,51 @@ Returns a list of `UserVmDetails` objects, each containing:
 - Returns detailed information about VMs owned by the account.
 - Useful for tracking VM deployment and management across the network.
 
+### 11. `get_client_ip`
+
+#### Description
+Retrieves the IP address assigned to a specific client account.
+
+#### Parameters
+- `client_id` (AccountId32): The account ID of the client to retrieve the IP for
+
+#### Response
+Returns an optional IP address as a `Vec<u8>`:
+- If an IP is assigned to the client, returns the IP address
+- If no IP is assigned, returns `null`
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_client_ip",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
+
+#### Example Responses
+```json
+{
+    "jsonrpc": "2.0",
+    "result": "10.0.16.42",
+    "id": 1
+}
+```
+or 
+```json
+{
+    "jsonrpc": "2.0",
+    "result": null,
+    "id": 1
+}
+```
+
+#### Notes
+- Returns the IP address assigned to a client during account creation or IP allocation
+- Useful for retrieving a client's network-assigned IP
+- Part of the IP management system in the Hippius network
+
 ### Notes
 - All methods return `RpcResult`, which handles potential errors
 - Ensure proper authentication and authorization when using these RPC methods
