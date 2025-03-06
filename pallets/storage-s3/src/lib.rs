@@ -30,7 +30,7 @@ pub mod pallet {
 	}
 
 	// New storage map for bucket names
-	#[pallet::storage]fn
+	#[pallet::storage]
 	#[pallet::getter(fn bucket_names)]
 	pub type BucketNames<T: Config> = StorageMap<
 		_, 
@@ -209,7 +209,10 @@ pub mod pallet {
 		/// Retrieve all users who have at least one bucket
 		pub fn get_users_with_bandwidth() -> Vec<T::AccountId> {
 			UserBandwidth::<T>::iter()
-				.filter(|(_, bandwidth)| *bandwidth > 0)
+				.filter(|(_, bandwidth)| {
+					// Check if the vector has at least one element and the last element is greater than 0
+					!bandwidth.is_empty() && *bandwidth.last().unwrap() > 0
+				})
 				.map(|(account, _)| account)
 				.collect()
 		}
@@ -248,7 +251,7 @@ pub mod pallet {
 		}
 
 		// Getter function to retrieve the size of a bucket by its name
-		pub fn get_bucket_size<T: Config>(bucket_name: Vec<u8>) -> u128 {
+		pub fn get_bucket_size(bucket_name: Vec<u8>) -> u128 {
 			BucketSize::<T>::get(bucket_name)
 		}
 
@@ -258,8 +261,10 @@ pub mod pallet {
 			let mut total_size = 0;
 
 			// Retrieve bucket names for the user
-			if let Some(bucket_names) = BucketNames::<T>::get(account_id) {
-				// Sum the sizes of each bucket
+			let bucket_names = BucketNames::<T>::get(account_id);
+			
+			// Sum the sizes of each bucket if there are any bucket names
+			if !bucket_names.is_empty() {
 				for bucket_name in bucket_names {
 					total_size += BucketSize::<T>::get(bucket_name);
 				}
@@ -283,7 +288,7 @@ pub mod pallet {
 				}
 			}
 		}
-		
+
 		// // Helper method to list bucket contents
 		// fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
 		// 	let file_api_endpoint = "http://localhost:8888"; 

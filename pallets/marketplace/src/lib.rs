@@ -104,7 +104,6 @@ pub mod pallet {
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
                 Self::handle_storage_subscription_charging(current_block);
                 Self::handle_storage_s3_subscription_charging(current_block);
-                Self::handle_storage_s3_bandwidth_charging(current_block);
                 Self::handle_compute_subscription_charging(current_block);
 
             }
@@ -1351,93 +1350,8 @@ pub mod pallet {
                 }
             }
         }
-
-        fn handle_storage_s3_bandwidth_charging(current_block: BlockNumberFor<T>) {
-            // get total files stores , charge users every hour
-            let users_with_buckets = StorageS3Pallet::<T>::get_users_with_bandwidth();
-            for user in users_with_buckets {
-                // last_charged_at
-                let last_charged_at = StorageS3Pallet::<T>::last_charged_at(&user);
-                let block_difference = current_block.saturating_sub(last_charged_at);
-                if block_difference > T::BlocksPerHour::get().into() {
-
-                    let user_total_size = StorageS3Pallet::<T>::get_user_bandwidth(&user);
-                    // Convert total file size to gigabytes
-                    let total_file_size_in_gbs = user_total_size as f64 / 1_073_741_824.0;
-
-                    // Get the current price per GB from the marketplace pallet
-                    let price_per_gb = Self::get_price_per_bandwidth();
-                    
-                    let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
-                    
-                    // Round up to the nearest whole number of GBs
-                    let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
-                    let charge_amount = price_per_gb * rounded_gbs;                    
-
-                    if user_free_credits >= charge_amount {
-                        // Decrease user credits
-                        CreditsPallet::<T>::decrease_user_credits(&user, charge_amount);
-
-                        // Handle referral logic
-                        let mut total_discount = 0u128;
-                        if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&user) {
-                            let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, charge_amount, &mut total_discount);
-                        }
-                        
-                        // Calculate the amounts for Compute Rankings and Marketplace
-                        let total_charge = charge_amount - total_discount;
-                        let rankings_amount = total_charge
-                            .checked_mul(70u32.into())
-                            .and_then(|x| x.checked_div(100u32.into()))
-                            .unwrap_or_default();
-                                    
-                        let marketplace_amount = total_charge - rankings_amount;
-
-                        // Mint 70% to Compute Rankings
-                        let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                            &pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id(), 
-                            rankings_amount.try_into().unwrap_or_default()
-                        );
-
-                        // Deposit remaining 30% amount to marketplace account
-                        let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                            &Self::account_id(), 
-                            marketplace_amount.try_into().unwrap_or_default()
-                        );
-
-                        // Record transaction
-                        let _ = Self::record_native_transaction(
-                            &user,
-                            NativeTransactionType::Subscription,
-                            (charge_amount - total_discount).into(),
-                        );
-
-                        // Update last charged block for each request
-                        StorageS3Pallet::<T>::update_last_charged_at(&user, current_block);
-                        
-                    } else {
-                        let blocks_per_hour = T::BlocksPerHour::get();
-                        let grace_period_blocks = T::StorageGracePeriod::get();
-                        
-                        // Calculate grace period start after hourly charging
-                        let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
-                        
-                        // Check if the current block is within the grace period
-                        if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
-                            // Still within grace period
-                            log::info!(
-                                "Storage request for user {:?} is in grace period",
-                                user
-                            );
-                        } else {
-                            // Cancel the request after grace period
-                            // and delete storage 
-                        }
-                    }
-                }
-            }
-        }
         
+        // charge user for buckets and bandwidth 
         fn handle_storage_s3_subscription_charging(current_block: BlockNumberFor<T>) {
             // get total files stores , charge users every hour
             let users_with_buckets = StorageS3Pallet::<T>::get_users_with_buckets();
@@ -1471,12 +1385,26 @@ pub mod pallet {
 
                     // Get the current price per GB from the marketplace pallet
                     let price_per_gb = Self::get_price_per_gb();
-                    
-                    let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
-                    
+
                     // Round up to the nearest whole number of GBs
                     let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
-                    let charge_amount = price_per_gb * rounded_gbs;                    
+                    let buckets_charge_amount = price_per_gb * rounded_gbs;     
+                    
+                    
+                    let bandwidth_user_total_size = StorageS3Pallet::<T>::get_user_bandwidth(user.clone());
+                    // Convert total file size to gigabytes
+                    let bandwidth_total_file_size_in_gbs = bandwidth_user_total_size as f64 / 1_073_741_824.0;
+
+                    // Get the current price per GB from the marketplace pallet
+                    let bandwidth_price_per_gb = Self::get_price_per_bandwidth();
+                    
+                    // Round up to the nearest whole number of GBs
+                    let bandwidth_rounded_gbs = ((bandwidth_total_file_size_in_gbs).floor() as u128) + 1;
+                    let bandwidth_charge_amount = bandwidth_price_per_gb * bandwidth_rounded_gbs;    
+                    
+                    let charge_amount = bandwidth_charge_amount + buckets_charge_amount;
+                                        
+                    let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
 
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
