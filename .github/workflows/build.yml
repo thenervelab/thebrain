@@ -16,10 +16,12 @@ jobs:
       - name: Install dependencies
         run: sudo apt update && sudo apt install -y clang cmake pkg-config libssl-dev git
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.85.0
+      - name: Install Rust 1.85
+        run: |
+          rustup install 1.85.0
+          rustup default 1.85.0
+          rustup override set 1.85.0
+          rustc --version
 
       - name: Build Substrate Node
         run: cargo build --release
