@@ -58,7 +58,7 @@ pub mod pallet {
 		_, 
 		Blake2_128Concat, 
 		T::AccountId, // user identifier 
-		u128,   // bandwidth size in bytes 
+		Vec<u128>,   // bandwidth size in bytes 
 		ValueQuery
 	>;
 
@@ -172,21 +172,27 @@ pub mod pallet {
 		) -> DispatchResult {
 			// Ensure the caller is the root/sudo account
 			ensure_root(origin)?;
-
+		
 			// Optional: Add a maximum bandwidth limit if needed
 			// For example, limit to 1 TB per month (1024 * 1024 * 1024 * 1024 bytes)
 			const MAX_USER_BANDWIDTH: u128 = 1_099_511_627_776;
 			ensure!(bandwidth <= MAX_USER_BANDWIDTH, Error::<T>::BandwidthTooLarge);
-
-			// Set the user bandwidth in storage
-			UserBandwidth::<T>::insert(&user_id, bandwidth);
-
+		
+			// Get the current bandwidth for the user or initialize a new vector
+			let mut current_bandwidth = UserBandwidth::<T>::get(&user_id);
+			
+			// Add the new bandwidth to the vector
+			current_bandwidth.push(bandwidth);
+		
+			// Set the updated user bandwidth in storage
+			UserBandwidth::<T>::insert(&user_id, current_bandwidth);
+		
 			// Emit an event about the user bandwidth being set
 			Self::deposit_event(Event::UserBandwidthSet {
 				user_id,
 				bandwidth,
 			});
-
+		
 			Ok(())
 		}
     }
@@ -264,9 +270,20 @@ pub mod pallet {
 
 		// Getter function to retrieve the bandwidth size for a user by their account ID
 		pub fn get_user_bandwidth(account_id: T::AccountId) -> u128 {
-			UserBandwidth::<T>::get(account_id)
-		}
+			let bandwidths = UserBandwidth::<T>::get(account_id);
 
+			// Check the length of the bandwidth vector
+			match bandwidths.len() {
+				0 => 0, // If there are no bandwidth records, return 0
+				1 => bandwidths[0], // If there's only one record, return it
+				_ => {
+					// If there are two or more records, return the difference between the last two
+					let last_index = bandwidths.len() - 1;
+					bandwidths[last_index] - bandwidths[last_index - 1]
+				}
+			}
+		}
+		
 		// // Helper method to list bucket contents
 		// fn get_bucket_size_in_bytes(bucket_name: &str) -> Result<(String, u64), sp_runtime::offchain::http::Error> {
 		// 	let file_api_endpoint = "http://localhost:8888"; 

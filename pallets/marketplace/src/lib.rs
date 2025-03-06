@@ -1361,12 +1361,12 @@ pub mod pallet {
                 let block_difference = current_block.saturating_sub(last_charged_at);
                 if block_difference > T::BlocksPerHour::get().into() {
 
-                    let user_total_size = StorageS3Pallet::<T>::user_bandwidth(&user);
+                    let user_total_size = StorageS3Pallet::<T>::get_user_bandwidth(&user);
                     // Convert total file size to gigabytes
                     let total_file_size_in_gbs = user_total_size as f64 / 1_073_741_824.0;
 
                     // Get the current price per GB from the marketplace pallet
-                    let price_per_gb = Self::get_price_per_gb();
+                    let price_per_gb = Self::get_price_per_bandwidth();
                     
                     let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
                     
