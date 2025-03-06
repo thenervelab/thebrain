@@ -30,7 +30,7 @@ pub mod pallet {
 	}
 
 	// New storage map for bucket names
-	#[pallet::storage]
+	#[pallet::storage]fn
 	#[pallet::getter(fn bucket_names)]
 	pub type BucketNames<T: Config> = StorageMap<
 		_, 
@@ -239,6 +239,27 @@ pub mod pallet {
 					}
 				})
 				.collect()
+		}
+
+		// Getter function to retrieve the size of a bucket by its name
+		pub fn get_bucket_size<T: Config>(bucket_name: Vec<u8>) -> u128 {
+			BucketSize::<T>::get(bucket_name)
+		}
+
+		// Function to get the total size of all buckets for a user
+		pub fn get_total_bucket_size<T: Config>(account_id: T::AccountId) -> u128 {
+			// Initialize total size
+			let mut total_size = 0;
+
+			// Retrieve bucket names for the user
+			if let Some(bucket_names) = BucketNames::<T>::get(account_id) {
+				// Sum the sizes of each bucket
+				for bucket_name in bucket_names {
+					total_size += BucketSize::<T>::get(bucket_name);
+				}
+			}
+
+			total_size
 		}
 
 		// // Helper method to list bucket contents
