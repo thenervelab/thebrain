@@ -2513,6 +2513,18 @@ impl_runtime_apis! {
 			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(miner_id)
 		}    
 
+		fn get_user_bandwidth( account_id: AccountId32) -> u128{
+			<pallet_storage_s3::Pallet<Runtime>>::get_user_bandwidth(account_id)
+		}
+
+		fn get_bucket_size( bucket_name: Vec<u8>) -> u128{
+			<pallet_storage_s3::Pallet<Runtime>>::get_bucket_size(bucket_name)
+		}
+
+		fn get_total_bucket_size( account_id: AccountId32) -> u128{
+			<pallet_storage_s3::Pallet<Runtime>>::get_total_bucket_size(account_id)
+		}
+
 		fn get_total_distributed_rewards_by_node_type(node_type: rpc_primitives_node_metrics::NodeType) -> u128 {
 			// Convert RPC NodeType to Pallet NodeType
 			let pallet_node_type = match node_type {

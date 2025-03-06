@@ -53,4 +53,14 @@ pub trait NodeMetricsApi {
 
 	#[method(name = "get_storage_miner_ip")]
 	fn get_storage_miner_ip(&self, miner_id: Vec<u8>) -> RpcResult<Option<Vec<u8>>>;
+
+	#[method(name = "get_bucket_size")]
+	fn get_bucket_size(&self, bucket_name: Vec<u8>) -> RpcResult<u128>;
+
+
+	#[method(name = "get_total_bucket_size")]
+	fn get_total_bucket_size(&self, account_id: AccountId32) -> RpcResult<u128>;
+
+	#[method(name = "get_user_bandwidth")]
+	fn get_user_bandwidth(&self, account_id: AccountId32) -> RpcResult<u128>;
 }

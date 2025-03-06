@@ -247,7 +247,7 @@ pub mod pallet {
 		}
 
 		// Function to get the total size of all buckets for a user
-		pub fn get_total_bucket_size<T: Config>(account_id: T::AccountId) -> u128 {
+		pub fn get_total_bucket_size(account_id: T::AccountId) -> u128 {
 			// Initialize total size
 			let mut total_size = 0;
 
@@ -260,6 +260,11 @@ pub mod pallet {
 			}
 
 			total_size
+		}
+
+		// Getter function to retrieve the bandwidth size for a user by their account ID
+		pub fn get_user_bandwidth(account_id: T::AccountId) -> u128 {
+			UserBandwidth::<T>::get(account_id)
 		}
 
 		// // Helper method to list bucket contents

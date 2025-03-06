@@ -181,4 +181,31 @@ where
 		})
 	}
 
+	fn get_total_bucket_size(&self, account_id: AccountId32) -> RpcResult<u128>{
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_total_bucket_size(best_hash, account_id).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
+	fn get_user_bandwidth(&self, account_id: AccountId32) -> RpcResult<u128>{
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_user_bandwidth(best_hash, account_id).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
+	fn get_bucket_size(&self, bucket_name: Vec<u8>) -> RpcResult<u128>{
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_bucket_size(best_hash, bucket_name).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
 }

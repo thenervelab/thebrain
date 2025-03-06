@@ -49,6 +49,7 @@ pub struct UserVmDetails<AccountId, BlockNumber, Hash> {
     pub is_fulfilled: bool,
 }
 
+
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]
 pub enum ComputeRequestStatus {
     Pending,

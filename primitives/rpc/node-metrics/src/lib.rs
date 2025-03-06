@@ -35,6 +35,9 @@ decl_runtime_apis! {
         fn get_hypervisor_ip( hypervisor_id: Vec<u8>) -> Option<Vec<u8>>;    
         fn get_vm_ip( vm_id: Vec<u8>) -> Option<Vec<u8>>;
         fn get_storage_miner_ip( miner_id: Vec<u8>) -> Option<Vec<u8>>;
+        fn get_bucket_size( bucket_name: Vec<u8>) -> u128;
+        fn get_total_bucket_size( account_id: AccountId32) -> u128;
+        fn get_user_bandwidth( account_id: AccountId32) -> u128;
     }
 }
 
