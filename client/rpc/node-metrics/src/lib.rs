@@ -4,7 +4,7 @@ use sp_blockchain::HeaderBackend;
 use sp_runtime::traits::Block as BlockT;
 use std::sync::Arc;
 pub use rpc_core_node_metrics::{NodeMetricsApiServer};
-use rpc_primitives_node_metrics::{NodeType, NodeMetricsData, MinerRewardSummary, UserFile, UserBucket, UserVmDetails};
+use rpc_primitives_node_metrics::{NodeType, Status, NodeMetricsData, MinerRewardSummary, UserFile, UserBucket, UserVmDetails};
 use rpc_primitives_node_metrics::NodeMetricsRuntimeApi;
 use fc_rpc::internal_err;
 use sp_std::vec::Vec;
@@ -204,6 +204,15 @@ where
 		let best_hash = self.client.info().best_hash;
 
 		api.get_bucket_size(best_hash, bucket_name).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
+
+	fn get_miner_info(&self, account_id: AccountId32) -> RpcResult<Option<(NodeType, Status)>>{
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.get_miner_info(best_hash, account_id).map_err(|err| {
 			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
 		})
 	}

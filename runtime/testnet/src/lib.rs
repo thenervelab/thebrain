@@ -3159,6 +3159,29 @@ impl_runtime_apis! {
 			<pallet_storage_s3::Pallet<Runtime>>::get_user_bandwidth(account_id)
 		}
 
+		fn get_miner_info(account_id: AccountId32) -> Option<(rpc_primitives_node_metrics::NodeType, rpc_primitives_node_metrics::Status)> {
+			match <pallet_registration::Pallet<Runtime>>::get_miner_info(account_id) {
+				Some((node_type, status)) => {
+					let updated_node_type = match node_type {
+						pallet_registration::NodeType::Validator => rpc_primitives_node_metrics::NodeType::Validator,
+						pallet_registration::NodeType::StorageMiner => rpc_primitives_node_metrics::NodeType::StorageMiner,
+						pallet_registration::NodeType::StorageS3 => rpc_primitives_node_metrics::NodeType::StorageS3,
+						pallet_registration::NodeType::ComputeMiner => rpc_primitives_node_metrics::NodeType::ComputeMiner,
+						pallet_registration::NodeType::GpuMiner => rpc_primitives_node_metrics::NodeType::GpuMiner,
+					};
+
+					let updated_status = match status {
+						pallet_registration::Status::Online => rpc_primitives_node_metrics::Status::Online,
+						pallet_registration::Status::Offline => rpc_primitives_node_metrics::Status::Offline,
+						pallet_registration::Status::Degraded => rpc_primitives_node_metrics::Status::Degraded,
+					};
+
+					Some((updated_node_type, updated_status))
+				},
+				None => None,
+			}
+		}
+
 		fn get_total_bucket_size( account_id: AccountId32) -> u128{
 			<pallet_storage_s3::Pallet<Runtime>>::get_total_bucket_size(account_id)
 		}

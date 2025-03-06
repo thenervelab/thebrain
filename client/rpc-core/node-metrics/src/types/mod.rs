@@ -3,7 +3,7 @@ use scale_info::TypeInfo;
 use parity_scale_codec::{Encode,Decode};
 use sp_runtime::AccountId32;
 
-#[derive( Serialize, Deserialize, TypeInfo, Encode, Decode)]
+#[derive(Clone ,Serialize, Deserialize, TypeInfo, Encode, Decode)]
 pub enum NodeType {
     Validator,
     StorageMiner,
@@ -49,6 +49,12 @@ pub struct UserVmDetails<AccountId, BlockNumber, Hash> {
     pub is_fulfilled: bool,
 }
 
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]
+pub enum Status {
+    Online,
+    Degraded,
+    Offline
+}
 
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]
 pub enum ComputeRequestStatus {

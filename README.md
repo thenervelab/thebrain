@@ -604,6 +604,32 @@ Returns the total bucket size as a `u128` value.
     "id": 1
 }
 ```
+
+### 18. `get_miner_info`
+
+#### Description
+Retrieves information about a miner associated with a specific account ID.
+
+#### Parameters
+- `account_id` (AccountId32): The account ID of the miner to retrieve information for.
+
+#### Response
+Returns an optional tuple containing:
+- `NodeType`: The type of the miner (e.g., Validator, StorageMiner).
+- `Status`: The current status of the miner (e.g., Online, Degraded, Offline).
+
+If no miner is found for the provided account ID, the response will be `null`.
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_miner_info",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
+
 #### Notes
 - These methods are part of the IP management system in the Hippius network
 - Useful for retrieving network-assigned IP addresses for different node types

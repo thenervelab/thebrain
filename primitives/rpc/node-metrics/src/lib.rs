@@ -9,7 +9,7 @@ use scale_info::prelude::string::String;
 use sp_runtime::AccountId32;
 use serde::{Serialize, Deserialize};
 
-#[derive( Serialize, Deserialize, TypeInfo, Encode, Decode)]
+#[derive( Clone, Serialize, Deserialize, TypeInfo, Encode, Decode)]
 pub enum NodeType {
     Validator,
     StorageMiner,
@@ -38,7 +38,15 @@ decl_runtime_apis! {
         fn get_bucket_size( bucket_name: Vec<u8>) -> u128;
         fn get_total_bucket_size( account_id: AccountId32) -> u128;
         fn get_user_bandwidth( account_id: AccountId32) -> u128;
+        fn get_miner_info(account_id: AccountId32) -> Option<(NodeType, Status)>;
     }
+}
+
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]
+pub enum Status {
+    Online,
+    Degraded,
+    Offline
 }
 
 /// Struct to represent VM details for a user

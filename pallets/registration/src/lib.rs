@@ -500,6 +500,20 @@ pub mod pallet {
             active_storage_miners
         }   
         
+        pub fn get_miner_info(account_id: T::AccountId) -> Option<(NodeType, Status)> {
+            // Iterate through the storage map to find the miner associated with the account_id
+            for (node_id, node_info) in NodeRegistration::<T>::iter() {
+                if let Some(info) = node_info {
+                    // Check if the owner of the node matches the provided account_id
+                    if info.owner == account_id {
+                        // Return the miner type and status
+                        return Some((info.node_type, info.status));
+                    }
+                }
+            }
+            // Return None if the account_id is not a miner
+            None
+        }
 
         /// Fetch all registered miners who have staked more than 600
         pub fn get_all_storage_miners_with_min_staked() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {

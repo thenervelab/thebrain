@@ -3,7 +3,7 @@ use sp_std::vec::Vec;
 pub mod types;
 use sp_runtime::AccountId32;
 
-use rpc_primitives_node_metrics::{NodeType, NodeMetricsData, MinerRewardSummary, UserFile, UserBucket, UserVmDetails};
+use rpc_primitives_node_metrics::{NodeType, Status , NodeMetricsData, MinerRewardSummary, UserFile, UserBucket, UserVmDetails};
 
 /// Net rpc interface.
 #[rpc(server)]
@@ -57,10 +57,12 @@ pub trait NodeMetricsApi {
 	#[method(name = "get_bucket_size")]
 	fn get_bucket_size(&self, bucket_name: Vec<u8>) -> RpcResult<u128>;
 
-
 	#[method(name = "get_total_bucket_size")]
 	fn get_total_bucket_size(&self, account_id: AccountId32) -> RpcResult<u128>;
 
 	#[method(name = "get_user_bandwidth")]
 	fn get_user_bandwidth(&self, account_id: AccountId32) -> RpcResult<u128>;
+
+	#[method(name = "get_miner_info")]
+	fn get_miner_info(&self, account_id: AccountId32) -> RpcResult<Option<(NodeType, Status)>>;
 }
