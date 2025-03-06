@@ -7696,6 +7696,7 @@ dependencies = [
  "hex",
  "log",
  "num-traits",
+ "pallet-alpha-bridge",
  "pallet-assets",
  "pallet-balances",
  "pallet-compute",

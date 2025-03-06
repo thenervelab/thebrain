@@ -71,6 +71,7 @@ pub mod pallet {
     use pallet_registration::BalanceOf;
     use pallet_ipfs_pin::FileHash;
     use pallet_credits::Pallet as CreditsPallet;
+    use pallet_alpha_bridge::Pallet as AlphaBridgePallet;
     use pallet_storage_s3::Pallet as StorageS3Pallet;
     use pallet_utils::SubscriptionId;
     use sp_core::H256;
@@ -117,6 +118,7 @@ pub mod pallet {
     pub trait Config: frame_system::Config + 
                     pallet_registration::Config + 
                     pallet_credits::Config + 
+                    pallet_alpha_bridge::Config + 
                     pallet_ipfs_pin::Config + 
                     pallet_balances::Config + 
                     pallet_notifications::Config +
@@ -834,44 +836,14 @@ pub mod pallet {
             _signature: <T as SigningTypes>::Signature,
 		) -> DispatchResultWithPostInfo {
             ensure_none(origin)?;
-			// Handle referral logic
-			let mut total_discount = 0u128;
-			if let Some(previous_referral) = CreditsPallet::<T>::referred_users(owner.clone()) {
-				let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, storage_cost, &mut total_discount);
-			}
-			log::info!("total discount is : {}", total_discount);					
 
-			// Calculate the amounts for Compute Rankings and Marketplace
-			let total_charge = storage_cost;
-			let rankings_amount = total_charge
-				.checked_mul(70u32.into())
-				.and_then(|x| x.checked_div(100u32.into()))
-				.unwrap_or_default();
-						
-			let marketplace_amount = total_charge - rankings_amount;
-
-			// Mint 70% to Compute Rankings
-			let _ = pallet_balances::Pallet::<T>::deposit_creating(
-				&RankingsPallet::<T>::account_id(), 
-				rankings_amount.try_into().unwrap_or_default()
-			);
-
-			// Emit event for rankings account reward
-			RankingsPallet::<T>::deposit_event(pallet_rankings::Event::RewardDistributed {
-				account: RankingsPallet::<T>::account_id(),
-				amount: rankings_amount.try_into().unwrap_or_default()
-			});
-
-			// Deposit remaining 30% amount to marketplace account
-			let _ = pallet_balances::Pallet::<T>::deposit_creating(
-				&Self::account_id(), 
-				marketplace_amount.try_into().unwrap_or_default()
-			);	
+            let _ = AlphaBridgePallet::<T>::consume_credits(owner.clone(), storage_cost,
+            Self::account_id().clone(), RankingsPallet::<T>::account_id().clone());
 
 			// Emit event for marketplace account reward
 			RankingsPallet::<T>::deposit_event(pallet_rankings::Event::RewardDistributed {
 				account: Self::account_id(),
-				amount: marketplace_amount.try_into().unwrap_or_default()
+				amount: storage_cost.try_into().unwrap_or_default()
 			});
 
             Ok(().into())
@@ -881,7 +853,7 @@ pub mod pallet {
         #[pallet::call_index(12)]
         #[pallet::weight((0, Pays::No))]
         pub fn set_specific_miner_request_fee(
-            origin: OriginFor<T>,
+            origin: OriginFor<T>,   
             fee: BalanceOf<T>
         ) -> DispatchResult {
             // Ensure the caller is an authority
@@ -1005,38 +977,8 @@ pub mod pallet {
                 current_id
             });
 
-            // Handle referral logic
-            let mut total_discount = 0u128;
-            if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&who.clone()) {
-                let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, plan_price_native, &mut total_discount);
-            }
-
-            // charge the user 
-            CreditsPallet::<T>::decrease_user_credits(&who, plan_price_native);
-
-            // Deposit charge to marketplace account
-            let _ = pallet_balances::Pallet::<T>::deposit_creating(&Self::account_id(), (plan_price_native).try_into().unwrap_or_default());
-
-            // Calculate the amounts for Compute Rankings and Marketplace
-            let total_charge = plan_price_native;
-            let rankings_amount = total_charge
-                .checked_mul(70u32.into())
-                .and_then(|x| x.checked_div(100u32.into()))
-                .unwrap_or_default();
-                                            
-            let marketplace_amount = total_charge - rankings_amount;
-            
-            // Mint 70% to Compute Rankings
-            let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                &pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id(), 
-                rankings_amount.try_into().unwrap_or_default()
-            );
-            
-            // Deposit remaining 30% amount to marketplace account
-            let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                &Self::account_id(), 
-                marketplace_amount.try_into().unwrap_or_default()
-            );
+            let _ = AlphaBridgePallet::<T>::consume_credits(who.clone(), plan_price_native,
+            Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
                     
             // Record transaction
             Self::record_native_transaction(
@@ -1156,40 +1098,14 @@ pub mod pallet {
                         
                             if user_free_credits >= charge_amount {
                                 // Decrease user credits
-                                CreditsPallet::<T>::decrease_user_credits(&account_id, charge_amount);
+                                let _ = AlphaBridgePallet::<T>::consume_credits(account_id.clone(), charge_amount,
+                                    Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
 
-                                // Handle referral logic
-                                let mut total_discount = 0u128;
-                                if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&account_id) {
-                                    let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, charge_amount, &mut total_discount);
-                                }
-                                
-                                // Calculate the amounts for Compute Rankings and Marketplace
-                                let total_charge = charge_amount - total_discount;
-                                let rankings_amount = total_charge
-                                    .checked_mul(70u32.into())
-                                    .and_then(|x| x.checked_div(100u32.into()))
-                                    .unwrap_or_default();
-                                
-                                let marketplace_amount = total_charge - rankings_amount;
-
-                                // Mint 70% to Compute Rankings
-                                let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                                    &pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id(), 
-                                    rankings_amount.try_into().unwrap_or_default()
-                                );
-
-                                // Deposit remaining 30% amount to marketplace account
-                                let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                                    &Self::account_id(), 
-                                    marketplace_amount.try_into().unwrap_or_default()
-                                );
-                                
                                 // Record transaction
                                 let _ = Self::record_native_transaction(
                                     &account_id,
                                     NativeTransactionType::Subscription,
-                                    (charge_amount - total_discount).into(),
+                                    charge_amount.into(),
                                 );
 
                                 // Update the storage (Gbs Used , Last Charged at) for this subscription
@@ -1270,40 +1186,14 @@ pub mod pallet {
             
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
-                        CreditsPallet::<T>::decrease_user_credits(&user, charge_amount);
-
-                        // Handle referral logic
-                        let mut total_discount = 0u128;
-                        if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&user) {
-                            let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, charge_amount, &mut total_discount);
-                        }
-                        
-                        // Calculate the amounts for Storage Rankings and Marketplace
-                        let total_charge = charge_amount - total_discount;
-                        let rankings_amount = total_charge
-                            .checked_mul(70u32.into())
-                            .and_then(|x| x.checked_div(100u32.into()))
-                            .unwrap_or_default();
-                                    
-                        let marketplace_amount = total_charge - rankings_amount;
-
-                        // Mint 70% to Storage Rankings
-                        let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                            &RankingsPallet::<T>::account_id(), 
-                            rankings_amount.try_into().unwrap_or_default()
-                        );
-
-                        // Deposit remaining 30% amount to marketplace account
-                        let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                            &Self::account_id(), 
-                            marketplace_amount.try_into().unwrap_or_default()
-                        );
+                        let _ = AlphaBridgePallet::<T>::consume_credits(user.clone(), charge_amount,
+                            Self::account_id().clone(), RankingsPallet::<T>::account_id().clone());
 
                         // Record transaction
                         let _ = Self::record_native_transaction(
                             &user,
                             NativeTransactionType::Subscription,
-                            (charge_amount - total_discount).into(),
+                            charge_amount.into(),
                         );
 
                         // Update last charged block for each request
@@ -1336,7 +1226,7 @@ pub mod pallet {
                                     // Cancel the request after grace period
                                     pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), None);
             
-                                    // request to delete all backups of user 
+                                    // request to delete all backups of user
                                     Self::move_user_to_backup_delete_requests(&user);
             
                                     // Handle unpinning for inactive subscription
@@ -1408,40 +1298,14 @@ pub mod pallet {
 
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
-                        CreditsPallet::<T>::decrease_user_credits(&user, charge_amount);
-
-                        // Handle referral logic
-                        let mut total_discount = 0u128;
-                        if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&user) {
-                            let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, charge_amount, &mut total_discount);
-                        }
-                        
-                        // Calculate the amounts for Compute Rankings and Marketplace
-                        let total_charge = charge_amount - total_discount;
-                        let rankings_amount = total_charge
-                            .checked_mul(70u32.into())
-                            .and_then(|x| x.checked_div(100u32.into()))
-                            .unwrap_or_default();
-                                    
-                        let marketplace_amount = total_charge - rankings_amount;
-
-                        // Mint 70% to Compute Rankings
-                        let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                            &pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id(), 
-                            rankings_amount.try_into().unwrap_or_default()
-                        );
-
-                        // Deposit remaining 30% amount to marketplace account
-                        let _ = pallet_balances::Pallet::<T>::deposit_creating(
-                            &Self::account_id(), 
-                            marketplace_amount.try_into().unwrap_or_default()
-                        );
+                        let _ = AlphaBridgePallet::<T>::consume_credits(user.clone(), charge_amount,
+                        Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id().clone());
 
                         // Record transaction
                         let _ = Self::record_native_transaction(
                             &user,
                             NativeTransactionType::Subscription,
-                            (charge_amount - total_discount).into(),
+                            charge_amount.into(),
                         );
 
                         // Update last charged block for each request

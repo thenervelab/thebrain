@@ -184,7 +184,7 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		MinetdAccountCredits {
+		MintedAccountCredits {
 			who: T::AccountId,
             amount: u128
 		},
@@ -355,32 +355,13 @@ pub mod pallet {
         /// Mint credits (only callable by authority accounts)
         #[pallet::call_index(2)]
         #[pallet::weight((0, Pays::No))]
-        pub fn mint(origin: OriginFor<T>, who: T::AccountId, amount: u128,code: Option<Vec<u8>>) -> DispatchResult {
+        pub fn mint(origin: OriginFor<T>, who: T::AccountId, amount: u128, code: Option<Vec<u8>>) -> DispatchResult {
             // Ensure the caller is an authority
             let authority = ensure_signed(origin)?;
             Self::ensure_is_authority(&authority)?;
         
-            // Get the current free credits of the user
-            let free = FreeCredits::<T>::get(&who);
-        
-            // Update free credits
-            FreeCredits::<T>::insert(&who, free + amount);
-
-            // Increase total credits purchased
-            TotalCreditsPurchased::<T>::mutate(|total| *total += amount);
-
-            // Helper function to insert a referral code for a user
-            Self::insert_referral_code(&who.clone(), code)?;
-
-            let mut vm_available_ips = IpPallet::<T>::available_client_ips();
-
-            if let Some(ip) = vm_available_ips.pop() {
-                let _ = IpPallet::<T>::assign_ip_to_client(who.clone(), ip);
-            }
-
-            Self::deposit_event(Event::MinetdAccountCredits{who, amount: free + amount});
-
-            Ok(())
+            // Call the helper function
+            Self::do_mint(who, amount, code)
         }
         
         /// Burn credits (only callable by authority accounts)
@@ -696,6 +677,30 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+        pub fn do_mint(who: T::AccountId, amount: u128, code: Option<Vec<u8>>) -> DispatchResult {
+            // Get the current free credits of the user
+            let free = FreeCredits::<T>::get(&who);
+        
+            // Update free credits
+            FreeCredits::<T>::insert(&who, free + amount);
+        
+            // Increase total credits purchased
+            TotalCreditsPurchased::<T>::mutate(|total| *total += amount);
+        
+            // Helper function to insert a referral code for a user
+            Self::insert_referral_code(&who.clone(), code)?;
+        
+            let mut vm_available_ips = IpPallet::<T>::available_client_ips();
+        
+            if let Some(ip) = vm_available_ips.pop() {
+                let _ = IpPallet::<T>::assign_ip_to_client(who.clone(), ip);
+            }
+        
+            Self::deposit_event(Event::MintedAccountCredits { who, amount: free + amount });
+        
+            Ok(())
+        }
+
         /// Helper function to generate a unique ID
         fn generate_unique_id() -> u64 {
             // Increment and retrieve the next unique ID from storage
@@ -713,7 +718,7 @@ pub mod pallet {
 		pub fn increase_user_credits(account: &T::AccountId, credits_to_increase: u128) {
 			FreeCredits::<T>::mutate(&account, |credits| *credits += credits_to_increase);
 
-            Self::deposit_event(Event::MinetdAccountCredits {
+            Self::deposit_event(Event::MintedAccountCredits {
                 who: account.clone(),
                 amount: credits_to_increase
             });

@@ -1762,13 +1762,7 @@ pub mod pallet {
 
 								let free_credits = pallet_credits::Pallet::<T>::free_credits(storage_request.owner.clone());
 												
-								if free_credits >= storage_cost {
-									
-									// Charge the user for storage
-									pallet_credits::Pallet::<T>::send_decrease_credits(
-										storage_request.owner.clone(), 
-										storage_cost as u128
-									);
+								if free_credits >= storage_cost {									
 									// approve the stautus of the request and update storage 
 									let mut updated_req = storage_request.clone();
 									updated_req.is_approved = true;

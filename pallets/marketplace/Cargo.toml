@@ -33,6 +33,7 @@ pallet-notifications = { workspace = true }
 pallet-registration = { default-features = false, workspace = true }
 pallet-rankings = { default-features = false, workspace = true }
 pallet-credits = { default-features = false, workspace = true }
+pallet-alpha-bridge = { default-features = false, workspace = true }
 num-traits = { version = "0.2.17", default-features = false }
 pallet-utils = { default-features = false, workspace = true }
 pallet-subaccount = { default-features = false, workspace = true }
@@ -59,6 +60,7 @@ std = [
     "serde",
     "pallet-registration/std",
     "pallet-credits/std",
+    "pallet-alpha-bridge/std",
     "num-traits/std",
     "pallet-utils/std",
     "pallet-rankings/std",

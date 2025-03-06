@@ -21,6 +21,7 @@ pub mod pallet {
     use pallet_credits::Pallet as CreditsPallet;
     use sp_runtime::traits::AtLeast32BitUnsigned;
     use pallet_credits::TotalLockedAlpha;
+    use pallet_credits::TotalCreditsPurchased;
     use types::*;
     use frame_support::{
         pallet_prelude::*,
@@ -178,58 +179,119 @@ pub mod pallet {
             Batches::<T>::insert(batch_id, batch);
             UserBatches::<T>::append(&sender, batch_id);
             NextBatchId::<T>::put(batch_id + 1);
+
             TotalLockedAlpha::<T>::mutate(|alpha| *alpha += alpha_amount);
+            CreditsPallet::<T>::do_mint(sender.clone(), alpha_amount, None);
 
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 
             Ok(())
         }
 
-        // /// Consume user credits from their batches
-        // fn consume_credits(origin: OriginFor<T>, credits: u128) -> DispatchResult {
-        //     let sender = ensure_signed(origin)?;
+        /// Consume user credits from their batches
+        pub fn consume_credits(sender: T::AccountId, credits: u128, marketplace_account: T::AccountId,
+             ranking_account: T::AccountId) -> DispatchResult {
+            
+            let mut remaining = credits;
 
-        //     let mut remaining = credits;
+            // Get the batch IDs associated with the user, handling the Option type
+            if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
+                for batch_id in batch_ids {
+                    if remaining == 0 { break; }
 
-        //     // Get the batch IDs associated with the user, handling the Option type
-        //     if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
-        //         for batch_id in batch_ids {
-        //             if remaining == 0 { break; }
+                    // Retrieve the batch
+                    if let Some(mut batch) = Batches::<T>::get(batch_id) {
+                        ensure!(batch.owner == sender, "Not your batch");
 
-        //             // Retrieve the batch
-        //             if let Some(mut batch) = Batches::<T>::get(batch_id) {
-        //                 ensure!(batch.owner == sender, "Not your batch");
+                        let credits_to_take = remaining.min(batch.remaining_credits);
+                        let alpha_to_release = (credits_to_take * batch.alpha_amount) / batch.credit_amount;
 
-        //                 let credits_to_take = remaining.min(batch.remaining_credits);
-        //                 let alpha_to_release = (credits_to_take * batch.alpha_amount) / batch.credit_amount;
+                        // Update the batch's remaining credits and alpha
+                        batch.remaining_credits -= credits_to_take;
+                        batch.remaining_alpha -= alpha_to_release;
 
-        //                 // Update the batch's remaining credits and alpha
-        //                 batch.remaining_credits -= credits_to_take;
-        //                 batch.remaining_alpha -= alpha_to_release;
+                        // Handle Alpha distribution
+                        if batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time {
+                            batch.pending_alpha += alpha_to_release; // Queue it
+                        } else {
+                            if batch.is_frozen && <frame_system::Pallet<T>>::block_number() >= batch.release_time {
+                                batch.is_frozen = false; // Unfreeze
+                                TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.pending_alpha);
+                                batch.pending_alpha = 0;
 
-        //                 // Handle Alpha distribution
-        //                 if batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time {
-        //                     batch.pending_alpha += alpha_to_release; // Queue it
-        //                 } else {
-        //                     if batch.is_frozen && <frame_system::Pallet<T>>::block_number() >= batch.release_time {
-        //                         batch.is_frozen = false; // Unfreeze
-        //                         TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.pending_alpha);
-        //                         batch.pending_alpha = 0;
-        //                     }
-        //                     TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= alpha_to_release);
-        //                 }
+                                // decrease credits and mint on miners account
+                                // Call the helper function to distribute alpha
+                                Self::distribute_alpha(
+                                    batch.owner.clone(),
+                                    alpha_to_release,
+                                    credits_to_take,
+                                    ranking_account.clone(),
+                                    marketplace_account.clone(),
+                                )?;
 
-        //                 // Update the batch in storage
-        //                 Batches::<T>::insert(batch_id, batch);
-        //                 remaining -= credits_to_take;
-        //             }
-        //         }
-        //     }
+                            }
+                            TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= alpha_to_release);
+                            // decrease credits and mint on miners account
+                            // Call the helper function to distribute alpha
+                            Self::distribute_alpha(
+                                batch.owner.clone(),
+                                alpha_to_release,
+                                credits_to_take,
+                                ranking_account.clone(),
+                                marketplace_account.clone(),
+                            )?;
+                        }
+ 
+                        // Update the batch in storage
+                        Batches::<T>::insert(batch_id, batch);
+                        remaining -= credits_to_take;
+                    }
+                }
+            }
 
-        //     // Ensure all credits have been consumed
-        //     ensure!(remaining == 0, "Not enough credits");
-        //     Ok(())
-        // }
+            // Ensure all credits have been consumed
+            ensure!(remaining == 0, "Not enough credits");
+            Ok(())
+        }
+
+        fn distribute_alpha(
+            batch_owner: T::AccountId,
+            alpha_to_release: u128,
+            credits_to_take: u128,
+            ranking_account: T::AccountId,
+            marketplace_account: T::AccountId,
+        ) -> DispatchResult {
+            // Decrease credits for the batch owner
+            CreditsPallet::<T>::decrease_user_credits(&batch_owner, credits_to_take);
+        
+            // Handle referral logic
+            let mut total_discount = 0u128;
+            if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&batch_owner) {
+                let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, credits_to_take, &mut total_discount);
+            }
+        
+            // Calculate the amounts for Storage Rankings and Marketplace
+            let rankings_amount = alpha_to_release
+                .checked_mul(70u32.into())
+                .and_then(|x| x.checked_div(100u32.into()))
+                .unwrap_or_default();
+        
+            let marketplace_amount = alpha_to_release - rankings_amount;
+        
+            // Mint 70% to Storage Rankings
+            pallet_balances::Pallet::<T>::deposit_creating(
+                &ranking_account,
+                rankings_amount.try_into().unwrap_or_default(),
+            );
+        
+            // Deposit remaining 30% amount to marketplace account
+            pallet_balances::Pallet::<T>::deposit_creating(
+                &marketplace_account,
+                marketplace_amount.try_into().unwrap_or_default(),
+            );
+        
+            Ok(())
+        }
 
         /// Release pending Alpha for a specific batch after the release time
         fn do_release_pending_alpha(batch_id: u64) -> DispatchResult {
@@ -283,10 +345,11 @@ pub mod pallet {
                 // Burn credits from batch.owner (implementation of burning logic needed)
                 let credit_to_burn = batch.remaining_credits;
                 CreditsPallet::<T>::decrease_user_credits(&batch.owner, credit_to_burn);
+                TotalCreditsPurchased::<T>::mutate(|total| *total -= credit_to_burn);
             }
 
             Ok(())
         }
-
     }
+
 }
