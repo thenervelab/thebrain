@@ -181,7 +181,6 @@ pub mod pallet {
     #[pallet::getter(fn next_locked_credit_id)]
     pub(super) type NextLockedCreditId<T: Config> = StorageValue<_, u64, ValueQuery>;
     
-    
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {

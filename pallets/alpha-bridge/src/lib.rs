@@ -5,6 +5,8 @@ mod mock;
 
 #[cfg(test)]
 mod tests;
+pub use types::*;
+mod types;
 
 pub use pallet::*;
 use frame_support::{pallet_prelude::*};
@@ -18,12 +20,14 @@ pub mod pallet {
     use sp_std::collections::btree_set::BTreeSet;
     use pallet_credits::Pallet as CreditsPallet;
     use sp_runtime::traits::AtLeast32BitUnsigned;
-   
+    use pallet_credits::TotalLockedAlpha;
+    use types::*;
     use frame_support::{
         pallet_prelude::*,
         traits::{ReservableCurrency, Currency},
         PalletId,
     };
+
     #[pallet::pallet]
     #[pallet::without_storage_info]
     pub struct Pallet<T>(_);
@@ -44,39 +48,30 @@ pub mod pallet {
     // New pallet_balances balance type
     pub type BalanceOf<T> = <T as pallet_balances::Config>::Balance;
 
+    // Map for batches identified by a unique ID
     #[pallet::storage]
-    pub type AlphaBalances<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u64, ValueQuery>;
-
-    #[pallet::storage]
-    pub type ProcessedEvents<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, bool, ValueQuery>;
-
-    #[pallet::storage]
-    pub type PendingMints<T: Config> = StorageMap<
-        _,
-        Blake2_128Concat,
-        Vec<u8>, // proof (block_hash, event_index)
-        (T::AccountId, u64, BTreeSet<T::AccountId>), // (user, amount, confirmations)
-        OptionQuery,
+    #[pallet::getter(fn batches)]
+    pub type Batches<T: Config> = StorageMap<
+        _, 
+        Blake2_128Concat, 
+        u64, 
+        Batch<T::AccountId, BlockNumberFor<T>>
     >;
 
+    // Map for user batches identified by AccountId
     #[pallet::storage]
-    pub type PendingBurns<T: Config> = StorageMap<
-        _,
-        Blake2_128Concat,
-        u64, // nonce
-        (
-            T::AccountId, // user
-            u64,          // amount
-            T::AccountId, // bittensor_coldkey
-            BTreeSet<T::AccountId>, // confirmations
-            Option<(Vec<u8>, Vec<u8>)>, // (bittensor_block_hash, extrinsic_id)
-        ),
-        OptionQuery,
+    #[pallet::getter(fn user_batches)]
+    pub type UserBatches<T: Config> = StorageMap<
+        _, 
+        Blake2_128Concat, 
+        T::AccountId, 
+        Vec<u64>
     >;
 
+    // Next batch ID
     #[pallet::storage]
-    #[pallet::getter(fn total_alpha_in_pool)]
-    pub type TotalAlphaInPool<T> = StorageValue<_, u128, ValueQuery>;
+    #[pallet::getter(fn next_batch_id)]
+    pub type NextBatchId<T: Config> = StorageValue<_, u64, ValueQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -88,6 +83,7 @@ pub mod pallet {
         BurnFinalized(u64, Vec<u8>, Vec<u8>),                     // (nonce, block_hash, extrinsic_id)
         AlphaBurnRejected(u64, T::AccountId, u64, T::AccountId),  // (nonce, user, amount, bittensor_coldkey)
         AlphaDeposited(T::AccountId, T::AccountId, u64),          // (pallet_account, user, amount)
+        BatchDeposited { owner: T::AccountId, batch_id: u64 },   // (owner, batch_id)
     }
 
     #[pallet::error]
@@ -103,222 +99,194 @@ pub mod pallet {
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        /// Operator proposes and confirms minting alpha
+
         #[pallet::call_index(0)]
-        #[pallet::weight(Weight::from_parts(10_000, 0))]
-        pub fn confirm_mint_alpha(
-            origin: OriginFor<T>,
-            amount: u64,
-            proof: Vec<u8>, // Encoded (block_hash, event_index)
+        #[pallet::weight((0, Pays::No))]
+        pub fn deposit(
+            origin: OriginFor<T>, 
+            account: T::AccountId, 
+            credit_amount: u128, 
+            alpha_amount: u128, 
+            freeze_for_chargeback: bool
         ) -> DispatchResult {
-            let operator = ensure_signed(origin)?;
-            CreditsPallet::<T>::ensure_is_authority(&operator)?;
-
-            // Prevent double-spending
-            ensure!(!ProcessedEvents::<T>::contains_key(&proof), Error::<T>::DoubleSpendDetected);
-
-            let (_, pending_amount, mut confirmations) =
-                PendingMints::<T>::get(&proof).unwrap_or((Self::account_id(), amount, BTreeSet::new()));
-
-            // Ensure consistent amount
-            ensure!(pending_amount == amount, Error::<T>::InvalidProof);
-
-            // Add confirmation
-            ensure!(!confirmations.contains(&operator), Error::<T>::AlreadyConfirmed);
-            confirmations.insert(operator);
-
-            if confirmations.len() as u32 >= T::MinConfirmations::get() {
-                // Threshold met, execute mint to pallet account
-                let pallet_account = Self::account_id();
-                let current_balance = AlphaBalances::<T>::get(&pallet_account);
-                let new_balance = current_balance.saturating_add(amount);
-                AlphaBalances::<T>::insert(&pallet_account, new_balance);
-                ProcessedEvents::<T>::insert(&proof, true);
-                PendingMints::<T>::remove(&proof);
-                
-                // Increase total alpha in pool
-                TotalAlphaInPool::<T>::mutate(|total| *total += amount as u128);
-                
-                Self::deposit_event(Event::AlphaMinted(pallet_account, amount));
-            } else {
-                // Still pending
-                PendingMints::<T>::insert(&proof, (Self::account_id(), amount, confirmations));
-                Self::deposit_event(Event::AlphaMintPending(proof, Self::account_id(), amount));
-            }
-            Ok(())
+            ensure_root(origin)?;
+            // Call the existing deposit function
+            Self::do_deposit(account, credit_amount, alpha_amount, freeze_for_chargeback)
         }
 
-        /// User initiates burn request
+
         #[pallet::call_index(1)]
-        #[pallet::weight(Weight::from_parts(10_000, 0))]
-        pub fn burn_alpha_for_bridge(
-            origin: OriginFor<T>,
-            amount: u64,
-            bittensor_coldkey: T::AccountId,
-            nonce: u64,
+        #[pallet::weight((0, Pays::No))]
+        pub fn chargeback(
+            origin: OriginFor<T>, 
+            batch_id: u64
         ) -> DispatchResult {
-            let user = ensure_signed(origin)?;
-            let balance = AlphaBalances::<T>::get(&user);
-            ensure!(balance >= amount, Error::<T>::InsufficientBalance);
+            // Ensure the caller is a signed origin (admin check)
+            ensure_root(origin)?;
 
-            // Burn alpha immediately but mark as pending
-            AlphaBalances::<T>::insert(&user, balance - amount);
-            
-            // Decrease total alpha in pool
-            TotalAlphaInPool::<T>::mutate(|total| *total -= amount as u128);
-            
-            PendingBurns::<T>::insert(
-                &nonce,
-                (
-                    user.clone(), 
-                    amount, 
-                    bittensor_coldkey.clone(), 
-                    BTreeSet::<T::AccountId>::new(), 
-                    None::<(Vec<u8>, Vec<u8>)>
-                ),
-            );
-            Self::deposit_event(Event::AlphaBurnPending(nonce, user, amount, bittensor_coldkey));
-            Ok(())
+            // Call the existing handle_chargeback function
+            Self::handle_chargeback(batch_id)
         }
 
-        /// Operator confirms burn and optionally finalizes with Bittensor details
         #[pallet::call_index(2)]
-        #[pallet::weight(Weight::from_parts(10_000, 0))]
-        pub fn confirm_and_finalize_burn(
-            origin: OriginFor<T>,
-            nonce: u64,
-            bittensor_block_hash: Option<Vec<u8>>,
-            bittensor_extrinsic_id: Option<Vec<u8>>,
+        #[pallet::weight((0, Pays::No))]
+        pub fn release_pending_alpha(
+            origin: OriginFor<T>, 
+            batch_id: u64
         ) -> DispatchResult {
-            let operator = ensure_signed(origin)?;
-            CreditsPallet::<T>::ensure_is_authority(&operator)?;
-
-            let Some((user, amount, coldkey, mut confirmations, existing_finalization)) =
-                PendingBurns::<T>::get(&nonce) else { return Err(Error::<T>::BurnNotPending.into()) };
-
-            // Add confirmation
-            ensure!(!confirmations.contains(&operator), Error::<T>::AlreadyConfirmed);
-            confirmations.insert(operator);
-
-            if let (Some(block_hash), Some(extrinsic_id)) = (bittensor_block_hash, bittensor_extrinsic_id) {
-                // Finalize with Bittensor details if provided
-                ensure!(
-                    confirmations.len() as u32 >= T::MinConfirmations::get(),
-                    Error::<T>::NotEnoughConfirmations
-                );
-                PendingBurns::<T>::insert(
-                    &nonce,
-                    (
-                        user.clone(),
-                        amount,
-                        coldkey.clone(),
-                        confirmations,
-                        Some((block_hash.clone(), extrinsic_id.clone())),
-                    ),
-                );
-                Self::deposit_event(Event::AlphaBurned(nonce, user, amount, coldkey));
-                Self::deposit_event(Event::BurnFinalized(nonce, block_hash, extrinsic_id));
-            } else {
-                // Still pending
-                PendingBurns::<T>::insert(&nonce, (user, amount, coldkey, confirmations, None::<(Vec<u8>, Vec<u8>)>));
-            }
-            Ok(())
-        }
-
-        /// Operator rejects a pending burn request and restores the user's alpha balance
-        #[pallet::call_index(3)]
-        #[pallet::weight(Weight::from_parts(10_000, 0))]
-        pub fn reject_burn_request(
-            origin: OriginFor<T>,
-            nonce: u64,
-        ) -> DispatchResult {
-            let operator = ensure_signed(origin)?;
-            CreditsPallet::<T>::ensure_is_authority(&operator)?;
-
-            // Retrieve the pending burn request
-            let Some((user, amount, coldkey, _, _)) = 
-                PendingBurns::<T>::get(&nonce) 
-            else { 
-                return Err(Error::<T>::BurnNotPending.into()) 
-            };
-
-            // Restore the user's alpha balance
-            let current_balance = AlphaBalances::<T>::get(&user);
-            AlphaBalances::<T>::insert(&user, current_balance + amount);
-
-            // Revert the total alpha in pool reduction
-            TotalAlphaInPool::<T>::mutate(|total| *total += amount as u128);
-
-            // Remove the pending burn request
-            PendingBurns::<T>::remove(&nonce);
-
-            // Emit an event for the burn request rejection
-            Self::deposit_event(Event::AlphaBurnRejected(nonce, user, amount, coldkey));
-
-            Ok(())
+            // Ensure the caller is a signed origin
+            let sender = ensure_signed(origin)?;
+    
+            // Call the existing release_pending_alpha function
+            Self::do_release_pending_alpha(batch_id)
         }
     }
 
     impl<T: Config> Pallet<T> {
-        // fn verify_bridge_proof(_proof: &[u8], _user: &T::AccountId, _amount: u64) -> Result<(), Error<T>> {
-        //     // Placeholder: Operators manually verify Bittensor event
-        //     Ok(())
-        // }
-
-        // Calculate the alpha price in terms of Credits equivalent
-        pub fn calculate_alpha_price(credits_to_withdraw: u128) -> Option<u128> {
-            let total_credits = CreditsPallet::<T>::total_credits_purchased();
-            let total_alpha = Self::total_alpha_in_pool();
-    
-            // Ensure we have Alpha in the pool to calculate
-            if total_alpha == 0 {
-                return None; // No Alpha available, withdrawal not possible, cant calculate price
-            }
-
-            // Calculate Alpha price in terms of Credits
-            let alpha_price_in_credits = total_credits.checked_div(total_alpha)?;
-    
-            // Calculate the amount of Alpha to burn
-            let alpha_to_burn = credits_to_withdraw.checked_div(alpha_price_in_credits)?;
-    
-            Some(alpha_to_burn)
-        }
-        
         pub fn account_id() -> T::AccountId {
             <T as pallet::Config>::PalletId::get().into_account_truncating()
         }
 
-        /// Get the current balance of the marketplace pallet
-        pub fn balance() -> BalanceOf<T> {
-            pallet_balances::Pallet::<T>::free_balance(&Self::account_id())
-        }
-
-        /// Helper function to deposit alpha to a user's account, reducing from pool
-        pub fn deposit_creating(
-            user: &T::AccountId, 
-            amount: u64
+        /// Deposit credits and alpha into a new batch
+        fn do_deposit(
+            sender: T::AccountId, 
+            credit_amount: u128, 
+            alpha_amount: u128, 
+            freeze_for_chargeback: bool
         ) -> DispatchResult {
-            // Get the pallet's account
-            let pallet_account = Self::account_id();
 
-            // Check pallet account has sufficient balance
-            let pallet_balance = AlphaBalances::<T>::get(&pallet_account);
-            ensure!(pallet_balance >= amount, Error::<T>::InsufficientBalance);
+            let batch_id = NextBatchId::<T>::get();
 
-            // Reduce pallet account balance
-            AlphaBalances::<T>::mutate(&pallet_account, |balance| *balance -= amount);
+            let release_time = if freeze_for_chargeback {
+                let block_number = <frame_system::Pallet<T>>::block_number();
+                block_number + (15u32 * 28800u32).into() // 15 days
+            } else {
+                <frame_system::Pallet<T>>::block_number() // No release time
+            };
 
-            // Increase user's alpha balance
-            let user_balance = AlphaBalances::<T>::get(user);
-            AlphaBalances::<T>::insert(user, user_balance + amount);
+            let batch = Batch {
+                owner: sender.clone(),
+                credit_amount,
+                alpha_amount,
+                remaining_credits: credit_amount,
+                remaining_alpha: alpha_amount,
+                pending_alpha: 0,
+                is_frozen: freeze_for_chargeback,
+                release_time,
+            };
 
-            // Decrease total alpha in pool
-            TotalAlphaInPool::<T>::mutate(|total| *total -= amount as u128);
+            Batches::<T>::insert(batch_id, batch);
+            UserBatches::<T>::append(&sender, batch_id);
+            NextBatchId::<T>::put(batch_id + 1);
+            TotalLockedAlpha::<T>::mutate(|alpha| *alpha += alpha_amount);
 
-            // Emit event
-            Self::deposit_event(Event::AlphaDeposited(pallet_account, user.clone(), amount));
+            Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 
             Ok(())
         }
+
+        // /// Consume user credits from their batches
+        // fn consume_credits(origin: OriginFor<T>, credits: u128) -> DispatchResult {
+        //     let sender = ensure_signed(origin)?;
+
+        //     let mut remaining = credits;
+
+        //     // Get the batch IDs associated with the user, handling the Option type
+        //     if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
+        //         for batch_id in batch_ids {
+        //             if remaining == 0 { break; }
+
+        //             // Retrieve the batch
+        //             if let Some(mut batch) = Batches::<T>::get(batch_id) {
+        //                 ensure!(batch.owner == sender, "Not your batch");
+
+        //                 let credits_to_take = remaining.min(batch.remaining_credits);
+        //                 let alpha_to_release = (credits_to_take * batch.alpha_amount) / batch.credit_amount;
+
+        //                 // Update the batch's remaining credits and alpha
+        //                 batch.remaining_credits -= credits_to_take;
+        //                 batch.remaining_alpha -= alpha_to_release;
+
+        //                 // Handle Alpha distribution
+        //                 if batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time {
+        //                     batch.pending_alpha += alpha_to_release; // Queue it
+        //                 } else {
+        //                     if batch.is_frozen && <frame_system::Pallet<T>>::block_number() >= batch.release_time {
+        //                         batch.is_frozen = false; // Unfreeze
+        //                         TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.pending_alpha);
+        //                         batch.pending_alpha = 0;
+        //                     }
+        //                     TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= alpha_to_release);
+        //                 }
+
+        //                 // Update the batch in storage
+        //                 Batches::<T>::insert(batch_id, batch);
+        //                 remaining -= credits_to_take;
+        //             }
+        //         }
+        //     }
+
+        //     // Ensure all credits have been consumed
+        //     ensure!(remaining == 0, "Not enough credits");
+        //     Ok(())
+        // }
+
+        /// Release pending Alpha for a specific batch after the release time
+        fn do_release_pending_alpha(batch_id: u64) -> DispatchResult {
+
+            // Retrieve the current block number
+            let now =  <frame_system::Pallet<T>>::block_number();
+
+            // Get the batch from storage
+            if let Some(mut batch) = Batches::<T>::get(batch_id) {
+                // Ensure the batch is ready to be released
+                ensure!(now >= batch.release_time, "Still frozen");
+
+                // Check if the batch is frozen
+                if batch.is_frozen {
+                    batch.is_frozen = false; // Unfreeze the batch
+
+                    // Release the pending Alpha
+                    TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.pending_alpha);
+                    // Distribute `batch.pending_alpha` to miners (implementation of distribution logic needed)
+                    batch.pending_alpha = 0;
+
+                    // Update the batch in storage
+                    Batches::<T>::insert(batch_id, batch);
+                }
+            }
+
+            Ok(())
+        }        
+
+        /// Handle chargeback for a specific batch
+        fn handle_chargeback(batch_id: u64) -> DispatchResult {
+           
+            // Get the batch from storage
+            if let Some(batch) = Batches::<T>::get(batch_id) {
+                // Ensure the batch is frozen and the chargeback is valid
+                ensure!(batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time, "Invalid chargeback");
+
+                // Decrease the total locked Alpha by the remaining Alpha in the batch
+                TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.remaining_alpha);
+
+                // Remove the batch from the user's batch list
+                UserBatches::<T>::mutate(&batch.owner, |batches| {
+                    if let Some(ref mut batch_vec) = batches {
+                        batch_vec.retain(|&id| id != batch_id);
+                    }
+                });
+
+                // Remove the batch from storage
+                Batches::<T>::remove(batch_id);
+
+                // Burn credits from batch.owner (implementation of burning logic needed)
+                let credit_to_burn = batch.remaining_credits;
+                CreditsPallet::<T>::decrease_user_credits(&batch.owner, credit_to_burn);
+            }
+
+            Ok(())
+        }
+
     }
 }
