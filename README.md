@@ -540,6 +540,70 @@ or
 }
 ```
 
+### 15. `get_bucket_size`
+
+#### Description
+Retrieves the size of a specific bucket.
+
+#### Parameters
+- [bucket_name](cci:1://file:///home/faiz/Documents/GitHub/thebrain/pallets/storage-s3/src/lib.rs:111:8-133:9) (Vec<u8>): The name of the bucket to retrieve the size for.
+
+#### Response
+Returns the size of the bucket as a `u128` value.
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_bucket_size",
+    "params": [["bucket_name"]],
+    "id": 1
+}
+```
+
+
+### 16. `get_user_bandwidth`
+
+#### Description
+Retrieves the bandwidth size for a specific user.
+
+#### Parameters
+- `account_id` (AccountId32): The account ID of the user to retrieve bandwidth for.
+
+#### Response
+Returns the bandwidth size as a `u128` value.
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_user_bandwidth",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
+
+
+### 17. `get_total_bucket_size`
+
+#### Description
+Retrieves the total size of all buckets for a specific user.
+
+#### Parameters
+- `account_id` (AccountId32): The account ID of the user to retrieve the total bucket size for.
+
+#### Response
+Returns the total bucket size as a `u128` value.
+
+#### Example Request
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "get_total_bucket_size",
+    "params": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKv3gB"],
+    "id": 1
+}
+```
 #### Notes
 - These methods are part of the IP management system in the Hippius network
 - Useful for retrieving network-assigned IP addresses for different node types
