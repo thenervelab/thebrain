@@ -2,6 +2,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub use pallet::*;
+pub use types::*;
 
 #[cfg(test)]
 mod mock;
@@ -13,6 +14,7 @@ mod tests;
 mod benchmarking;
 pub mod weights;
 pub use weights::*;
+mod types;
 // pub mod migrations; // Add this line
 
 use sp_core::offchain::KeyTypeId;
@@ -71,7 +73,6 @@ pub mod pallet {
     use sp_core::hashing;
     use sp_runtime::format;
 	use pallet_ip::Pallet as IpPallet;
-    // use frame_support::traits::OnRuntimeUpgrade;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -90,58 +91,6 @@ pub mod pallet {
 
         // type OnRuntimeUpgrade: OnRuntimeUpgrade;
 	}
-
-    // Define separate storage for free credits.
-    #[pallet::storage]
-    #[pallet::getter(fn free_credits)]
-    pub(super) type FreeCredits<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
-
-    // Define a struct for lock period
-    #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo, MaxEncodedLen)]
-    pub struct LockPeriod<BlockNumber> {
-        /// Start block of the lock period
-        pub start_block: BlockNumber,
-        /// End block of the lock period
-        pub end_block: BlockNumber,
-    }
-
-    // Storage for the current active lock period
-    #[pallet::storage]
-    #[pallet::getter(fn current_lock_period)]
-    pub type CurrentLockPeriod<T: Config> = StorageValue<_, LockPeriod<BlockNumberFor<T>>, OptionQuery>;
-
-    // Storage for the current active lock period
-    #[pallet::storage]
-    #[pallet::getter(fn min_lock_amount)]
-    pub type MinLockAmount<T: Config> = StorageValue<_, u128, OptionQuery>;
-
-    // Define a struct for locked credits
-    #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo)]
-    pub struct LockedCredit<AccountId, BlockNumber> {
-        pub owner: AccountId,
-        pub amount_locked: u128,
-        pub is_fulfilled: bool,
-        pub tx_hash: Option<Vec<u8>>,
-        pub created_at: BlockNumber,
-        pub id: u64,
-        pub is_migrated: bool, 
-    }
-
-    // Define separate storage for locked credits
-    #[pallet::storage]
-    #[pallet::getter(fn locked_credits)]
-    pub(super) type LockedCredits<T: Config> = StorageMap<
-        _,
-        Blake2_128Concat,
-        T::AccountId,
-        Vec<LockedCredit<T::AccountId, BlockNumberFor<T>>>,
-        ValueQuery
-    >;
-
-    // Storage for unique ID counter
-    #[pallet::storage]
-    #[pallet::getter(fn next_locked_credit_id)]
-    pub(super) type NextLockedCreditId<T: Config> = StorageValue<_, u64, ValueQuery>;
 
     // Storage for authority accounts
     #[pallet::storage]
@@ -192,6 +141,47 @@ pub mod pallet {
     #[pallet::getter(fn total_credits_purchased)]
     pub type TotalCreditsPurchased<T> = StorageValue<_, u128, ValueQuery>;
 
+    #[pallet::storage]
+    #[pallet::getter(fn total_locked_alpha)]
+    pub type TotalLockedAlpha<T> = StorageValue<_, u128, ValueQuery>;
+
+    // Define separate storage for free credits.
+    #[pallet::storage]
+    #[pallet::getter(fn free_credits)]
+    pub(super) type FreeCredits<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+    
+    // Define separate storage for free alpha.
+    #[pallet::storage]
+    #[pallet::getter(fn free_alpha)]
+    pub(super) type FreeAlpha<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+    
+    // Storage for the current active lock period
+    #[pallet::storage]
+    #[pallet::getter(fn current_lock_period)]
+    pub type CurrentLockPeriod<T: Config> = StorageValue<_, LockPeriod<BlockNumberFor<T>>, OptionQuery>;
+    
+    // Storage for the current active lock period
+    #[pallet::storage]
+    #[pallet::getter(fn min_lock_amount)]
+    pub type MinLockAmount<T: Config> = StorageValue<_, u128, OptionQuery>;
+    
+    // Define separate storage for locked credits
+    #[pallet::storage]
+    #[pallet::getter(fn locked_credits)]
+    pub(super) type LockedCredits<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Vec<LockedCredit<T::AccountId, BlockNumberFor<T>>>,
+        ValueQuery
+    >;
+    
+    // Storage for unique ID counter
+    #[pallet::storage]
+    #[pallet::getter(fn next_locked_credit_id)]
+    pub(super) type NextLockedCreditId<T: Config> = StorageValue<_, u64, ValueQuery>;
+    
+    
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -227,6 +217,15 @@ pub mod pallet {
 			ref_owner: T::AccountId,
 			discount_amount: u128,
 		},
+        ConvertedToAlpha {
+            who: T::AccountId,
+            amount: u128,
+        },
+        IncreasedUserBalance {
+            who: T::AccountId,
+            marketplace_credit_amount: u128,
+            alpha_amount: u128,
+        },
 	}
 
         /// Validate unsigned call to this module.
@@ -283,6 +282,7 @@ pub mod pallet {
         MinLockAmountNotSet,
         /// Locked amount is less than the minimum required lock amount
         InsufficientLockAmount,
+        InsufficientAlphaBalance,
 	}
 
     /// Payload for unsigned credits decrease transaction
@@ -401,18 +401,45 @@ pub mod pallet {
             // Update free credits
             FreeCredits::<T>::insert(&who, free - amount);
 
-            // Increase total credits purchased
-            TotalCreditsPurchased::<T>::mutate(|total| *total -= amount);
-
             Self::deposit_event(Event::BurnedAccountCredits{who, amount: free - amount});
         
             Ok(())
         }
 
-        /// Convert native tokens to credits
         #[pallet::call_index(4)]
+        #[pallet::weight(10_000)]
+        pub fn increase_user_balance(
+            origin: OriginFor<T>,
+            marketplace_credit_amount: u128,
+            alpha_amount: u128,
+            user_to_credit: T::AccountId,
+        ) -> DispatchResult {
+            // Ensure the caller is an authority
+            ensure_root(origin)?;
+
+            // Decrease the alpha balance of the sudo key
+            let current_alpha_balance = TotalLockedAlpha::<T>::get();
+            ensure!(current_alpha_balance >= alpha_amount, Error::<T>::InsufficientAlphaBalance);
+            
+            TotalLockedAlpha::<T>::set(current_alpha_balance - alpha_amount);
+    
+            // Increase the user's credits
+            FreeCredits::<T>::mutate(&user_to_credit, |credits| *credits += marketplace_credit_amount);
+    
+            // Emit event for balance increase
+            Self::deposit_event(Event::IncreasedUserBalance {
+                who: user_to_credit.clone(),
+                marketplace_credit_amount,
+                alpha_amount,
+            });
+    
+            Ok(())
+        }
+
+        /// Convert user credits to alpha
+        #[pallet::call_index(5)]
         #[pallet::weight((0, Pays::No))]
-        pub fn convert_balance_to_credits(
+        pub fn convert_credits_to_alpha(
             origin: OriginFor<T>, 
             amount: u128
         ) -> DispatchResult {
@@ -422,33 +449,56 @@ pub mod pallet {
             // Ensure the amount is greater than zero
             ensure!(amount > 0, Error::<T>::InvalidConversionAmount);
 
-            // Convert amount to balance type (assuming u32 to Balance conversion)
-            let balance_amount = amount.try_into().map_err(|_| Error::<T>::ConversionFailed)?;
-
-            // Ensure the pallet has enough balance using pallet_balances
+            // Ensure the user has enough credits
             ensure!(
-                pallet_balances::Pallet::<T>::free_balance(&who) >= balance_amount,
-                Error::<T>::InsufficientBalance
+                FreeCredits::<T>::get(&who) >= amount,
+                Error::<T>::InsufficientFreeCredits
             );
 
-            // Call the burn function from balances pallet
-            pallet_balances::Pallet::<T>::burn(
-                frame_system::RawOrigin::Signed(who.clone()).into(),
-                balance_amount,
-                false, // keep_alive set to false to allow burning entire balance
-            )?;
+            // Decrease the user's credits
+            FreeCredits::<T>::mutate(&who, |credits| *credits -= amount);
 
-            // Mint credits to the user's account
-            Self::increase_user_credits(&who, amount);
+            // Increase the total locked alpha by the converted amount
+            TotalLockedAlpha::<T>::mutate(|total| *total += amount);
 
             // Deposit an event
-            Self::deposit_event(Event::ConvertedToCredits { who, amount });
+            Self::deposit_event(Event::ConvertedToAlpha { who, amount });
+
+            Ok(())
+        }
+
+        /// Convert alpha to user credits
+        #[pallet::call_index(6)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn convert_alpha_to_credits(
+            origin: OriginFor<T>, 
+            alpha_amount: u128,
+            user_to_credit: T::AccountId,
+        ) -> DispatchResult {
+            // Ensure the caller is a signed origin
+            let who = ensure_signed(origin)?;
+
+            // Ensure the amount is greater than zero
+            ensure!(alpha_amount > 0, Error::<T>::InvalidConversionAmount);
+
+            // Ensure the total locked alpha is sufficient
+            let current_alpha_balance = TotalLockedAlpha::<T>::get();
+            ensure!(current_alpha_balance >= alpha_amount, Error::<T>::InsufficientAlphaBalance);
+
+            // Decrease the total locked alpha by the specified amount
+            TotalLockedAlpha::<T>::mutate(|total| *total -= alpha_amount);
+
+            // Increase the user's credits
+            FreeCredits::<T>::mutate(&user_to_credit, |credits| *credits += alpha_amount);
+
+            // Emit an event for the conversion
+            Self::deposit_event(Event::ConvertedToCredits { who: user_to_credit.clone(), amount: alpha_amount });
 
             Ok(())
         }
 
         /// Convert native tokens to credits
-        #[pallet::call_index(5)]
+        #[pallet::call_index(7)]
         #[pallet::weight((0, Pays::No))]
         pub fn decrease_user_credits_balance(
             origin: OriginFor<T>, 
@@ -466,7 +516,7 @@ pub mod pallet {
         }
 
         // creates refferal for a user 
-		#[pallet::call_index(6)]
+		#[pallet::call_index(8)]
         #[pallet::weight((0, Pays::No))]
         pub fn create_referral_code(origin: OriginFor<T>) -> DispatchResult {
             let creator = ensure_signed(origin)?;
@@ -478,7 +528,7 @@ pub mod pallet {
         }
 
         // Changes the referral code of a user automatically
-        #[pallet::call_index(7)]  // New call index, you can choose your own
+        #[pallet::call_index(9)]  // New call index, you can choose your own
         #[pallet::weight((0, Pays::No))]
         pub fn change_referral_code(
             origin: OriginFor<T>
@@ -558,7 +608,7 @@ pub mod pallet {
         /// - `origin`: The account that originally locked the credits
         /// - `locked_credit_id`: The ID of the locked credit to mark as fulfilled
         /// - `tx_hash`: The transaction hash proving fulfillment
-        #[pallet::call_index(9)]
+        #[pallet::call_index(10)]
         #[pallet::weight((0, Pays::No))]
         pub fn fulfill_locked_credits(
             origin: OriginFor<T>,
@@ -602,8 +652,7 @@ pub mod pallet {
             Ok(())
         }
 
-
-        #[pallet::call_index(10)]
+        #[pallet::call_index(11)]
         #[pallet::weight((0, Pays::No))]
         pub fn set_lock_period(
             origin: OriginFor<T>,
@@ -627,7 +676,7 @@ pub mod pallet {
         }
 
         /// Set the minimum lock amount (only callable by authorized accounts)
-        #[pallet::call_index(11)]
+        #[pallet::call_index(12)]
         #[pallet::weight((0, Pays::No))]
         pub fn set_min_lock_amount(
             origin: OriginFor<T>,
@@ -665,9 +714,6 @@ pub mod pallet {
 		pub fn increase_user_credits(account: &T::AccountId, credits_to_increase: u128) {
 			FreeCredits::<T>::mutate(&account, |credits| *credits += credits_to_increase);
 
-            // Increase total credits purchased
-            TotalCreditsPurchased::<T>::mutate(|total| *total += credits_to_increase);
-
             Self::deposit_event(Event::MinetdAccountCredits {
                 who: account.clone(),
                 amount: credits_to_increase
@@ -676,9 +722,6 @@ pub mod pallet {
 
         pub fn decrease_user_credits(account: &T::AccountId, credits_to_decrease: u128) {
 			FreeCredits::<T>::mutate(&account, |credits| *credits -= credits_to_decrease);
-
-            // Increase total credits purchased
-            TotalCreditsPurchased::<T>::mutate(|total| *total -= credits_to_decrease);
 
             Self::deposit_event(Event::BurnedAccountCredits {
                 who: account.clone(),
