@@ -128,19 +128,6 @@ pub mod pallet {
             // Call the existing handle_chargeback function
             Self::handle_chargeback(batch_id)
         }
-
-        #[pallet::call_index(2)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn release_pending_alpha(
-            origin: OriginFor<T>, 
-            batch_id: u64
-        ) -> DispatchResult {
-            // Ensure the caller is a signed origin
-            let sender = ensure_signed(origin)?;
-    
-            // Call the existing release_pending_alpha function
-            Self::do_release_pending_alpha(batch_id)
-        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -291,34 +278,6 @@ pub mod pallet {
         
             Ok(())
         }
-
-        /// Release pending Alpha for a specific batch after the release time
-        fn do_release_pending_alpha(batch_id: u64) -> DispatchResult {
-
-            // Retrieve the current block number
-            let now =  <frame_system::Pallet<T>>::block_number();
-
-            // Get the batch from storage
-            if let Some(mut batch) = Batches::<T>::get(batch_id) {
-                // Ensure the batch is ready to be released
-                ensure!(now >= batch.release_time, "Still frozen");
-
-                // Check if the batch is frozen
-                if batch.is_frozen {
-                    batch.is_frozen = false; // Unfreeze the batch
-
-                    // Release the pending Alpha
-                    TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.pending_alpha);
-                    // Distribute `batch.pending_alpha` to miners (implementation of distribution logic needed)
-                    batch.pending_alpha = 0;
-
-                    // Update the batch in storage
-                    Batches::<T>::insert(batch_id, batch);
-                }
-            }
-
-            Ok(())
-        }        
 
         /// Handle chargeback for a specific batch
         fn handle_chargeback(batch_id: u64) -> DispatchResult {
