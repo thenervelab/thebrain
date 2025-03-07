@@ -69,6 +69,8 @@ pub mod pallet {
         Saturating,
     };
     use pallet_registration::BalanceOf;
+    use pallet_registration::Pallet as RegistrationPallet;
+    use pallet_registration::NodeType;
     use pallet_ipfs_pin::FileHash;
     use pallet_credits::Pallet as CreditsPallet;
     use pallet_storage_s3::Pallet as StorageS3Pallet;
@@ -410,6 +412,7 @@ pub mod pallet {
         InsufficientFreeCredits,
         LocationNotFound,
         InvalidPlanLimits,
+        NodeTypeDisabled,
         InvalidStorageReduction,
         InvalidSubscriptionUsage,
         ComputeResourceExceeded,
@@ -550,6 +553,12 @@ pub mod pallet {
             miner_ids: Option<Vec<Vec<u8>>>
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
+
+            // Check if the StorageMiner node type is disabled
+            ensure!(
+                !RegistrationPallet::<T>::is_node_type_disabled(NodeType::StorageMiner),
+                Error::<T>::NodeTypeDisabled
+            );
 
             // Check if a specific miner is requested and charge an additional fee
             if miner_ids.is_some() {
@@ -966,6 +975,12 @@ pub mod pallet {
             // referral_code: Option<Vec<u8>>,
             // pay_upfront: Option<u128>,
         ) -> DispatchResult {
+            // Check if the ComputeMiner node type is disabled
+            ensure!(
+                !RegistrationPallet::<T>::is_node_type_disabled(NodeType::ComputeMiner),
+                Error::<T>::NodeTypeDisabled
+            );
+
             let pay_upfront: Option<u128> = None;
             // Check if plan exists
             let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
