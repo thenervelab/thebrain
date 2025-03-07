@@ -1318,8 +1318,6 @@ impl pallet_marketplace::Config for Runtime {
 	type BlocksPerHour = BlocksPerHour;
 	type BlockChargeCheckInterval = BlockChargeCheckInterval;
 	type AuthorityId = pallet_marketplace::crypto::TestAuthId;	
-	
-
 }
 
 impl pallet_offences::Config for Runtime {

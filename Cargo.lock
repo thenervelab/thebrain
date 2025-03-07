@@ -6678,7 +6678,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "pallet-balances",
- "pallet-credits",
+ "pallet-marketplace",
  "parity-scale-codec",
  "scale-info",
  "sp-core",

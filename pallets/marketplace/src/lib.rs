@@ -430,7 +430,6 @@ pub mod pallet {
     #[pallet::getter(fn sudo_key)]
     pub type SudoKey<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
     
-
     #[pallet::validate_unsigned]
     impl<T: Config> ValidateUnsigned for Pallet<T> {
         type Call = Call<T>;
@@ -1699,7 +1698,7 @@ pub mod pallet {
             NextBatchId::<T>::put(batch_id + 1);
 
             TotalLockedAlpha::<T>::mutate(|alpha| *alpha += alpha_amount);
-            CreditsPallet::<T>::do_mint(sender.clone(), alpha_amount, None);
+            let _ = CreditsPallet::<T>::do_mint(sender.clone(), alpha_amount, None);
 
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 

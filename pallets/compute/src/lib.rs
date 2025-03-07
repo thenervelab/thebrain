@@ -405,7 +405,7 @@ pub mod pallet {
 						.and_provides(("submit_compute_boot_request_fulfillment", unique_hash)) // Unique key
 						.build()
 				},
-				Call::handle_miner_compute_request_failure { node_id, request_id, fail_reason } => {
+				Call::handle_miner_compute_request_failure { node_id, request_id, fail_reason: _ } => {
 					// Additional validation checks
 					let block_number = <frame_system::Pallet<T>>::block_number();
 					
@@ -1053,7 +1053,7 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			request_id: u128,
 			vnc_port: u64,
-			vm_name: Vec<u8>,
+			_vm_name: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
