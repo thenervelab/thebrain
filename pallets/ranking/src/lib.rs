@@ -467,7 +467,7 @@ pub mod pallet {
 			}
 
 			let mut pending_rewards = Vec::new();
-
+			
 			// Calculate pending rewards for each node type
 			if T::InstanceID::get() == 2 && !compute_miner_node.is_empty() {
 				let compute_miner_total_weight: u128 = compute_miner_node.iter()

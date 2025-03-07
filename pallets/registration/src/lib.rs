@@ -90,6 +90,16 @@ pub mod pallet {
 	#[pallet::without_storage_info]
     pub struct Pallet<T>(_);
 
+    #[pallet::storage]
+    #[pallet::getter(fn is_node_type_disabled)]
+    pub type DisabledNodeTypes<T: Config> = StorageMap<
+        _, 
+        Blake2_128Concat, 
+        NodeType, 
+        bool,
+        ValueQuery
+    >;
+
     // Saves all the miners who have pinned for that file hash
 	#[pallet::storage]
     #[pallet::getter(fn get_node_info)]
@@ -145,6 +155,7 @@ pub mod pallet {
             node_type: NodeType, 
             fee: BalanceOf<T> 
         },
+        NodeTypeDisabledChanged { node_type: NodeType, disabled: bool }, // New event
     }
     
     #[pallet::error]
@@ -160,7 +171,8 @@ pub mod pallet {
         InvalidAccountId,
         InsufficientStake,
         InsufficientBalanceForFee,
-        FeeTooHigh
+        FeeTooHigh,
+        NodeTypeDisabled,
     }
 
     #[pallet::validate_unsigned]
@@ -258,6 +270,12 @@ pub mod pallet {
                     }
                 }
             }
+
+            // Check if the node type is disabled
+            ensure!(
+                !Self::is_node_type_disabled(node_type.clone()),
+                Error::<T>::NodeTypeDisabled
+            );
 
             // If the node type is Validator, ensure minimum stake
             if node_type == NodeType::Validator {
@@ -454,6 +472,25 @@ pub mod pallet {
                 node_type, 
                 fee
             });
+
+            Ok(())
+        }
+
+        #[pallet::call_index(6)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn set_node_type_disabled(
+            origin: OriginFor<T>, 
+            node_type: NodeType, 
+            disabled: bool
+        ) -> DispatchResult {
+            // Ensure only root can call this
+            ensure_root(origin)?;
+
+            // Update the disabled status for the specified node type
+            DisabledNodeTypes::<T>::insert(node_type.clone(), disabled);
+
+            // Emit an event
+            Self::deposit_event(Event::NodeTypeDisabledChanged { node_type, disabled });
 
             Ok(())
         }

@@ -18,12 +18,12 @@ pub mod pallet {
     use sp_std::collections::btree_set::BTreeSet;
     use pallet_credits::Pallet as CreditsPallet;
     use sp_runtime::traits::AtLeast32BitUnsigned;
-   
-    use frame_support::{
+    use frame_support::{ 
         pallet_prelude::*,
-        traits::{ReservableCurrency, Currency},
+        traits::ReservableCurrency,
         PalletId,
     };
+
     #[pallet::pallet]
     #[pallet::without_storage_info]
     pub struct Pallet<T>(_);
@@ -193,7 +193,7 @@ pub mod pallet {
             let operator = ensure_signed(origin)?;
             CreditsPallet::<T>::ensure_is_authority(&operator)?;
 
-            let Some((user, amount, coldkey, mut confirmations, existing_finalization)) =
+            let Some((user, amount, coldkey, mut confirmations, _existing_finalization)) =
                 PendingBurns::<T>::get(&nonce) else { return Err(Error::<T>::BurnNotPending.into()) };
 
             // Add confirmation
