@@ -1318,6 +1318,8 @@ impl pallet_marketplace::Config for Runtime {
 	type BlocksPerHour = BlocksPerHour;
 	type BlockChargeCheckInterval = BlockChargeCheckInterval;
 	type AuthorityId = pallet_marketplace::crypto::TestAuthId;	
+	
+
 }
 
 impl pallet_offences::Config for Runtime {
@@ -2541,7 +2543,7 @@ impl_runtime_apis! {
 		}
 
 		fn get_batches_for_user(account_id: AccountId32) -> Vec<rpc_primitives_node_metrics::Batch<AccountId32, u32>> {
-			let batches = <pallet_alpha_bridge::Pallet<Runtime>>::get_batches_for_user(account_id);
+			let batches = <pallet_marketplace::Pallet<Runtime>>::get_batches_for_user(account_id);
 			batches.into_iter().map(|batch| {
 				rpc_primitives_node_metrics::Batch {
 					owner: batch.owner,
@@ -2557,7 +2559,7 @@ impl_runtime_apis! {
 		}
 
 		fn get_batch_by_id(batch_id: u64) -> Option<rpc_primitives_node_metrics::Batch<AccountId32, u32>> {
-			let batch = <pallet_alpha_bridge::Pallet<Runtime>>::get_batch_by_id(batch_id)?;
+			let batch = <pallet_marketplace::Pallet<Runtime>>::get_batch_by_id(batch_id)?;
 		
 			Some(rpc_primitives_node_metrics::Batch {
 				owner: batch.owner,

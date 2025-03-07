@@ -66,6 +66,13 @@ pub struct FileInput {
     pub file_name: Vec<u8>,
 }
 
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo)]
+pub struct ImageDetails {
+    pub url: Vec<u8>,
+    pub description: Vec<u8>,
+    pub name: Vec<u8>,
+}
+
 /// User subscription details
 #[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
 #[scale_info(skip_type_params(T))]
@@ -104,4 +111,16 @@ impl<T: Config> SignedPayload<T> for StorageApprovalPayload<T> {
     fn public(&self) -> T::Public {
         self.public.clone()
     }
+}
+
+#[derive(Encode, Decode, Default, TypeInfo)]
+pub struct Batch<AccountId, BlockNumberFor> {
+    pub owner: AccountId,        // User who deposited
+    pub credit_amount: u128,     // Total credits in batch
+    pub alpha_amount: u128,      // Total Alpha purchased
+    pub remaining_credits: u128, // Remaining credits in the batch
+    pub remaining_alpha: u128,   // Remaining Alpha in the batch
+    pub pending_alpha: u128,     // Pending Alpha to be released
+    pub is_frozen: bool,         // Freezes Alpha distribution, not credit use
+    pub release_time: BlockNumberFor, // When Alpha can be distributed
 }

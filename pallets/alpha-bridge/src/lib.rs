@@ -100,7 +100,6 @@ pub mod pallet {
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-
         #[pallet::call_index(0)]
         #[pallet::weight((0, Pays::No))]
         pub fn deposit(
@@ -281,7 +280,6 @@ pub mod pallet {
 
         /// Handle chargeback for a specific batch
         fn handle_chargeback(batch_id: u64) -> DispatchResult {
-           
             // Get the batch from storage
             if let Some(batch) = Batches::<T>::get(batch_id) {
                 // Ensure the batch is frozen and the chargeback is valid

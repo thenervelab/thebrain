@@ -71,7 +71,6 @@ pub mod pallet {
     use pallet_registration::BalanceOf;
     use pallet_ipfs_pin::FileHash;
     use pallet_credits::Pallet as CreditsPallet;
-    use pallet_alpha_bridge::Pallet as AlphaBridgePallet;
     use pallet_storage_s3::Pallet as StorageS3Pallet;
     use pallet_utils::SubscriptionId;
     use sp_core::H256;
@@ -82,6 +81,8 @@ pub mod pallet {
     use pallet_subaccount::traits::SubAccounts;
     use frame_system::offchain::Signer;
     use sp_runtime::offchain::storage_lock::StorageLock;
+    use pallet_credits::TotalLockedAlpha;
+    use pallet_credits::TotalCreditsPurchased;
     // use frame_system::offchain::SignedPayload;
     use sp_runtime::offchain::Duration;
     use sp_runtime::offchain::storage_lock::BlockAndTime;
@@ -118,7 +119,6 @@ pub mod pallet {
     pub trait Config: frame_system::Config + 
                     pallet_registration::Config + 
                     pallet_credits::Config + 
-                    pallet_alpha_bridge::Config + 
                     pallet_ipfs_pin::Config + 
                     pallet_balances::Config + 
                     pallet_notifications::Config +
@@ -238,13 +238,31 @@ pub mod pallet {
 		Vec<u8>, // OS Name (e.g., "ubuntu", "fedora")
 		ImageDetails, // URL for the OS disk image
 	>;
-    
-    #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo)]
-    pub struct ImageDetails {
-        pub url: Vec<u8>,
-        pub description: Vec<u8>,
-        pub name: Vec<u8>,
-    }
+
+    // Map for batches identified by a unique ID
+    #[pallet::storage]
+    #[pallet::getter(fn batches)]
+    pub type Batches<T: Config> = StorageMap<
+        _, 
+        Blake2_128Concat, 
+        u64, 
+        Batch<T::AccountId, BlockNumberFor<T>>
+    >;
+
+    // Map for user batches identified by AccountId
+    #[pallet::storage]
+    #[pallet::getter(fn user_batches)]
+    pub type UserBatches<T: Config> = StorageMap<
+        _, 
+        Blake2_128Concat, 
+        T::AccountId, 
+        Vec<u64>
+    >;
+
+    // Next batch ID
+    #[pallet::storage]
+    #[pallet::getter(fn next_batch_id)]
+    pub type NextBatchId<T: Config> = StorageValue<_, u64, ValueQuery>;
 
     #[pallet::storage]
     #[pallet::getter(fn cdn_locations)]
@@ -361,6 +379,8 @@ pub mod pallet {
         PlanPriceUpdated(T::Hash, u128),
         /// Specific miner request fee updated
         SpecificMinerRequestFeeUpdated { fee: BalanceOf<T> },
+        BatchDeposited { owner: T::AccountId, batch_id: u64 },   // (owner, batch_id)
+        CreditsConsumed { owner: T::AccountId, credits: u128 },
 	}
 
 	#[pallet::error]
@@ -406,6 +426,10 @@ pub mod pallet {
         NoSubscriptionFound,
 	}
 
+    #[pallet::storage]
+    #[pallet::getter(fn sudo_key)]
+    pub type SudoKey<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
+    
 
     #[pallet::validate_unsigned]
     impl<T: Config> ValidateUnsigned for Pallet<T> {
@@ -837,7 +861,7 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
             ensure_none(origin)?;
 
-            let _ = AlphaBridgePallet::<T>::consume_credits(owner.clone(), storage_cost,
+            let _ = Self::consume_credits(owner.clone(), storage_cost,
             Self::account_id().clone(), RankingsPallet::<T>::account_id().clone());
 
 			// Emit event for marketplace account reward
@@ -866,6 +890,51 @@ pub mod pallet {
             // Deposit an event to notify about the fee update
             Self::deposit_event(Event::<T>::SpecificMinerRequestFeeUpdated { fee });
 
+            Ok(())
+        }
+
+
+        #[pallet::call_index(14)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn deposit(
+            origin: OriginFor<T>, 
+            account: T::AccountId, 
+            credit_amount: u128, 
+            alpha_amount: u128, 
+            freeze_for_chargeback: bool
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+
+            // Call the existing deposit function
+            Self::do_deposit(account, credit_amount, alpha_amount, freeze_for_chargeback)
+        }
+
+
+        #[pallet::call_index(15)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn chargeback(
+            origin: OriginFor<T>, 
+            batch_id: u64
+        ) -> DispatchResult {
+            // Ensure the caller is a signed origin (admin check)
+            ensure_root(origin)?;
+
+            // Call the existing handle_chargeback function
+            Self::handle_chargeback(batch_id)
+        }
+
+        #[pallet::call_index(16)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn set_sudo_key(
+            origin: OriginFor<T>, 
+            new_sudo_key: T::AccountId
+        ) -> DispatchResult {
+            // Ensure that the caller is the sudo account
+            ensure_root(origin)?;
+    
+            // Set the new sudo key in storage
+            SudoKey::<T>::put(Some(new_sudo_key)); // Store as Some(value)
+    
             Ok(())
         }
 	}
@@ -977,7 +1046,7 @@ pub mod pallet {
                 current_id
             });
 
-            let _ = AlphaBridgePallet::<T>::consume_credits(who.clone(), plan_price_native,
+            let _ = Self::consume_credits(who.clone(), plan_price_native,
             Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
                     
             // Record transaction
@@ -1098,7 +1167,7 @@ pub mod pallet {
                         
                             if user_free_credits >= charge_amount {
                                 // Decrease user credits
-                                let _ = AlphaBridgePallet::<T>::consume_credits(account_id.clone(), charge_amount,
+                                let _ = Self::consume_credits(account_id.clone(), charge_amount,
                                     Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
 
                                 // Record transaction
@@ -1186,7 +1255,7 @@ pub mod pallet {
             
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
-                        let _ = AlphaBridgePallet::<T>::consume_credits(user.clone(), charge_amount,
+                        let _ = Self::consume_credits(user.clone(), charge_amount,
                             Self::account_id().clone(), RankingsPallet::<T>::account_id().clone());
 
                         // Record transaction
@@ -1298,7 +1367,7 @@ pub mod pallet {
 
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
-                        let _ = AlphaBridgePallet::<T>::consume_credits(user.clone(), charge_amount,
+                        let _ = Self::consume_credits(user.clone(), charge_amount,
                         Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id().clone());
 
                         // Record transaction
@@ -1595,6 +1664,201 @@ pub mod pallet {
 				log::error!("❌ Could not acquire lock for updating metrics data");
 			};
 		}
+
+
+        /// Deposit credits and alpha into a new batch
+        fn do_deposit(
+            sender: T::AccountId, 
+            credit_amount: u128, 
+            alpha_amount: u128, 
+            freeze_for_chargeback: bool
+        ) -> DispatchResult {
+
+            let batch_id = NextBatchId::<T>::get();
+
+            let release_time = if freeze_for_chargeback {
+                let block_number = <frame_system::Pallet<T>>::block_number();
+                block_number + (15u32 * 28800u32).into() // 15 days
+            } else {
+                <frame_system::Pallet<T>>::block_number() // No release time
+            };
+
+            let batch = Batch {
+                owner: sender.clone(),
+                credit_amount,
+                alpha_amount,
+                remaining_credits: credit_amount,
+                remaining_alpha: alpha_amount,
+                pending_alpha: 0,
+                is_frozen: freeze_for_chargeback,
+                release_time,
+            };
+
+            Batches::<T>::insert(batch_id, batch);
+            UserBatches::<T>::append(&sender, batch_id);
+            NextBatchId::<T>::put(batch_id + 1);
+
+            TotalLockedAlpha::<T>::mutate(|alpha| *alpha += alpha_amount);
+            CreditsPallet::<T>::do_mint(sender.clone(), alpha_amount, None);
+
+            Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
+
+            Ok(())
+        }
+
+        /// Consume user credits from their batches
+        pub fn consume_credits(sender: T::AccountId, credits: u128, marketplace_account: T::AccountId,
+             ranking_account: T::AccountId) -> DispatchResult {
+            
+            let mut remaining = credits;
+
+            // Get the batch IDs associated with the user, handling the Option type
+            if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
+                for batch_id in batch_ids {
+                    if remaining == 0 { break; }
+
+                    // Retrieve the batch
+                    if let Some(mut batch) = Batches::<T>::get(batch_id) {
+                        ensure!(batch.owner == sender, "Not your batch");
+
+                        let credits_to_take = remaining.min(batch.remaining_credits);
+                        let alpha_to_release = (credits_to_take * batch.alpha_amount) / batch.credit_amount;
+
+                        // Update the batch's remaining credits and alpha
+                        batch.remaining_credits -= credits_to_take;
+                        batch.remaining_alpha -= alpha_to_release;
+
+                        // Handle Alpha distribution
+                        if batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time {
+                            batch.pending_alpha += alpha_to_release; // Queue it
+                        } else {
+                            if batch.is_frozen && <frame_system::Pallet<T>>::block_number() >= batch.release_time {
+                                batch.is_frozen = false; // Unfreeze
+                                TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.pending_alpha);
+                                
+                                // decrease credits and mint on miners account
+                                Self::distribute_alpha(
+                                    batch.owner.clone(),
+                                    batch.pending_alpha,
+                                    credits_to_take,
+                                    ranking_account.clone(),
+                                    marketplace_account.clone(),
+                                )?;
+
+                                batch.pending_alpha = 0;
+                            }
+
+                            TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= alpha_to_release);
+                            // decrease credits and mint on miners account
+                            Self::distribute_alpha(
+                                batch.owner.clone(),
+                                alpha_to_release,
+                                credits_to_take,
+                                ranking_account.clone(),
+                                marketplace_account.clone(),
+                            )?;
+                        }
+    
+                        // Update the batch in storage
+                        Batches::<T>::insert(batch_id, batch);
+                        remaining -= credits_to_take;
+                    }
+                }
+            }
+
+            // Ensure all credits have been consumed
+            ensure!(remaining == 0, "Not enough credits");
+
+            // Emit the event for credits consumed
+            Self::deposit_event(Event::CreditsConsumed { owner: sender, credits });
+
+            Ok(())
+        }
+
+        fn distribute_alpha(
+            batch_owner: T::AccountId,
+            alpha_to_release: u128,
+            credits_to_take: u128,
+            ranking_account: T::AccountId,
+            marketplace_account: T::AccountId,
+        ) -> DispatchResult {
+            // Decrease credits for the batch owner
+            CreditsPallet::<T>::decrease_user_credits(&batch_owner, credits_to_take);
+        
+            // Handle referral logic
+            let mut total_discount = 0u128;
+            if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&batch_owner) {
+                let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, credits_to_take, &mut total_discount);
+            }
+        
+            // Calculate the amounts for Storage Rankings and Marketplace
+            let rankings_amount = alpha_to_release
+                .checked_mul(70u32.into())
+                .and_then(|x| x.checked_div(100u32.into()))
+                .unwrap_or_default();
+        
+            let marketplace_amount = alpha_to_release - rankings_amount;
+        
+            // Transfer equivalent amount of native currency from the sudo account
+            if let Some(sudo_account) = Self::sudo_key() { // Get the sudo key from storage
+                // Transfer funds from sudo account to marketplace and rankings accounts
+                <pallet_balances::Pallet<T>>::transfer(
+                    &sudo_account,
+                    &ranking_account,
+                    rankings_amount.try_into().unwrap_or_default(), 
+                    ExistenceRequirement::KeepAlive
+                )?;
+
+                <pallet_balances::Pallet<T>>::transfer(
+                    &sudo_account,
+                    &marketplace_account,
+                    marketplace_amount.try_into().unwrap_or_default(),
+                    ExistenceRequirement::KeepAlive
+                )?;
+            }
+        
+            Ok(())
+        }
+
+        /// Handle chargeback for a specific batch
+        fn handle_chargeback(batch_id: u64) -> DispatchResult {
+            // Get the batch from storage
+            if let Some(batch) = Batches::<T>::get(batch_id) {
+                // Ensure the batch is frozen and the chargeback is valid
+                ensure!(batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time, "Invalid chargeback");
+
+                // Decrease the total locked Alpha by the remaining Alpha in the batch
+                TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.remaining_alpha);
+
+                // Remove the batch from the user's batch list
+                UserBatches::<T>::mutate(&batch.owner, |batches| {
+                    if let Some(ref mut batch_vec) = batches {
+                        batch_vec.retain(|&id| id != batch_id);
+                    }
+                });
+
+                // Remove the batch from storage
+                Batches::<T>::remove(batch_id);
+
+                // Burn credits from batch.owner (implementation of burning logic needed)
+                let credit_to_burn = batch.remaining_credits;
+                CreditsPallet::<T>::decrease_user_credits(&batch.owner, credit_to_burn);
+                TotalCreditsPurchased::<T>::mutate(|total| *total -= credit_to_burn);
+            }
+
+            Ok(())
+        }
+        
+        pub fn get_batches_for_user(user: T::AccountId) -> Vec<Batch<T::AccountId, BlockNumberFor<T>>> {
+            let batch_ids: Vec<u64> = UserBatches::<T>::get(user).unwrap(); // Convert to Vec<u64>
+            batch_ids.iter()
+                .filter_map(|id| Batches::<T>::get(*id))
+                .collect()
+        }
+        
+        pub fn get_batch_by_id(batch_id: u64) -> Option<Batch<T::AccountId, BlockNumberFor<T>>> {
+            Batches::<T>::get(batch_id)
+        }
 
    }
 }
