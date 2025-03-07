@@ -39,24 +39,24 @@ jobs:
           name: hippius-binary
           path: target/release/hippius  # Ensure this path is correct
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Built Binary
-        uses: actions/download-artifact@v4
-        with:
-          name: hippius-binary
-          path: hippius
+  # deploy:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Download Built Binary
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: hippius-binary
+  #         path: hippius
 
-      - name: Set Up SSH
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H 141.94.106.80 >> ~/.ssh/known_hosts
+  #     - name: Set Up SSH
+  #       env:
+  #         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+  #       run: |
+  #         mkdir -p ~/.ssh
+  #         echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+  #         chmod 600 ~/.ssh/id_rsa
+  #         ssh-keyscan -H 141.94.106.80 >> ~/.ssh/known_hosts
 
-      - name: Deploy to Server via rsync
-        run: rsync -avz hippius/ root@141.94.106.80:/var/www/html/
+  #     - name: Deploy to Server via rsync
+  #       run: rsync -avz hippius/ root@141.94.106.80:/var/www/html/

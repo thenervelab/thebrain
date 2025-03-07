@@ -217,22 +217,21 @@ pub mod pallet {
                             if batch.is_frozen && <frame_system::Pallet<T>>::block_number() >= batch.release_time {
                                 batch.is_frozen = false; // Unfreeze
                                 TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.pending_alpha);
-                                batch.pending_alpha = 0;
-
+                                
                                 // decrease credits and mint on miners account
-                                // Call the helper function to distribute alpha
                                 Self::distribute_alpha(
                                     batch.owner.clone(),
-                                    alpha_to_release,
+                                    batch.pending_alpha,
                                     credits_to_take,
                                     ranking_account.clone(),
                                     marketplace_account.clone(),
                                 )?;
 
+                                batch.pending_alpha = 0;
                             }
+
                             TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= alpha_to_release);
                             // decrease credits and mint on miners account
-                            // Call the helper function to distribute alpha
                             Self::distribute_alpha(
                                 batch.owner.clone(),
                                 alpha_to_release,
