@@ -1170,12 +1170,12 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
         if marketplace_balance > 0 {
             // Calculate amounts for each destination
             let staking_amount = marketplace_balance
-                .checked_mul(65u32.into())
+                .checked_mul(75u32.into())
                 .and_then(|x| x.checked_div(100u32.into()))
                 .unwrap_or_default();
 
             let treasury_amount = marketplace_balance
-                .checked_mul(35u32.into())
+                .checked_mul(25u32.into())
                 .and_then(|x| x.checked_div(100u32.into()))
                 .unwrap_or_default();
 

@@ -513,17 +513,6 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(2)] 
-        #[pallet::weight((0, Pays::No))]
-        pub fn burn_tokens( 
-            origin: OriginFor<T>,
-            amount: BalanceOf<T>,
-        ) -> DispatchResult {
-            // Ensure the caller is signed
-            let _who = ensure_signed(origin)?;
-            Self::do_burn_tokens(amount)
-        }
-
         /// Set the `is_suspended` field for a specific package.
         #[pallet::call_index(3)]
         #[pallet::weight((0, Pays::No))]
@@ -966,31 +955,6 @@ pub mod pallet {
             total_amount / eras_balance
         }
 
-        /// Burns the specified amount of native tokens from the pallet's account
-        pub fn do_burn_tokens( amount: BalanceOf<T>) -> DispatchResult {
-            // Get the pallet's account
-            let pallet_account = Self::account_id();
-            
-            // Ensure the pallet has enough balance using pallet_balances
-            ensure!(
-                pallet_balances::Pallet::<T>::free_balance(&pallet_account) >= amount,
-                Error::<T>::InsufficientBalance
-            );
-
-            // Call the burn function from balances pallet
-            pallet_balances::Pallet::<T>::burn(
-                frame_system::RawOrigin::Signed(pallet_account).into(),
-                amount,
-                false, // keep_alive set to false to allow burning entire balance
-            )?;
-
-            // Emit an event
-            Self::deposit_event(Event::TokensBurned {
-                amount,
-            });
-
-            Ok(())
-        }
 
         fn do_purchase_plan(
             who: T::AccountId,
@@ -1792,7 +1756,7 @@ pub mod pallet {
         
             // Calculate the amounts for Storage Rankings and Marketplace
             let rankings_amount = alpha_to_release
-                .checked_mul(70u32.into())
+                .checked_mul(60u32.into())
                 .and_then(|x| x.checked_div(100u32.into()))
                 .unwrap_or_default();
         
