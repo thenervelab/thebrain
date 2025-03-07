@@ -352,4 +352,15 @@ pub mod pallet {
         }
     }
 
+    pub fn get_batches_for_user<T: Config>(user: T::AccountId) -> Vec<Batch<T::AccountId, BlockNumberFor<T>>> {
+        let batch_ids: Vec<u64> = UserBatches::<T>::get(user).unwrap(); // Convert to Vec<u64>
+        batch_ids.iter()
+            .filter_map(|id| Batches::<T>::get(*id))
+            .collect()
+    }
+    
+    pub fn get_batch_by_id<T: Config>(batch_id: u64) -> Option<Batch<T::AccountId, BlockNumberFor<T>>> {
+        Batches::<T>::get(batch_id)
+    }
+
 }
