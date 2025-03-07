@@ -2540,6 +2540,37 @@ impl_runtime_apis! {
 			}
 		}
 
+		fn get_batches_for_user(account_id: AccountId32) -> Vec<rpc_primitives_node_metrics::Batch<AccountId32, u32>> {
+			let batches = <pallet_alpha_bridge::Pallet<Runtime>>::get_batches_for_user(account_id);
+			batches.into_iter().map(|batch| {
+				rpc_primitives_node_metrics::Batch {
+					owner: batch.owner,
+					credit_amount: batch.credit_amount as u128, // Convert to u128
+					alpha_amount: batch.alpha_amount as u128,   // Convert to u128
+					remaining_credits: batch.remaining_credits as u128, // Convert to u128
+					remaining_alpha: batch.remaining_alpha as u128, // Convert to u128
+					pending_alpha: batch.pending_alpha as u128, // Convert to u128
+					is_frozen: batch.is_frozen,
+					release_time: batch.release_time as u32,
+				}
+			}).collect()
+		}
+
+		fn get_batch_by_id(batch_id: u64) -> Option<rpc_primitives_node_metrics::Batch<AccountId32, u32>> {
+			let batch = <pallet_alpha_bridge::Pallet<Runtime>>::get_batch_by_id(batch_id)?;
+		
+			Some(rpc_primitives_node_metrics::Batch {
+				owner: batch.owner,
+				credit_amount: batch.credit_amount as u128, // Convert to u128
+				alpha_amount: batch.alpha_amount as u128,   // Convert to u128
+				remaining_credits: batch.remaining_credits as u128, // Convert to u128
+				remaining_alpha: batch.remaining_alpha as u128, // Convert to u128
+				pending_alpha: batch.pending_alpha as u128, // Convert to u128
+				is_frozen: batch.is_frozen,
+				release_time: batch.release_time as u32, // Convert to u32
+			})
+		}
+
 		fn get_bucket_size( bucket_name: Vec<u8>) -> u128{
 			<pallet_storage_s3::Pallet<Runtime>>::get_bucket_size(bucket_name)
 		}

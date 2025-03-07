@@ -39,7 +39,21 @@ decl_runtime_apis! {
         fn get_total_bucket_size( account_id: AccountId32) -> u128;
         fn get_user_bandwidth( account_id: AccountId32) -> u128;
         fn get_miner_info(account_id: AccountId32) -> Option<(NodeType, Status)>;
+        fn get_batches_for_user(account_id: AccountId32) -> Vec<Batch<AccountId32, u32>>;
+        fn get_batch_by_id(batch_id: u64) -> Option<Batch<AccountId32, u32>>;
     }
+}
+
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]
+pub struct Batch<AccountId, BlockNumberFor> {
+    pub owner: AccountId,        // User who deposited
+    pub credit_amount: u128,     // Total credits in batch
+    pub alpha_amount: u128,      // Total Alpha purchased
+    pub remaining_credits: u128, // Remaining credits in the batch
+    pub remaining_alpha: u128,   // Remaining Alpha in the batch
+    pub pending_alpha: u128,     // Pending Alpha to be released
+    pub is_frozen: bool,         // Freezes Alpha distribution, not credit use
+    pub release_time: BlockNumberFor, // When Alpha can be distributed
 }
 
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]

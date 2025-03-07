@@ -3,7 +3,7 @@ use sp_std::vec::Vec;
 pub mod types;
 use sp_runtime::AccountId32;
 
-use rpc_primitives_node_metrics::{NodeType, Status , NodeMetricsData, MinerRewardSummary, UserFile, UserBucket, UserVmDetails};
+use rpc_primitives_node_metrics::{NodeType, Batch, Status , NodeMetricsData, MinerRewardSummary, UserFile, UserBucket, UserVmDetails};
 
 /// Net rpc interface.
 #[rpc(server)]
@@ -65,4 +65,10 @@ pub trait NodeMetricsApi {
 
 	#[method(name = "get_miner_info")]
 	fn get_miner_info(&self, account_id: AccountId32) -> RpcResult<Option<(NodeType, Status)>>;
+
+	#[method(name = "get_batches_for_user")]
+	fn get_batches_for_user(&self, account_id: AccountId32) -> RpcResult<Vec<Batch<AccountId32, u32>>>;
+
+	#[method(name = "get_batch_by_id")]
+	fn get_batch_by_id(&self, batch_id: u64) -> RpcResult<Option<Batch<AccountId32, u32>>>;
 }

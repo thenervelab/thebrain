@@ -65,3 +65,15 @@ pub enum ComputeRequestStatus {
     Failed,      // Task encountered an error
     Cancelled,   // Task was cancelled
 }
+
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, Serialize, Deserialize)]
+pub struct Batch<AccountId, BlockNumberFor> {
+    pub owner: AccountId,        // User who deposited
+    pub credit_amount: u128,     // Total credits in batch
+    pub alpha_amount: u128,      // Total Alpha purchased
+    pub remaining_credits: u128, // Remaining credits in the batch
+    pub remaining_alpha: u128,   // Remaining Alpha in the batch
+    pub pending_alpha: u128,     // Pending Alpha to be released
+    pub is_frozen: bool,         // Freezes Alpha distribution, not credit use
+    pub release_time: BlockNumberFor, // When Alpha can be distributed
+}
