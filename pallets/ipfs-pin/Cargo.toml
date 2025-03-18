@@ -1,0 +1,64 @@
+[package]
+name = "pallet-ipfs-pin"
+description = "pallet for managing IPFS pinning and unpinning."
+version = "0.1.0"
+license = "MIT"
+authors.workspace = true
+#homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { features = [
+	"derive",
+], workspace = true }
+scale-info = { features = [
+	"derive",
+], workspace = true }
+frame-benchmarking = { optional = true, workspace = true }
+frame-support.workspace = true
+frame-system.workspace = true
+sp-std = { default-features = false, workspace = true }
+pallet-registration = { default-features = false, workspace = true }
+log = { version = "0.4.22", default-features = false }
+sp-core = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+hex = { workspace = true }
+sp-debug-derive = { default-features = false, workspace = true }
+pallet-utils = { default-features = false, workspace = true }
+
+[dev-dependencies]
+sp-core = { default-features = true, workspace = true }
+sp-io = { default-features = true, workspace = true }
+sp-runtime = { default-features = true, workspace = true }
+
+[features]
+default = ["std"]
+std = [
+	"codec/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"frame-system/std",
+	"scale-info/std",
+	"sp-std/std",
+    "sp-core/std",
+	"sp-runtime/std",
+	"sp-io/std",
+	"pallet-registration/std",
+    "sp-debug-derive/std",
+	"pallet-utils/std"
+]
+runtime-benchmarks = [
+	"frame-benchmarking/runtime-benchmarks",
+	"frame-support/runtime-benchmarks",
+	"frame-system/runtime-benchmarks",
+]
+try-runtime = [
+	"frame-support/try-runtime",
+	"frame-system/try-runtime",
+]

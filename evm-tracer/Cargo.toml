@@ -1,0 +1,34 @@
+[package]
+name = "evm-tracer"
+version = "0.1.0"
+authors = { workspace = true }
+edition = "2021"
+license = "GPL-3.0-only"
+repository = { workspace = true }
+
+[dependencies]
+# Hippius
+evm-tracing-events = { workspace = true, features = ["evm-tracing"] }
+primitives-ext = { workspace = true }
+
+# Substrate
+parity-scale-codec = { workspace = true }
+sp-std = { workspace = true }
+
+# Frontier
+evm = { workspace = true }
+evm-gasometer = { workspace = true }
+evm-runtime = { workspace = true }
+
+[features]
+default = ["std"]
+std = [
+  "evm-gasometer/std",
+  "evm-runtime/std",
+  "evm-tracing-events/std",
+  "evm/std",
+  "evm/with-serde",
+  "primitives-ext/std",
+  "parity-scale-codec/std",
+  "sp-std/std",
+]

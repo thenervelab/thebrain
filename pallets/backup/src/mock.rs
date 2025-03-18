@@ -1,0 +1,174 @@
+use crate as pallet_backup;
+use frame_support::{
+    derive_impl, 
+    traits::{ConstU16, ConstU32, ConstU64, Everything, tokens::Balance},
+    PalletId,
+};
+use sp_core::H256;
+use sp_runtime::{
+    traits::{BlakeTwo256, IdentifyAccount, Verify, IdentityLookup},
+    MultiSignature, MultiSigner,
+    BuildStorage,
+};
+use frame_system::offchain::SendTransactionTypes;
+use crate::crypto;
+use frame_support::parameter_types;
+
+type Block = frame_system::mocking::MockBlock<Test>;
+type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
+type AccountId = <MultiSigner as IdentifyAccount>::AccountId;
+type Signature = MultiSignature;
+
+// Define constants and parameter types
+parameter_types! {
+    pub const BlocksPerDay: u32 = 14400; // Assuming 1 block per 6 seconds
+    pub const MarketplacePalletId: PalletId = PalletId(*b"mrktplce");
+    pub const MaxActiveSubscriptionsPerUser: u32 = 10;
+    pub const MarketplaceMinSubscriptionBlocks: u32 = 100;
+}
+
+// Configure a mock runtime to test the pallet.
+frame_support::construct_runtime!(
+    pub enum Test {
+        System: frame_system,
+        Backup: pallet_backup,
+        Marketplace: pallet_marketplace,
+        Balances: pallet_balances,
+        Compute: pallet_compute,
+        Utils: pallet_utils,
+        Notifications: pallet_notifications,
+        IpfsPin: pallet_ipfs_pin,
+        Credits: pallet_credits,
+        Registration: pallet_registration,
+    }
+);
+
+#[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
+impl frame_system::Config for Test {
+    type BaseCallFilter = Everything;
+    type BlockWeights = ();
+    type BlockLength = ();
+    type DbWeight = ();
+    type RuntimeOrigin = RuntimeOrigin;
+    type RuntimeCall = RuntimeCall;
+    type Block = Block;
+    type Hash = H256;
+    type Hashing = BlakeTwo256;
+    type AccountId = AccountId;
+    type Lookup = IdentityLookup<Self::AccountId>;
+    type RuntimeEvent = RuntimeEvent;
+    type BlockHashCount = ConstU64<250>;
+    type Version = ();
+    type PalletInfo = PalletInfo;
+    type AccountData = pallet_balances::AccountData<u64>;
+    type OnNewAccount = ();
+    type OnKilledAccount = ();
+    type SystemWeightInfo = ();
+    type SS58Prefix = ConstU16<42>;
+    type OnSetCode = ();
+    type MaxConsumers = ConstU32<16>;
+    type Nonce = u64;
+}
+
+impl frame_system::offchain::SigningTypes for Test {
+    type Public = <Signature as Verify>::Signer;
+    type Signature = Signature;
+}
+
+// Balances pallet mock
+impl pallet_balances::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+    type Balance = u64;
+    type DustRemoval = ();
+    type ExistentialDeposit = ConstU64<1>;
+    type AccountStore = System;
+    type RewardRemainder = ();
+    type MaxLocks = ConstU32<50>;
+    type MaxReserves = ConstU32<50>;
+    type MaxHolds = ConstU32<50>;
+    type MaxFreezes = ConstU32<50>;
+}
+
+// Compute pallet mock
+impl pallet_compute::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+    type MaxComputeRequests = ConstU32<100>;
+    type Currency = Balances;
+}
+
+// Marketplace pallet mock
+impl pallet_marketplace::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type Balance = u64;
+    type MinSubscriptionBlocks = MarketplaceMinSubscriptionBlocks;
+    type MaxActiveSubscriptions = MaxActiveSubscriptionsPerUser;
+    type UpdateOrigin = frame_system::EnsureRoot<AccountId>;
+    type PalletId = MarketplacePalletId;
+    type BlockDurationMillis = ConstU64<6000>;
+    type BlocksPerEra = ConstU32<14400>;
+    type StorageGracePeriod = ConstU32<0>;
+    type ComputeGracePeriod = ConstU32<0>;
+    type CustomHash = H256;
+    type BlocksPerHour = ConstU32<3600>;
+    type BlockChargeCheckInterval = ConstU32<8>;
+}
+
+// Utils pallet mock
+impl pallet_utils::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+}
+
+// Notifications pallet mock
+impl pallet_notifications::pallet::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+}
+
+// IPFS Pin pallet mock
+impl pallet_ipfs_pin::pallet::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+}
+
+// Credits pallet mock
+impl pallet_credits::pallet::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+}
+
+// Registration pallet mock
+impl pallet_registration::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+}
+
+// Backup pallet configuration
+impl pallet_backup::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type AuthorityId = crypto::TestAuthId;
+    type BlocksPerDay = BlocksPerDay;
+    type RuntimeCall = RuntimeCall;
+}
+
+// Implement SendTransactionTypes for Test
+impl SendTransactionTypes<crate::Call<Test>> for Test {
+    type OverarchingCall = RuntimeCall;
+    type Extrinsic = UncheckedExtrinsic;
+}
+
+// Build genesis storage according to the mock runtime.
+pub fn new_test_ext() -> sp_io::TestExternalities {
+    let t = frame_system::GenesisConfig::<Test>::default()
+        .build_storage()
+        .unwrap();
+
+    let mut ext = sp_io::TestExternalities::new(t);
+    ext.execute_with(|| {
+        System::set_block_number(1);
+    });
+    ext
+}

@@ -1,0 +1,47 @@
+[package]
+name = "pallet-subaccount"
+version = "4.0.0-dev"
+description = "Pallet for managing subaccounts."
+authors = ["The Nerve Lab"]
+homepage = "https://hippius.com"
+edition = "2021"
+license = "MIT"
+publish = false
+repository = "https://github.com/thenervelab/thebrain"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { workspace = true, default-features = false }
+scale-info = { workspace = true, default-features = false, features = ["derive"] }
+frame-benchmarking = { workspace = true, default-features = false , optional = true}
+frame-support = { workspace = true, default-features = false }
+frame-system = { workspace = true, default-features = false }
+sp-runtime = { workspace = true, default-features = false }
+sp-std = { workspace = true, default-features = false }
+sp-core = { workspace = true, default-features = false }
+sp-io = { workspace = true, default-features = false }
+
+log = "0.4.20"
+
+[dev-dependencies]
+pallet-assets = { workspace = true, default-features = false }
+pallet-timestamp = { workspace = true, default-features = false }
+pallet-treasury = { workspace = true, default-features = false }
+
+[features]
+default = ["std"]
+std = [
+	"codec/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"frame-system/std",
+	"scale-info/std",
+	"sp-runtime/std",
+	"sp-std/std",
+	"sp-core/std",
+	"sp-io/std",
+]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+try-runtime = ["frame-support/try-runtime"]

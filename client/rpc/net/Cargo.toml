@@ -1,0 +1,37 @@
+[package]
+name = "rpc-net"
+version = "0.1.0"
+authors = { workspace = true }
+edition = "2021"
+license = "GPL-3.0-only"
+repository = { workspace = true }
+
+[dependencies]
+futures = { workspace = true, features = ["compat"] }
+hex-literal = { workspace = true }
+jsonrpsee = { workspace = true, features = ["macros", "server"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+sc-network = { workspace = true }
+
+# Hippius
+client-evm-tracing = { workspace = true }
+rpc-core-net = { workspace = true }
+rpc-core-types = { workspace = true }
+
+# Substrate
+sc-client-api = { workspace = true }
+sc-utils = { workspace = true }
+sp-api = { workspace = true, features = ["std"] }
+sp-block-builder = { workspace = true, features = ["std"] }
+sp-blockchain = { workspace = true }
+sp-io = { workspace = true, features = ["std"] }
+sp-runtime = { workspace = true, features = ["std"] }
+
+# Frontier
+ethereum = { workspace = true, features = ["std", "with-codec"] }
+ethereum-types = { workspace = true, features = ["std"] }
+fc-db = { workspace = true }
+fc-rpc = { workspace = true, features = ["rpc-binary-search-estimate"] }
+fc-storage = { workspace = true }
+fp-rpc = { workspace = true, features = ["std"] }
+fc-api = { workspace = true }

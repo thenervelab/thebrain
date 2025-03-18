@@ -1,0 +1,41 @@
+[package]
+name = "pallet-account-profile"
+authors = ["The Nerve Lab"]
+description = "pallet for managing user account profiles and metadata in the Hippius network"
+version = "0.1.0"
+license = "MIT"
+edition = "2021"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { workspace = true, default-features = false }
+scale-info = { workspace = true, default-features = false }
+
+# Substrate
+frame-support = { default-features = false, workspace = true }
+frame-system = { default-features = false, workspace = true }
+frame-benchmarking = { default-features = false, workspace = true, optional = true }
+sp-std = { default-features = false, workspace = true }
+
+[dev-dependencies]
+serde  = { workspace = true }
+
+# Substrate
+sp-core = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+
+[features]
+default = ["std"]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+std = [
+	"codec/std",
+	"scale-info/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"frame-system/std",
+	"sp-std/std",
+]
+try-runtime = [ "frame-support/try-runtime" ]

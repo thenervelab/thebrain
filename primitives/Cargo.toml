@@ -1,0 +1,86 @@
+[package]
+name = "hippius-primitives"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+frame-support = { workspace = true }
+log = { workspace = true }
+parity-scale-codec = { workspace = true }
+scale-info = { workspace = true }
+serde = { workspace = true }
+smallvec = { workspace = true }
+sp-arithmetic = { workspace = true }
+sp-consensus-babe = { workspace = true }
+sp-core = { workspace = true }
+sp-runtime = { workspace = true }
+sp-std = { workspace = true }
+sp-staking = { workspace = true }
+ethabi = { workspace = true }
+
+
+# Arkworks
+ark-bn254 = { workspace = true, optional = true }
+ark-crypto-primitives = { workspace = true, default-features = false, optional = true }
+ark-ec = { workspace = true, default-features = false, optional = true }
+ark-ff = { workspace = true, default-features = false, optional = true }
+ark-groth16 = { workspace = true, default-features = false, optional = true }
+ark-serialize = { workspace = true, default-features = false, optional = true }
+ark-std = { workspace = true, default-features = false, optional = true }
+
+[dependencies.educe]
+workspace = true
+features = [
+  "Debug",
+  "Clone",
+  "Copy",
+  "PartialEq",
+  "Eq",
+  "PartialOrd",
+  "Ord",
+  "Hash",
+  "Default"
+]
+
+[dev-dependencies]
+hex = { workspace = true }
+
+[features]
+default = ["std"]
+std = [
+  "serde/std",
+  "sp-arithmetic/std",
+  "log/std",
+  "frame-support/std",
+  "sp-runtime/std",
+  "sp-core/std",
+  "parity-scale-codec/std",
+  "scale-info/std",
+  "sp-consensus-babe/std",
+  "sp-std/std",
+  "ark-std?/std",
+  "ark-bn254?/std",
+  "ark-crypto-primitives?/std",
+  "ark-ec?/std",
+  "ark-ff?/std",
+  "ark-groth16?/std",
+  "ark-serialize?/std",
+  "ethabi/std",
+  "sp-staking/std"
+]
+verifying = [
+  "ark-crypto-primitives",
+  "ark-ec",
+  "ark-ff",
+  "ark-std",
+  "ark-groth16",
+  "ark-serialize",
+  "ark-bn254",
+]
+integration-tests = []
+fast-runtime = []
+manual-seal = []

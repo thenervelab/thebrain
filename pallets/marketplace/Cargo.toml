@@ -1,0 +1,71 @@
+[package]
+name = "pallet-marketplace"
+version = "0.1.0"
+description = "marketplace pallet for decentralized  services"
+authors = ["The Nerve Lab"]
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+codec = { features = [
+	"derive",
+], workspace = true }
+scale-info = { features = [
+	"derive",
+], workspace = true }
+frame-support = { workspace = true, default-features = false }
+frame-system = { workspace = true, default-features = false }
+frame-benchmarking = { workspace = true, default-features = false, optional = true }
+pallet-assets = { workspace = true, default-features = false }
+pallet-balances = { workspace = true, default-features = false }
+sp-std = { workspace = true, default-features = false }
+sp-runtime = { workspace = true, default-features = false }
+sp-core = { workspace = true, default-features = false }
+sp-arithmetic = { workspace = true, default-features = false }
+serde = { version = "1.0", optional = true, features = ["derive"] }
+pallet-ipfs-pin = { workspace = true, default-features = false }
+sp-io = { default-features = false, workspace = true }
+pallet-compute = { workspace = true, default-features = false }
+pallet-storage-s3 = { workspace = true, default-features = false }
+hex = { workspace = true }
+log = { version = "0.4.22", default-features = false }
+pallet-notifications = { workspace = true }
+pallet-registration = { default-features = false, workspace = true }
+pallet-rankings = { default-features = false, workspace = true }
+pallet-credits = { default-features = false, workspace = true }
+num-traits = { version = "0.2.17", default-features = false }
+pallet-utils = { default-features = false, workspace = true }
+pallet-subaccount = { default-features = false, workspace = true }
+
+
+[dev-dependencies]
+sp-io = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407" }
+
+[features]
+default = ["std"]
+std = [
+    "codec/std",
+    "frame-support/std",
+    "frame-system/std",
+    "scale-info/std",
+    "sp-std/std",
+    "sp-runtime/std",
+    "pallet-assets/std",
+    "pallet-balances/std",
+    "sp-core/std",
+    "sp-arithmetic/std",
+    "pallet-ipfs-pin/std",
+    "pallet-compute/std",
+    "pallet-notifications/std",
+    "serde",
+    "pallet-registration/std",
+    "pallet-credits/std",
+    "num-traits/std",
+    "pallet-utils/std",
+    "pallet-rankings/std",
+    "pallet-subaccount/std",
+    "pallet-storage-s3/std",
+    "sp-io/std"
+]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+try-runtime = ["frame-support/try-runtime"]

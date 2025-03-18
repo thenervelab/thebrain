@@ -1,0 +1,73 @@
+[package]
+name = "pallet-bittensor"
+authors = ["The Nerve Lab"]
+description = "Pallet for managing bittensor network"
+version = "0.1.0"
+license = "MIT"
+edition = "2021"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { workspace = true, default-features = false }
+scale-info = { workspace = true, default-features = false }
+hex = { workspace = true }
+pallet-session = { workspace = true }
+pallet-registration = { default-features = false, workspace = true }
+pallet-execution-unit = { default-features = false, workspace = true }
+pallet-utils = { workspace = true, default-features = false }
+hippius-primitives = { workspace = true }
+
+# Substrate
+frame-support = { default-features = false, workspace = true }
+frame-system = { default-features = false, workspace = true }
+frame-benchmarking = { default-features = false, workspace = true, optional = true }
+sp-core = { default-features = false, workspace = true }
+log = { version = "0.4.22", default-features = false }
+sp-std = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+serde_json = { workspace = true }
+pallet-babe = { default-features = false, workspace = true }
+pallet-rankings = { default-features = false, workspace = true }
+pallet-metagraph = { default-features = false, workspace = true }
+sp-consensus-babe = { default-features = false, workspace = true }
+
+[dev-dependencies]
+serde  = { workspace = true }
+
+# Substrate
+sp-core = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+sp-std = { default-features = false, workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = ["std"]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+std = [
+	"codec/std",
+	"scale-info/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"frame-system/std",
+	"sp-runtime/std",
+	"sp-io/std",
+	"sp-std/std",
+	"sp-runtime/std",
+	"sp-core/std",
+	"pallet-babe/std",
+	"sp-consensus-babe/std",
+	"pallet-session/std",
+	"pallet-registration/std",
+	"pallet-execution-unit/std",
+	"pallet-metagraph/std",
+	"pallet-utils/std",
+	"pallet-rankings/std",
+	"hippius-primitives/std"
+]
+
+try-runtime = [ "frame-support/try-runtime" ]

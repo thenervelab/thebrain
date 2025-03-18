@@ -1,0 +1,62 @@
+name: Build and Deploy Hippius
+
+on:
+  push:
+    branches:
+      - main  # Change this if your branch is different
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y clang cmake pkg-config libssl-dev git
+
+      - name: Install Protocol Buffers Compiler (`protoc`)
+        run: |
+          sudo apt install -y protobuf-compiler
+          protoc --version  # Verify installation
+
+      - name: Install Rust 1.85 and required components
+        run: |
+          rustup install 1.85.0
+          rustup default 1.85.0
+          rustup override set 1.85.0
+          rustup target add wasm32-unknown-unknown --toolchain 1.85.0
+          rustup component add rust-src --toolchain 1.85.0-x86_64-unknown-linux-gnu
+          rustc --version  # Verify installation
+
+      - name: Build Substrate Node
+        run: cargo build --release
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hippius-binary
+          path: target/release/hippius  # Ensure this path is correct
+
+  # deploy:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Download Built Binary
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: hippius-binary
+  #         path: hippius
+
+  #     - name: Set Up SSH
+  #       env:
+  #         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+  #       run: |
+  #         mkdir -p ~/.ssh
+  #         echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+  #         chmod 600 ~/.ssh/id_rsa
+  #         ssh-keyscan -H 141.94.106.80 >> ~/.ssh/known_hosts
+
+  #     - name: Deploy to Server via rsync
+  #       run: rsync -avz hippius/ root@141.94.106.80:/var/www/html/

@@ -1,0 +1,55 @@
+[package]
+name = "rpc-weight"
+version = "0.1.0"
+authors = { workspace = true }
+edition = "2021"
+license = "GPL-3.0-only"
+repository = { workspace = true }
+
+[dependencies]
+futures = { workspace = true, features = ["compat"] }
+hex-literal = { workspace = true }
+jsonrpsee = { workspace = true, features = ["macros", "server"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+sc-network = { workspace = true }
+log = { version = "0.4.22", default-features = false }
+sp-keystore = { workspace = true }
+sc-keystore = { workspace = true }
+sp-keyring = { workspace = true }
+sp-core = { workspace = true }
+codec = { workspace = true }
+hex = { workspace = true }
+sp-core-hashing = { version = "9", default-features = false }
+lite-json = { version = "0.2.0", default-features = false }
+sp-std = { default-features = false, workspace = true }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde_json = "1.0"
+hippius-primitives = { workspace = true }
+
+# Hippius
+client-evm-tracing = { workspace = true }
+rpc-core-weight = { workspace = true }
+rpc-core-types = { workspace = true }
+
+sysinfo = { workspace = true }
+if-addrs = "0.6" 
+
+# Substrate
+sc-client-api = { workspace = true }
+sc-utils = { workspace = true }
+sp-api = { workspace = true, features = ["std"] }
+sp-block-builder = { workspace = true, features = ["std"] }
+sp-blockchain = { workspace = true }
+sp-io = { workspace = true, features = ["std"] }
+sp-runtime = { workspace = true, features = ["std"] }
+
+# Frontier
+ethereum = { workspace = true, features = ["std", "with-codec"] }
+ethereum-types = { workspace = true, features = ["std"] }
+fc-db = { workspace = true }
+fc-rpc = { workspace = true, features = ["rpc-binary-search-estimate"] }
+fc-storage = { workspace = true }
+fp-rpc = { workspace = true, features = ["std"] }
+fc-api = { workspace = true }
+
+

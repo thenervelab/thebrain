@@ -1,0 +1,27 @@
+[package]
+name = "rpc-txpool"
+version = "0.6.0"
+authors = { workspace = true }
+edition = "2021"
+license = "GPL-3.0-only"
+repository = { workspace = true }
+
+[dependencies]
+jsonrpsee = { workspace = true, features = ["macros", "server"] }
+serde = { workspace = true, features = ["derive"] }
+sha3 = { workspace = true }
+
+# Hippius
+rpc-core-txpool = { workspace = true }
+rpc-primitives-txpool = { workspace = true, features = ["std"] }
+
+# Substrate
+sc-transaction-pool = { workspace = true }
+sc-transaction-pool-api = { workspace = true }
+sp-api = { workspace = true }
+sp-blockchain = { workspace = true }
+sp-runtime = { workspace = true }
+
+# Frontier
+ethereum-types = { workspace = true, features = ["std"] }
+fc-rpc = { workspace = true }

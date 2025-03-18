@@ -1,0 +1,24 @@
+[package]
+name = "pallet-staking-reward-fn"
+version = "22.0.0"
+authors.workspace = true
+edition.workspace = true
+license = "MIT"
+homepage = "https://hippius.com"
+repository = "https://github.com/thenervelab/thebrain"
+repository.workspace = true
+description = "Reward function for FRAME staking pallet (polkadot v1.15.0)"
+
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lib]
+
+[dependencies]
+log = { workspace = true }
+sp-arithmetic.workspace = true
+
+[features]
+default = ["std"]
+std = ["log/std", "sp-arithmetic/std"]

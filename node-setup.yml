@@ -1,0 +1,108 @@
+---
+- name: Setup and Run Substrate Node
+  hosts: all
+  become: yes  # Run as sudo
+  vars:
+    substrate_dir: "{{ playbook_dir }}"
+
+  tasks:
+    - name: Install required dependencies
+      apt:
+        name:
+          - curl
+          - clang
+          - cmake
+          - pkg-config
+          - libssl-dev
+          - build-essential
+          - git
+          - jq
+          - libclang-dev
+        state: present
+        update_cache: yes
+
+    - name: Check if Rust is installed
+      command: rustc --version
+      register: rust_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Install Rust if not installed
+      shell: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      when: rust_check.rc != 0
+
+    - name: Add Rust to PATH
+      lineinfile:
+        path: ~/.bashrc
+        line: 'export PATH="$HOME/.cargo/bin:$PATH"'
+        create: yes
+      when: rust_check.rc != 0
+
+    - name: Reload shell environment to include Rust
+      shell: source ~/.bashrc
+      when: rust_check.rc != 0
+
+    - name: Pull latest changes from Git
+      shell: git pull
+      args:
+        chdir: "{{ playbook_dir }}"
+
+    - name: Remove old database and frontier directories
+      shell: |
+        rm -rf /root/.local/share/hippius/chains/hippius-testnet/db
+        rm -rf /root/.local/share/hippius/chains/hippius-testnet/frontier
+
+    - name: Build the Substrate node
+      shell: cargo build --release
+      args:
+        chdir: "{{ playbook_dir }}"
+      environment:
+        PATH: "{{ ansible_env.HOME }}/.cargo/bin:{{ ansible_env.PATH }}"
+
+    - name: Generate custom spec file
+      shell: |
+        rm -rf customSpec.json
+        ./target/release/hippius build-spec --disable-default-bootnode --chain testnet > customSpec.json
+      args:
+        chdir: "{{ playbook_dir }}"
+
+    - name: Copy custom spec file and binary to web directory
+      shell: |
+        rm -rf /var/www/html/*
+        cp -rp customSpec.json /var/www/html/
+        cp -rp target/release/hippius /var/www/html/
+      args:
+        chdir: "{{ playbook_dir }}"
+
+    - name: Create systemd service for Substrate node
+      copy:
+        dest: "/etc/systemd/system/substrate-node.service"
+        content: |
+          [Unit]
+          Description=Substrate Node (Hippius)
+          After=network.target
+
+          [Service]
+          User={{ ansible_user }}
+          ExecStart={{ playbook_dir }}/target/release/hippius --chain testnet --validator --unsafe-rpc-external --rpc-cors all --telemetry-url "wss://telemetry.polkadot.io/submit/ 1" --offchain-worker Always --pruning=archive
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd and enable Substrate service
+      systemd:
+        daemon_reload: yes
+        name: substrate-node
+        enabled: yes
+        state: restarted
+
+    - name: Check Substrate node status
+      command: systemctl status substrate-node
+      register: node_status
+      changed_when: false
+
+    - debug:
+        var: node_status.stdout_lines

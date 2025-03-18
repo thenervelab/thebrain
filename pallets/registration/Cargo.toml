@@ -1,0 +1,66 @@
+[package]
+name = "pallet-registration"
+authors = ["The Nerve Lab"]
+description = "FRAME pallet template for defining custom runtime logic."
+version = "0.1.0"
+license = "MIT"
+homepage = "https://hippius.com"
+repository = "https://github.com/thenervelab/thebrain"
+edition = "2021"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { workspace = true, default-features = false }
+scale-info = { workspace = true, default-features = false }
+sp-std = { default-features = false, workspace = true }
+pallet-session = { workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+log = { version = "0.4.22", default-features = false }
+sp-core = { default-features = false, workspace = true }	
+sp-consensus-babe = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+pallet-staking = { workspace = true }
+pallet-credits = { workspace = true }
+sp-staking = { workspace = true }
+
+# Substrate
+frame-support = { default-features = false, workspace = true }
+frame-system = { default-features = false, workspace = true }
+pallet-utils = { default-features = false, workspace = true }
+frame-benchmarking = { default-features = false, workspace = true, optional = true }
+pallet-babe = { default-features = false, workspace = true }
+pallet-balances = { workspace = true }
+
+[dev-dependencies]
+serde  = { workspace = true }
+
+# Substrate
+sp-core = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+
+[features]
+default = ["std"]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+std = [
+	"codec/std",
+	"scale-info/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"frame-system/std",
+	"sp-std/std",
+	"pallet-session/std",
+	"sp-runtime/std",
+	"sp-core/std",
+	"pallet-utils/std",
+	"pallet-babe/std",
+	"sp-consensus-babe/std",
+	"sp-io/std",
+	"pallet-staking/std",
+	"sp-staking/std",
+	"pallet-balances/std",
+	"pallet-credits/std",
+]
+try-runtime = [ "frame-support/try-runtime" ]

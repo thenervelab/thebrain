@@ -1,0 +1,98 @@
+name: Release
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      # Enhanced caching strategy
+      - name: Cache build dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            /var/lib/apt/lists
+            /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('**/release.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "frontier-build"
+          cache-directories: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev git clang libclang-dev protobuf-compiler
+
+      - name: Build Release Binary
+        run: |
+          RUSTFLAGS="-C target-cpu=native" cargo build --release
+        env:
+          CARGO_INCREMENTAL: 1
+          CARGO_NET_RETRY: 10
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          echo "RELEASE_TAG=release-$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.RELEASE_TAG }}
+          release_name: Release ${{ steps.tag.outputs.RELEASE_TAG }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./target/release/frontier
+          asset_name: frontier-ubuntu-22.04
+          asset_content_type: application/octet-stream
+
+      - name: Upload Release Binary Checksum
+        run: |
+          cd target/release
+          sha256sum frontier > frontier-ubuntu-22.04.sha256
+          
+      - name: Upload Checksum File
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./target/release/frontier-ubuntu-22.04.sha256
+          asset_name: frontier-ubuntu-22.04.sha256
+          asset_content_type: text/plain
