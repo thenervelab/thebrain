@@ -177,6 +177,7 @@ pub mod pallet {
         InsufficientBalanceForFee,
         FeeTooHigh,
         NodeTypeDisabled,
+        NodeTypeMismatch,
     }
 
     #[pallet::validate_unsigned]
@@ -263,6 +264,18 @@ pub mod pallet {
                 Error::<T>::NodeAlreadyRegistered
             );
 
+            // Check if the account ID already has a registered node
+            let existing_node = NodeRegistration::<T>::iter()
+            .find(|(_registered_node_id, registered_node_info)| {
+                if let Some(info) = registered_node_info {
+                    info.owner == who
+                } else {
+                    false
+                }
+            });
+
+            ensure!(existing_node.is_none(), Error::<T>::NodeAlreadyRegistered); // You can define a more specific error if needed
+
             // Check if the ipfs_node_id is already registered
             if let Some(ref ipfs_id) = ipfs_node_id {
                 // Iterate through all registered nodes to check for the ipfs_node_id
@@ -302,6 +315,16 @@ pub mod pallet {
             
                 // Check if the caller is in UIDs
                 let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == who_ss58);
+
+                // If the caller is in UIDs, check if the node_type matches the role
+                if is_in_uids {
+                    if let Some(uid) = uids.iter().find(|uid| uid.substrate_address.to_ss58check() == who_ss58) {
+                        ensure!(
+                            uid.role == node_type.to_role(),
+                            Error::<T>::NodeTypeMismatch
+                        );
+                    }
+                }
 
                 // Check if fee charging is enabled
                 if Self::fee_charging_enabled() && !is_in_uids{
