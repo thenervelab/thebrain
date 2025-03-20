@@ -22,7 +22,7 @@ pub mod pallet {
     use pallet_metagraph::Pallet as MetagraphPallet;
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_registration::{Pallet as RegistrationPallet, NodeRegistration, NodeType, NodeInfo};
-    use pallet_metagraph::UID;
+    use pallet_metagraph::{UID, Role};
     use pallet_utils::Pallet as UtilsPallet;
     use scale_info::prelude::string::String;
     use sp_core::crypto::Ss58Codec;
@@ -450,6 +450,9 @@ pub mod pallet {
             // remove validator uids
             log::info!("Validator UIDs: {:?}", validator_uids);
             uids.retain(|uid| !validator_uids.contains(&uid.id));
+
+            // Remove UIDs with role equal to Validator
+            uids.retain(|uid| uid.role != Role::Validator);
             log::info!("Remaining UIDs: {:?}", uids);
 
             // After checking all miners, add unmatched UIDs with weight 0
