@@ -125,6 +125,9 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type IPFSBaseUrl: Get<&'static str>;
+
+		#[pallet::constant]
+		type UnregistrationBuffer: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -303,10 +306,15 @@ pub mod pallet {
         }
     }
 
-
-
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
+
+            Self::handle_incorrect_registration(_n);
+
+            Weight::zero()
+        }
+		
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
 			match IpfsPinPallet::<T>::fetch_node_id() {
 				Ok(node_id) => {
@@ -2110,6 +2118,33 @@ pub mod pallet {
         bytes.copy_from_slice(&random_seed[..32]);
         bytes
     }
+
+	// Deleted all Registration with Incorrect Info
+	fn handle_incorrect_registration(current_block_number: BlockNumberFor<T>) {
+		let unregistration_period = T::UnregistrationBuffer::get();
+		if current_block_number % unregistration_period.into() == 0u32.into() {
+			let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
+			for miner in active_miners {
+				let metrics = Self::get_node_metrics(miner.node_id.clone());
+				if metrics.is_none() {
+			        // if node metrics not there then delete it
+					log::info!("Unregistering due to incorrect info: {:?}", miner.node_id);
+					pallet_registration::Pallet::<T>::unregister_node(miner.node_id.clone());
+				}else{
+					let registered_at = miner.registered_at;
+					let uptime_minutes = metrics.unwrap().uptime_minutes;
+					// since each block is of 6 secs
+					let uptime_in_blocks = (uptime_minutes * 60) / 6;
+					// buffer period before unregistration
+					let buffer = 100;
+					if current_block_number - registered_at > ( uptime_in_blocks + buffer ).into(){
+						log::info!("Unregistering dead node: {:?}", miner.node_id);
+						pallet_registration::Pallet::<T>::unregister_node(miner.node_id.clone());
+					}
+				}
+			}
+		}
+	}
 
 	/// Determine if we should execute offchain worker tasks based on BABE randomness
 	fn should_execute_offchain(current_block: u32, _random_seed: [u8; 32]) -> bool {

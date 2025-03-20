@@ -260,7 +260,7 @@ pub mod pallet {
             let uids = Self::get_uids();
             
             // The specific address we want to keep regardless
-            const KEEP_ADDRESS: &str = "5HonHw49JschEuuphquYwxbhCbjMFhUufJCboqCZ41KzX8SS";
+            const KEEP_ADDRESS: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
 
             // Get whitelisted validators
 			let whitelisted_validators = Self::whitelisted_validators();

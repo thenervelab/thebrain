@@ -559,10 +559,7 @@ pub mod pallet {
         pub fn force_unregister_node(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResultWithPostInfo {
             ensure_root(origin)?;
 
-            // Remove the node registration from storage
-            NodeRegistration::<T>::remove(node_id.clone());
-
-            Self::deposit_event(Event::NodeUnregistered { node_id });
+            Self::unregister_node(node_id);
             Ok(().into())
         }
     }
@@ -859,5 +856,11 @@ pub mod pallet {
 			}
 			active_nodes
 		}
+
+        pub fn unregister_node(node_id: Vec<u8>) {
+            NodeRegistration::<T>::remove(node_id.clone());
+            Self::deposit_event(Event::NodeUnregistered { node_id });
+        }
+        
     }
 }

@@ -129,7 +129,7 @@ impl NodeMetricsData {
         
         // Conditionally include capacity score only for storage miners
         let capacity_score = match _node_type {
-            NodeType::StorageMiner => (Self::calculate_capacity_score(metrics) as u64).saturating_div(100),
+            NodeType::StorageMiner => (Self::calculate_capacity_score::<T>(metrics) as u64).saturating_div(100),
             _ => 0, 
         };
 
@@ -428,16 +428,25 @@ impl NodeMetricsData {
         normalized_score
     }
 
-    fn calculate_capacity_score(metrics: &NodeMetricsData) -> u32 {
+    fn calculate_capacity_score<T: pallet_ipfs_pin::Config>(metrics: &NodeMetricsData) -> u32 {
         // Minimum storage requirement
         if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {
             return 0;
         }
 
+        let miner_ipfs_requests = pallet_ipfs_pin::FileStored::<T>::get(metrics.miner_id.clone());
+        let mut total_used_storage = 0;
+        for request in miner_ipfs_requests {            
+            // Count pinned files
+            if request.is_pinned {
+                total_used_storage += request.file_size_in_bytes as u64;
+            }
+        }
+
         // Usage scoring
         let usage_score = if metrics.ipfs_storage_max > 0 {
-            let usage_percent = (metrics.ipfs_repo_size * 100) / metrics.ipfs_storage_max;
-            let base_score = (metrics.ipfs_repo_size as u32)
+            let usage_percent = (total_used_storage * 100) / metrics.ipfs_storage_max;
+            let base_score = (total_used_storage as u32)
                 .saturating_mul(Self::INTERNAL_SCALING)
                 .saturating_div(metrics.ipfs_storage_max as u32);
 
@@ -460,7 +469,7 @@ impl NodeMetricsData {
 
         // Free space scoring
         let free_space_score = if metrics.ipfs_storage_max > 0 {
-            let free_percent = ((metrics.ipfs_storage_max - metrics.ipfs_repo_size) * 100) 
+            let free_percent = ((metrics.ipfs_storage_max - total_used_storage) * 100) 
                 / metrics.ipfs_storage_max;
 
             if free_percent < 10 {

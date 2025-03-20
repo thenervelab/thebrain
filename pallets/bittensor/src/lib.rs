@@ -412,7 +412,7 @@ pub mod pallet {
 
         // Refactored main weight calculation method
         pub fn calculate_weights_for_nodes() -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
-            let uids = MetagraphPallet::<T>::get_uids();
+            let mut uids = MetagraphPallet::<T>::get_uids();
             let all_nodes = RegistrationPallet::<T>::get_all_nodes_with_min_staked();
 
             // Collect metrics for all miners
@@ -434,20 +434,23 @@ pub mod pallet {
             let (compute_weights, compute_nodes_ss58, compute_miners_node_id, compute_miners_node_types, 
                  compute_uids, compute_weights_on_bittensor) = Self::calculate_compute_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
 
-                 
             let (gpu_weights, gpu_nodes_ss58, gpu_miners_node_id, gpu_miners_node_types, 
                 gpu_uids, gpu_weights_on_bittensor) = Self::calculate_gpu_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
    
             // Calculate weights for different validator types
             let (validator_weights, validator_nodes_ss58, validator_miners_node_id, validator_miners_node_types, 
-                 validator_uids, validator_weights_on_bittensor) = Self::calculate_validator_weights(&all_nodes, &all_nodes_metrics, &uids);
-
+                 validator_uids, _validator_weights_on_bittensor) = Self::calculate_validator_weights(&all_nodes, &all_nodes_metrics, &uids);
 
             let (storage_s3_weights, storage_s3_nodes_ss58, storage_s3_miners_node_id, storage_s3_miners_node_types, 
                 storage_s3_uids, storage_s3_weights_on_bittensor) = Self::calculate_storage_s3_weights(&all_nodes, &all_nodes_metrics, &uids);
    
-            let mut all_uids_on_bittensor: Vec<u16> = [storage_uids, compute_uids, gpu_uids, validator_uids, storage_s3_uids].concat();
-            let mut all_weights_on_bitensor: Vec<u16> = [storage_weights_on_bittensor, compute_weights_on_bittensor, gpu_weights_on_bittensor, validator_weights_on_bittensor, storage_s3_weights_on_bittensor].concat();
+            let mut all_uids_on_bittensor: Vec<u16> = [storage_uids, compute_uids, gpu_uids, storage_s3_uids].concat();
+            let mut all_weights_on_bitensor: Vec<u16> = [storage_weights_on_bittensor, compute_weights_on_bittensor, gpu_weights_on_bittensor, storage_s3_weights_on_bittensor].concat();
+
+            // remove validator uids
+            log::info!("Validator UIDs: {:?}", validator_uids);
+            uids.retain(|uid| !validator_uids.contains(&uid.id));
+            log::info!("Remaining UIDs: {:?}", uids);
 
             // After checking all miners, add unmatched UIDs with weight 0
             for uid in uids.iter() {
@@ -456,7 +459,7 @@ pub mod pallet {
                     all_weights_on_bitensor.push(0);
                 }
             }
-
+            log::info!("All UIDs on BitTensor: {:?}", all_uids_on_bittensor);
             // Combine results
             (
                 storage_weights, storage_nodes_ss58, storage_miners_node_id, storage_miners_node_types,
