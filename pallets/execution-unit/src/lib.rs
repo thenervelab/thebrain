@@ -615,7 +615,7 @@ pub mod pallet {
 		
 			// Create the new OfflineStatus entry
 			let offline_status = OfflineStatus {
-				miner_node_id: miner_id,
+				miner_node_id: miner_id.clone(),
 				reportor_node_id: node_id,
 				at_block: block_number,
 			};
@@ -628,7 +628,9 @@ pub mod pallet {
 		
 			// Store the updated list back in the storage
 			DowntimeStatus::<T>::put(current_downtime_status);
-		
+
+			pallet_registration::Pallet::<T>::do_unregister_node(miner_id.clone());
+			
 			// Return the result
 			Ok(().into())
 		}
@@ -2119,27 +2121,35 @@ pub mod pallet {
         bytes
     }
 
-	// Deleted all Registration with Incorrect Info
 	fn handle_incorrect_registration(current_block_number: BlockNumberFor<T>) {
-		let unregistration_period = T::UnregistrationBuffer::get();
-		if current_block_number % unregistration_period.into() == 0u32.into() {
+		let unregistration_period: BlockNumberFor<T> = T::UnregistrationBuffer::get().into();
+		let min_period = 50u32;
+		let max_period = 70u32;
+		let range = max_period - min_period;
+	
+		// Use block number to create a pseudo-random offset
+		let pseudo_random_offset = (current_block_number % range.into()) + min_period.into();
+		let adjusted_period = unregistration_period + pseudo_random_offset - (range / 2).into();
+	
+		// Check if current block matches the adjusted period
+		if current_block_number % adjusted_period == 0u32.into() {
 			let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
 			for miner in active_miners {
 				let metrics = Self::get_node_metrics(miner.node_id.clone());
 				if metrics.is_none() {
-			        // if node metrics not there then delete it
+					// If node metrics are not there, delete it
 					log::info!("Unregistering due to incorrect info: {:?}", miner.node_id);
-					pallet_registration::Pallet::<T>::unregister_node(miner.node_id.clone());
-				}else{
+					pallet_registration::Pallet::<T>::do_unregister_node(miner.node_id.clone());
+				} else {
 					let registered_at = miner.registered_at;
 					let uptime_minutes = metrics.unwrap().uptime_minutes;
-					// since each block is of 6 secs
+					// Since each block is 6 seconds
 					let uptime_in_blocks = (uptime_minutes * 60) / 6;
-					// buffer period before unregistration
+					// Buffer period before unregistration
 					let buffer = 100;
-					if current_block_number - registered_at > ( uptime_in_blocks + buffer ).into(){
+					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
 						log::info!("Unregistering dead node: {:?}", miner.node_id);
-						pallet_registration::Pallet::<T>::unregister_node(miner.node_id.clone());
+						pallet_registration::Pallet::<T>::do_unregister_node(miner.node_id.clone());
 					}
 				}
 			}

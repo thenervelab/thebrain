@@ -178,6 +178,8 @@ pub mod pallet {
         FeeTooHigh,
         NodeTypeDisabled,
         NodeTypeMismatch,
+        NodeNotRegistered,
+        NotNodeOwner
     }
 
     #[pallet::validate_unsigned]
@@ -559,7 +561,30 @@ pub mod pallet {
         pub fn force_unregister_node(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResultWithPostInfo {
             ensure_root(origin)?;
 
-            Self::unregister_node(node_id);
+            Self::do_unregister_node(node_id);
+            Ok(().into())
+        }
+
+        #[pallet::call_index(8)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn unregister_node(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
+
+            // Ensure that the node is registered
+            ensure!(
+                NodeRegistration::<T>::contains_key(&node_id),
+                Error::<T>::NodeNotRegistered
+            );
+
+            // Retrieve the node info to check ownership
+            let node_info = NodeRegistration::<T>::get(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Ensure the caller is the owner of the node
+            ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
+
+            // Call the existing unregister logic
+            Self::do_unregister_node(node_id);
+
             Ok(().into())
         }
     }
@@ -857,7 +882,7 @@ pub mod pallet {
 			active_nodes
 		}
 
-        pub fn unregister_node(node_id: Vec<u8>) {
+        pub fn do_unregister_node(node_id: Vec<u8>) {
             NodeRegistration::<T>::remove(node_id.clone());
             Self::deposit_event(Event::NodeUnregistered { node_id });
         }

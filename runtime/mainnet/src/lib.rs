@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 1212,
+	spec_version: 1214,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1305,7 +1305,7 @@ parameter_types! {
 	pub const GetReadProofRpcMethod: &'static str = "state_getReadProof";
 	pub const SystemHealthRpcMethod: &'static str = "system_health";
 	pub const IPFSBaseUrl: &'static str = "http://localhost:5001";
-	pub const UnregistrationBuffer : u32 = (EPOCH_DURATION_IN_BLOCKS * 2) as u32;
+	pub const UnregistrationBuffer : u32 = 60;
 }
 
 impl pallet_execution_unit::Config for Runtime {
