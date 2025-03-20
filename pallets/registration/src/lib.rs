@@ -446,39 +446,6 @@ pub mod pallet {
             // Get the current block number
             let current_block_number = <frame_system::Pallet<T>>::block_number();
 
-            // Check if the account ID already has a registered node
-            let existing_node = NodeRegistration::<T>::iter()
-            .find(|(_registered_node_id, registered_node_info)| {
-                if let Some(info) = registered_node_info {
-                    info.owner == owner
-                } else {
-                    false
-                }
-            });
-
-            ensure!(existing_node.is_none(), Error::<T>::NodeAlreadyRegistered); // You can define a more specific error if needed            
-
-            // Get all UIDs using the MetagraphInfo provider
-            let uids = T::MetagraphInfo::get_all_uids();
-
-            if let Ok(account_bytes) = owner.clone().encode().try_into() {
-                let account = AccountId32::new(account_bytes);
-                let who_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default()).to_ss58check();
-            
-                // Check if the caller is in UIDs
-                let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == who_ss58);
-
-                // If the caller is in UIDs, check if the node_type matches the role
-                if is_in_uids {
-                    if let Some(uid) = uids.iter().find(|uid| uid.substrate_address.to_ss58check() == who_ss58) {
-                        ensure!(
-                            uid.role == node_type.to_role(),
-                            Error::<T>::NodeTypeMismatch
-                        );
-                    }
-                }            
-            }
-
             let node_info = NodeInfo {
                 node_id: node_id.clone(),
                 node_type,

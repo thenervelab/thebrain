@@ -347,19 +347,17 @@ pub mod pallet {
 							Self::do_update_metrics_data(node_id.clone(), node_type.clone());
 
 							// commenting purging of nodes bacuse we will have other nodes as well
-							// Self::purge_nodes_if_deregistered_on_bittensor(node_id.clone());
-							
+							// Self::purge_nodes_if_deregistered_on_bittensor(node_id.clone());							
 							if node_type == NodeType::Validator {
 								Self::process_pending_compute_requests();
 								Self::process_pending_storage_requests(node_id.clone(), block_number);
-								Self::perform_pin_checks_to_miners(node_id);
+								Self::perform_pin_checks_to_miners(node_id.clone());
+								Self::perform_ping_checks_to_miners(node_id.clone());
 							}
 							log::info!("✅ Executed offchain worker tasks at block {}", current_block);
 						} else {
 							log::info!("Skipping execution at block {}", current_block);
 						}
-					} else {
-						log::info!("Can't Find Validator node");
 					}
 				}
 				Err(e) => {
@@ -1399,45 +1397,61 @@ pub mod pallet {
 				return Err(http::Error::Unknown);
 			}
 
-		
 			Ok(node_ids)
 		}
 		
 		// Helper function to ping an IPFS node to track uptime
 		fn ping_node(node_id_bytes: Vec<u8>) -> Result<bool, http::Error> {
-
 			let node_id = sp_std::str::from_utf8(&node_id_bytes).map_err(|_| {
 				log::error!("Failed to convert hash to string");
 				http::Error::Unknown
 			})?;
-
-			let url = format!("{}/api/v0/swarm/peers/ping?arg={}", T::IPFSBaseUrl::get(), node_id);
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
+			log::info!("Pinging node: {}", node_id);
+			// Update the URL to include the count parameter
+			let url = format!("{}/api/v0/ping?arg={}&count=5", T::IPFSBaseUrl::get(), node_id);
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(15_000));
 
 			// Use POST instead of GET, as ping typically requires a POST request
 			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
 
 			let pending = request
-			.deadline(deadline)
-			.send()
-			.map_err(|err| {
-				log::info!("Error sending ping request: {:?}", err);
-				sp_runtime::offchain::http::Error::IoError
-			})?;
+				.deadline(deadline)
+				.send()
+				.map_err(|err| {
+					log::info!("Error sending ping request: {:?}", err);
+					sp_runtime::offchain::http::Error::IoError
+				})?;
 
 			let response = pending
-			.try_wait(deadline)
-			.map_err(|err| {
-				log::info!("Error waiting for ping response: {:?}", err);
-				sp_runtime::offchain::http::Error::DeadlineReached
-			})??;
+				.try_wait(deadline)
+				.map_err(|err| {
+					log::info!("Error waiting for ping response: {:?}", err);
+					sp_runtime::offchain::http::Error::DeadlineReached
+				})??;
 
+			log::info!("Ping response: {:?}", response);
+			
 			// Check if the response code is 200 (OK)
 			if response.code == 200 {
-				Ok(true)
+				let response_body = response.body().collect::<Vec<u8>>();
+				let body_str = core::str::from_utf8(&response_body).unwrap_or("");
+
+				// Split the response body into lines to count success messages
+				let success_count = body_str.lines().filter(|line| line.contains("\"Success\":true")).count();
+
+				// Check if we have at least 5 successful pings
+				if success_count >= 5 {
+					log::info!("Node {} pinged successfully at least 5 times.", node_id);
+					return Ok(true);
+				} else {
+					log::info!("Node {} did not respond successfully 5 times: {}", node_id, body_str);
+					return Ok(false);
+				}
 			} else {
-				log::info!("Node {} is offline or unreachable (status code: {})", node_id, response.code);
-				Ok(false)
+				let response_body = response.body().collect::<Vec<u8>>();
+				let body_str = core::str::from_utf8(&response_body).unwrap_or("");
+				log::info!("Node {} returned an error (status code: {}): {}", node_id, response.code, body_str);
+				return Ok(false);
 			}
 		}
 
@@ -1588,23 +1602,6 @@ pub mod pallet {
 									});
 									pallet_ipfs_pin::Pallet::<T>::update_ipfs_request_storage(miner_node_id.clone(), files_stored_for_miner);
 								}
-								// check if the miner's ipfs node  is online or not 
-								match Self::ping_node(ipfs_node_id.clone()) {
-									Ok(is_online) => {
-										if is_online {
-											total_pin_checks += 1;
-											successful_pin_checks += 1;
-											
-										} else {
-											total_pin_checks += 1;
-											let current_block = frame_system::Pallet::<T>::block_number();
-											Self::call_store_offline_status_of_miner(node_id.clone(), miner_node_id.clone(),current_block);
-										}
-									},
-									Err(err) => {
-										log::error!("Error pinging node {}: {:?}", sp_std::str::from_utf8(&miner_node_id).unwrap_or("<Invalid UTF-8>"), err);
-									}
-								}
 							} else {
 								log::info!("Node ID {:?} does not have an associated IPFS node ID",sp_std::str::from_utf8(&node_info.node_id).unwrap_or("<Invalid UTF-8>"));
 							}
@@ -1618,6 +1615,34 @@ pub mod pallet {
 			}
 		}
 
+		// perform health checks and see if the miner is pinned the file / updates the node metrics fro miners
+		pub fn perform_ping_checks_to_miners(node_id: Vec<u8>) {
+			let active_miners  = pallet_registration::Pallet::<T>::get_all_active_storage_miners();
+			for miner in active_miners {
+				let miner_node_id: Vec<u8> = miner.node_id;
+				match pallet_registration::Pallet::<T>::get_registered_node(miner_node_id.clone()) {
+					Ok(node_info) => {
+						// Check if ipfs_node_id is present in ipfs_nodes_who_pinned
+						if let Some(ipfs_node_id) = node_info.ipfs_node_id {
+							// check if the miner's ipfs node  is online or not 
+							match Self::ping_node(ipfs_node_id.clone()) {
+								Ok(is_online) => {
+									if !is_online {
+										let current_block = frame_system::Pallet::<T>::block_number();
+										Self::call_store_offline_status_of_miner(node_id.clone(), miner_node_id.clone(),current_block);
+									}
+								},
+								Err(err) => {
+									log::error!("Ipfs for Error pinging node {}: {:?}", sp_std::str::from_utf8(&miner_node_id).unwrap_or("<Invalid UTF-8>"), err);
+								}
+							}
+						}
+					},
+					Err(err) => log::info!("Failed to get node info: {}", err),
+				}
+			}
+		}
+		
 		pub fn process_pending_storage_requests(node_id: Vec<u8>, block_number: BlockNumberFor<T>) {
 			let active_storage_miners = pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
 			let pending_storage_requests = pallet_ipfs_pin::Pallet::<T>::get_pending_storage_requests();
@@ -2135,21 +2160,21 @@ pub mod pallet {
 		if current_block_number % adjusted_period == 0u32.into() {
 			let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
 			for miner in active_miners {
-				let metrics = Self::get_node_metrics(miner.node_id.clone());
-				if metrics.is_none() {
-					// If node metrics are not there, delete it
-					log::info!("Unregistering due to incorrect info: {:?}", miner.node_id);
-					pallet_registration::Pallet::<T>::do_unregister_node(miner.node_id.clone());
-				} else {
-					let registered_at = miner.registered_at;
-					let uptime_minutes = metrics.unwrap().uptime_minutes;
-					// Since each block is 6 seconds
-					let uptime_in_blocks = (uptime_minutes * 60) / 6;
-					// Buffer period before unregistration
-					let buffer = 100;
-					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
-						log::info!("Unregistering dead node: {:?}", miner.node_id);
+				if current_block_number - miner.registered_at > 36u32.into() {
+					let metrics = Self::get_node_metrics(miner.node_id.clone());
+					if metrics.is_none() {
+						// If node metrics are not there, delete it
 						pallet_registration::Pallet::<T>::do_unregister_node(miner.node_id.clone());
+					} else {
+						let registered_at = miner.registered_at;
+						let uptime_minutes = metrics.unwrap().uptime_minutes;
+						// Since each block is 6 seconds
+						let uptime_in_blocks = (uptime_minutes * 60) / 6;
+						// Buffer period before unregistration
+						let buffer = 300;
+						if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
+							pallet_registration::Pallet::<T>::do_unregister_node(miner.node_id.clone());
+						}
 					}
 				}
 			}

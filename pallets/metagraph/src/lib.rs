@@ -428,8 +428,6 @@ pub mod pallet {
                                     (_, Err(e)) => log::error!("Error fetching dividends: {:?}", e),
                                 }
                             };
-                        } else {
-                            log::info!("Can't find Validator node");
                         }
                     }
                     Err(e) => {
