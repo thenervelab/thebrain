@@ -94,8 +94,10 @@ pub mod pallet {
 }
 
 
-pub trait MetagraphInfoProvider {
+pub trait MetagraphInfoProvider<T: frame_system::Config> {
     fn get_all_uids() -> Vec<UID>;
+
+    fn get_whitelisted_validators() -> Vec<T::AccountId>;
 }
 
 

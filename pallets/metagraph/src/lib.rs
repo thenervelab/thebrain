@@ -710,7 +710,7 @@ pub mod pallet {
     }
 }
 
-impl<T: Config> MetagraphInfoProvider for Pallet<T> {
+impl<T: Config> MetagraphInfoProvider<T> for Pallet<T> {
     fn get_all_uids() -> Vec<pallet_utils::UID> {
         // Get the UIDs from storage
         let registered_uids = Self::get_all_registered_uids();
@@ -730,6 +730,10 @@ impl<T: Config> MetagraphInfoProvider for Pallet<T> {
                 substrate_address: uid.substrate_address,
             })
             .collect()
+    }
+
+    fn get_whitelisted_validators() -> Vec<T::AccountId> {
+        Self::whitelisted_validators()
     }
 }
 

@@ -155,13 +155,24 @@ pub mod pallet {
                     let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                     
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageMiner, &metrics, all_nodes_metrics, &geo_distribution);
+
+                    let current_block_number = <frame_system::Pallet<T>>::block_number();
+					let registered_at = miner.registered_at;
+					let uptime_minutes = metrics.uptime_minutes;
+					// Since each block is 6 seconds
+					let uptime_in_blocks = (uptime_minutes * 60) / 6;
+					// Buffer period before unregistration
+					let buffer = 300;
+					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
+                        weight = 0;
+					}
 
                     storage_weights.push(weight as u16);
                     storage_miners_node_id.push(miner.node_id.clone());
                     storage_miners_node_types.push(miner.node_type.clone());
                     storage_nodes_ss58.push(miner_ss58.clone().into());
-
+					
                     // Update Bittensor UIDs
                     for uid in uids.iter() {
                         if uid.substrate_address.to_ss58check() == miner_ss58 {
@@ -175,14 +186,6 @@ pub mod pallet {
                     }
                 }
             }
-
-            // // After checking all miners, add unmatched UIDs with weight 0
-            // for uid in uids.iter() {
-            //     if !all_uids_on_bittensor.contains(&uid.id) {
-            //         all_uids_on_bittensor.push(uid.id);
-            //         all_weights_on_bitensor.push(0);
-            //     }
-            // }
 
             (storage_weights, storage_nodes_ss58, storage_miners_node_id, 
              storage_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
@@ -210,7 +213,18 @@ pub mod pallet {
                     let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                     
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageS3, &metrics, all_nodes_metrics, &geo_distribution);
+                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageS3, &metrics, all_nodes_metrics, &geo_distribution);
+
+                    let current_block_number = <frame_system::Pallet<T>>::block_number();
+                    let registered_at = miner.registered_at;
+					let uptime_minutes = metrics.uptime_minutes;
+					// Since each block is 6 seconds
+					let uptime_in_blocks = (uptime_minutes * 60) / 6;
+					// Buffer period before unregistration
+					let buffer = 300;
+					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
+                        weight = 0;
+					}
 
                     storage_s3_weights.push(weight as u16);
                     storage_s3_miners_node_id.push(miner.node_id.clone());
@@ -230,14 +244,6 @@ pub mod pallet {
                     }
                 }
             }
-
-            // // After checking all miners, add unmatched UIDs with weight 0
-            // for uid in uids.iter() {
-            //     if !all_uids_on_bittensor.contains(&uid.id) {
-            //         all_uids_on_bittensor.push(uid.id);
-            //         all_weights_on_bitensor.push(0);
-            //     }
-            // }
 
             (storage_s3_weights, storage_s3_nodes_ss58, storage_s3_miners_node_id, 
              storage_s3_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
@@ -266,7 +272,18 @@ pub mod pallet {
                     let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                     
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::Validator, &metrics, all_nodes_metrics, &geo_distribution);
+                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::Validator, &metrics, all_nodes_metrics, &geo_distribution);
+
+                    let current_block_number = <frame_system::Pallet<T>>::block_number();
+                    let registered_at = miner.registered_at;
+					let uptime_minutes = metrics.uptime_minutes;
+					// Since each block is 6 seconds
+					let uptime_in_blocks = (uptime_minutes * 60) / 6;
+					// Buffer period before unregistration
+					let buffer = 300;
+					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
+                        weight = 0;
+					}
 
                     validator_weights.push(weight as u16);
                     validator_miners_node_id.push(miner.node_id.clone());
@@ -286,14 +303,6 @@ pub mod pallet {
                     }
                 }
             }
-
-            // // After checking all miners, add unmatched UIDs with weight 0
-            // for uid in uids.iter() {
-            //     if !all_uids_on_bittensor.contains(&uid.id) {
-            //         all_uids_on_bittensor.push(uid.id);
-            //         all_weights_on_bitensor.push(0);
-            //     }
-            // }
 
             (validator_weights, validator_nodes_ss58, validator_miners_node_id, 
              validator_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
@@ -321,7 +330,18 @@ pub mod pallet {
                     let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                     
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::GpuMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::GpuMiner, &metrics, all_nodes_metrics, &geo_distribution);
+
+                    let current_block_number = <frame_system::Pallet<T>>::block_number();
+                    let registered_at = miner.registered_at;
+					let uptime_minutes = metrics.uptime_minutes;
+					// Since each block is 6 seconds
+					let uptime_in_blocks = (uptime_minutes * 60) / 6;
+					// Buffer period before unregistration
+					let buffer = 300;
+					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
+                        weight = 0;
+					}
 
                     gpu_weights.push(weight as u16);
                     gpu_miners_node_id.push(miner.node_id.clone());
@@ -341,14 +361,6 @@ pub mod pallet {
                     }
                 }
             }
-
-            // // After checking all miners, add unmatched UIDs with weight 0
-            // for uid in uids.iter() {
-            //     if !all_uids_on_bittensor.contains(&uid.id) {
-            //         all_uids_on_bittensor.push(uid.id);
-            //         all_weights_on_bitensor.push(0);
-            //     }
-            // }
 
             (gpu_weights, gpu_nodes_ss58, gpu_miners_node_id, 
              gpu_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
@@ -377,7 +389,18 @@ pub mod pallet {
                     let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                     
                     geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let weight = WeightCalculation::calculate_weight::<T>(NodeType::ComputeMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::ComputeMiner, &metrics, all_nodes_metrics, &geo_distribution);
+
+                    let current_block_number = <frame_system::Pallet<T>>::block_number();
+                    let registered_at = miner.registered_at;
+					let uptime_minutes = metrics.uptime_minutes;
+					// Since each block is 6 seconds
+					let uptime_in_blocks = (uptime_minutes * 60) / 6;
+					// Buffer period before unregistration
+					let buffer = 300;
+					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
+                        weight = 0;
+					}
 
                     compute_weights.push(weight as u16);
                     compute_miners_node_id.push(miner.node_id.clone());
@@ -397,14 +420,6 @@ pub mod pallet {
                     }
                 }
             }
-
-            // // After checking all miners, add unmatched UIDs with weight 0
-            // for uid in uids.iter() {
-            //     if !all_uids_on_bittensor.contains(&uid.id) {
-            //         all_uids_on_bittensor.push(uid.id);
-            //         all_weights_on_bitensor.push(0);
-            //     }
-            // }
 
             (compute_weights, compute_nodes_ss58, compute_miners_node_id, 
              compute_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)

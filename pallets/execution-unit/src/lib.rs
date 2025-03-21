@@ -352,7 +352,7 @@ pub mod pallet {
 								Self::process_pending_compute_requests();
 								Self::process_pending_storage_requests(node_id.clone(), block_number);
 								Self::perform_pin_checks_to_miners(node_id.clone());
-								Self::perform_ping_checks_to_miners(node_id.clone());
+								// Self::perform_ping_checks_to_miners(node_id.clone());
 							}
 							log::info!("✅ Executed offchain worker tasks at block {}", current_block);
 						} else {
@@ -2160,21 +2160,12 @@ pub mod pallet {
 		if current_block_number % adjusted_period == 0u32.into() {
 			let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
 			for miner in active_miners {
+				// Check if the miner has been registered for more than 36 blocks
 				if current_block_number - miner.registered_at > 36u32.into() {
 					let metrics = Self::get_node_metrics(miner.node_id.clone());
 					if metrics.is_none() {
 						// If node metrics are not there, delete it
 						pallet_registration::Pallet::<T>::do_unregister_node(miner.node_id.clone());
-					} else {
-						let registered_at = miner.registered_at;
-						let uptime_minutes = metrics.unwrap().uptime_minutes;
-						// Since each block is 6 seconds
-						let uptime_in_blocks = (uptime_minutes * 60) / 6;
-						// Buffer period before unregistration
-						let buffer = 300;
-						if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
-							pallet_registration::Pallet::<T>::do_unregister_node(miner.node_id.clone());
-						}
 					}
 				}
 			}

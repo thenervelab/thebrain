@@ -58,7 +58,7 @@ pub mod pallet {
     #[pallet::config]
     pub trait Config: frame_system::Config  + pallet_babe::Config + pallet_balances::Config + pallet_utils::Config + pallet_credits::Config + SendTransactionTypes<Call<Self>> + pallet_staking::Config{
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-        type MetagraphInfo: MetagraphInfoProvider;
+        type MetagraphInfo: MetagraphInfoProvider<Self>;
         /// The minimum amount that must be staked by a miner
         #[pallet::constant]
         type MinerStakeThreshold: Get<u32>;
@@ -320,11 +320,17 @@ pub mod pallet {
 
                 // If the caller is in UIDs, check if the node_type matches the role
                 if is_in_uids {
-                    if let Some(uid) = uids.iter().find(|uid| uid.substrate_address.to_ss58check() == who_ss58) {
-                        ensure!(
-                            uid.role == node_type.to_role(),
-                            Error::<T>::NodeTypeMismatch
-                        );
+
+                    let whitelist = T::MetagraphInfo::get_whitelisted_validators();
+                    let is_whitelisted = whitelist.iter().any(|validator|  validator == &who);
+
+                    if !is_whitelisted{
+                        if let Some(uid) = uids.iter().find(|uid| uid.substrate_address.to_ss58check() == who_ss58) {
+                            ensure!(
+                                uid.role == node_type.to_role(),
+                                Error::<T>::NodeTypeMismatch
+                            );
+                        }
                     }
                 }
 
