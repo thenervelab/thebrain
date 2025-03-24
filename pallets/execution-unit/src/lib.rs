@@ -112,7 +112,7 @@ pub mod pallet {
 		type SystemInfoRpcMethod: Get<&'static str>;
 
 		// Define block time as a runtime parameter
-		type BlockTime: Get<u64>;
+		type BlockTime: Get<u32>;
 
 		// Define block time as a runtime parameter
 		type BlockCheckInterval: Get<u32>;
@@ -181,7 +181,7 @@ pub mod pallet {
 
 	#[pallet::storage]
 	pub(super) type DowntimeStatus<T: Config> = StorageValue<_, Vec<OfflineStatus<BlockNumberFor<T>>>, ValueQuery>;
-	
+
 	// #[pallet::storage]
 	// pub type NodeSpecs<T: Config> = StorageMap<
 	// 	_, 
@@ -244,7 +244,7 @@ pub mod pallet {
 						.propagate(true)
 						.build()
                 },
-                Call::update_metrics_data { node_id, signature: _, 
+                Call::update_metrics_data { node_id, signature: _,
 					storage_proof_time_ms: _,
 					latency_ms: _,
 					peer_count: _,
@@ -256,6 +256,7 @@ pub mod pallet {
 					consecutive_reliable_days: _, 
 					recent_downtime_hours: _,  
 					node_type: _,
+					block_number: _,
 				} => {
 					let current_block = frame_system::Pallet::<T>::block_number();
 					// Create a unique hash combining all relevant data
@@ -323,11 +324,14 @@ pub mod pallet {
 					if node_info.is_some() {
 						// Get BABE randomness
 						let random_seed = Self::get_babe_randomness();
+						let node_type = node_info.unwrap().node_type;
 						
 						// update blocktime for uptime tracking
 						let check_intetrval = <T as pallet::Config>::BlockCheckInterval::get();
+						// last metrics updated at	
 						if block_number % check_intetrval.into() == Zero::zero() {
 							Self::call_update_block_time(node_id.clone(), block_number);
+							Self::do_update_metrics_data(node_id.clone(), node_type.clone(), block_number);
 						}
 	
 						let current_block = block_number.saturated_into::<u32>();
@@ -341,10 +345,9 @@ pub mod pallet {
 								STORAGE_KEY,
 								&current_block.to_be_bytes(),
 							);
-							let node_type = node_info.unwrap().node_type;
+
 							// Execute tasks with BABE randomness
 							Self::save_hardware_info(node_id.clone(), node_type.clone());
-							Self::do_update_metrics_data(node_id.clone(), node_type.clone());
 
 							// commenting purging of nodes bacuse we will have other nodes as well
 							// Self::purge_nodes_if_deregistered_on_bittensor(node_id.clone());							
@@ -447,9 +450,9 @@ pub mod pallet {
 					existing_metrics.current_storage_bytes = (system_info.storage_total_mb * 1024 * 1024) - (system_info.storage_free_mb * 1024 * 1024);
 					existing_metrics.total_storage_bytes = system_info.storage_total_mb * 1024 * 1024;
 
-					 // Calculate storage growth rate
-					existing_metrics.storage_growth_rate = if existing_metrics.uptime_minutes == 0 {
-						existing_metrics.storage_growth_rate // Avoid division by zero (remains unchanged)
+					// Calculate storage growth rate
+					existing_metrics.storage_growth_rate = if existing_metrics.uptime_minutes == 0 || existing_metrics.uptime_minutes == u32::MAX {
+						existing_metrics.storage_growth_rate // Avoid division by zero or max value (remains unchanged)
 					} else {
 						(existing_metrics.current_storage_bytes / existing_metrics.uptime_minutes as u64) as u32
 					};
@@ -530,7 +533,8 @@ pub mod pallet {
 			total_minutes: u32, 
 			consecutive_reliable_days: u32,
 			recent_downtime_hours: u32, 
-			_node_type: NodeType
+			_node_type: NodeType,
+			_block_number: u32,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?; // Ensure the call is unsigned
 
@@ -553,16 +557,16 @@ pub mod pallet {
 			metrics.failed_challenges_count += failed_challenges_count;
 			metrics.successful_challenges += successful_challenges;
 			metrics.total_challenges += total_challenges;
-			if uptime_minutes != 0 {
+			if uptime_minutes != 0 && uptime_minutes != u32::MAX {
 				metrics.uptime_minutes = uptime_minutes; 
 			}
-			if total_minutes != 0 {
+			if total_minutes != 0 && total_minutes != u32::MAX {
 				metrics.total_minutes = total_minutes;
 			}
-			if consecutive_reliable_days != 0 {
+			if consecutive_reliable_days != 0 && consecutive_reliable_days != u32::MAX {
 				metrics.consecutive_reliable_days = consecutive_reliable_days;
 			}
-			if recent_downtime_hours != 0 {
+			if recent_downtime_hours != 0 && recent_downtime_hours != u32::MAX {
 				metrics.recent_downtime_hours = recent_downtime_hours;
 			}
 
@@ -855,7 +859,7 @@ pub mod pallet {
 		// 	Ok(())
 		// }
 
-		pub fn do_update_metrics_data(node_id: Vec<u8>, node_type: NodeType) {
+		pub fn do_update_metrics_data(node_id: Vec<u8>, node_type: NodeType, block_number: BlockNumberFor<T>) {
 			// Initialize counters
 			let mut failed_challenges_count = 0;
 			let mut successful_challenges = 0;
@@ -934,6 +938,8 @@ pub mod pallet {
 				}
 			}
 		
+			let block : u32 = block_number.saturated_into::<u32>();
+			
 			// Call update metrics with adjusted values
 			Self::call_update_metrics_data(
 				node_id, 
@@ -943,14 +949,14 @@ pub mod pallet {
 				failed_challenges_count,
 				successful_challenges, 
 				total_challenges,
-				uptime_minutes as u32, 
-				total_uptime_minutes as u32, 
+				uptime_minutes, 
+				total_uptime_minutes, 
 				consecutive_reliable_days,
-				downtime_hours as u32,  
-				node_type
+				downtime_hours,  
+				node_type,
+				block
 			);
 		}
-
 		
 		pub fn call_update_metrics_data(
 			node_id: Vec<u8>,
@@ -965,6 +971,7 @@ pub mod pallet {
 			consecutive_reliable_days: u32,
 			recent_downtime_hours: u32,
 			node_type: NodeType,
+			block_number: u32,
 		) {
 			// Create a unique lock for the update metrics data operation
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
@@ -998,6 +1005,7 @@ pub mod pallet {
 							consecutive_reliable_days,
 							recent_downtime_hours,
 							node_type: node_type.clone(),
+							block_number: block_number.clone(),
 							public: account.public.clone(),
 							_marker: PhantomData,
 						}
@@ -1017,6 +1025,7 @@ pub mod pallet {
 							consecutive_reliable_days: payload.consecutive_reliable_days,
 							recent_downtime_hours: payload.recent_downtime_hours,
 							node_type: payload.node_type,
+							block_number: payload.block_number,
 						}
 					},
 				);
@@ -2010,14 +2019,14 @@ pub mod pallet {
 			}
 		}
 
-		fn block_time() -> u64 {
+		fn block_time() -> u32 {
 			<T as pallet::Config>::BlockTime::get()
 		}
 
 		/// Helper function to calculate uptime, total uptime, consecutive reliable days, and recent downtime hours
 		pub fn calculate_uptime_and_recent_downtime(
 			miner_node_id: Vec<u8>, // Key for the storage map
-		) -> Option<(u64, u64, u32, u64)> {
+		) -> Option<(u32, u32, u32, u32)> {
 			// Fetch the stored block numbers
 			let block_numbers = BlockNumbers::<T>::get(&miner_node_id)?;
 
@@ -2026,40 +2035,39 @@ pub mod pallet {
 			}
 
 			// Fetch the block time
-			let block_time: u64 = Self::block_time();
+			let block_time: u32 = Self::block_time();
 
-			let mut uptime_seconds = 0u64;
-			let mut total_uptime_seconds = 0u64;
-			let mut recent_downtime_seconds = 0u64;
+			let mut uptime_seconds = 0u32;
+			let mut total_uptime_seconds = 0u32;
+			let mut recent_downtime_seconds = 0u32;
 
 			let mut consecutive_reliable_days = 0u32;
-			let mut current_day_uptime = 0u64;
+			let mut current_day_uptime = 0u32;
 
 			// Calculate metrics
 			for i in 1..block_numbers.len() {
-				let previous_block = block_numbers[i - 1].saturated_into::<u64>();
-				let current_block = block_numbers[i].saturated_into::<u64>();
+				let previous_block = block_numbers[i - 1].saturated_into::<u32>();
+				let current_block = block_numbers[i].saturated_into::<u32>();
 
 				// Difference in blocks
 				let block_diff = current_block.saturating_sub(previous_block);
 
 				// Calculate uptime
 				if block_diff == 1 {
+					// Uptime is continuous
 					uptime_seconds += block_time;
+					total_uptime_seconds += block_time; // Only add to total uptime when there is actual uptime
 					current_day_uptime += block_time;
+
+					// Check if a full day of uptime is reached
+					if current_day_uptime >= 86400 { // 86400 seconds = 1 day
+						consecutive_reliable_days += 1;
+						current_day_uptime = 0; // Reset for next day
+					}
 				} else {
-					// Calculate recent downtime (only consider the last gap)
-					recent_downtime_seconds = (block_diff - 1) * block_time;
+					// Calculate recent downtime for gaps
+					recent_downtime_seconds += (block_diff - 1) * block_time;
 					current_day_uptime = 0; // Reset for gaps
-				}
-
-				// Add to total uptime (including gaps)
-				total_uptime_seconds += block_diff * block_time;
-
-				// Check if a full day of uptime is reached
-				if current_day_uptime >= 86400 { // 86400 seconds = 1 day
-					consecutive_reliable_days += 1;
-					current_day_uptime = 0; // Reset for next day
 				}
 			}
 
@@ -2165,7 +2173,7 @@ pub mod pallet {
 					let metrics = Self::get_node_metrics(miner.node_id.clone());
 					if metrics.is_none() {
 						// If node metrics are not there, delete it
-						pallet_registration::Pallet::<T>::do_unregister_node(miner.node_id.clone());
+						Self::unregister_and_remove_metrics(miner.node_id.clone());
 					}
 				}
 			}
@@ -2210,6 +2218,12 @@ pub mod pallet {
 
 			// Then, fetch metrics for these active nodes
 			Self::get_node_metrics_batch(active_node_ids)
+		}
+
+		pub fn unregister_and_remove_metrics(node_id: Vec<u8>) {
+			pallet_registration::Pallet::<T>::do_unregister_node(node_id.clone());
+			NodeMetrics::<T>::remove(&node_id);
+			BlockNumbers::<T>::remove(&node_id);
 		}
 	}
 }

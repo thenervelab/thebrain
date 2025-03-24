@@ -173,12 +173,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 1217,
+	spec_version: 1219,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
 	state_version: 0,
 };
+
 
 /// The version information used to identify this runtime when compiled natively.
 #[cfg(feature = "std")]
@@ -1299,7 +1300,7 @@ impl pallet_notifications::Config for Runtime {
 parameter_types! {
     pub const ExecutionUnitRpcUrl: &'static str = "http://localhost:9944";
     pub const ExecutionUnitSystemInfoRpcMethod: &'static str = "sys_getSystemInfo";
-	pub const BlockTimeSecs :u64 =  SECONDS_PER_BLOCK;
+	pub const BlockTimeSecs :u32 =  SECONDS_PER_BLOCK as u32;
 	/// number of blocks at which uptime will be checked
 	pub const BlockCheckInterval : u32 = 12;
 	pub const GetReadProofRpcMethod: &'static str = "state_getReadProof";
@@ -1556,12 +1557,11 @@ impl pallet_multisig::Config for Runtime {
 }
 
 parameter_types! {
-	// One storage item; key size 32, value size 8; .
-	pub const ProxyDepositBase: Balance = deposit(1, 8);
-	// Additional storage item size of 33 bytes.
-	pub const ProxyDepositFactor: Balance = deposit(0, 33);
-	pub const AnnouncementDepositBase: Balance = deposit(1, 8);
-	pub const AnnouncementDepositFactor: Balance = deposit(0, 66);
+    // Set all deposits to zero for feeless transactions
+    pub const ProxyDepositBase: Balance = deposit(0, 0);
+    pub const ProxyDepositFactor: Balance = deposit(0, 0);
+    pub const AnnouncementDepositBase: Balance = deposit(0, 0);
+    pub const AnnouncementDepositFactor: Balance = deposit(0, 0);
 }
 
 /// The type used to represent the kinds of proxying allowed.
@@ -1584,6 +1584,7 @@ pub enum ProxyType {
 	Governance,
 	Staking,
 }
+
 impl Default for ProxyType {
 	fn default() -> Self {
 		Self::Any

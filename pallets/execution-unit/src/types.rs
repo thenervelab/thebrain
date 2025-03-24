@@ -253,6 +253,7 @@ pub struct UpdateMetricsDataPayload<T: Config> {
     pub consecutive_reliable_days: u32,
     pub recent_downtime_hours: u32,
     pub node_type: NodeType,
+    pub block_number: u32,
     pub public: T::Public,
     pub _marker: PhantomData<T>,
 }

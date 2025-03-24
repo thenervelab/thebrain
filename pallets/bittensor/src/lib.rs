@@ -158,15 +158,23 @@ pub mod pallet {
                     let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageMiner, &metrics, all_nodes_metrics, &geo_distribution);
 
                     let current_block_number = <frame_system::Pallet<T>>::block_number();
-					let registered_at = miner.registered_at;
-					let uptime_minutes = metrics.uptime_minutes;
-					// Since each block is 6 seconds
-					let uptime_in_blocks = (uptime_minutes * 60) / 6;
-					// Buffer period before unregistration
-					let buffer = 300;
-					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
-                        weight = 0;
-					}
+                    let buffer = 300u32;
+                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                    
+                    if let Some(blocks) = blocks_online {
+                        if let Some(&last_block) = blocks.last() {
+                            let difference = current_block_number - last_block;
+                            if difference > buffer.into() { // Ensure buffer is of the correct type
+                                weight = 0;
+                            }
+
+                            // Check if the difference exceeds 500 for deregistration
+                            if difference > 500u32.into() {
+                                // Call your deregistration logic here
+                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            }
+                        }
+                    }
 
                     storage_weights.push(weight as u16);
                     storage_miners_node_id.push(miner.node_id.clone());
@@ -216,15 +224,23 @@ pub mod pallet {
                     let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageS3, &metrics, all_nodes_metrics, &geo_distribution);
 
                     let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let registered_at = miner.registered_at;
-					let uptime_minutes = metrics.uptime_minutes;
-					// Since each block is 6 seconds
-					let uptime_in_blocks = (uptime_minutes * 60) / 6;
-					// Buffer period before unregistration
-					let buffer = 300;
-					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
-                        weight = 0;
-					}
+                    let buffer = 300u32;
+                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                    
+                    if let Some(blocks) = blocks_online {
+                        if let Some(&last_block) = blocks.last() {
+                            let difference = current_block_number - last_block;
+                            if difference > buffer.into() { // Ensure buffer is of the correct type
+                                weight = 0;
+                            }
+
+                            // Check if the difference exceeds 500 for deregistration
+                            if difference > 500u32.into() {
+                                // Call your deregistration logic here
+                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            }
+                        }
+                    }
 
                     storage_s3_weights.push(weight as u16);
                     storage_s3_miners_node_id.push(miner.node_id.clone());
@@ -275,15 +291,23 @@ pub mod pallet {
                     let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::Validator, &metrics, all_nodes_metrics, &geo_distribution);
 
                     let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let registered_at = miner.registered_at;
-					let uptime_minutes = metrics.uptime_minutes;
-					// Since each block is 6 seconds
-					let uptime_in_blocks = (uptime_minutes * 60) / 6;
-					// Buffer period before unregistration
-					let buffer = 300;
-					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
-                        weight = 0;
-					}
+                    let buffer = 300u32;
+                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                    
+                    if let Some(blocks) = blocks_online {
+                        if let Some(&last_block) = blocks.last() {
+                            let difference = current_block_number - last_block;
+                            if difference > buffer.into() { // Ensure buffer is of the correct type
+                                weight = 0;
+                            }
+
+                            // Check if the difference exceeds 500 for deregistration
+                            if difference > 500u32.into() {
+                                // Call your deregistration logic here
+                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            }
+                        }
+                    }
 
                     validator_weights.push(weight as u16);
                     validator_miners_node_id.push(miner.node_id.clone());
@@ -333,15 +357,23 @@ pub mod pallet {
                     let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::GpuMiner, &metrics, all_nodes_metrics, &geo_distribution);
 
                     let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let registered_at = miner.registered_at;
-					let uptime_minutes = metrics.uptime_minutes;
-					// Since each block is 6 seconds
-					let uptime_in_blocks = (uptime_minutes * 60) / 6;
-					// Buffer period before unregistration
-					let buffer = 300;
-					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
-                        weight = 0;
-					}
+                    let buffer = 300u32;
+                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                    
+                    if let Some(blocks) = blocks_online {
+                        if let Some(&last_block) = blocks.last() {
+                            let difference = current_block_number - last_block;
+                            if difference > buffer.into() { // Ensure buffer is of the correct type
+                                weight = 0;
+                            }
+
+                            // Check if the difference exceeds 500 for deregistration
+                            if difference > 500u32.into() {
+                                // Call your deregistration logic here
+                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            }
+                        }
+                    }
 
                     gpu_weights.push(weight as u16);
                     gpu_miners_node_id.push(miner.node_id.clone());
@@ -392,15 +424,23 @@ pub mod pallet {
                     let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::ComputeMiner, &metrics, all_nodes_metrics, &geo_distribution);
 
                     let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let registered_at = miner.registered_at;
-					let uptime_minutes = metrics.uptime_minutes;
-					// Since each block is 6 seconds
-					let uptime_in_blocks = (uptime_minutes * 60) / 6;
-					// Buffer period before unregistration
-					let buffer = 300;
-					if current_block_number - registered_at > (uptime_in_blocks + buffer).into() {
-                        weight = 0;
-					}
+                    let buffer = 300u32;
+                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                    
+                    if let Some(blocks) = blocks_online {
+                        if let Some(&last_block) = blocks.last() {
+                            let difference = current_block_number - last_block;
+                            if difference > buffer.into() { // Ensure buffer is of the correct type
+                                weight = 0;
+                            }
+
+                            // Check if the difference exceeds 500 for deregistration
+                            if difference > 500u32.into() {
+                                // Call your deregistration logic here
+                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            }
+                        }
+                    }
 
                     compute_weights.push(weight as u16);
                     compute_miners_node_id.push(miner.node_id.clone());
