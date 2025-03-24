@@ -7800,6 +7800,7 @@ dependencies = [
  "pallet-babe",
  "pallet-balances",
  "pallet-credits",
+ "pallet-proxy",
  "pallet-session",
  "pallet-staking",
  "pallet-utils",

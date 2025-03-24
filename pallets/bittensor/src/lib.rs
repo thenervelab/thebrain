@@ -27,6 +27,7 @@ pub mod pallet {
     use scale_info::prelude::string::String;
     use sp_core::crypto::Ss58Codec;
     use sp_io;
+    use pallet_registration::LinkedNodes;
     use sp_runtime::{
         format,
         traits::Zero,
@@ -134,74 +135,133 @@ pub mod pallet {
 
     impl<T: Config> Pallet<T> {
         // New method to calculate weights specifically for storage miners
-        fn calculate_storage_miner_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
-            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
-            
+        fn calculate_storage_miner_weights(
+            all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, 
+            all_nodes_metrics: &Vec<NodeMetricsData>, 
+            uids: &Vec<UID>
+        ) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>) {
+
             let mut storage_weights: Vec<u16> = Vec::new();
             let mut storage_nodes_ss58: Vec<Vec<u8>> = Vec::new();
             let mut storage_miners_node_id: Vec<Vec<u8>> = Vec::new();
             let mut storage_miners_node_types: Vec<NodeType> = Vec::new();
             let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
             let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
-
-            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
-
+        
+            let mut linked_storage_miners_weights: Vec<u16> = Vec::new();
+            let mut linked_storage_miners_ss58: Vec<Vec<u8>> = Vec::new();
+            let mut linked_storage_miners_node_id: Vec<Vec<u8>> = Vec::new();
+            let mut linked_storage_miners_node_types: Vec<NodeType> = Vec::new();
+        
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+        
             for miner in all_miners {
                 if miner.node_type != NodeType::StorageMiner {
                     continue;
                 }
+        
+                // Retrieve linked nodes for the main node
+                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut total_weight = 0u32;
 
-                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
-                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
-                    
-                    geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Calculate weights for linked nodes
+                    for linked_node_id in &linked_node_ids {
+                        if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
+                            geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                            let weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                            total_weight += weight as u32; // Accumulate weight
 
-                    let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let buffer = 300u32;
-                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-                    
-                    if let Some(blocks) = blocks_online {
-                        if let Some(&last_block) = blocks.last() {
-                            let difference = current_block_number - last_block;
-                            if difference > buffer.into() { // Ensure buffer is of the correct type
-                                weight = 0;
+                            let current_block_number = <frame_system::Pallet<T>>::block_number();
+                            let buffer = 300u32;
+                            let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                            
+                            if let Some(blocks) = blocks_online {
+                                if let Some(&last_block) = blocks.last() {
+                                    let difference = current_block_number - last_block;
+                                    if difference > buffer.into() { // Ensure buffer is of the correct type
+                                        total_weight -= weight as u32; // Accumulate weight
+                                    }
+
+                                    // Check if the difference exceeds 500 for deregistration
+                                    if difference > 500u32.into() {
+                                        // Call your deregistration logic here
+                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                    }
+                                }
                             }
-
-                            // Check if the difference exceeds 500 for deregistration
-                            if difference > 500u32.into() {
-                                // Call your deregistration logic here
-                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            // Retrieve node info using the linked node ID
+                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                                let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                                linked_storage_miners_ss58.push(linked_miner_ss58.into());
+                                linked_storage_miners_node_id.push(linked_node_id.clone());
+                                linked_storage_miners_node_types.push(NodeType::StorageMiner);
+                                linked_storage_miners_weights.push(weight as u16);
                             }
                         }
                     }
-
-                    storage_weights.push(weight as u16);
-                    storage_miners_node_id.push(miner.node_id.clone());
-                    storage_miners_node_types.push(miner.node_type.clone());
-                    storage_nodes_ss58.push(miner_ss58.clone().into());
-					
-                    // Update Bittensor UIDs
-                    for uid in uids.iter() {
-                        if uid.substrate_address.to_ss58check() == miner_ss58 {
-                            all_uids_on_bittensor.push(uid.id);
-                            all_weights_on_bitensor.push(weight as u16);
-                        }
-                    }
+                    // Normalize weight for the main node based on linked nodes
+                    let normalized_weight = total_weight / linked_node_ids.len() as u32;
+                    storage_weights.push(normalized_weight as u16);
                 } else {
-                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
-                        log::info!("Node metrics not found for storage miner: {:?}", node_id_str);
+                    // Handle the case where there are no linked nodes
+                    if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+                        geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                        let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                        let current_block_number = <frame_system::Pallet<T>>::block_number();
+                        let buffer = 300u32;
+                        let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                        
+                        if let Some(blocks) = blocks_online {
+                            if let Some(&last_block) = blocks.last() {
+                                let difference = current_block_number - last_block;
+                                if difference > buffer.into() { // Ensure buffer is of the correct type
+                                    weight = 0; // Accumulate weight
+                                }
+
+                                // Check if the difference exceeds 500 for deregistration
+                                if difference > 500u32.into() {
+                                    // Call your deregistration logic here
+                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                }
+                            }
+                        }
+                        storage_weights.push(weight as u16);
+                    } else {
+                        log::info!("Node metrics not found for storage miner: {:?}", miner.node_id);
+                    }
+                }
+
+                // Other logic remains the same...
+                let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                storage_miners_node_id.push(miner.node_id.clone());
+                storage_miners_node_types.push(miner.node_type.clone());
+                storage_nodes_ss58.push(miner_ss58.clone().into());
+        
+                // Update Bittensor UIDs
+                for uid in uids.iter() {
+                    if uid.substrate_address.to_ss58check() == miner_ss58 {
+                        all_uids_on_bittensor.push(uid.id);
+                        all_weights_on_bitensor.push(*storage_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
                     }
                 }
             }
-
+        
             (storage_weights, storage_nodes_ss58, storage_miners_node_id, 
-             storage_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
+             storage_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor,
+             linked_storage_miners_weights, linked_storage_miners_ss58, linked_storage_miners_node_id, 
+             linked_storage_miners_node_types, 
+            )
         }
 
-        // New method to calculate weights specifically for compute miners
-        fn calculate_storage_s3_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
-            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+        // New method to calculate weights specifically for storage S3 miners
+        fn calculate_storage_s3_weights(
+            all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, 
+            all_nodes_metrics: &Vec<NodeMetricsData>, 
+            uids: &Vec<UID>
+        ) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>) {
             
             let mut storage_s3_weights: Vec<u16> = Vec::new();
             let mut storage_s3_nodes_ss58: Vec<Vec<u8>> = Vec::new();
@@ -210,65 +270,117 @@ pub mod pallet {
             let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
             let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
+            let mut linked_s3_miners_ss58: Vec<Vec<u8>> = Vec::new();
+            let mut linked_s3_miners_node_id: Vec<Vec<u8>> = Vec::new();
+            let mut linked_s3_miners_node_types: Vec<NodeType> = Vec::new();
+            let mut linked_s3_miners_weights: Vec<u16> = Vec::new();
+
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
             for miner in all_miners {
                 if miner.node_type != NodeType::StorageS3 {
                     continue;
                 }
 
-                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
-                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
-                    
-                    geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageS3, &metrics, all_nodes_metrics, &geo_distribution);
+                // Retrieve linked nodes for the main node
+                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut total_weight = 0u32;
 
-                    let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let buffer = 300u32;
-                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-                    
-                    if let Some(blocks) = blocks_online {
-                        if let Some(&last_block) = blocks.last() {
-                            let difference = current_block_number - last_block;
-                            if difference > buffer.into() { // Ensure buffer is of the correct type
-                                weight = 0;
-                            }
+                if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Calculate weights for linked nodes
+                    for linked_node_id in &linked_node_ids {
+                        if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
+                            geo_distribution.insert(metrics.geolocation.clone(), 1);
+                            let weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageS3, &metrics, all_nodes_metrics, &geo_distribution);
+                            total_weight += weight as u32; // Accumulate weight
 
-                            // Check if the difference exceeds 500 for deregistration
-                            if difference > 500u32.into() {
-                                // Call your deregistration logic here
-                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            let current_block_number = <frame_system::Pallet<T>>::block_number();
+                            let buffer = 300u32;
+                            let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                            
+                            if let Some(blocks) = blocks_online {
+                                if let Some(&last_block) = blocks.last() {
+                                    let difference = current_block_number - last_block;
+                                    if difference > buffer.into() { // Ensure buffer is of the correct type
+                                        total_weight -= weight as u32; // Accumulate weight
+                                    }
+
+                                    // Check if the difference exceeds 500 for deregistration
+                                    if difference > 500u32.into() {
+                                        // Call your deregistration logic here
+                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                    }
+                                }
+                            }                   
+                            // Retrieve node info using the linked node ID
+                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                                let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                                linked_s3_miners_ss58.push(linked_miner_ss58.into());
+                                linked_s3_miners_node_id.push(linked_node_id.clone());
+                                linked_s3_miners_node_types.push(NodeType::StorageS3);
+                                linked_s3_miners_weights.push(weight as u16);
                             }
                         }
                     }
-
-                    storage_s3_weights.push(weight as u16);
-                    storage_s3_miners_node_id.push(miner.node_id.clone());
-                    storage_s3_miners_node_types.push(miner.node_type.clone());
-                    storage_s3_nodes_ss58.push(miner_ss58.clone().into());
-
-                    // Update Bittensor UIDs
-                    for uid in uids.iter() {
-                        if uid.substrate_address.to_ss58check() == miner_ss58 {
-                            all_uids_on_bittensor.push(uid.id);
-                            all_weights_on_bitensor.push(weight as u16);
-                        }
-                    }
+                    // Normalize weight for the main node based on linked nodes
+                    let normalized_weight = total_weight / linked_node_ids.len() as u32;
+                    storage_s3_weights.push(normalized_weight as u16);
                 } else {
-                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
-                        log::info!("Node metrics not found for validator miner: {:?}", node_id_str);
+                    // Handle the case where there are no linked nodes
+                    if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+                        geo_distribution.insert(metrics.geolocation.clone(), 1);
+                        let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::StorageS3, &metrics, all_nodes_metrics, &geo_distribution);
+                        let current_block_number = <frame_system::Pallet<T>>::block_number();
+                        let buffer = 300u32;
+                        let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                        
+                        if let Some(blocks) = blocks_online {
+                            if let Some(&last_block) = blocks.last() {
+                                let difference = current_block_number - last_block;
+                                if difference > buffer.into() { // Ensure buffer is of the correct type
+                                    weight = 0; // Accumulate weight
+                                }
+
+                                // Check if the difference exceeds 500 for deregistration
+                                if difference > 500u32.into() {
+                                    // Call your deregistration logic here
+                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                }
+                            }
+                        }
+                        storage_s3_weights.push(weight as u16);
+                    } else {
+                        log::info!("Node metrics not found for storage S3 miner: {:?}", miner.node_id);
+                    }
+                }
+
+                // Other logic remains the same...
+                let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                storage_s3_miners_node_id.push(miner.node_id.clone());
+                storage_s3_miners_node_types.push(miner.node_type.clone());
+                storage_s3_nodes_ss58.push(miner_ss58.clone().into());
+
+                // Update Bittensor UIDs
+                for uid in uids.iter() {
+                    if uid.substrate_address.to_ss58check() == miner_ss58 {
+                        all_uids_on_bittensor.push(uid.id);
+                        all_weights_on_bitensor.push(*storage_s3_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
                     }
                 }
             }
 
             (storage_s3_weights, storage_s3_nodes_ss58, storage_s3_miners_node_id, 
-             storage_s3_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
-        }
-    
+            storage_s3_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor,
+            linked_s3_miners_weights, linked_s3_miners_ss58, linked_s3_miners_node_id, linked_s3_miners_node_types)
+        }   
 
         // New method to calculate weights specifically for compute miners
-        fn calculate_validator_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
-            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+        fn calculate_validator_weights(
+            all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, 
+            all_nodes_metrics: &Vec<NodeMetricsData>, 
+            uids: &Vec<UID>
+        ) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>) {
             
             let mut validator_weights: Vec<u16> = Vec::new();
             let mut validator_nodes_ss58: Vec<Vec<u8>> = Vec::new();
@@ -277,65 +389,118 @@ pub mod pallet {
             let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
             let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
+            let mut linked_validator_ss58: Vec<Vec<u8>> = Vec::new();
+            let mut linked_validator_node_id: Vec<Vec<u8>> = Vec::new();
+            let mut linked_validator_node_types: Vec<NodeType> = Vec::new();
+            let mut linked_validator_weights: Vec<u16> = Vec::new();
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
             for miner in all_miners {
                 if miner.node_type != NodeType::Validator {
                     continue;
                 }
 
-                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
-                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
-                    
-                    geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::Validator, &metrics, all_nodes_metrics, &geo_distribution);
+                // Retrieve linked nodes for the main node
+                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut total_weight = 0u32;
 
-                    let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let buffer = 300u32;
-                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-                    
-                    if let Some(blocks) = blocks_online {
-                        if let Some(&last_block) = blocks.last() {
-                            let difference = current_block_number - last_block;
-                            if difference > buffer.into() { // Ensure buffer is of the correct type
-                                weight = 0;
+                if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Calculate weights for linked nodes
+                    for linked_node_id in &linked_node_ids {
+                        if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
+                            geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                            let weight = WeightCalculation::calculate_weight::<T>(NodeType::Validator, &metrics, all_nodes_metrics, &geo_distribution);
+                            total_weight += weight as u32; // Accumulate weight
+
+                            let current_block_number = <frame_system::Pallet<T>>::block_number();
+                            let buffer = 300u32;
+                            let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                            
+                            if let Some(blocks) = blocks_online {
+                                if let Some(&last_block) = blocks.last() {
+                                    let difference = current_block_number - last_block;
+                                    if difference > buffer.into() { // Ensure buffer is of the correct type
+                                        total_weight -= weight as u32; // Accumulate weight
+                                    }
+
+                                    // Check if the difference exceeds 500 for deregistration
+                                    if difference > 500u32.into() {
+                                        // Call your deregistration logic here
+                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                    }
+                                }
                             }
 
-                            // Check if the difference exceeds 500 for deregistration
-                            if difference > 500u32.into() {
-                                // Call your deregistration logic here
-                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            // Retrieve node info using the linked node ID
+                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                                let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                                linked_validator_ss58.push(linked_miner_ss58.into());
+                                linked_validator_node_id.push(linked_node_id.clone());
+                                linked_validator_node_types.push(NodeType::StorageS3);
+                                linked_validator_weights.push(weight as u16);
                             }
                         }
                     }
-
-                    validator_weights.push(weight as u16);
-                    validator_miners_node_id.push(miner.node_id.clone());
-                    validator_miners_node_types.push(miner.node_type.clone());
-                    validator_nodes_ss58.push(miner_ss58.clone().into());
-
-                    // Update Bittensor UIDs
-                    for uid in uids.iter() {
-                        if uid.substrate_address.to_ss58check() == miner_ss58 {
-                            all_uids_on_bittensor.push(uid.id);
-                            all_weights_on_bitensor.push(weight as u16);
-                        }
-                    }
+                    // Normalize weight for the main node based on linked nodes
+                    let normalized_weight = total_weight / linked_node_ids.len() as u32;
+                    validator_weights.push(normalized_weight as u16);
                 } else {
-                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
-                        log::info!("Node metrics not found for validator miner: {:?}", node_id_str);
+                    // Handle the case where there are no linked nodes
+                    if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+                        geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                        let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::Validator, &metrics, all_nodes_metrics, &geo_distribution);
+                        let current_block_number = <frame_system::Pallet<T>>::block_number();
+                        let buffer = 300u32;
+                        let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                        
+                        if let Some(blocks) = blocks_online {
+                            if let Some(&last_block) = blocks.last() {
+                                let difference = current_block_number - last_block;
+                                if difference > buffer.into() { // Ensure buffer is of the correct type
+                                    weight = 0; // Accumulate weight
+                                }
+
+                                // Check if the difference exceeds 500 for deregistration
+                                if difference > 500u32.into() {
+                                    // Call your deregistration logic here
+                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                }
+                            }
+                        }
+                        validator_weights.push(weight as u16);
+                    } else {
+                        log::info!("Node metrics not found for validator miner: {:?}", miner.node_id);
+                    }
+                }
+
+                // Other logic remains the same...
+                let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                validator_miners_node_id.push(miner.node_id.clone());
+                validator_miners_node_types.push(miner.node_type.clone());
+                validator_nodes_ss58.push(miner_ss58.clone().into());
+
+                // Update Bittensor UIDs
+                for uid in uids.iter() {
+                    if uid.substrate_address.to_ss58check() == miner_ss58 {
+                        all_uids_on_bittensor.push(uid.id);
+                        all_weights_on_bitensor.push(*validator_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
                     }
                 }
             }
 
             (validator_weights, validator_nodes_ss58, validator_miners_node_id, 
-             validator_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
+            validator_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor,
+            linked_validator_weights, linked_validator_ss58, linked_validator_node_id, linked_validator_node_types)
         }
 
-        // New method to calculate weights specifically for compute miners
-        fn calculate_gpu_miner_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
-            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
-            
+        // New method to calculate weights specifically for GPU miners
+        fn calculate_gpu_miner_weights(
+            all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, 
+            all_nodes_metrics: &Vec<NodeMetricsData>, 
+            uids: &Vec<UID>
+        ) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>) {
+
             let mut gpu_weights: Vec<u16> = Vec::new();
             let mut gpu_nodes_ss58: Vec<Vec<u8>> = Vec::new();
             let mut gpu_miners_node_id: Vec<Vec<u8>> = Vec::new();
@@ -343,65 +508,117 @@ pub mod pallet {
             let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
             let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
+            let mut linked_gpu_miners_ss58: Vec<Vec<u8>> = Vec::new();
+            let mut linked_gpu_miners_node_id: Vec<Vec<u8>> = Vec::new();
+            let mut linked_gpu_miners_node_types: Vec<NodeType> = Vec::new();
+            let mut linked_gpu_miners_weights: Vec<u16> = Vec::new();
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
             for miner in all_miners {
-                if miner.node_type != NodeType::ComputeMiner {
+                if miner.node_type != NodeType::GpuMiner {
                     continue;
                 }
 
-                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
-                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
-                    
-                    geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::GpuMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                // Retrieve linked nodes for the main node
+                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut total_weight = 0u32;
 
-                    let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let buffer = 300u32;
-                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-                    
-                    if let Some(blocks) = blocks_online {
-                        if let Some(&last_block) = blocks.last() {
-                            let difference = current_block_number - last_block;
-                            if difference > buffer.into() { // Ensure buffer is of the correct type
-                                weight = 0;
+                if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Calculate weights for linked nodes
+                    for linked_node_id in &linked_node_ids {
+                        if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
+                            geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                            let weight = WeightCalculation::calculate_weight::<T>(NodeType::GpuMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                            total_weight += weight as u32; // Accumulate weight
+
+                            let current_block_number = <frame_system::Pallet<T>>::block_number();
+                            let buffer = 300u32;
+                            let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                            
+                            if let Some(blocks) = blocks_online {
+                                if let Some(&last_block) = blocks.last() {
+                                    let difference = current_block_number - last_block;
+                                    if difference > buffer.into() { // Ensure buffer is of the correct type
+                                        total_weight -= weight as u32; // Accumulate weight
+                                    }
+
+                                    // Check if the difference exceeds 500 for deregistration
+                                    if difference > 500u32.into() {
+                                        // Call your deregistration logic here
+                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                    }
+                                }
                             }
 
-                            // Check if the difference exceeds 500 for deregistration
-                            if difference > 500u32.into() {
-                                // Call your deregistration logic here
-                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            // Retrieve node info using the linked node ID
+                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                                let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                                linked_gpu_miners_ss58.push(linked_miner_ss58.into());
+                                linked_gpu_miners_node_id.push(linked_node_id.clone());
+                                linked_gpu_miners_node_types.push(NodeType::GpuMiner);
+                                linked_gpu_miners_weights.push(weight as u16);
                             }
                         }
                     }
-
-                    gpu_weights.push(weight as u16);
-                    gpu_miners_node_id.push(miner.node_id.clone());
-                    gpu_miners_node_types.push(miner.node_type.clone());
-                    gpu_nodes_ss58.push(miner_ss58.clone().into());
-
-                    // Update Bittensor UIDs
-                    for uid in uids.iter() {
-                        if uid.substrate_address.to_ss58check() == miner_ss58 {
-                            all_uids_on_bittensor.push(uid.id);
-                            all_weights_on_bitensor.push(weight as u16);
-                        }
-                    }
+                    // Normalize weight for the main node based on linked nodes
+                    let normalized_weight = total_weight / linked_node_ids.len() as u32;
+                    gpu_weights.push(normalized_weight as u16);
                 } else {
-                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
-                        log::info!("Node metrics not found for compute miner: {:?}", node_id_str);
+                    // Handle the case where there are no linked nodes
+                    if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+                        geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                        let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::GpuMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                        let current_block_number = <frame_system::Pallet<T>>::block_number();
+                        let buffer = 300u32;
+                        let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                        
+                        if let Some(blocks) = blocks_online {
+                            if let Some(&last_block) = blocks.last() {
+                                let difference = current_block_number - last_block;
+                                if difference > buffer.into() { // Ensure buffer is of the correct type
+                                    weight = 0; // Accumulate weight
+                                }
+
+                                // Check if the difference exceeds 500 for deregistration
+                                if difference > 500u32.into() {
+                                    // Call your deregistration logic here
+                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                }
+                            }
+                        }
+                        gpu_weights.push(weight as u16);
+                    } else {
+                        log::info!("Node metrics not found for GPU miner: {:?}", miner.node_id);
+                    }
+                }
+
+                // Other logic remains the same...
+                let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                gpu_miners_node_id.push(miner.node_id.clone());
+                gpu_miners_node_types.push(miner.node_type.clone());
+                gpu_nodes_ss58.push(miner_ss58.clone().into());
+
+                // Update Bittensor UIDs
+                for uid in uids.iter() {
+                    if uid.substrate_address.to_ss58check() == miner_ss58 {
+                        all_uids_on_bittensor.push(uid.id);
+                        all_weights_on_bitensor.push(*gpu_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
                     }
                 }
             }
 
             (gpu_weights, gpu_nodes_ss58, gpu_miners_node_id, 
-             gpu_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
+            gpu_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor,
+            linked_gpu_miners_weights, linked_gpu_miners_ss58, linked_gpu_miners_node_id, linked_gpu_miners_node_types)
         }
 
-
         // New method to calculate weights specifically for compute miners
-        fn calculate_compute_miner_weights(all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, all_nodes_metrics: &Vec<NodeMetricsData>, uids: &Vec<UID>) 
-            -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+        fn calculate_compute_miner_weights(
+            all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>, 
+            all_nodes_metrics: &Vec<NodeMetricsData>, 
+            uids: &Vec<UID>
+        ) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>) {
             
             let mut compute_weights: Vec<u16> = Vec::new();
             let mut compute_nodes_ss58: Vec<Vec<u8>> = Vec::new();
@@ -410,63 +627,123 @@ pub mod pallet {
             let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
             let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new(); // You might want to populate this more comprehensively
+            let mut linked_compute_miners_ss58: Vec<Vec<u8>> = Vec::new();
+            let mut linked_compute_miners_node_id: Vec<Vec<u8>> = Vec::new();
+            let mut linked_compute_miners_node_types: Vec<NodeType> = Vec::new();
+            let mut linked_compute_miners_weights: Vec<u16> = Vec::new();
+            let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
             for miner in all_miners {
                 if miner.node_type != NodeType::ComputeMiner {
                     continue;
                 }
 
-                if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
-                    let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
-                    
-                    geo_distribution.insert(metrics.geolocation.clone(), 1);    
-                    let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::ComputeMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                // Retrieve linked nodes for the main node
+                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut total_weight = 0u32;
 
-                    let current_block_number = <frame_system::Pallet<T>>::block_number();
-                    let buffer = 300u32;
-                    let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-                    
-                    if let Some(blocks) = blocks_online {
-                        if let Some(&last_block) = blocks.last() {
-                            let difference = current_block_number - last_block;
-                            if difference > buffer.into() { // Ensure buffer is of the correct type
-                                weight = 0;
+                if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Calculate weights for linked nodes
+                    for linked_node_id in &linked_node_ids {
+                        if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
+                            geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                            let weight = WeightCalculation::calculate_weight::<T>(NodeType::ComputeMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                            total_weight += weight as u32; // Accumulate weight
+
+                            let current_block_number = <frame_system::Pallet<T>>::block_number();
+                            let buffer = 300u32;
+                            let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                            
+                            if let Some(blocks) = blocks_online {
+                                if let Some(&last_block) = blocks.last() {
+                                    let difference = current_block_number - last_block;
+                                    if difference > buffer.into() { // Ensure buffer is of the correct type
+                                        total_weight -= weight as u32; // Accumulate weight
+                                    }
+
+                                    // Check if the difference exceeds 500 for deregistration
+                                    if difference > 500u32.into() {
+                                        // Call your deregistration logic here
+                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                    }
+                                }
                             }
 
-                            // Check if the difference exceeds 500 for deregistration
-                            if difference > 500u32.into() {
-                                // Call your deregistration logic here
-                                ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                            // Retrieve node info using the linked node ID
+                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                                let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                                linked_compute_miners_ss58.push(linked_miner_ss58.into());
+                                linked_compute_miners_node_id.push(linked_node_id.clone());
+                                linked_compute_miners_node_types.push(NodeType::ComputeMiner);
+                                linked_compute_miners_weights.push(weight as u16);
                             }
                         }
                     }
-
-                    compute_weights.push(weight as u16);
-                    compute_miners_node_id.push(miner.node_id.clone());
-                    compute_miners_node_types.push(miner.node_type.clone());
-                    compute_nodes_ss58.push(miner_ss58.clone().into());
-
-                   // Update Bittensor UIDs
-                   for uid in uids.iter() {
-                        if uid.substrate_address.to_ss58check() == miner_ss58 {
-                            all_uids_on_bittensor.push(uid.id);
-                            all_weights_on_bitensor.push(weight as u16);
-                        }
-                    }
+                    // Normalize weight for the main node based on linked nodes
+                    let normalized_weight = total_weight / linked_node_ids.len() as u32;
+                    compute_weights.push(normalized_weight as u16);
                 } else {
-                    if let Ok(node_id_str) = String::from_utf8(miner.node_id.clone()) {
-                        log::info!("Node metrics not found for compute miner: {:?}", node_id_str);
+                    // Handle the case where there are no linked nodes
+                    if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+                        geo_distribution.insert(metrics.geolocation.clone(), 1);    
+                        let mut weight = WeightCalculation::calculate_weight::<T>(NodeType::ComputeMiner, &metrics, all_nodes_metrics, &geo_distribution);
+                        let current_block_number = <frame_system::Pallet<T>>::block_number();
+                        let buffer = 300u32;
+                        let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+                        
+                        if let Some(blocks) = blocks_online {
+                            if let Some(&last_block) = blocks.last() {
+                                let difference = current_block_number - last_block;
+                                if difference > buffer.into() { // Ensure buffer is of the correct type
+                                    weight = 0; // Accumulate weight
+                                }
+
+                                // Check if the difference exceeds 500 for deregistration
+                                if difference > 500u32.into() {
+                                    // Call your deregistration logic here
+                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
+                                }
+                            }
+                        }
+                        compute_weights.push(weight as u16);
+                    } else {
+                        log::info!("Node metrics not found for compute miner: {:?}", miner.node_id);
+                    }
+                }
+
+                // Other logic remains the same...
+                let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default()).to_ss58check();
+                compute_miners_node_id.push(miner.node_id.clone());
+                compute_miners_node_types.push(miner.node_type.clone());
+                compute_nodes_ss58.push(miner_ss58.clone().into());
+
+                // Update Bittensor UIDs
+                for uid in uids.iter() {
+                    if uid.substrate_address.to_ss58check() == miner_ss58 {
+                        all_uids_on_bittensor.push(uid.id);
+                        all_weights_on_bitensor.push(*compute_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
                     }
                 }
             }
 
             (compute_weights, compute_nodes_ss58, compute_miners_node_id, 
-             compute_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor)
+            compute_miners_node_types, all_uids_on_bittensor, all_weights_on_bitensor,
+            linked_compute_miners_weights, linked_compute_miners_ss58, linked_compute_miners_node_id, linked_compute_miners_node_types)
         }
 
         // Refactored main weight calculation method
-        pub fn calculate_weights_for_nodes() -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
+        pub fn calculate_weights_for_nodes() -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, 
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, 
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, 
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, 
+            Vec<u16>, Vec<u16>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+            Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+        ) {
             let mut uids = MetagraphPallet::<T>::get_uids();
             let all_nodes = RegistrationPallet::<T>::get_all_nodes_with_min_staked();
 
@@ -484,20 +761,30 @@ pub mod pallet {
 
             // Calculate weights for different miner types
             let (storage_weights, storage_nodes_ss58, storage_miners_node_id, storage_miners_node_types, 
-                 storage_uids, storage_weights_on_bittensor) = Self::calculate_storage_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+                 storage_uids, storage_weights_on_bittensor,
+                 linked_storage_miners_weights, linked_storage_miners_ss58, linked_storage_miners_node_id, linked_storage_miners_node_types
+                ) = Self::calculate_storage_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
 
             let (compute_weights, compute_nodes_ss58, compute_miners_node_id, compute_miners_node_types, 
-                 compute_uids, compute_weights_on_bittensor) = Self::calculate_compute_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+                 compute_uids, compute_weights_on_bittensor,
+                 linked_compute_miners_weights, linked_compute_miners_ss58, linked_compute_miners_node_id, linked_compute_miners_node_types
+                ) = Self::calculate_compute_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
 
             let (gpu_weights, gpu_nodes_ss58, gpu_miners_node_id, gpu_miners_node_types, 
-                gpu_uids, gpu_weights_on_bittensor) = Self::calculate_gpu_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+                gpu_uids, gpu_weights_on_bittensor,
+                linked_gpu_miners_weights, linked_gpu_miners_ss58, linked_gpu_miners_node_id, linked_gpu_miners_node_types
+            ) = Self::calculate_gpu_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
    
             // Calculate weights for different validator types
             let (validator_weights, validator_nodes_ss58, validator_miners_node_id, validator_miners_node_types, 
-                 validator_uids, _validator_weights_on_bittensor) = Self::calculate_validator_weights(&all_nodes, &all_nodes_metrics, &uids);
+                validator_uids, _validator_weights_on_bittensor,
+                linked_validator_miners_weights, linked_validator_miners_ss58, linked_validator_miners_node_id, linked_validator_miners_node_types
+            ) = Self::calculate_validator_weights(&all_nodes, &all_nodes_metrics, &uids);
 
             let (storage_s3_weights, storage_s3_nodes_ss58, storage_s3_miners_node_id, storage_s3_miners_node_types, 
-                storage_s3_uids, storage_s3_weights_on_bittensor) = Self::calculate_storage_s3_weights(&all_nodes, &all_nodes_metrics, &uids);
+                storage_s3_uids, storage_s3_weights_on_bittensor,
+                linked_storage_s3_miners_weights, linked_storage_s3_miners_ss58, linked_storage_s3_miners_node_id, linked_storage_s3_miners_node_types
+            ) = Self::calculate_storage_s3_weights(&all_nodes, &all_nodes_metrics, &uids);
    
             let mut all_uids_on_bittensor: Vec<u16> = [storage_uids, compute_uids, gpu_uids, storage_s3_uids].concat();
             let mut all_weights_on_bitensor: Vec<u16> = [storage_weights_on_bittensor, compute_weights_on_bittensor, gpu_weights_on_bittensor, storage_s3_weights_on_bittensor].concat();
@@ -525,7 +812,12 @@ pub mod pallet {
                 gpu_weights, gpu_nodes_ss58, gpu_miners_node_id, gpu_miners_node_types,
                 validator_weights, validator_nodes_ss58, validator_miners_node_id, validator_miners_node_types,
                 storage_s3_weights, storage_s3_nodes_ss58, storage_s3_miners_node_id, storage_s3_miners_node_types,
-                all_uids_on_bittensor, all_weights_on_bitensor 
+                all_uids_on_bittensor, all_weights_on_bitensor,
+                linked_storage_miners_weights, linked_storage_miners_ss58, linked_storage_miners_node_id, linked_storage_miners_node_types,
+                linked_compute_miners_weights, linked_compute_miners_ss58, linked_compute_miners_node_id, linked_compute_miners_node_types,
+                linked_gpu_miners_weights, linked_gpu_miners_ss58, linked_gpu_miners_node_id, linked_gpu_miners_node_types,
+                linked_validator_miners_weights, linked_validator_miners_ss58, linked_validator_miners_node_id, linked_validator_miners_node_types,
+                linked_storage_s3_miners_weights, linked_storage_s3_miners_ss58, linked_storage_s3_miners_node_id, linked_storage_s3_miners_node_types
             )
         }
 
@@ -660,25 +952,47 @@ pub mod pallet {
                 storage_s3_all_miners_node_types, 
 
                 all_dests_on_bittensor, 
-                all_weights_on_bitensor) :
-                (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) = 
+                all_weights_on_bitensor,
+
+                linked_storage_miners_weights, linked_storage_miners_ss58, linked_storage_miners_node_id, linked_storage_miners_node_types,
+                linked_compute_miners_weights, linked_compute_miners_ss58, linked_compute_miners_node_id, linked_compute_miners_node_types,
+                linked_gpu_miners_weights, linked_gpu_miners_ss58, linked_gpu_miners_node_id, linked_gpu_miners_node_types,
+                linked_validator_miners_weights, linked_validator_miners_ss58, linked_validator_miners_node_id, linked_validator_miners_node_types,
+                linked_storage_s3_miners_weights, linked_storage_s3_miners_ss58, linked_storage_s3_miners_node_id, linked_storage_s3_miners_node_types
+                
+            ) :
+                (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<u16>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
+                
+            ) = 
                 Self::calculate_weights_for_nodes();
             
             // update rankings in ranking pallet for both instances
-            let _ = RankingsPallet::<T>::save_rankings_update(weights.clone(),
-                        storage_nodes_ss58.clone(), storage_miners_node_id.clone(), storage_miners_node_types.clone(), block_number, 1u32);
-                        
-            let _ = RankingsPallet::<T, pallet_rankings::Instance2>::save_rankings_update(compute_weights.clone(), 
-                        compute_all_nodes_ss58.clone(), compute_all_miners_node_id.clone(), compute_all_miners_node_types.clone(), block_number, 2u32);
+            let _ = RankingsPallet::<T>::save_rankings_update([weights.clone(), linked_storage_miners_weights.clone()].concat(),
+                        [storage_nodes_ss58.clone(), linked_storage_miners_ss58.clone()].concat(), 
+                        [storage_miners_node_id.clone(), linked_storage_miners_node_id.clone()].concat(), 
+                        [storage_miners_node_types.clone(), linked_storage_miners_node_types.clone()].concat(), block_number, 1u32);
 
-            let _ = RankingsPallet::<T, pallet_rankings::Instance3>::save_rankings_update(validator_weights.clone(), 
-                    validator_all_nodes_ss58.clone(), validator_all_miners_node_id.clone(), validator_all_miners_node_types.clone(), block_number, 3u32); 
+            let _ = RankingsPallet::<T, pallet_rankings::Instance2>::save_rankings_update([compute_weights.clone(), linked_compute_miners_weights.clone()].concat(), 
+                        [compute_all_nodes_ss58.clone(), linked_compute_miners_ss58.clone()].concat(), [compute_all_miners_node_id.clone(), linked_compute_miners_node_id.clone()].concat(), [compute_all_miners_node_types.clone(), linked_compute_miners_node_types.clone()].concat(), block_number, 2u32);
 
-            let _ = RankingsPallet::<T, pallet_rankings::Instance4>::save_rankings_update(gpu_weights.clone(), 
-                    gpu_all_nodes_ss58.clone(), gpu_all_miners_node_id.clone(), gpu_all_miners_node_types.clone(), block_number,  4u32);
+            let _ = RankingsPallet::<T, pallet_rankings::Instance3>::save_rankings_update([validator_weights.clone(), linked_validator_miners_weights.clone()].concat(), 
+                    [validator_all_nodes_ss58.clone(), linked_validator_miners_ss58.clone()].concat(), [validator_all_miners_node_id.clone(), linked_validator_miners_node_id.clone()].concat(), [validator_all_miners_node_types.clone(), linked_validator_miners_node_types.clone()].concat(), block_number, 3u32); 
 
-            let _ = RankingsPallet::<T, pallet_rankings::Instance5>::save_rankings_update(storage_s3_weights.clone(), 
-                    storage_s3_all_nodes_ss58.clone(), storage_s3_all_miners_node_id.clone(), storage_s3_all_miners_node_types.clone(), block_number, 5u32);
+            let _ = RankingsPallet::<T, pallet_rankings::Instance4>::save_rankings_update([gpu_weights.clone(), linked_gpu_miners_weights.clone()].concat(), 
+                    [gpu_all_nodes_ss58.clone(), linked_gpu_miners_ss58.clone()].concat(), [gpu_all_miners_node_id.clone(), linked_gpu_miners_node_id.clone()].concat(), [gpu_all_miners_node_types.clone(), linked_gpu_miners_node_types.clone()].concat(), block_number,  4u32);
+
+            let _ = RankingsPallet::<T, pallet_rankings::Instance5>::save_rankings_update([storage_s3_weights.clone(), linked_storage_s3_miners_weights.clone()].concat(), 
+                    [storage_s3_all_nodes_ss58.clone(), linked_storage_s3_miners_ss58.clone()].concat(), [storage_s3_all_miners_node_id.clone(), linked_storage_s3_miners_node_id.clone()].concat(), [storage_s3_all_miners_node_types.clone(), linked_storage_s3_miners_node_types.clone()].concat(), block_number, 5u32);
 
             // Ensure both vectors have the same length and are greater than 1
             if all_dests_on_bittensor.len() != all_weights_on_bitensor.len() {

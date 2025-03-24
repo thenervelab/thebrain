@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 pub use pallet::*;
 pub use types::*;
-
+pub mod migrations; // Add this line
 #[cfg(test)]
 mod mock;
 
@@ -12,6 +12,12 @@ mod types;
 
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
+
+// Define a trait for proxy type compatibility
+pub trait ProxyTypeCompat {
+    fn is_non_transfer(&self) -> bool;
+    fn is_any(&self) -> bool;
+}
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -45,6 +51,9 @@ pub mod pallet {
         },
     };
     use sp_runtime::traits::Zero;
+    use pallet_proxy::Pallet as ProxyPallet;
+    use frame_support::traits::OnRuntimeUpgrade;
+    use crate::migrations::MigrateNodeRegistration;
 
     const LOCK_BLOCK_EXPIRATION: u32 = 1;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -56,7 +65,11 @@ pub mod pallet {
     pub type BalanceOf<T> = <T as pallet_balances::Config>::Balance;
 
     #[pallet::config]
-    pub trait Config: frame_system::Config  + pallet_babe::Config + pallet_balances::Config + pallet_utils::Config + pallet_credits::Config + SendTransactionTypes<Call<Self>> + pallet_staking::Config{
+    pub trait Config: frame_system::Config  + pallet_babe::Config + pallet_balances::Config + pallet_utils::Config + pallet_credits::Config + SendTransactionTypes<Call<Self>> 
+                        + pallet_staking::Config + pallet_proxy::Config<ProxyType = Self::ProxyTypeCompatType>{
+
+
+        
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type MetagraphInfo: MetagraphInfoProvider<Self>;
         /// The minimum amount that must be staked by a miner
@@ -84,7 +97,11 @@ pub mod pallet {
         type StorageMiners3InitialFee: Get<BalanceOf<Self>>;
 
         #[pallet::constant]
-        type BlocksPerDay: Get<u32>;
+        type BlocksPerDay: Get<u32>;     
+        
+        type ProxyTypeCompatType: ProxyTypeCompat;
+
+        type OnRuntimeUpgrade: OnRuntimeUpgrade;
     }
 
 	#[pallet::pallet]
@@ -98,6 +115,28 @@ pub mod pallet {
         Blake2_128Concat, 
         NodeType, 
         bool,
+        ValueQuery
+    >;
+
+    // Saves all the miners who have pinned for that file hash
+	#[pallet::storage]
+    #[pallet::getter(fn main_node_registration)]
+	pub type ColdkeyNodeRegistration<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		Vec<u8>,     
+		Option<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
+		ValueQuery
+	>;
+
+    /// Stores the linked node IDs for each main node
+    #[pallet::storage]
+    #[pallet::getter(fn linked_nodes)]
+    pub type LinkedNodes<T: Config> = StorageMap<
+        _, 
+        Blake2_128Concat, 
+        Vec<u8>,  // The node_id of the main node
+        Vec<Vec<u8>>,  // The vector of linked node IDs
         ValueQuery
     >;
 
@@ -143,6 +182,9 @@ pub mod pallet {
         NodeRegistered{
             node_id: Vec<u8>
         },
+        MainNodeRegistered{
+            node_id: Vec<u8>
+        },
         NodeUnregistered{
             node_id: Vec<u8>
         },
@@ -160,6 +202,7 @@ pub mod pallet {
             fee: BalanceOf<T> 
         },
         NodeTypeDisabledChanged { node_type: NodeType, disabled: bool }, // New event
+        NodeOwnerSwapped { node_id: Vec<u8>, new_owner: T::AccountId },
     }
     
     #[pallet::error]
@@ -179,7 +222,11 @@ pub mod pallet {
         NodeTypeDisabled,
         NodeTypeMismatch,
         NodeNotRegistered,
-        NotNodeOwner
+        NotNodeOwner,
+        NotAProxyAccount,
+        InvalidProxyType,
+        AccountNotRegistered,
+        NodeNotInUids,
     }
 
     #[pallet::validate_unsigned]
@@ -231,6 +278,8 @@ pub mod pallet {
         }
     }
 
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
@@ -240,6 +289,21 @@ pub mod pallet {
             }
             Weight::zero()
         }
+
+        fn on_runtime_upgrade() -> Weight {
+            // Check the on-chain storage version
+            let on_chain_version = StorageVersion::get::<Pallet<T>>();
+            if on_chain_version < STORAGE_VERSION {
+                // Perform the migration
+                let weight = MigrateNodeRegistration::<T>::on_runtime_upgrade();
+                // Set the new storage version
+                StorageVersion::put::<Pallet<T>>(&STORAGE_VERSION);
+                weight
+            } else {
+                Weight::zero()
+            }
+        }
+
     }
     
 
@@ -247,11 +311,205 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
         #[pallet::weight((0, Pays::No))]
-        pub fn register_node(origin: OriginFor<T>, node_type: NodeType, node_id : Vec<u8>,
+        pub fn force_register_coldkey_node(origin: OriginFor<T>, owner: T::AccountId, node_type: NodeType, node_id : Vec<u8>,ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
+            ensure_root(origin)?;
+            
+            // Get the current block number
+            let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+            let node_info = NodeInfo {
+                node_id: node_id.clone(),
+                node_type,
+                ipfs_node_id,
+                status: Status::Online,
+                registered_at: current_block_number,
+                owner
+            };
+            ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+
+            Self::deposit_event(Event::MainNodeRegistered{node_id});
+            Ok(().into())
+        }
+
+        #[pallet::call_index(1)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn register_node_with_coldkey(origin: OriginFor<T>, node_type: NodeType, node_id : Vec<u8>,
             pay_in_credits: bool,
             ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
             let who = ensure_signed(origin)?;
+
+            // Ensure that if the node type is `StorageMiner`, the `ipfs_node_id` is not `None`
+            match node_type {
+                NodeType::StorageMiner => ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired),
+                NodeType::Validator => ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired),
+                _ => {}
+            }
             
+            let node_id = node_id.clone();
+            // Check if the node is already registered
+            ensure!(
+                !ColdkeyNodeRegistration::<T>::contains_key(&node_id),
+                Error::<T>::NodeAlreadyRegistered
+            );
+
+            // Check if the account ID already has a registered node
+            let existing_node = ColdkeyNodeRegistration::<T>::iter()
+            .find(|(_registered_node_id, registered_node_info)| {
+                if let Some(info) = registered_node_info {
+                    info.owner == who
+                } else {
+                    false
+                }
+            });
+
+            ensure!(existing_node.is_none(), Error::<T>::NodeAlreadyRegistered); // You can define a more specific error if needed
+
+            // Check if the ipfs_node_id is already registered
+            if let Some(ref ipfs_id) = ipfs_node_id {
+                // Iterate through all registered nodes to check for the ipfs_node_id
+                for (_registered_node_id, registered_node_info) in NodeRegistration::<T>::iter() {
+                    if let Some(info) = registered_node_info {
+                        if info.ipfs_node_id.as_ref() == Some(ipfs_id) {
+                            return Err(Error::<T>::IpfsNodeIdAlreadyRegistered.into());
+                        }
+                    }
+                }
+            }
+
+            // Check if the node type is disabled
+            ensure!(
+                !Self::is_node_type_disabled(node_type.clone()),
+                Error::<T>::NodeTypeDisabled
+            );
+
+            // If the node type is Validator, ensure minimum stake
+            if node_type == NodeType::Validator {
+                // You'll need to implement a way to check the staked amount
+                // This is a placeholder - replace with actual stake checking logic
+                ensure!(
+                    pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(who.clone()))
+                        .map(|ledger| ledger.active)
+                        .unwrap_or_default() >= T::MinerStakeThreshold::get().into(),
+                    Error::<T>::InsufficientStake
+                );
+            }
+
+            // Get all UIDs using the MetagraphInfo provider
+            let uids = T::MetagraphInfo::get_all_uids();
+                
+            if let Ok(account_bytes) = who.clone().encode().try_into() {
+                let account = AccountId32::new(account_bytes);
+                let who_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default()).to_ss58check();
+            
+                // Check if the caller is in UIDs
+                let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == who_ss58);
+
+                // Check if the caller is not in UIDs and return an error
+                ensure!(is_in_uids, Error::<T>::NodeNotInUids);
+
+                // If the caller is in UIDs, check if the node_type matches the role
+                if is_in_uids {
+                    let whitelist = T::MetagraphInfo::get_whitelisted_validators();
+                    let is_whitelisted = whitelist.iter().any(|validator|  validator == &who);
+
+                    if !is_whitelisted{
+                        if let Some(uid) = uids.iter().find(|uid| uid.substrate_address.to_ss58check() == who_ss58) {
+                            ensure!(
+                                uid.role == node_type.to_role(),
+                                Error::<T>::NodeTypeMismatch
+                            );
+                        }
+                    }
+                }
+
+                // Check if fee charging is enabled
+                if Self::fee_charging_enabled() && !is_in_uids{
+                    // Calculate dynamic fee based on node type
+                    let fee = Self::calculate_dynamic_fee(node_type.clone());
+                    
+                    // Ensure user has sufficient balance
+                    ensure!(
+                        <pallet_balances::Pallet<T>>::free_balance(&who) >= fee,
+                        Error::<T>::InsufficientBalanceForFee
+                    );
+
+                    if !pay_in_credits{
+                        // Transfer fee to the pallet's account
+                        <pallet_balances::Pallet<T>>::transfer(
+                            &who.clone(), 
+                            &Self::account_id(), 
+                            fee,
+                            ExistenceRequirement::AllowDeath
+                        )?;
+                    }else{
+                        // decrease credits and mint balance
+                        let fee_u128: u128 = fee.try_into().unwrap_or_default();
+                        CreditsPallet::<T>::decrease_user_credits(&who.clone(), fee_u128);
+                        // Deposit charge to marketplace account
+                        let _ = pallet_balances::Pallet::<T>::deposit_creating(&Self::account_id(), fee);
+                    }
+
+                    // Update fee after successful registration
+                    Self::update_fee_after_registration(node_type.clone());
+                }
+            }
+
+            // Get the current block number
+            let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+            let node_info = NodeInfo {
+                node_id: node_id.clone(),
+                node_type,
+                ipfs_node_id,
+                status: Status::Online,
+                registered_at: current_block_number,
+                owner: who
+            };
+            
+            ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+
+            Self::deposit_event(Event::MainNodeRegistered{node_id});
+            Ok(().into())
+        }
+
+        #[pallet::call_index(2)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn register_node_with_hotkey(origin: OriginFor<T>, 
+            coldkey: T::AccountId,
+            node_type: NodeType, node_id : Vec<u8>,
+            pay_in_credits: bool,
+            ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
+            let who = ensure_signed(origin)?;
+
+            // Check if the caller is a proxy and retrieve the real (main) account
+            let proxy_def = ProxyPallet::<T>::find_proxy(
+                &coldkey, 
+                &who, 
+                None // Accept any proxy type for now
+            ).map_err(|_| Error::<T>::NotAProxyAccount)?;
+
+            let proxy_type = proxy_def.proxy_type;
+
+            // Validate the proxy type using ProxyTypeCompat
+            ensure!(
+                proxy_type.is_non_transfer(),
+                Error::<T>::InvalidProxyType
+            );
+
+            // Check if the coldkey is registered in ColdkeyNodeRegistration
+            let is_registered = ColdkeyNodeRegistration::<T>::iter().any(|(_node_id, node_info)| {
+                if let Some(info) = node_info {
+                    info.owner == coldkey
+                } else {
+                    false
+                }
+            });
+
+            ensure!(
+                is_registered,
+                Error::<T>::AccountNotRegistered
+            );
+
             // Ensure that if the node type is `StorageMiner`, the `ipfs_node_id` is not `None`
             match node_type {
                 NodeType::StorageMiner => ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired),
@@ -380,11 +638,17 @@ pub mod pallet {
             
             NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
 
+            // Update the linked nodes count
+            LinkedNodes::<T>::try_mutate(&node_id, |linked_node_ids| {
+                linked_node_ids.push(node_id.clone());
+                Ok::<(), DispatchError>(()) // Specify the type here
+            })?;
+
             Self::deposit_event(Event::NodeRegistered{node_id});
             Ok(().into())
         }
 
-        #[pallet::call_index(1)]
+        #[pallet::call_index(3)]
         #[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
         pub fn set_node_status_to_degraded(
             origin: OriginFor<T>,
@@ -416,37 +680,54 @@ pub mod pallet {
             })
         }
 
-        #[pallet::call_index(2)]
+        #[pallet::call_index(4)]
         #[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
         pub fn set_node_status_to_degraded_unsigned(
             origin: OriginFor<T>,
             node_id: Vec<u8>,
             signature: Vec<u8>,
         ) -> DispatchResult {
-			ensure_none(origin)?;
-			let _signature = signature;
-
-            // Try to mutate the node information if it exists
+            ensure_none(origin)?;
+            let _signature = signature;
+        
+            // Try to mutate the node information if it exists in NodeRegistration
             NodeRegistration::<T>::try_mutate(&node_id, |node_info_opt| -> DispatchResult {
                 // Check if the node exists in the storage map
                 let node_info = node_info_opt.as_mut().ok_or(Error::<T>::NodeNotFound)?;
-
-                // Update the status to Degraded
+        
+                // Update the status to Degraded in NodeRegistration
                 node_info.status = Status::Degraded;
-
+        
                 // Emit an event for the status update
-                Self::deposit_event(Event::NodeStatusUpdated{
+                Self::deposit_event(Event::NodeStatusUpdated {
                     node_id: node_id.clone(),
-                    status: Status::Degraded
+                    status: Status::Degraded,
                 });
-
+        
                 Ok(())
-            })
+            })?;
+        
+            // Check if the node exists in ColdkeyNodeRegistration and update status
+            ColdkeyNodeRegistration::<T>::try_mutate(&node_id, |node_info_opt| -> DispatchResult {
+                if let Some(node_info) = node_info_opt {
+                    // Update the status to Degraded in ColdkeyNodeRegistration
+                    node_info.status = Status::Degraded;
+        
+                    // Emit an event for the status update
+                    Self::deposit_event(Event::NodeStatusUpdated {
+                        node_id: node_id.clone(),
+                        status: Status::Degraded,
+                    });
+                }
+                Ok(())
+            })?;
+        
+            Ok(())
         }
 
-        #[pallet::call_index(3)]
+        #[pallet::call_index(5)]
         #[pallet::weight((0, Pays::No))]
-        pub fn force_register_node(origin: OriginFor<T>, owner: T::AccountId, node_type: NodeType, node_id : Vec<u8>,ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
+        pub fn force_register_node_with_hotkey(origin: OriginFor<T>, owner: T::AccountId, node_type: NodeType, node_id : Vec<u8>,ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
             ensure_root(origin)?;
             
             // Get the current block number
@@ -462,13 +743,18 @@ pub mod pallet {
             };
             NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
 
+            // Update the linked nodes count
+            LinkedNodes::<T>::try_mutate(&node_id, |linked_node_ids| {
+                linked_node_ids.push(node_id.clone());
+                Ok::<(), DispatchError>(()) // Specify the type here
+            })?;
+
             Self::deposit_event(Event::NodeRegistered{node_id});
             Ok(().into())
         }
 
-
         /// Sudo function to enable or disable fee charging
-        #[pallet::call_index(4)]
+        #[pallet::call_index(6)]
         #[pallet::weight((0, Pays::No))]
         pub fn set_fee_charging(
             origin: OriginFor<T>, 
@@ -487,7 +773,7 @@ pub mod pallet {
         }
 
         /// Sudo function to update the fee for a specific node type
-        #[pallet::call_index(5)]
+        #[pallet::call_index(7)]
         #[pallet::weight((0, Pays::No))]
         pub fn set_node_type_fee(
             origin: OriginFor<T>, 
@@ -510,7 +796,7 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(6)]
+        #[pallet::call_index(8)]
         #[pallet::weight((0, Pays::No))]
         pub fn set_node_type_disabled(
             origin: OriginFor<T>, 
@@ -529,16 +815,27 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(7)]
+        #[pallet::call_index(9)]
         #[pallet::weight((0, Pays::No))]
-        pub fn force_unregister_node(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResultWithPostInfo {
+        pub fn force_unregister_hotkey_node(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResultWithPostInfo {
             ensure_root(origin)?;
 
             Self::do_unregister_node(node_id);
+
             Ok(().into())
         }
 
-        #[pallet::call_index(8)]
+        #[pallet::call_index(10)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn force_unregister_coldkey_node(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResultWithPostInfo {
+            ensure_root(origin)?;
+
+            Self::do_unregister_main_node(node_id);
+
+            Ok(().into())
+        }
+
+        #[pallet::call_index(11)]
         #[pallet::weight((0, Pays::No))]
         pub fn unregister_node(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
@@ -560,6 +857,55 @@ pub mod pallet {
 
             Ok(().into())
         }
+
+        #[pallet::call_index(12)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn unregister_main_node(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
+
+            // Ensure that the node is registered
+            ensure!(
+                ColdkeyNodeRegistration::<T>::contains_key(&node_id),
+                Error::<T>::NodeNotRegistered
+            );
+
+            // Retrieve the node info to check ownership
+            let node_info = ColdkeyNodeRegistration::<T>::get(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Ensure the caller is the owner of the node
+            ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
+
+            // Call the existing unregister logic
+            Self::do_unregister_main_node(node_id);
+
+            Ok(().into())
+        }
+
+        #[pallet::call_index(13)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn swap_node_owner(
+            origin: OriginFor<T>,
+            node_id: Vec<u8>,
+            new_owner: T::AccountId,
+        ) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
+        
+            // Retrieve the node information
+            let mut node_info = NodeRegistration::<T>::get(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
+        
+            // Ensure the caller is the current owner
+            ensure!(node_info.owner == who.clone(), Error::<T>::NotNodeOwner);
+        
+            // Update the owner
+            node_info.owner = new_owner.clone();
+        
+            // Save the updated node information back to storage
+            NodeRegistration::<T>::insert(node_id.clone(), Some(node_info)); // Wrap node_info in Some
+        
+            Self::deposit_event(Event::NodeOwnerSwapped { node_id, new_owner });
+        
+            Ok(().into())
+        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -567,63 +913,114 @@ pub mod pallet {
         pub fn get_all_active_storage_miners() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
             // Vector to store filtered node info
             let mut active_storage_miners = Vec::new();
+            let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-            // Iterate over all registered nodes in the storage map
+            // Iterate over all registered nodes in the NodeRegistration storage map
             for (_, node_info_opt) in NodeRegistration::<T>::iter() {
                 if let Some(node_info) = node_info_opt {
                     // Check if the node is of type miner and its status is not Degraded
-                    if matches!(node_info.node_type, NodeType::StorageMiner) 
-                    &&
-                    !matches!(node_info.status, Status::Degraded) 
-                    {
-                        active_storage_miners.push(node_info);
+                    if matches!(node_info.node_type, NodeType::StorageMiner) && !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_storage_miners.push(node_info);
+                        }
                     }
                 }
             }
-            active_storage_miners
-        }   
 
+            // Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
+            for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of type miner and its status is not Degraded
+                    if matches!(node_info.node_type, NodeType::StorageMiner) && !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_storage_miners.push(node_info);
+                        }
+                    }
+                }
+            }
+
+            active_storage_miners
+        }
+        
         /// Fetch all registered miners whose status is not degraded
         pub fn get_all_active_compute_miners() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
             // Vector to store filtered node info
             let mut active_storage_miners = Vec::new();
+            let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-            // Iterate over all registered nodes in the storage map
+            // Iterate over all registered nodes in the NodeRegistration storage map
             for (_, node_info_opt) in NodeRegistration::<T>::iter() {
                 if let Some(node_info) = node_info_opt {
                     // Check if the node is of type miner and its status is not Degraded
-                    if matches!(node_info.node_type, NodeType::ComputeMiner) 
-                    &&
-                    !matches!(node_info.status, Status::Degraded) 
-                    {
-                        active_storage_miners.push(node_info);
+                    if matches!(node_info.node_type, NodeType::ComputeMiner) && !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_storage_miners.push(node_info);
+                        }
                     }
                 }
             }
+
+            // Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
+            for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of type miner and its status is not Degraded
+                    if matches!(node_info.node_type, NodeType::ComputeMiner) && !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_storage_miners.push(node_info);
+                        }
+                    }
+                }
+            }
+
             active_storage_miners
-        }   
-        
+        }
+
         pub fn get_miner_info(account_id: T::AccountId) -> Option<(NodeType, Status)> {
-            // Iterate through the storage map to find the miner associated with the account_id
+            let mut seen_accounts = Vec::new(); // Vec to track unique account IDs
+        
+            // Iterate through the storage map to find the miner associated with the account_id in NodeRegistration
             for (_, node_info) in NodeRegistration::<T>::iter() {
                 if let Some(info) = node_info {
                     // Check if the owner of the node matches the provided account_id
-                    if info.owner == account_id {
+                    if info.owner == account_id && !seen_accounts.contains(&info.owner) {
+                        seen_accounts.push(info.owner.clone()); // Track this account ID
                         // Return the miner type and status
                         return Some((info.node_type, info.status));
                     }
                 }
             }
+        
+            // Iterate through the storage map to find the miner associated with the account_id in ColdkeyNodeRegistration
+            for (_, node_info) in ColdkeyNodeRegistration::<T>::iter() {
+                if let Some(info) = node_info {
+                    // Check if the owner of the node matches the provided account_id
+                    if info.owner == account_id && !seen_accounts.contains(&info.owner) {
+                        seen_accounts.push(info.owner.clone()); // Track this account ID
+                        // Return the miner type and status
+                        return Some((info.node_type, info.status));
+                    }
+                }
+            }
+        
             // Return None if the account_id is not a miner
             None
         }
 
-        /// Fetch all registered miners who have staked more than 600
+        /// Fetch all registered miners who have staked 
         pub fn get_all_storage_miners_with_min_staked() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
             // Vector to store filtered node info
             let mut active_storage_miners = Vec::new();
-
-            // Iterate over all registered nodes in the storage map
+            let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
+        
+            // Iterate over all registered nodes in the NodeRegistration storage map
             for (_, node_info_opt) in NodeRegistration::<T>::iter() {
                 if let Some(node_info) = node_info_opt {
                     // Check if the node is of type miner
@@ -638,25 +1035,24 @@ pub mod pallet {
                             (T::MinerStakeThreshold::get() as u128).saturating_mul(10u128.pow(T::ChainDecimals::get()))
                             .try_into()
                             .unwrap_or_default();
-
+        
                         // Check if staked balance is greater than threshold
                         if staked_balance >= threshold {
-                            active_storage_miners.push(node_info);
+                            // Check for uniqueness
+                            if !seen_node_ids.contains(&node_info.node_id) {
+                                seen_node_ids.push(node_info.node_id.clone());
+                                active_storage_miners.push(node_info);
+                            }
                         }
                     }
                 }
             }
-            active_storage_miners
-        }
-
-        /// Fetch all registered miners who have staked more than 600
-        pub fn get_all_nodes_with_min_staked() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
-            // Vector to store filtered node info
-            let mut active_storage_miners = Vec::new();
-
-            // Iterate over all registered nodes in the storage map
-            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+        
+            // Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
+            for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
                 if let Some(node_info) = node_info_opt {
+                    // Check if the node is of type miner
+                    if matches!(node_info.node_type, NodeType::StorageMiner) && !matches!(node_info.status, Status::Degraded) {
                         // Get the staked balance for this miner
                         let staked_balance = pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(node_info.owner.clone()))
                             .map(|ledger| ledger.active)
@@ -667,17 +1063,55 @@ pub mod pallet {
                             (T::MinerStakeThreshold::get() as u128).saturating_mul(10u128.pow(T::ChainDecimals::get()))
                             .try_into()
                             .unwrap_or_default();
-
+        
                         // Check if staked balance is greater than threshold
                         if staked_balance >= threshold {
-                            active_storage_miners.push(node_info);
+                            // Check for uniqueness
+                            if !seen_node_ids.contains(&node_info.node_id) {
+                                seen_node_ids.push(node_info.node_id.clone());
+                                active_storage_miners.push(node_info);
+                            }
                         }
-                    
+                    }
                 }
             }
+        
             active_storage_miners
         }
 
+        /// Fetch all registered miners who have staked more than 600
+        pub fn get_all_nodes_with_min_staked() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            // Vector to store filtered node info
+            let mut active_storage_miners = Vec::new();
+            let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
+
+            // Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
+            for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Get the staked balance for this miner
+                    let staked_balance = pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(node_info.owner.clone()))
+                        .map(|ledger| ledger.active)
+                        .unwrap_or_default();
+                    
+                    // Convert the threshold to staking currency balance type
+                    let threshold: <T as pallet_staking::Config>::CurrencyBalance = 
+                        (T::MinerStakeThreshold::get() as u128).saturating_mul(10u128.pow(T::ChainDecimals::get()))
+                        .try_into()
+                        .unwrap_or_default();
+
+                    // Check if staked balance is greater than threshold
+                    if staked_balance >= threshold {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_storage_miners.push(node_info);
+                        }
+                    }
+                }
+            }
+
+            active_storage_miners
+        }
         
         pub fn get_chain_decimals() -> u32 {
             T::ChainDecimals::get()
@@ -687,39 +1121,75 @@ pub mod pallet {
         pub fn get_all_nodes_by_node_type(node_type: NodeType) -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
             // Vector to store filtered node info
             let mut active_nodes = Vec::new();
-
-            // Iterate over all registered nodes in the storage map
+            let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
+        
+            // Iterate over all registered nodes in the NodeRegistration storage map
             for (_, node_info_opt) in NodeRegistration::<T>::iter() {
                 if let Some(node_info) = node_info_opt {
-                    // Check if the node is of the specified type
-                    if node_info.node_type == node_type
-                        && !matches!(node_info.status, Status::Degraded)
-                    {
-                        active_nodes.push(node_info);
+                    // Check if the node is of the specified type and its status is not Degraded
+                    if node_info.node_type == node_type && !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_nodes.push(node_info);
+                        }
                     }
                 }
             }
+        
+            // Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
+            for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of the specified type and its status is not Degraded
+                    if node_info.node_type == node_type && !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_nodes.push(node_info);
+                        }
+                    }
+                }
+            }
+        
             active_nodes
         }
-
 
         /// Fetch all registered miners whose status is not degraded
         pub fn get_all_active_nodes() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
             // Vector to store filtered node info
             let mut active_nodes = Vec::new();
+            let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-            // Iterate over all registered nodes in the storage map
+            // Iterate over all registered nodes in the NodeRegistration storage map
             for (_, node_info_opt) in NodeRegistration::<T>::iter() {
                 if let Some(node_info) = node_info_opt {
-                    // Check if the node is of type miner and its status is not Degraded
-                    if !matches!(node_info.status, Status::Degraded) 
-                    {
-                        active_nodes.push(node_info);
+                    // Check if the node's status is not Degraded
+                    if !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_nodes.push(node_info);
+                        }
                     }
                 }
             }
+
+            // Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
+            for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node's status is not Degraded
+                    if !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_nodes.push(node_info);
+                        }
+                    }
+                }
+            }
+
             active_nodes
-        }   
+        }
 
         pub fn account_id() -> T::AccountId {
             <T as pallet::Config>::PalletId::get().into_account_truncating()
@@ -731,8 +1201,14 @@ pub mod pallet {
         }
 
         pub fn get_registered_node(node_id: Vec<u8>) -> Result<NodeInfo<BlockNumberFor<T>, T::AccountId>, &'static str> {
-            // Retrieve the node info from storage
-            match NodeRegistration::<T>::get(node_id) {
+            // Retrieve the node info from NodeRegistration storage
+            match NodeRegistration::<T>::get(&node_id) {
+                Some(node_info) => return Ok(node_info),
+                _ => {}
+            }
+        
+            // If not found, retrieve the node info from ColdkeyNodeRegistration storage
+            match ColdkeyNodeRegistration::<T>::get(&node_id) {
                 Some(node_info) => Ok(node_info),
                 _ => Err("Node ID not registered or invalid data"),
             }
@@ -836,29 +1312,51 @@ pub mod pallet {
             LastRegistrationBlock::<T>::insert(node_type, current_block);
         }
 
-
         /// Fetch all registered miners of a specific type whose status is not degraded
-		pub fn get_active_nodes_by_type(node_type: NodeType) -> Vec<Vec<u8>> {
-			// Vector to store filtered node info
-			let mut active_nodes = Vec::new();
+        pub fn get_active_nodes_by_type(node_type: NodeType) -> Vec<Vec<u8>> {
+            // Vector to store filtered node info
+            let mut active_nodes = Vec::new();
+            let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the storage map
-			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
-				if let Some(node_info) = node_info_opt {
-					// Check if the node is of the specified type and its status is not Degraded
-					if node_info.node_type == node_type && !matches!(node_info.status, Status::Degraded) 
-					{
-						active_nodes.push(node_info.node_id.clone());
-					}
-				}
-			}
-			active_nodes
-		}
+            // Iterate over all registered nodes in the NodeRegistration storage map
+            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of the specified type and its status is not Degraded
+                    if node_info.node_type == node_type && !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_nodes.push(node_info.node_id.clone());
+                        }
+                    }
+                }
+            }
+
+            // Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
+            for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node is of the specified type and its status is not Degraded
+                    if node_info.node_type == node_type && !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_nodes.push(node_info.node_id.clone());
+                        }
+                    }
+                }
+            }
+
+            active_nodes
+        }
 
         pub fn do_unregister_node(node_id: Vec<u8>) {
             NodeRegistration::<T>::remove(node_id.clone());
             Self::deposit_event(Event::NodeUnregistered { node_id });
         }
-        
+
+        pub fn do_unregister_main_node(node_id: Vec<u8>) {
+            ColdkeyNodeRegistration::<T>::remove(node_id.clone());
+            Self::deposit_event(Event::NodeUnregistered { node_id });
+        }
     }
 }

@@ -534,7 +534,7 @@ pub mod pallet {
                                     let slash_amount = slash_fraction * ledger.total;
 
                                     // Ensure the slash amount is greater than the minimum balance
-                                    let minimum_balance = T::Currency::minimum_balance();
+                                    let minimum_balance = <T as pallet_staking::Config>::Currency::minimum_balance();
                                     if slash_amount > minimum_balance {
                                         // Slash the validator's stake
                                         let slashed_amount = ledger.slash(

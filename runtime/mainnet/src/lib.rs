@@ -173,13 +173,22 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 1219,
+	spec_version: 1220,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
 	state_version: 0,
 };
 
+impl pallet_registration::ProxyTypeCompat for ProxyType {
+    fn is_non_transfer(&self) -> bool {
+        matches!(self, ProxyType::NonTransfer)
+    }
+
+    fn is_any(&self) -> bool {
+        matches!(self, ProxyType::Any)
+    }
+}
 
 /// The version information used to identify this runtime when compiled natively.
 #[cfg(feature = "std")]
@@ -1163,6 +1172,8 @@ impl pallet_registration::Config for Runtime {
 	type StorageMiners3InitialFee = StorageMiners3InitialFee;
     type GpuMinerInitialFee = GpuMinerInitialFee;
 	type BlocksPerDay = BlocksPerDay;
+	type ProxyTypeCompatType = ProxyType;
+	type OnRuntimeUpgrade = pallet_registration::migrations::MigrateNodeRegistration<Runtime>;
 }
 
 parameter_types! {
