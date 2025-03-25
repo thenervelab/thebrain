@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 1220,
+	spec_version: 1223,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1008,7 +1008,6 @@ parameter_types! {
 	pub const StakingUnsignedPriority: TransactionPriority = TransactionPriority::MAX / 2;
 }
 
-
 impl<LocalCall> frame_system::offchain::CreateSignedTransaction<LocalCall> for Runtime
 where
 	RuntimeCall: From<LocalCall>,
@@ -1173,7 +1172,6 @@ impl pallet_registration::Config for Runtime {
     type GpuMinerInitialFee = GpuMinerInitialFee;
 	type BlocksPerDay = BlocksPerDay;
 	type ProxyTypeCompatType = ProxyType;
-	type OnRuntimeUpgrade = pallet_registration::migrations::MigrateNodeRegistration<Runtime>;
 }
 
 parameter_types! {

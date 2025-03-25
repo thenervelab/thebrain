@@ -67,7 +67,8 @@ pub mod pallet {
 	use pallet_babe::RandomnessFromOneEpochAgo;
 	use pallet_ipfs_pin::Pallet as IpfsPinPallet;
 	use pallet_metagraph::UIDs;
-	use pallet_registration::{NodeRegistration, NodeType};
+	use pallet_registration::NodeType;
+	use pallet_registration::Pallet as RegistrationPallet;
 	use sp_core::offchain::StorageKind;
 	use sp_runtime::{
 		format,
@@ -319,7 +320,7 @@ pub mod pallet {
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
 			match IpfsPinPallet::<T>::fetch_node_id() {
 				Ok(node_id) => {
-					let node_info = NodeRegistration::<T>::get(&node_id);    
+					let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());    
 	
 					if node_info.is_some() {
 						// Get BABE randomness

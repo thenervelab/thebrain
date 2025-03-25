@@ -69,7 +69,8 @@ pub mod pallet {
 	use frame_support::pallet_prelude::*;
 	use sp_std::prelude::*;
 	use scale_info::prelude::*;
-	use pallet_registration::{NodeType, Status, NodeRegistration};
+	use pallet_registration::{NodeType, Status};
+	use pallet_registration::Pallet as RegistrationPallet;
 	use sp_runtime::offchain::storage_lock::{StorageLock,BlockAndTime};
 	use pallet_utils::{ Pallet as UtilsPallet};
 	use frame_system::{pallet_prelude::*, offchain::{Signer,SendUnsignedTransaction, SigningTypes, SendTransactionTypes}};
@@ -217,7 +218,7 @@ pub mod pallet {
 			let _signature = signature;
 
 			// check if the node is already registered or not here
-			let node_info = NodeRegistration::<T>::get(&node_identity);
+			let node_info = RegistrationPallet::<T>::get_node_registration_info(node_identity.clone());
 			// Ensure the node is registered and its type is miner
 			ensure!(
 				node_info.is_some(),
@@ -255,7 +256,7 @@ pub mod pallet {
             ensure_none(origin)?;
 			let _signature = signature;
 			// check if the node is already registered or not here
-			let node_info = NodeRegistration::<T>::get(&node_identity);
+			let node_info = RegistrationPallet::<T>::get_node_registration_info(node_identity.clone());
 			// Ensure the node is registered and its type is miner
 			ensure!(
 				node_info.is_some(),
@@ -373,7 +374,7 @@ pub mod pallet {
 			let _signature = signature;
 
 			// check if the node is already registered or not here
-			let node_info = NodeRegistration::<T>::get(&node_identity);
+			let node_info = RegistrationPallet::<T>::get_node_registration_info(node_identity.clone());
 			// Ensure the node is registered and its type is miner
 			ensure!(
 				node_info.is_some(),
@@ -404,7 +405,7 @@ pub mod pallet {
 			ensure_none(origin)?;
 			let _signature = signature;
 			// check if the node is already registered or not here
-			let node_info = NodeRegistration::<T>::get(&node_identity);
+			let node_info = RegistrationPallet::<T>::get_node_registration_info(node_identity.clone());
 			// Ensure the node is registered and its type is miner
 			ensure!(
 				node_info.is_some(),
@@ -527,7 +528,7 @@ pub mod pallet {
 					// Hashes of all files peered in local IPFS node
 					if let Ok(files_peered) = Self::fetch_info() {
 						// first check if the node is registered and the type is validator or not 
-						let node_info = NodeRegistration::<T>::get(&node_identity);
+						let node_info = RegistrationPallet::<T>::get_node_registration_info(node_identity.clone());
 						// if node is present 
 						if node_info.is_some(){ 
 							// logging IPFS Node Id 

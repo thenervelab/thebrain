@@ -1,47 +1,53 @@
 use crate::{Error, utils, pallet::Config};
 use sp_std::vec::Vec;
 use sp_runtime::format;
+use sp_std::vec;
 
 /// Parse dividends from a hex-encoded storage value
-pub fn parse_dividends_from_hex<T: Config>(hex: &str) -> Result<Vec<u16>, Error<T>> {    
-    // Remove null value if present
+pub fn parse_dividends_from_hex<T: Config>(hex: &str) -> Result<Vec<u16>, Error<T>> {
+    
+    // Handle null case
     if hex == "null" {
-        log::error!("❌ Received null value");
-        return Ok(Vec::new());
+        return Ok(vec![0; 256]); // Return a vector of 256 zeros
     }
 
-    // Ensure we have a hex string
+    // Validate hex format
     if !hex.starts_with("0x") {
-        log::error!("❌ Invalid hex string - missing 0x prefix");
         return Err(Error::<T>::InvalidUIDFormat);
     }
 
     let bytes = utils::decode_hex::<T>(hex)?;
+   
+    // Initialize a vector with 256 zeros (expected output size)
+    let mut dividends = vec![0u16; 256];
 
-    // Check if we have enough bytes for dividends
-    if bytes.len() < 4 {
-        log::error!("❌ Not enough bytes for dividends: {}", bytes.len());
-        return Err(Error::<T>::InvalidUIDFormat);
+    // Calculate how many u16 values we can extract from the byte array
+    let num_values = bytes.len() / 2; // Each u16 is 2 bytes
+
+    // Extract u16 values from the byte array
+    for i in 0..num_values {
+        if i < dividends.len() {
+            dividends[i] = u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+        }
     }
 
-    // Skip the first byte (header) and process the rest
-    let data = &bytes[1..]; // Skip the first byte
-
-    // Each dividend is a u16 (2 bytes) in little-endian format
-    let mut dividends = Vec::with_capacity(data.len() / 2);
-    for chunk in data.chunks_exact(2) {
-        // Convert from little-endian bytes to u16
-        let dividend = u16::from_le_bytes([chunk[0], chunk[1]]);
-        dividends.push(dividend);
-    }
-    
     // Log non-zero dividends with their indices
     let non_zero = dividends.iter().enumerate()
         .filter(|(_, &v)| v > 0)
-        .map(|(i, &v)| format!("index {}: {}", i + 1, v))
+        .map(|(i, &v)| format!("index {}: {}", i, v))
         .collect::<Vec<_>>();
 
-    log::info!("Non-zero dividends: {:?}", non_zero);
-    
-    Ok(dividends) // Return the parsed dividends
+    // Remove the first item
+    if !dividends.is_empty() {
+        dividends.remove(0);
+    }
+
+    // Remove the last 36 items
+    for _ in 0..36 {
+        if !dividends.is_empty() {
+            dividends.pop();
+        }
+    }
+
+    Ok(dividends)
 }

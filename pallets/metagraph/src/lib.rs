@@ -92,7 +92,8 @@ pub mod pallet {
         vec::Vec,
     };
     use pallet_utils::Pallet as UtilsPallet;
-    use pallet_registration::{NodeRegistration, NodeType};
+    use pallet_registration::NodeType;
+    use pallet_registration::Pallet as RegistrationPallet;
     use sp_core::crypto::Ss58Codec;
     use sp_runtime::AccountId32;
 
@@ -377,7 +378,7 @@ pub mod pallet {
             if UtilsPallet::<T>::metagraph_submission_enabled() {
                 match UtilsPallet::<T>::fetch_node_id() {
                     Ok(node_id) => {
-                        let node_info = NodeRegistration::<T>::get(&node_id);
+                        let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());
             
                         if node_info.is_some() && node_info.unwrap().node_type == NodeType::Validator {
                             let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(

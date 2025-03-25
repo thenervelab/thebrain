@@ -60,7 +60,8 @@ pub mod pallet {
     use frame_support::sp_runtime::SaturatedConversion;
     use sp_std::vec;
     use pallet_utils::Pallet as UtilsPallet;
-	use pallet_registration::{NodeRegistration, NodeType};
+	use pallet_registration::NodeType;
+    use pallet_registration::Pallet as RegistrationPallet;
     use frame_support::sp_runtime::Saturating;
     use sp_runtime::offchain::Duration;
     use sp_runtime::format;
@@ -170,7 +171,7 @@ pub mod pallet {
             if block_number % <T as pallet::Config>::BlocksPerDay::get().into() == 0u32.into() {
                 match UtilsPallet::<T>::fetch_node_id() {
                     Ok(node_id) => {
-                        let node_info = NodeRegistration::<T>::get(&node_id);
+                        let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());
                         match node_info {
                             Some(node_info) => {
                                 if node_info.node_type == NodeType::ComputeMiner {

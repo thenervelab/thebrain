@@ -3,10 +3,6 @@ use frame_support::{
     pallet_prelude::*, 
     traits::{OnRuntimeUpgrade, StorageInstance},
 };
-use frame_system::pallet_prelude::*;
-use sp_runtime::RuntimeDebug;
-use sp_std::vec::Vec;
-
 pub struct MigrateNodeRegistration<T>(PhantomData<T>);
 
 impl<T: Config> OnRuntimeUpgrade for MigrateNodeRegistration<T> {

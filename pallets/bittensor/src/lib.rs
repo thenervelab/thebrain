@@ -21,7 +21,7 @@ pub mod pallet {
     };
     use pallet_metagraph::Pallet as MetagraphPallet;
     use pallet_rankings::Pallet as RankingsPallet;
-    use pallet_registration::{Pallet as RegistrationPallet, NodeRegistration, NodeType, NodeInfo};
+    use pallet_registration::{Pallet as RegistrationPallet,  NodeType, NodeInfo};
     use pallet_metagraph::{UID, Role};
     use pallet_utils::Pallet as UtilsPallet;
     use scale_info::prelude::string::String;
@@ -101,7 +101,7 @@ pub mod pallet {
 
             match UtilsPallet::<T>::fetch_node_id() {
                 Ok(node_id) => {
-                    let node_info = NodeRegistration::<T>::get(&node_id);	
+                    let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());	
                     if node_info.is_some() {
                         if node_info.unwrap().node_type == NodeType::Validator {
                             if let Err(e) = Self::submit_weight_extrinsic(block_number) {
@@ -192,7 +192,7 @@ pub mod pallet {
                                 }
                             }
                             // Retrieve node info using the linked node ID
-                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                            if let Some(linked_node_info) = RegistrationPallet::<T>::get_node_registration_info(linked_node_id.clone().to_vec()) {
                                 let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                                 linked_storage_miners_ss58.push(linked_miner_ss58.into());
                                 linked_storage_miners_node_id.push(linked_node_id.clone());
@@ -313,7 +313,7 @@ pub mod pallet {
                                 }
                             }                   
                             // Retrieve node info using the linked node ID
-                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                            if let Some(linked_node_info) = RegistrationPallet::<T>::get_node_registration_info(linked_node_id.clone().to_vec()) {
                                 let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                                 linked_s3_miners_ss58.push(linked_miner_ss58.into());
                                 linked_s3_miners_node_id.push(linked_node_id.clone());
@@ -432,11 +432,11 @@ pub mod pallet {
                             }
 
                             // Retrieve node info using the linked node ID
-                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                            if let Some(linked_node_info) = RegistrationPallet::<T>::get_node_registration_info(linked_node_id.clone().to_vec()) {
                                 let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                                 linked_validator_ss58.push(linked_miner_ss58.into());
                                 linked_validator_node_id.push(linked_node_id.clone());
-                                linked_validator_node_types.push(NodeType::StorageS3);
+                                linked_validator_node_types.push(NodeType::Validator);
                                 linked_validator_weights.push(weight as u16);
                             }
                         }
@@ -551,7 +551,7 @@ pub mod pallet {
                             }
 
                             // Retrieve node info using the linked node ID
-                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                            if let Some(linked_node_info) = RegistrationPallet::<T>::get_node_registration_info(linked_node_id.clone().to_vec()) {
                                 let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                                 linked_gpu_miners_ss58.push(linked_miner_ss58.into());
                                 linked_gpu_miners_node_id.push(linked_node_id.clone());
@@ -670,7 +670,7 @@ pub mod pallet {
                             }
 
                             // Retrieve node info using the linked node ID
-                            if let Some(linked_node_info) = NodeRegistration::<T>::get(linked_node_id) {
+                            if let Some(linked_node_info) = RegistrationPallet::<T>::get_node_registration_info(linked_node_id.clone().to_vec()) {
                                 let linked_miner_ss58 = AccountId32::new(linked_node_info.owner.encode().try_into().unwrap_or_default()).to_ss58check();
                                 linked_compute_miners_ss58.push(linked_miner_ss58.into());
                                 linked_compute_miners_node_id.push(linked_node_id.clone());

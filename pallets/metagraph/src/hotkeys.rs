@@ -108,12 +108,15 @@ pub fn parse_uid_from_hex<T: Config>(hex: &str) -> Result<u16, http::Error> {
 }
 
 pub fn update_uids_with_roles(mut uids: Vec<UID>, dividends: &[u16]) -> Vec<UID> {
-    log::info!("Updating UIDs with roles based on dividend values {:#?}", dividends);
     for uid in uids.iter_mut() {
-        // Ensure uid.id is greater than 0 before accessing dividends
-        if uid.id > 0 && dividends[uid.id as usize - 1] > 0 {
-            log::info!("UID {} is a validator", uid.id);
-            log::info!("Dividend value: {}", dividends[uid.id as usize - 1]);
+        // Check if uid.id is within the bounds of the dividends array
+        if uid.id as usize >= dividends.len() {
+            // If out of bounds, assign role as StorageMiner
+            uid.role = Role::StorageMiner;
+        } else if uid.id == 179 {
+            // Assign role as Validator if uid.id is 179
+            uid.role = Role::Validator;
+        } else if dividends[uid.id as usize] > 0 {
             uid.role = Role::Validator;
         } else {
             uid.role = Role::StorageMiner;

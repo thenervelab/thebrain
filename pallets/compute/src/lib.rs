@@ -55,7 +55,8 @@ pub mod pallet {
 	use pallet_utils::Pallet as UtilsPallet;
 	use pallet_ip::Pallet as IpPallet;
 	use serde::{Serialize, Deserialize};
-	use pallet_registration::{NodeRegistration, NodeType};
+	use pallet_registration::NodeType;
+	use pallet_registration::Pallet as RegistrationPallet;
 	use sp_runtime::format;
 	use scale_info::prelude::string::String;
 	use codec::alloc::string::ToString;
@@ -547,8 +548,8 @@ pub mod pallet {
 			// Find the compute request by iterating through all requests
 			Self::update_compute_request_status(request_id, ComputeRequestStatus::InProgress)?;
 			
-			let node_info = NodeRegistration::<T>::get(&miner_node_id.clone());
-
+			let node_info = RegistrationPallet::<T>::get_node_registration_info(miner_node_id.clone());
+ 
 			let miner_request = MinerComputeRequest {
 				request_id,
 				miner_node_id: miner_node_id.clone(),
@@ -2978,7 +2979,7 @@ pub mod pallet {
 
 			match UtilsPallet::<T>::fetch_node_id() {
 				Ok(node_id) => {
-					let node_info = NodeRegistration::<T>::get(&node_id);
+					let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());
 					match node_info {
 						Some(node_info) => {
 							if node_info.node_type == NodeType::ComputeMiner {

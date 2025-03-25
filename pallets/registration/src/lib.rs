@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 pub use pallet::*;
 pub use types::*;
-pub mod migrations; // Add this line
+// pub mod migrations; // Add this line
 #[cfg(test)]
 mod mock;
 
@@ -52,8 +52,8 @@ pub mod pallet {
     };
     use sp_runtime::traits::Zero;
     use pallet_proxy::Pallet as ProxyPallet;
-    use frame_support::traits::OnRuntimeUpgrade;
-    use crate::migrations::MigrateNodeRegistration;
+    // use frame_support::traits::OnRuntimeUpgrade;
+    // use crate::migrations::MigrateNodeRegistration;
 
     const LOCK_BLOCK_EXPIRATION: u32 = 1;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -100,8 +100,6 @@ pub mod pallet {
         type BlocksPerDay: Get<u32>;     
         
         type ProxyTypeCompatType: ProxyTypeCompat;
-
-        type OnRuntimeUpgrade: OnRuntimeUpgrade;
     }
 
 	#[pallet::pallet]
@@ -278,8 +276,6 @@ pub mod pallet {
         }
     }
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
-
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
@@ -289,21 +285,6 @@ pub mod pallet {
             }
             Weight::zero()
         }
-
-        fn on_runtime_upgrade() -> Weight {
-            // Check the on-chain storage version
-            let on_chain_version = StorageVersion::get::<Pallet<T>>();
-            if on_chain_version < STORAGE_VERSION {
-                // Perform the migration
-                let weight = MigrateNodeRegistration::<T>::on_runtime_upgrade();
-                // Set the new storage version
-                StorageVersion::put::<Pallet<T>>(&STORAGE_VERSION);
-                weight
-            } else {
-                Weight::zero()
-            }
-        }
-
     }
     
 
@@ -1201,17 +1182,19 @@ pub mod pallet {
         }
 
         pub fn get_registered_node(node_id: Vec<u8>) -> Result<NodeInfo<BlockNumberFor<T>, T::AccountId>, &'static str> {
-            // Retrieve the node info from NodeRegistration storage
-            match NodeRegistration::<T>::get(&node_id) {
-                Some(node_info) => return Ok(node_info),
-                _ => {}
-            }
-        
-            // If not found, retrieve the node info from ColdkeyNodeRegistration storage
-            match ColdkeyNodeRegistration::<T>::get(&node_id) {
+            // Use the helper function to retrieve node info
+            match Self::get_node_registration_info(node_id) {
                 Some(node_info) => Ok(node_info),
-                _ => Err("Node ID not registered or invalid data"),
+                None => Err("Node ID not registered or invalid data"),
             }
+        }
+
+        // Helper function to get node info from both registrations
+        pub fn get_node_registration_info(node_id: Vec<u8>) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            if let Some(coldkey_info) = ColdkeyNodeRegistration::<T>::get(&node_id) {
+                return Some(coldkey_info);
+            }
+            NodeRegistration::<T>::get(&node_id)
         }
 
         // update user storage request handler
