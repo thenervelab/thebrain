@@ -483,8 +483,6 @@ pub mod pallet {
 
 			// Insert the updated or new metrics data into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
-			// NodeSpecs::<T>::insert(node_id.clone(), system_info);
-			log::info!("✅ Storage updated with Specs");
 
 			Self::deposit_event(Event::NodeSpecsStored { node_id });
 			Ok(().into())

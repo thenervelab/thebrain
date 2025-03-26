@@ -160,12 +160,15 @@ pub mod pallet {
                 if miner.node_type != NodeType::StorageMiner {
                     continue;
                 }
-        
+
                 // Retrieve linked nodes for the main node
-                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
                 let mut total_weight = 0u32;
 
                 if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Remove linked nodes without metrics
+                    linked_node_ids.retain(|linked_node_id| ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()).is_some());
+
                     // Calculate weights for linked nodes
                     for linked_node_id in &linked_node_ids {
                         if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
@@ -283,10 +286,13 @@ pub mod pallet {
                 }
 
                 // Retrieve linked nodes for the main node
-                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
                 let mut total_weight = 0u32;
 
                 if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Remove linked nodes without metrics
+                    linked_node_ids.retain(|linked_node_id| ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()).is_some());
+
                     // Calculate weights for linked nodes
                     for linked_node_id in &linked_node_ids {
                         if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
@@ -401,10 +407,13 @@ pub mod pallet {
                 }
 
                 // Retrieve linked nodes for the main node
-                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
                 let mut total_weight = 0u32;
 
                 if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Remove linked nodes without metrics
+                    linked_node_ids.retain(|linked_node_id| ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()).is_some());
+
                     // Calculate weights for linked nodes
                     for linked_node_id in &linked_node_ids {
                         if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
@@ -520,10 +529,13 @@ pub mod pallet {
                 }
 
                 // Retrieve linked nodes for the main node
-                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
                 let mut total_weight = 0u32;
 
                 if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Remove linked nodes without metrics
+                    linked_node_ids.retain(|linked_node_id| ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()).is_some());
+
                     // Calculate weights for linked nodes
                     for linked_node_id in &linked_node_ids {
                         if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
@@ -639,10 +651,13 @@ pub mod pallet {
                 }
 
                 // Retrieve linked nodes for the main node
-                let linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
+                let mut linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
                 let mut total_weight = 0u32;
 
                 if !linked_node_ids.is_empty() { // Check if there are linked nodes
+                    // Remove linked nodes without metrics
+                    linked_node_ids.retain(|linked_node_id| ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()).is_some());
+
                     // Calculate weights for linked nodes
                     for linked_node_id in &linked_node_ids {
                         if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
@@ -745,19 +760,23 @@ pub mod pallet {
             Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>,
         ) {
             let mut uids = MetagraphPallet::<T>::get_uids();
-            let all_nodes = RegistrationPallet::<T>::get_all_nodes_with_min_staked();
+            let mut all_nodes = RegistrationPallet::<T>::get_all_nodes_with_min_staked();
 
             // Collect metrics for all miners
             let mut all_nodes_metrics: Vec<NodeMetricsData> = Vec::new();
-            for node in &all_nodes {
+            log::info!("All coldkey nodes before updating length is {:?}", all_nodes.len());
+            all_nodes.retain(|node| {
                 if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(node.node_id.clone()) {
                     all_nodes_metrics.push(metrics);
+                    true // Keep the node
                 } else {
                     if let Ok(node_id_str) = String::from_utf8(node.node_id.clone()) {
                         log::info!("Node metrics not found for miner: {:?}", node_id_str);
                     }
+                    false // Remove the node
                 }
-            }
+            });
+            log::info!("All coldkey nodes after updating length is {:?}", all_nodes.len());
 
             // Calculate weights for different miner types
             let (storage_weights, storage_nodes_ss58, storage_miners_node_id, storage_miners_node_types, 
@@ -790,13 +809,11 @@ pub mod pallet {
             let mut all_weights_on_bitensor: Vec<u16> = [storage_weights_on_bittensor, compute_weights_on_bittensor, gpu_weights_on_bittensor, storage_s3_weights_on_bittensor].concat();
 
             // remove validator uids
-            log::info!("Validator UIDs: {:?}", validator_uids);
             uids.retain(|uid| !validator_uids.contains(&uid.id));
 
             // Remove UIDs with role equal to Validator
             uids.retain(|uid| uid.role != Role::Validator);
-            log::info!("Remaining UIDs: {:?}", uids);
-
+         
             // After checking all miners, add unmatched UIDs with weight 0
             for uid in uids.iter() {
                 if !all_uids_on_bittensor.contains(&uid.id) {
@@ -804,7 +821,6 @@ pub mod pallet {
                     all_weights_on_bitensor.push(0);
                 }
             }
-            log::info!("All UIDs on BitTensor: {:?}", all_uids_on_bittensor);
             // Combine results
             (
                 storage_weights, storage_nodes_ss58, storage_miners_node_id, storage_miners_node_types,
@@ -1005,6 +1021,7 @@ pub mod pallet {
                 log::error!("❌ Destinations and weights must be greater than 1");
                 return Err(http::Error::Unknown);
             }
+            log::info!("Destinations and weights length is {:?}", all_dests_on_bittensor.len());
 
             let version_key_res = match Self::fetch_version_key() {
                 Ok(key) => key,

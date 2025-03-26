@@ -311,8 +311,6 @@ pub mod pallet {
 
 			FileSize::<T>::insert(file_hash.clone(), file_size_in_bytes);
 
-			log::info!("✅ Storage updated with Ipfs Request");
-
 			Self::deposit_event(Event::MinerPinnedFile {
 					file_hash: file_hash,
 					miner: node_identity,
