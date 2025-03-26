@@ -346,6 +346,16 @@ impl NodeMetricsData {
 
     // New method to calculate storage usage score
     fn calculate_storage_usage_score<T: pallet_ipfs_pin::Config>(metrics: &NodeMetricsData) -> u64 {
+        // Add the condition to check for ipfs_storage_max against ipfs_zfs_pool_size
+        if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
+            return 0; // Set final score to 0
+        }
+
+        // Minimum storage requirement
+        if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {
+            return 0;
+        }
+
         // Use a more generic approach to retrieve IPFS pin requests
         let miner_id = metrics.miner_id.clone();
         let miner_ipfs_requests = pallet_ipfs_pin::FileStored::<T>::get(miner_id);
@@ -429,6 +439,11 @@ impl NodeMetricsData {
     }
 
     fn calculate_capacity_score<T: pallet_ipfs_pin::Config>(metrics: &NodeMetricsData) -> u32 {
+        // Add the condition to check for ipfs_storage_max against ipfs_zfs_pool_size
+        if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
+            return 0; // Set final score to 0
+        }
+
         // Minimum storage requirement
         if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {
             return 0;
