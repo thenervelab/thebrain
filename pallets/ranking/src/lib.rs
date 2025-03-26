@@ -325,8 +325,6 @@ pub mod pallet {
 
 		/// Update rankings based on node ids and their corresponding weights
 		pub fn do_update_rankings( weights: Vec<u16>, all_nodes_ss58 : Vec<Vec<u8>>, node_ids: Vec<Vec<u8>>, node_types: Vec<NodeType>) -> DispatchResult {
-			log::info!("length of node ids inside rankings pallet {}", node_ids.len());
-			log::info!("length of weights inside rankings pallet {}", weights.len());
 			// Ensure vectors have same length
 			ensure!(node_ids.len() == weights.len(), Error::<T,I>::InvalidInput);
 			let current_block = frame_system::Pallet::<T>::block_number();
@@ -375,7 +373,7 @@ pub mod pallet {
 			LastGlobalUpdate::<T,I>::put(time);
 			
 			Self::deposit_event(Event::RankingsUpdated { count: node_ids.len() as u32 });
-			// log::info!("Rankings Updated successfully");
+		
 			Ok(())
 		}
 

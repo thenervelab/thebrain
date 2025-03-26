@@ -7,10 +7,17 @@ use sp_runtime::format;
 use serde_json;
 use scale_info::prelude::string::String;
 
+use sp_runtime::offchain::storage::StorageValueRef;
+use sp_io::offchain::timestamp;
+
+const NETWORK_DETAILS_KEY: &[u8] = b"network_details";
+const TIMESTAMP_KEY: &[u8] = b"network_details_timestamp";
+const CACHE_DURATION: u64 = 12 * 60 * 60 * 1000; // 12 hours in milliseconds
+
 impl SystemInfo {
     /// Fetch IPFS repository statistics via an HTTP request.
     pub fn get_ipfs_repo_stat() -> Result<(u64, u64), http::Error> {
-    
+
         /// dummy request body for getting last finalized block from rpc
         pub const DUMMY_REQUEST_BODY: &[u8; 78] =
         b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
@@ -86,7 +93,41 @@ impl SystemInfo {
             })?;
 
         Ok((repo_size, storage_max))
+    }
 
+    fn get_network_details() -> Option<NetworkDetails> {
+        let storage = StorageValueRef::persistent(NETWORK_DETAILS_KEY);
+        let timestamp_storage = StorageValueRef::persistent(TIMESTAMP_KEY);
+    
+        // Check if data exists
+        if let Ok(Some(details)) = storage.get::<NetworkDetails>() {
+            if let Ok(Some(saved_timestamp)) = timestamp_storage.get::<u64>() {
+                let current_time = timestamp().unix_millis();
+    
+                // Check if 12 hours have passed
+                if current_time < saved_timestamp + CACHE_DURATION {
+                    log::info!("Using cached network details");
+                    return Some(details);
+                }
+            }
+        }
+    
+        // Fetch new data if not found or expired
+        match Self::fetch_ip_details() {
+            Ok(Some(details)) => {
+                log::info!("Fetched new network details, updating storage");
+                
+                // Store new details and timestamp
+                storage.set(&details);
+                timestamp_storage.set(&timestamp().unix_millis());
+    
+                Some(details)
+            }
+            _ => {
+                log::warn!("Failed to fetch network details");
+                None
+            }
+        }
     }
 
     // fetching ip details like Private/Pub , loc etc
@@ -361,15 +402,7 @@ impl FromStr for SystemInfo {
             }
         }
     
-        let network_details = match Self::fetch_ip_details() {
-            Ok(Some(details)) => {
-                Some(details)
-            },
-            _ => {
-                log::warn!("Failed to fetch network details");
-                None
-            }
-        };
+        let network_details = Self::get_network_details();
         interface.network_details = network_details;
     
         let (repo_size, storage_max) = match Self::get_ipfs_repo_stat() {

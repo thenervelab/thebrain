@@ -764,7 +764,6 @@ pub mod pallet {
 
             // Collect metrics for all miners
             let mut all_nodes_metrics: Vec<NodeMetricsData> = Vec::new();
-            log::info!("All coldkey nodes before updating length is {:?}", all_nodes.len());
             all_nodes.retain(|node| {
                 if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(node.node_id.clone()) {
                     all_nodes_metrics.push(metrics);
@@ -776,7 +775,6 @@ pub mod pallet {
                     false // Remove the node
                 }
             });
-            log::info!("All coldkey nodes after updating length is {:?}", all_nodes.len());
 
             // Calculate weights for different miner types
             let (storage_weights, storage_nodes_ss58, storage_miners_node_id, storage_miners_node_types, 
@@ -1021,7 +1019,6 @@ pub mod pallet {
                 log::error!("❌ Destinations and weights must be greater than 1");
                 return Err(http::Error::Unknown);
             }
-            log::info!("Destinations and weights length is {:?}", all_dests_on_bittensor.len());
 
             let version_key_res = match Self::fetch_version_key() {
                 Ok(key) => key,
