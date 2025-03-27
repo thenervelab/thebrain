@@ -1470,16 +1470,7 @@ pub mod pallet {
 			total_file_size
 		}
 
-		/// Retrieves all files for a given account with their pinning information
-		///
-		/// # Arguments
-		///
-		/// * `account`: The account address to retrieve files for
-		///
-		/// # Returns
-		///
-		/// A vector of UserFile structs containing file details and pinning miners
-		pub fn get_user_files(account: T::AccountId) -> Vec<UserFile> {
+		pub fn get_user_files(account: T::AccountId) -> Vec<UserFile<BlockNumberFor<T>>> {
 			RequestedPin::<T>::iter_prefix(account)
 				.filter_map(|(file_hash, storage_request)| {
 					storage_request.map(|req| {
@@ -1490,25 +1481,27 @@ pub mod pallet {
 							)
 							.map(|(node_id, _)| node_id)
 							.collect();
-
+		
 						// Retrieve file size from FileSize storage, default to 0 if not found
 						let file_size = Self::file_size(&file_hash).unwrap_or(0);
-
+		
 						// Find the minimum last charged at value from the pin requests
 						let min_last_charged_at = FileStored::<T>::iter()
-						.filter(|(_, pin_requests)| 
-							pin_requests.iter().any(|pin_req| pin_req.file_hash == file_hash)
-						)
-						.filter_map(|(_, pin_requests)| {
-							pin_requests.iter().map(|pin_req| pin_req.created_at).min()
-						})
-						.min();
-
+							.filter(|(_, pin_requests)| 
+								pin_requests.iter().any(|pin_req| pin_req.file_hash == file_hash)
+							)
+							.filter_map(|(_, pin_requests)| {
+								pin_requests.iter().map(|pin_req| pin_req.created_at).min()
+							})
+							.min()
+							.unwrap_or_default(); // Provide a default value if None
+		
 						UserFile {
 							file_hash,
 							file_name: req.file_name,
 							miner_ids,
 							file_size,
+							date: min_last_charged_at,
 						}
 					})
 				})

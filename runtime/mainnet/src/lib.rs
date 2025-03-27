@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 1233,
+	spec_version: 1234,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -3332,6 +3332,7 @@ impl_runtime_apis! {
 				file_name: file.file_name.clone(),
 				miner_ids: file.miner_ids.clone(),
 				file_size: file.file_size,
+				date: file.date,
 			})
 			.collect()
 		}

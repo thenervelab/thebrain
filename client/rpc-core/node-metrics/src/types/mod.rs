@@ -24,6 +24,7 @@ pub struct UserFile {
     pub file_name: Vec<u8>,
     pub miner_ids: Vec<Vec<u8>>,
     pub file_size: u32,  // Added file size field
+    pub date: u64, // Added date field
 }
 
 /// Represents a bucket with its name and size
