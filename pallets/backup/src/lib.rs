@@ -323,8 +323,6 @@ pub mod pallet {
 							let json_string = json_payload.to_string();
 							let content_length = json_string.len();
 
-							log::info!("JSON Snapshot Payload: {}", json_string);
-
 							let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 							let request = sp_runtime::offchain::http::Request::post(url, vec![json_string]);
 

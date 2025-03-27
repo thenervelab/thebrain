@@ -233,7 +233,6 @@ pub mod pallet {
 
 			// Directly insert the vector of PinRequests into the storage
 			FileStored::<T>::insert(node_identity.clone(), pin_requests);
-			log::info!("✅ Successfully updated the Storage For miner");
 			Self::deposit_event(Event::
 				MinerPinnedUpdated {
 					miner: node_identity
@@ -380,8 +379,7 @@ pub mod pallet {
 			);
 		
 			UnpinRequests::<T>::put(file_hashes_updated_vec);
-			log::info!("✅ Successfully updated the Unpin Storage");
-
+		
 			Self::deposit_event(Event::
 				UnpinStorageUpdated {
 					miner: node_identity

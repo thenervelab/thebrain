@@ -358,7 +358,6 @@ pub mod pallet {
 								Self::perform_pin_checks_to_miners(node_id.clone());
 								Self::perform_ping_checks_to_miners(node_id.clone());
 							}
-							log::info!("✅ Executed offchain worker tasks at block {}", current_block);
 						} else {
 							log::info!("Skipping execution at block {}", current_block);
 						}
@@ -509,7 +508,6 @@ pub mod pallet {
 
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
-			log::info!("✅ Updated pin check metrics for node ID {:?}", node_id);
 
 			Self::deposit_event(Event::PinCheckMetricsUpdated { node_id });
 			Ok(().into())
@@ -571,7 +569,6 @@ pub mod pallet {
 
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
-			log::info!("✅ Updated metrics Extrinsic data sucessfully");
 
 			Self::deposit_event(Event::PinCheckMetricsUpdated { node_id });
 			Ok(().into())
@@ -1436,7 +1433,6 @@ pub mod pallet {
 					sp_runtime::offchain::http::Error::DeadlineReached
 				})??;
 
-			log::info!("Ping response: {:?}", response);
 			
 			// Check if the response code is 200 (OK)
 			if response.code == 200 {
@@ -1448,16 +1444,13 @@ pub mod pallet {
 
 				// Check if we have at least 5 successful pings
 				if success_count >= 5 {
-					log::info!("Node {} pinged successfully at least 5 times.", node_id);
 					return Ok(true);
 				} else {
-					log::info!("Node {} did not respond successfully 5 times: {}", node_id, body_str);
 					return Ok(false);
 				}
 			} else {
 				let response_body = response.body().collect::<Vec<u8>>();
 				let body_str = core::str::from_utf8(&response_body).unwrap_or("");
-				log::info!("Node {} returned an error (status code: {}): {}", node_id, response.code, body_str);
 				return Ok(false);
 			}
 		}
@@ -1719,18 +1712,7 @@ pub mod pallet {
 													Ok(file_size) => {
 														// Check if miner has enough storage
 														if (file_size as u64) <= available_storage  {
-															if let (Some(file_hash_str), Some(miner_id_str)) = (
-																sp_std::str::from_utf8(&file_hash).ok(),
-																sp_std::str::from_utf8(&miner.node_id).ok(),
-															) {
-																log::info!(
-																	"Assigning file {:?} to specified miner {:?}. Available storage: {} bytes, File size: {} bytes", 
-																	file_hash_str, 
-																	miner_id_str,
-																	available_storage,
-																	file_size
-																);
-															}
+															
 															pallet_ipfs_pin::Pallet::<T>::store_ipfs_pin_request(
 																storage_request.owner.clone(),
 																file_hash.clone(), 

@@ -567,7 +567,6 @@ fn get_ipfs_pool_info() -> Result<(u128, u128, u128), String> {
     {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            log::info!("IPFS pool info: {}", stdout);
             let lines: Vec<&str> = stdout.lines().collect();
             if lines.len() > 1 {
                 let pool_info = lines[1].split_whitespace().collect::<Vec<&str>>();
@@ -575,8 +574,6 @@ fn get_ipfs_pool_info() -> Result<(u128, u128, u128), String> {
                     let size = parse_size(pool_info[1])?;
                     let alloc = parse_size(pool_info[2])?;
                     let free = parse_size(pool_info[3])?;
-
-                    log::info!("Parsed IPFS ZFS pool size: {} bytes, allocated: {} bytes, free: {} bytes", size, alloc, free);
 
                     return Ok((size, alloc, free));
                 } else {

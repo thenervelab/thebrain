@@ -1369,10 +1369,10 @@ pub mod pallet {
                         // Check if the current block is within the grace period
                         if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
                             // Still within grace period
-                            log::info!(
-                                "Storage request for user {:?} is in grace period",
-                                user
-                            );
+                            // log::info!(
+                            //     "Storage request for user {:?} is in grace period",
+                            //     user
+                            // );
                         } else {
                             // Cancel the request after grace period
                             // and delete storage 

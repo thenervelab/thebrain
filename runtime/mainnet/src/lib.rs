@@ -668,8 +668,8 @@ const MAX_QUOTA_NOMINATIONS: u32 = 16;
 
 pub struct MarketplaceRewardDistributor;
 impl frame_support::traits::OnUnbalanced<pallet_balances::PositiveImbalance<Runtime>> for MarketplaceRewardDistributor {
-    fn on_unbalanced(amount: pallet_balances::PositiveImbalance<Runtime>) {
-        log::info!("Distributing rewards to staking: {:?}", amount);
+    fn on_unbalanced(_amount: pallet_balances::PositiveImbalance<Runtime>) {
+
         // Send the full amount to staking rewards
         // <pallet_staking::Pallet<Runtime> as OnUnbalanced<_>>::on_unbalanced(amount);
     }
@@ -1101,7 +1101,7 @@ impl pallet_metagraph::Config for Runtime {
 parameter_types! {
     pub const IpfsBaseUrl: &'static str = "http://127.0.0.1:5001";
 	pub const GarbageCollectorInterval : u32 = 14;
-	pub const MinerIPFSCHeckInterval : u32 = 10;
+	pub const MinerIPFSCHeckInterval : u32 = 2;
 }
 
 impl pallet_ipfs_pin::Config for Runtime {

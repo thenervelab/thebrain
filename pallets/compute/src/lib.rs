@@ -1588,7 +1588,6 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			request_id: u128
 		) {
-			log::info!("submit_compute_boot_request_deletion");
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"Compute::submit_compute_boot_request_fulfillment_lock",
 				LOCK_BLOCK_EXPIRATION,

@@ -270,7 +270,6 @@ pub mod pallet {
                 if let Ok(account_bytes) = validator.encode().try_into() {
                     let account = AccountId32::new(account_bytes);
                     let validator_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default()).to_ss58check();
-                    log::info!("validators found Address is : {:?}", validator_ss58);
                     // Check if validator is in UIDs or matches the keep address
                     let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == validator_ss58);
                     let is_keep_address = validator_ss58 == KEEP_ADDRESS;
@@ -334,10 +333,6 @@ pub mod pallet {
                                     // Continue execution even if this fails
                                 }
                                 
-                                log::info!(
-                                    target: "runtime::metagraph",
-                                    "🔑 Disabled validator in session"
-                                );
                             }
                             
                             // 3. Update any relevant storage
@@ -348,14 +343,6 @@ pub mod pallet {
                                 "✅ Successfully removed validator from all systems"
                             );
                         }
-                    } else {
-                        log::info!(
-                            target: "runtime::metagraph",
-                            "✅ Validator OK: {}, In UIDs: {}, Is Keep Address: {}",
-                            validator_ss58,
-                            is_in_uids,
-                            is_keep_address,
-                        );
                     }
                 }
             }

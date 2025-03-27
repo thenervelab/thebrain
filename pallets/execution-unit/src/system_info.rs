@@ -106,7 +106,7 @@ impl SystemInfo {
     
                 // Check if 12 hours have passed
                 if current_time < saved_timestamp + CACHE_DURATION {
-                    log::info!("Using cached network details");
+
                     return Some(details);
                 }
             }
@@ -115,7 +115,6 @@ impl SystemInfo {
         // Fetch new data if not found or expired
         match Self::fetch_ip_details() {
             Ok(Some(details)) => {
-                log::info!("Fetched new network details, updating storage");
                 
                 // Store new details and timestamp
                 storage.set(&details);

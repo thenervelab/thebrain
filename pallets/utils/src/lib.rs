@@ -67,8 +67,6 @@ pub mod pallet {
 
             // Set the submission enabled flag
             <MetagraphSubmissionEnabled<T>>::put(enabled);
-
-            log::info!("Metagraph submission flag set to: {}", enabled);
             Ok(())
         }
     }

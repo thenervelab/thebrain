@@ -120,11 +120,9 @@ impl OnChargeEVMTransaction<Runtime> for CustomEVMCurrencyAdapter {
         let pallet_marketplace_address = H160::from_slice(&account_bytes[account_bytes.len() - 20..]);
         
         if who == &pallet_marketplace_address {
-            log::info!("Marketplace transaction - free!");
             return Ok(None);
         }
         
-        log::info!("Regular transaction - applying fees");
         // fallback to the default implementation
         <pallet_evm::EVMCurrencyAdapter<Balances, impls::DealWithFees<Runtime>> as OnChargeEVMTransaction<
             Runtime,
@@ -160,11 +158,9 @@ impl OnChargeEVMTransaction<Runtime> for CustomEVMCurrencyAdapter {
         let pallet_marketplace_address = H160::from_slice(&account_bytes[account_bytes.len() - 20..]);
         
         if who == &pallet_marketplace_address {
-            log::info!("Marketplace transaction - free!");
             return already_withdrawn;
         }
         
-        log::info!("Regular transaction - applying fees");
         // fallback to the default implementation
         <pallet_evm::EVMCurrencyAdapter<Balances, impls::DealWithFees<Runtime>> as OnChargeEVMTransaction<
             Runtime,
