@@ -893,6 +893,21 @@ pub mod pallet {
 			};
 		}
 
+		/// Returns the total file size fulfilled by a user in bytes.
+		pub fn total_file_size_fulfilled(user: T::AccountId) -> u128 {
+			let fulfilled_requests = Self::get_owner_fulfilled_requests(user);
+			let mut total_size: u128 = 0;
+
+			// Iterate through fulfilled requests
+			for request in fulfilled_requests {
+				if let Some(file_size) = Self::get_file_size(request.file_hash) {
+					total_size += file_size as u128;
+				}
+			}
+
+			total_size
+		}
+
 		// update user storage request handler
 		pub fn update_storage_usage_request(
 			account_id: T::AccountId,

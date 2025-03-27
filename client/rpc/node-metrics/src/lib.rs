@@ -288,4 +288,13 @@ where
 			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
 		})
 	}
+
+	fn total_file_size_fulfilled(&self, account_id: AccountId32) -> RpcResult<u128>{
+		let api = self.client.runtime_api();
+		let best_hash = self.client.info().best_hash;
+
+		api.total_file_size_fulfilled(best_hash, account_id).map_err(|err| {
+			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+		})
+	}
 }

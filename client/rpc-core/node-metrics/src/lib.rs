@@ -89,4 +89,7 @@ pub trait NodeMetricsApi {
 
 	#[method(name = "get_referral_codes")]
 	fn get_referral_codes(&self, account_id: AccountId32) -> RpcResult<Vec<Vec<u8>>>;
+
+	#[method(name = "total_file_size_fulfilled")]
+	fn total_file_size_fulfilled(&self, account_id: AccountId32) -> RpcResult<u128>;
 }

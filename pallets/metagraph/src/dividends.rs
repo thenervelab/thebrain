@@ -32,7 +32,7 @@ pub fn parse_dividends_from_hex<T: Config>(hex: &str) -> Result<Vec<u16>, Error<
     }
 
     // Log non-zero dividends with their indices
-    let non_zero = dividends.iter().enumerate()
+    let _non_zero = dividends.iter().enumerate()
         .filter(|(_, &v)| v > 0)
         .map(|(i, &v)| format!("index {}: {}", i, v))
         .collect::<Vec<_>>();

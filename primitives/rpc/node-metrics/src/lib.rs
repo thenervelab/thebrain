@@ -47,6 +47,7 @@ decl_runtime_apis! {
         fn total_referral_codes() -> u32;
         fn total_referral_rewards() -> u128;
         fn get_referral_codes(account_id: AccountId32) -> Vec<Vec<u8>>;
+        fn total_file_size_fulfilled(account_id: AccountId32) -> u128;
     }
 }
 

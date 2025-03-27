@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 1227,
+	spec_version: 1228,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -3371,8 +3371,11 @@ impl_runtime_apis! {
 			})
 			.collect()
 		}
-	}
 
+		fn total_file_size_fulfilled(account_id: AccountId32) -> u128 {
+			<pallet_ipfs_pin::Pallet<Runtime>>::total_file_size_fulfilled(account_id)
+		}
+	}
 
 	impl rpc_primitives_txpool::TxPoolRuntimeApi<Block> for Runtime {
 		fn extrinsic_filter(

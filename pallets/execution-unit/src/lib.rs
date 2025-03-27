@@ -83,6 +83,7 @@ pub mod pallet {
 
 	const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
 	const DUMMY_REQUEST_BODY: &[u8; 78] = b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
+	const MAX_NODES_PER_BLOCK: usize = 20;
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + 
@@ -321,7 +322,6 @@ pub mod pallet {
 			match IpfsPinPallet::<T>::fetch_node_id() {
 				Ok(node_id) => {
 					let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());    
-	
 					if node_info.is_some() {
 						// Get BABE randomness
 						let random_seed = Self::get_babe_randomness();
@@ -356,7 +356,7 @@ pub mod pallet {
 								Self::process_pending_compute_requests();
 								Self::process_pending_storage_requests(node_id.clone(), block_number);
 								Self::perform_pin_checks_to_miners(node_id.clone());
-								// Self::perform_ping_checks_to_miners(node_id.clone());
+								Self::perform_ping_checks_to_miners(node_id.clone());
 							}
 							log::info!("✅ Executed offchain worker tasks at block {}", current_block);
 						} else {
@@ -1414,7 +1414,6 @@ pub mod pallet {
 				log::error!("Failed to convert hash to string");
 				http::Error::Unknown
 			})?;
-			log::info!("Pinging node: {}", node_id);
 			// Update the URL to include the count parameter
 			let url = format!("{}/api/v0/ping?arg={}&count=5", T::IPFSBaseUrl::get(), node_id);
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(15_000));
@@ -1623,33 +1622,41 @@ pub mod pallet {
 			}
 		}
 
-		// perform health checks and see if the miner is pinned the file / updates the node metrics fro miners
 		pub fn perform_ping_checks_to_miners(node_id: Vec<u8>) {
-			let active_miners  = pallet_registration::Pallet::<T>::get_all_active_storage_miners();
-			for miner in active_miners {
-				let miner_node_id: Vec<u8> = miner.node_id;
-				match pallet_registration::Pallet::<T>::get_registered_node(miner_node_id.clone()) {
-					Ok(node_info) => {
-						// Check if ipfs_node_id is present in ipfs_nodes_who_pinned
-						if let Some(ipfs_node_id) = node_info.ipfs_node_id {
-							// check if the miner's ipfs node  is online or not 
-							match Self::ping_node(ipfs_node_id.clone()) {
-								Ok(is_online) => {
-									if !is_online {
-										let current_block = frame_system::Pallet::<T>::block_number();
-										Self::call_store_offline_status_of_miner(node_id.clone(), miner_node_id.clone(),current_block);
-									}
-								},
-								Err(err) => {
-									log::error!("Ipfs for Error pinging node {}: {:?}", sp_std::str::from_utf8(&miner_node_id).unwrap_or("<Invalid UTF-8>"), err);
-								}
+			let active_miners = pallet_registration::Pallet::<T>::get_all_active_storage_miners();
+
+			// Get last processed index from local storage
+			let storage_key = b"last_processed_miner_index";
+			let last_index: usize = sp_io::offchain::local_storage_get(sp_core::offchain::StorageKind::PERSISTENT, storage_key)
+				.and_then(|v| if v.len() == 8 { Some(u64::from_be_bytes(v.try_into().unwrap()) as usize) } else { None })
+				.unwrap_or(0);
+
+			let miners_to_check = active_miners.iter().skip(last_index).take(MAX_NODES_PER_BLOCK);
+		
+			for miner in miners_to_check {
+				if let Some(ipfs_node_id) = pallet_registration::Pallet::<T>::get_registered_node(miner.node_id.clone()).ok().and_then(|n| n.ipfs_node_id) {
+					match Self::ping_node(ipfs_node_id.clone()) {
+						Ok(is_online) => {
+							if !is_online {
+								let current_block = frame_system::Pallet::<T>::block_number();
+								Self::call_store_offline_status_of_miner(node_id.clone(), miner.node_id.clone(), current_block);
 							}
+						},
+						Err(err) => {
+							log::error!("Error pinging node {}: {:?}", sp_std::str::from_utf8(&miner.node_id).unwrap_or("<Invalid UTF-8>"), err);
 						}
-					},
-					Err(err) => log::info!("Failed to get node info: {}", err),
+					}
 				}
 			}
-		}
+		
+			// Update last processed index
+			let new_index = last_index + MAX_NODES_PER_BLOCK;
+			if new_index >= active_miners.len() {
+				sp_io::offchain::local_storage_set(sp_core::offchain::StorageKind::PERSISTENT, storage_key, &0u64.to_be_bytes());
+			} else {
+				sp_io::offchain::local_storage_set(sp_core::offchain::StorageKind::PERSISTENT, storage_key, &new_index.to_be_bytes());
+			}
+		}		
 		
 		pub fn process_pending_storage_requests(node_id: Vec<u8>, block_number: BlockNumberFor<T>) {
 			let active_storage_miners = pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
