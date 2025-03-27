@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 1228,
+	spec_version: 1233,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1101,7 +1101,7 @@ impl pallet_metagraph::Config for Runtime {
 parameter_types! {
     pub const IpfsBaseUrl: &'static str = "http://127.0.0.1:5001";
 	pub const GarbageCollectorInterval : u32 = 14;
-	pub const MinerIPFSCHeckInterval : u32 = 2;
+	pub const MinerIPFSCHeckInterval : u32 = 5;
 }
 
 impl pallet_ipfs_pin::Config for Runtime {

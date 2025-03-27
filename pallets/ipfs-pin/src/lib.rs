@@ -839,6 +839,20 @@ pub mod pallet {
 			RequestedPin::<T>::get(owner, encoded_hash)
 		}
 
+		// Retrieves the storage request by file hash
+		pub fn get_storage_request_by_file_hash(encoded_hash: FileHash) -> Option<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
+			// Iterate over all entries in `RequestedPin` storage double map
+			for (owner, file_hash, storage_request_opt) in RequestedPin::<T>::iter() {
+				// Check if the current file_hash matches the encoded_hash
+				if file_hash == encoded_hash {
+					if let Some(storage_request) = storage_request_opt {
+						return Some(storage_request);
+					}
+				}
+			}
+			None // Return None if no matching request is found
+		}
+
 		// add pin reuqest for miners to pin the  file 
 		pub fn store_ipfs_pin_request(account_id: T::AccountId, file_hash: FileHash, node_id: Vec<u8>, file_size_in_bytes: u32) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
@@ -1164,19 +1178,19 @@ pub mod pallet {
 			Ok(())
 		}
 
-		pub fn get_pending_storage_requests() -> Vec<StorageRequest<T::AccountId,BlockNumberFor<T>>> {
+		pub fn get_pending_storage_requests() -> Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
 			let mut pending_requests = Vec::new();
-	
+		
 			// Iterate over all entries in `Requested` storage double map
 			for (_owner, _file_hash, storage_request_opt) in RequestedPin::<T>::iter() {
 				if let Some(storage_request) = storage_request_opt {
-					// Check if total replicas are not equal to fulfilled replicas
-					if storage_request.total_replicas != storage_request.fullfilled_replicas {
+					// Check if fulfilled replicas are less than total replicas
+					if storage_request.fullfilled_replicas < storage_request.total_replicas {
 						pending_requests.push(storage_request);
 					}
 				}
 			}
-	
+		
 			pending_requests
 		}
 
@@ -1396,6 +1410,10 @@ pub mod pallet {
 			});
 		}
 
+		pub fn remove_file_stored(node_id: &Vec<u8>) {
+			FileStored::<T>::remove(node_id);
+		}
+
 		/// Check if an account has any storage requests and remove from StorageRequestUsers if not
 		pub fn remove_account_if_no_request(account: T::AccountId) {
 			// Check if any storage requests exist for this account using iter_prefix
@@ -1475,6 +1493,16 @@ pub mod pallet {
 
 						// Retrieve file size from FileSize storage, default to 0 if not found
 						let file_size = Self::file_size(&file_hash).unwrap_or(0);
+
+						// Find the minimum last charged at value from the pin requests
+						let min_last_charged_at = FileStored::<T>::iter()
+						.filter(|(_, pin_requests)| 
+							pin_requests.iter().any(|pin_req| pin_req.file_hash == file_hash)
+						)
+						.filter_map(|(_, pin_requests)| {
+							pin_requests.iter().map(|pin_req| pin_req.created_at).min()
+						})
+						.min();
 
 						UserFile {
 							file_hash,

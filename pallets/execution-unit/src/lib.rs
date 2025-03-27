@@ -627,7 +627,7 @@ pub mod pallet {
 			// Store the updated list back in the storage
 			DowntimeStatus::<T>::put(current_downtime_status);
 
-			pallet_registration::Pallet::<T>::do_unregister_node(miner_id.clone());
+			Self::unregister_and_remove_metrics(miner_id.clone());
 			
 			// Return the result
 			Ok(().into())
@@ -1328,7 +1328,6 @@ pub mod pallet {
 		}
 
 		fn fetch_cid_pinned_nodes(cid: &Vec<u8>) -> Result<Vec<Vec<u8>>, http::Error> {
-
 			let file_hash = hex::decode(cid).map_err(|_| {
 				log::error!("Failed to decode file hash");
 				http::Error::Unknown
@@ -1449,8 +1448,6 @@ pub mod pallet {
 					return Ok(false);
 				}
 			} else {
-				let response_body = response.body().collect::<Vec<u8>>();
-				let body_str = core::str::from_utf8(&response_body).unwrap_or("");
 				return Ok(false);
 			}
 		}
@@ -1564,52 +1561,93 @@ pub mod pallet {
 			NodeMetrics::<T>::get(node_id)
 		}
 
-		// perform health checks and see if the miner is pinned the file / updates the node metrics fro miners
+		// Perform health checks and see if the miner is pinning the file / updates the node metrics for miners
 		pub fn perform_pin_checks_to_miners(node_id: Vec<u8>) {
-			let fullfilled_req  = IpfsPinPallet::<T>::get_all_fullfilled_requests();
-			// for each fullfilled request 
-			for request in fullfilled_req {
-				// all active Ipfs nodes that has that hash pinned (http req)
-				let ipfs_nodes_who_pinned: Vec<Vec<u8>> = Self::fetch_cid_pinned_nodes(&request.file_hash.clone())
+			let fulfilled_req = IpfsPinPallet::<T>::get_all_fullfilled_requests();
+
+			// For each fulfilled request
+			for request in fulfilled_req {
+				// All active IPFS nodes that have that hash pinned (http req)
+				let ipfs_nodes_who_pinned: Vec<Vec<u8>> = Self::fetch_cid_pinned_nodes(&request.file_hash)
 					.expect("Failed to fetch pinned nodes");
-				// all miners who have pinned this file 
-				let request_pinned_by_miners = IpfsPinPallet::<T>::get_pin_requests_by_file_hash(&request.file_hash.clone());
-				for miner_request in request_pinned_by_miners {
-					let miner_node_id: Vec<u8> = miner_request.miner_node_id;
-					match pallet_registration::Pallet::<T>::get_registered_node(miner_node_id.clone()) {
-						Ok(node_info) => {
-							let mut total_pin_checks = 0;
-							let mut successful_pin_checks = 0;		
 
-							// Check if ipfs_node_id is present in ipfs_nodes_who_pinned
-							if let Some(ipfs_node_id) = node_info.ipfs_node_id {
-								if ipfs_nodes_who_pinned.contains(&ipfs_node_id) {
-									// found pinned the file 
+				// All miners who have pinned this file 
+				let request_pinned_by_miners = IpfsPinPallet::<T>::get_pin_requests_by_file_hash(&request.file_hash);
+
+				// Check if the number of IPFS nodes who pinned matches the fulfilled replicas
+				if request_pinned_by_miners.len() != request.total_replicas as usize {
+					if request_pinned_by_miners.len() < request.total_replicas as usize {
+						// Reassign as it is not fulfilled yet
+						let difference = request.total_replicas as i32 - request_pinned_by_miners.len() as i32;
+						let mut updated_req = request.clone();
+
+						// Ensure we do not underflow
+						if updated_req.fullfilled_replicas >= difference as u32 {
+							updated_req.fullfilled_replicas -= difference as u32;
+						} else {
+							updated_req.fullfilled_replicas = 0; // Set to zero if underflow would occur
+						}
+
+						// Update the storage usage request
+						pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(request.owner.clone(), request.file_hash.clone(), Some(updated_req), node_id.clone());
+					}
+				} else {
+					for miner_request in request_pinned_by_miners {
+						let miner_node_id: Vec<u8> = miner_request.miner_node_id;
+
+						match pallet_registration::Pallet::<T>::get_registered_node(miner_node_id.clone()) {
+							Ok(node_info) => {
+								let mut total_pin_checks = 0;
+								let mut successful_pin_checks = 0;
+
+								// Check if ipfs_node_id is present in ipfs_nodes_who_pinned
+								if let Some(ipfs_node_id) = node_info.ipfs_node_id {
 									total_pin_checks += 1;
-									successful_pin_checks += 1;
+
+									if ipfs_nodes_who_pinned.contains(&ipfs_node_id) {
+										// Found pinned the file 
+										successful_pin_checks += 1;
+									} else {
+										// Not found pinned file
+										let mut updated_req = request.clone();
+										if updated_req.fullfilled_replicas > 0 {
+											updated_req.fullfilled_replicas -= 1; // Safely decrement
+										}
+
+										// Update the storage usage request
+										pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(request.owner.clone(), request.file_hash.clone(), Some(updated_req), node_id.clone());
+
+										let mut files_stored_for_miner = pallet_ipfs_pin::Pallet::<T>::get_files_stored(miner_node_id.clone());
+										files_stored_for_miner.retain(|stored_request| {
+											stored_request.file_hash != miner_request.file_hash // Adjust this condition based on your criteria
+										});
+										pallet_ipfs_pin::Pallet::<T>::update_ipfs_request_storage(miner_node_id.clone(), files_stored_for_miner);
+									}
 								} else {
-									// not found pinned file
-									// update request storage  and delete this fileRequest
-									total_pin_checks += 1;
-									let mut updated_req = request.clone();
-									updated_req.fullfilled_replicas = updated_req.fullfilled_replicas - 1;
-									// we just need to update this and offchian worker will do assigning stuff
-									pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(request.owner.clone(), request.file_hash.clone(), Some(updated_req) , node_id.clone());
-
-									let mut files_stored_for_miner = pallet_ipfs_pin::Pallet::<T>::get_files_stored(miner_node_id.clone());
-									files_stored_for_miner.retain(|stored_request| {
-										stored_request.file_hash != miner_request.file_hash // Adjust this condition based on your criteria
-									});
-									pallet_ipfs_pin::Pallet::<T>::update_ipfs_request_storage(miner_node_id.clone(), files_stored_for_miner);
+									log::info!("Node ID {:?} does not have an associated IPFS node ID", sp_std::str::from_utf8(&node_info.node_id).unwrap_or("<Invalid UTF-8>"));
 								}
-							} else {
-								log::info!("Node ID {:?} does not have an associated IPFS node ID",sp_std::str::from_utf8(&node_info.node_id).unwrap_or("<Invalid UTF-8>"));
-							}
 
-							// update node metrics
-							Self::call_update_pin_check_metrics(miner_node_id, total_pin_checks, successful_pin_checks)
-						},
-						Err(err) => log::info!("Failed to get node info: {}", err),
+								// Update node metrics
+								Self::call_update_pin_check_metrics(miner_node_id, total_pin_checks, successful_pin_checks);
+							},
+							Err(err) => {
+								// It is not registered so delete FileRequest and update IPFS request storage
+								let mut updated_req = request.clone();
+								if updated_req.fullfilled_replicas > 0 {
+									updated_req.fullfilled_replicas -= 1; // Safely decrement
+								}
+
+								// Update the storage usage request
+								pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(request.owner.clone(), request.file_hash.clone(), Some(updated_req), node_id.clone());
+
+								let mut files_stored_for_miner = pallet_ipfs_pin::Pallet::<T>::get_files_stored(miner_node_id.clone());
+								files_stored_for_miner.retain(|stored_request| {
+									stored_request.file_hash != miner_request.file_hash // Adjust this condition based on your criteria
+								});
+								pallet_ipfs_pin::Pallet::<T>::update_ipfs_request_storage(miner_node_id.clone(), files_stored_for_miner);
+								log::info!("Failed to get node info: {}", err);
+							},
+						}
 					}
 				}
 			}
@@ -1649,8 +1687,8 @@ pub mod pallet {
 			} else {
 				sp_io::offchain::local_storage_set(sp_core::offchain::StorageKind::PERSISTENT, storage_key, &new_index.to_be_bytes());
 			}
-		}		
-		
+		}
+
 		pub fn process_pending_storage_requests(node_id: Vec<u8>, block_number: BlockNumberFor<T>) {
 			let active_storage_miners = pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
 			let pending_storage_requests = pallet_ipfs_pin::Pallet::<T>::get_pending_storage_requests();
@@ -2209,6 +2247,37 @@ pub mod pallet {
 		}
 
 		pub fn unregister_and_remove_metrics(node_id: Vec<u8>) {
+			let node_info = pallet_registration::Pallet::<T>::get_node_info(node_id.clone());
+
+			// Check if the miner is a StorageMiner
+			if let Some(miner) = node_info {
+				if miner.node_type == NodeType::StorageMiner {
+					// get all files pinned by this miner
+					let files_pinned_by_miners = pallet_ipfs_pin::Pallet::<T>::get_files_stored(miner.node_id.clone());
+					
+					// degrading by calling unsigned tx
+					pallet_registration::Pallet::<T>::call_node_status_to_degraded_unsigned(miner.node_id);
+					
+					// all storage requests fulfilled replicas should be -1 and then update storage;
+					for files_pinned in files_pinned_by_miners {
+						// Attempt to get the storage request
+						if let Some(mut req) = pallet_ipfs_pin::Pallet::<T>::get_storage_request_by_file_hash(files_pinned.file_hash.clone()) {
+							// Update the fulfilled replicas count
+							req.fullfilled_replicas = req.fullfilled_replicas.saturating_sub(1); // Ensure no underflow
+							
+							// Update the storage usage request
+							pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(
+								req.owner.clone(),
+								files_pinned.file_hash.clone(),
+								Some(req),
+								node_id.clone(),
+							);
+	 					    // Remove the entry from FileStored for this miner
+							pallet_ipfs_pin::Pallet::<T>::remove_file_stored(&node_id);
+						}
+					}
+				}
+			}
 			pallet_registration::Pallet::<T>::do_unregister_node(node_id.clone());
 			NodeMetrics::<T>::remove(&node_id);
 			BlockNumbers::<T>::remove(&node_id);
