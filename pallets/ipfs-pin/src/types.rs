@@ -99,10 +99,9 @@ impl<T: Config> SignedPayload<T> for UpdateStorageUsagePayload<T> {
 
 /// Represents a user's file with its pinning information
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
-pub struct UserFile<BlockNumberFor> {
+pub struct UserFile {
     pub file_hash: FileHash,
     pub file_name: FileName,
     pub miner_ids: Vec<Vec<u8>>,
     pub file_size: u32,
-    pub date: BlockNumberFor,
 }

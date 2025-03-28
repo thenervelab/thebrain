@@ -583,20 +583,27 @@ pub mod pallet {
 			block_number: BlockNumberFor<T>
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?; // Ensure the call is unsigned
-
+		
 			// Fetch the existing vector of block numbers or initialize a new one
-			let mut blocks = BlockNumbers::<T>::get(node_id.clone()).unwrap_or_else(|| Vec::new());
-
-			let check_intetrval = <T as pallet::Config>::BlockCheckInterval::get();
-			// Add the current block number
+			let blocks_vec = BlockNumbers::<T>::get(node_id.clone()).unwrap_or_else(|| Vec::new());
+		
+			// Convert the existing blocks into a BTreeMap to remove duplicates
+			let mut blocks: BTreeMap<BlockNumberFor<T>, ()> = blocks_vec.into_iter().map(|block| (block, ())).collect();
+		
+			let check_interval = <T as pallet::Config>::BlockCheckInterval::get();
 			// Push the current block number and the preceding ones
-			for i in (0..check_intetrval).rev() {
+			for i in (0..check_interval).rev() {
 				let block_to_push = block_number - i.into();
-				blocks.push(block_to_push);
+				// Check if the block is already present in the storage
+				if !blocks.contains_key(&block_to_push) {
+					blocks.insert(block_to_push, ()); // Only add if it's not already present
+				}
 			}
-
-			BlockNumbers::<T>::insert(node_id,blocks);
-
+		
+			// Convert the BTreeMap back to a Vec for storage
+			let unique_blocks: Vec<_> = blocks.keys().cloned().collect();
+			BlockNumbers::<T>::insert(node_id, unique_blocks);
+		
 			Ok(().into())
 		}
 
@@ -2071,9 +2078,20 @@ pub mod pallet {
 			let mut current_day_uptime = 0u32;
 
 			// Calculate metrics
-			for i in 1..block_numbers.len() {
+			for mut i in 1..block_numbers.len() {
 				let previous_block = block_numbers[i - 1].saturated_into::<u32>();
-				let current_block = block_numbers[i].saturated_into::<u32>();
+				let mut current_block = block_numbers[i].saturated_into::<u32>();
+				
+				// Skip until we find a current block that is greater than previous block
+				while previous_block >= current_block && i < block_numbers.len() - 1 {
+					i += 1; // Move to the next block
+					current_block = block_numbers[i].saturated_into::<u32>();
+				}
+
+				// If we exit the loop and the current block is still not greater, skip this iteration
+				if previous_block >= current_block {
+					continue;
+				}
 
 				// Difference in blocks
 				let block_diff = current_block.saturating_sub(previous_block);

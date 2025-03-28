@@ -616,10 +616,10 @@ impl NodeMetricsData {
     }
 
     fn calculate_penalties(metrics: &NodeMetricsData) -> u32 {
-        // // Downtime penalties
-        // let downtime_penalty = (metrics.recent_downtime_hours as u32)
-        //     .saturating_mul(10_000) // 1% per hour
-        //     .min(500_000); // Max 50%
+        // Downtime penalties
+        let downtime_penalty = (metrics.recent_downtime_hours as u32)
+            .saturating_mul(10_000) // 1% per hour
+            .min(500_000); // Max 50%
 
         // Failed challenges penalty
         let challenge_penalty = (metrics.failed_challenges_count as u32)
@@ -638,16 +638,11 @@ impl NodeMetricsData {
             500_000 // 50% penalty for no storage
         };
 
-        // let total_penalty = downtime_penalty
-        //     .saturating_add(challenge_penalty)
-        //     .saturating_add(storage_penalty)
-        //     .min(800_000); // Maximum 80% total penalty
-
-        let total_penalty = challenge_penalty
+        let total_penalty = downtime_penalty
+            .saturating_add(challenge_penalty)
             .saturating_add(storage_penalty)
             .min(800_000); // Maximum 80% total penalty
 
-            
         total_penalty
     }
 

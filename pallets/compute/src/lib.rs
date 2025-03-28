@@ -2963,8 +2963,7 @@ pub mod pallet {
 					is_fulfilled: miner_details.map(|md| md.fullfilled).unwrap_or(false),
 				}
 			}).collect()
-		}
-		
+		}	
 	}
 
 	#[pallet::hooks]

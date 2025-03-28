@@ -1333,6 +1333,9 @@ pub mod pallet {
         }
 
         pub fn do_unregister_node(node_id: Vec<u8>) {
+            if !NodeRegistration::<T>::contains_key(&node_id) {
+                ColdkeyNodeRegistration::<T>::remove(node_id.clone());
+            }
             NodeRegistration::<T>::remove(node_id.clone());
             Self::deposit_event(Event::NodeUnregistered { node_id });
         }
