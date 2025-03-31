@@ -626,7 +626,7 @@ pub mod pallet {
                     .filter(|uid| matches!(uid.role, Role::Validator))
                     .count() as u32;
                 let miners = hot_keys.iter()
-                    .filter(|uid| matches!(uid.role, Role::StorageMiner))
+                    .filter(|uid| matches!(uid.role, Role::Miner))
                     .count() as u32;
     
                 // Emit events
@@ -711,9 +711,8 @@ impl<T: Config> MetagraphInfoProvider<T> for Pallet<T> {
                 id: uid.id,
                 role: match uid.role {
                     types::Role::Validator => pallet_utils::Role::Validator,
-                    types::Role::StorageMiner => pallet_utils::Role::StorageMiner,
+                    types::Role::Miner => pallet_utils::Role::Miner,
                     types::Role::None => pallet_utils::Role::None,
-                    _ => pallet_utils::Role::None,
                 },
                 substrate_address: uid.substrate_address,
             })

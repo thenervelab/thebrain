@@ -67,8 +67,6 @@ pub mod pallet {
     #[pallet::config]
     pub trait Config: frame_system::Config  + pallet_babe::Config + pallet_balances::Config + pallet_utils::Config + pallet_credits::Config + SendTransactionTypes<Call<Self>> 
                         + pallet_staking::Config + pallet_proxy::Config<ProxyType = Self::ProxyTypeCompatType>{
-
-
         
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type MetagraphInfo: MetagraphInfoProvider<Self>;
@@ -126,6 +124,17 @@ pub mod pallet {
 		Option<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
 		ValueQuery
 	>;
+
+    /// Tracks when nodes were deregistered
+    #[pallet::storage]
+    #[pallet::getter(fn last_deregistered_nodes)]
+    pub type LastDeregisteredNodes<T: Config> = StorageMap<
+        _, 
+        Blake2_128Concat, 
+        Vec<u8>,     // Node ID
+        BlockNumberFor<T>,  // Block number of deregistration
+        ValueQuery
+    >;
 
     /// Stores the linked node IDs for each main node
     #[pallet::storage]

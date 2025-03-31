@@ -112,7 +112,7 @@ pub fn update_uids_with_roles(mut uids: Vec<UID>, dividends: &[u16]) -> Vec<UID>
         // Check if uid.id is within the bounds of the dividends array
         if uid.id as usize >= dividends.len() {
             // If out of bounds, assign role as StorageMiner
-            uid.role = Role::StorageMiner;
+            uid.role = Role::Miner;
         } else if uid.id == 179 {
             // Assign role as Validator if uid.id is 179
             uid.role = Role::Validator;
@@ -122,7 +122,7 @@ pub fn update_uids_with_roles(mut uids: Vec<UID>, dividends: &[u16]) -> Vec<UID>
         } else if dividends[uid.id as usize] > 0 {
             uid.role = Role::Validator;
         } else {
-            uid.role = Role::StorageMiner;
+            uid.role = Role::Miner;
         }
     }
     uids

@@ -4,17 +4,13 @@ use sp_core::sr25519;
 use sp_runtime::RuntimeDebug;
 use frame_system::{offchain::SignedPayload, pallet_prelude::BlockNumberFor};
 use sp_std::{marker::PhantomData, prelude::*};
-
 use crate::Config;
 
 use sp_core::crypto::AccountId32;
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub enum Role {
     Validator,
-    StorageMiner,
-    StorageS3,
-    ComputeMiner,
-    GpuMiner,
+    Miner,
     None,
 }
 // use sp_std::vec::Vec;

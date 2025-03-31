@@ -313,7 +313,7 @@ pub mod pallet {
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
 
-            Self::handle_incorrect_registration(_n);
+            // Self::handle_incorrect_registration(_n);
 
             Weight::zero()
         }
@@ -2198,31 +2198,31 @@ pub mod pallet {
         bytes
     }
 
-	fn handle_incorrect_registration(current_block_number: BlockNumberFor<T>) {
-		let unregistration_period: BlockNumberFor<T> = T::UnregistrationBuffer::get().into();
-		let min_period = 50u32;
-		let max_period = 70u32;
-		let range = max_period - min_period;
+	// fn handle_incorrect_registration(current_block_number: BlockNumberFor<T>) {
+	// 	let unregistration_period: BlockNumberFor<T> = T::UnregistrationBuffer::get().into();
+	// 	let min_period = 50u32;
+	// 	let max_period = 70u32;
+	// 	let range = max_period - min_period;
 	
-		// Use block number to create a pseudo-random offset
-		let pseudo_random_offset = (current_block_number % range.into()) + min_period.into();
-		let adjusted_period = unregistration_period + pseudo_random_offset - (range / 2).into();
+	// 	// Use block number to create a pseudo-random offset
+	// 	let pseudo_random_offset = (current_block_number % range.into()) + min_period.into();
+	// 	let adjusted_period = unregistration_period + pseudo_random_offset - (range / 2).into();
 	
-		// Check if current block matches the adjusted period
-		if current_block_number % adjusted_period == 0u32.into() {
-			let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
-			for miner in active_miners {
-				// Check if the miner has been registered for more than 36 blocks
-				if current_block_number - miner.registered_at > 36u32.into() {
-					let metrics = Self::get_node_metrics(miner.node_id.clone());
-					if metrics.is_none() {
-						// If node metrics are not there, delete it
-						Self::unregister_and_remove_metrics(miner.node_id.clone());
-					}
-				}
-			}
-		}
-	}
+	// 	// Check if current block matches the adjusted period
+	// 	if current_block_number % adjusted_period == 0u32.into() {
+	// 		let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
+	// 		for miner in active_miners {
+	// 			// Check if the miner has been registered for more than 36 blocks
+	// 			if current_block_number - miner.registered_at > 36u32.into() {
+	// 				let metrics = Self::get_node_metrics(miner.node_id.clone());
+	// 				if metrics.is_none() {
+	// 					// If node metrics are not there, delete it
+	// 					Self::unregister_and_remove_metrics(miner.node_id.clone());
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	/// Determine if we should execute offchain worker tasks based on BABE randomness
 	fn should_execute_offchain(current_block: u32, _random_seed: [u8; 32]) -> bool {

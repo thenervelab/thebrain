@@ -26,10 +26,10 @@ impl NodeType {
     pub fn to_role(&self) -> Role {
         match self {
             NodeType::Validator => Role::Validator,
-            NodeType::StorageMiner => Role::StorageMiner,
-            NodeType::StorageS3 => Role::StorageS3,
-            NodeType::ComputeMiner => Role::ComputeMiner,
-            NodeType::GpuMiner => Role::GpuMiner,
+            NodeType::StorageMiner => Role::Miner,
+            NodeType::StorageS3 => Role::Miner,
+            NodeType::ComputeMiner => Role::Miner,
+            NodeType::GpuMiner => Role::Miner,
         }
     }
 }

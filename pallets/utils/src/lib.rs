@@ -107,11 +107,8 @@ use sp_core::crypto::AccountId32;
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub enum Role {
 	Validator,
-    StorageMiner,
-    StorageS3,
-    ComputeMiner,
-    GpuMiner,
-    None,
+    Miner,
+	None
 }
 use sp_std::vec::Vec;
 
