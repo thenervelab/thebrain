@@ -1424,20 +1424,22 @@ pub mod pallet {
 			// Use POST instead of GET, as ping typically requires a POST request
 			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
 
+			let start_time = sp_io::offchain::timestamp();
+
 			let pending = request
-				.deadline(deadline)
-				.send()
-				.map_err(|err| {
-					log::info!("Error sending ping request: {:?}", err);
-					sp_runtime::offchain::http::Error::IoError
-				})?;
+			.deadline(deadline)
+			.send()
+			.map_err(|err| {
+				log::info!("Error sending ping request: {:?}", err);
+				sp_runtime::offchain::http::Error::IoError
+			})?;
 
 			let response = pending
-				.try_wait(deadline)
-				.map_err(|err| {
-					log::info!("Error waiting for ping response: {:?}", err);
-					sp_runtime::offchain::http::Error::DeadlineReached
-				})??;
+			.try_wait(deadline)
+			.map_err(|err| {
+				log::info!("Error waiting for ping response: {:?}", err);
+				sp_runtime::offchain::http::Error::DeadlineReached
+			})??;
 
 			
 			// Check if the response code is 200 (OK)
@@ -1723,9 +1725,21 @@ pub mod pallet {
 			// Sort miners by rank (ascending)
 			sorted_miners.sort_by_key(|(_, rank)| *rank);
 		
+			// Take top 100 miners and shuffle them
+			let mut top_miners: Vec<_> = sorted_miners.into_iter().take(100).collect();
+			
+			// Use block number as a seed for deterministic shuffling
+			let seed = block_number.saturated_into::<u64>();
+			
+			// Deterministic shuffle using a simple algorithm
+			for i in (1..top_miners.len()).rev() {
+				let j = seed.wrapping_mul(i as u64) % (i + 1) as u64;
+				top_miners.swap(i, j as usize);
+			}
+		
 			for storage_request in pending_storage_requests {
 				let file_hash = storage_request.file_hash.clone();								
-				// should not be blaclisted 
+				// should not be blacklisted 
 				if !pallet_ipfs_pin::Pallet::<T>::is_file_blacklisted(&file_hash) {
 					// should be an approved request
 					if storage_request.is_approved{
@@ -1733,7 +1747,7 @@ pub mod pallet {
 						let mut assigned = false;
 						if let Some(request_miner_ids) = &storage_request.miner_ids {
 
-							for (miner, _) in sorted_miners.iter() {
+							for (miner, _) in top_miners.iter() {
 								// Check if this miner's node_id is in the requested miner_ids
 								if request_miner_ids.iter().any(|id| *id == miner.node_id) {
 									let is_pinned = pallet_ipfs_pin::Pallet::<T>::is_file_already_pinned_by_storage_miner(
@@ -1795,7 +1809,7 @@ pub mod pallet {
 						}
 						// If not assigned to specified miners, fall back to general assignment
 						if !assigned {
-							for (miner, _) in sorted_miners.iter() {
+							for (miner, _) in top_miners.iter() {
 								let is_pinned = pallet_ipfs_pin::Pallet::<T>::is_file_already_pinned_by_storage_miner(
 									miner.node_id.clone(), 
 									file_hash.clone()
@@ -1876,7 +1890,7 @@ pub mod pallet {
 								let free_credits = pallet_credits::Pallet::<T>::free_credits(storage_request.owner.clone());
 												
 								if free_credits >= storage_cost {									
-									// approve the stautus of the request and update storage 
+									// approve the stauts of the request and update storage 
 									let mut updated_req = storage_request.clone();
 									updated_req.is_approved = true;
 									updated_req.last_charged_at = block_number;
@@ -2038,7 +2052,8 @@ pub mod pallet {
 				return Err(http::Error::Unknown);
 			}
 
-			let response_body = response.body().collect::<Vec<u8>>(); // Collect the response body
+			let response_body = response.body().collect::<Vec<u8>>();
+		
 			let response_json: serde_json::Value = serde_json::from_slice(&response_body).map_err(|_| {
 				log::error!("Failed to parse response body as JSON");
 				http::Error::Unknown
@@ -2275,8 +2290,8 @@ pub mod pallet {
 					
 					// degrading by calling unsigned tx
 					pallet_registration::Pallet::<T>::call_node_status_to_degraded_unsigned(miner.node_id);
-					
-					// all storage requests fulfilled replicas should be -1 and then update storage;
+
+					// all storage requests fullfilled replicas should be -1 and then update storage;
 					for files_pinned in files_pinned_by_miners {
 						// Attempt to get the storage request
 						if let Some(mut req) = pallet_ipfs_pin::Pallet::<T>::get_storage_request_by_file_hash(files_pinned.file_hash.clone()) {

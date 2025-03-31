@@ -36,6 +36,7 @@ pallet-marketplace = { workspace = true, default-features = false }
 sp-debug-derive = { default-features = false, workspace = true }
 serde_json = { workspace = true }
 
+
 [features]
 default = ["std"]
 std = [

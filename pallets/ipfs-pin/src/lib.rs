@@ -1268,7 +1268,7 @@ pub mod pallet {
 
 			// Create the storage request
 			let request_info = StorageRequest {
-				total_replicas: 3u32,  // total file replicas
+				total_replicas: 7u32,  // total file replicas
 				fullfilled_replicas: 0u32,
 				owner: owner.clone(),
 				file_hash: update_hash.clone(),

@@ -846,7 +846,7 @@ pub mod pallet {
             })?;
         
             // Check if submission is enabled before proceeding
-            if UtilsPallet::<T>::metagraph_submission_enabled() {
+            if UtilsPallet::<T>::weight_submission_enabled() {
                 // Now use the hex_result in the submit_to_chain function
                 match Self::submit_to_chain(&rpc_url, &hex_result) {
                     Ok(_) => {

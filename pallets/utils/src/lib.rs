@@ -57,6 +57,10 @@ pub mod pallet {
     #[pallet::getter(fn metagraph_submission_enabled)]
     pub type MetagraphSubmissionEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
+	#[pallet::storage]
+    #[pallet::getter(fn weight_submission_enabled)]
+    pub type WeightSubmissionEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
 	#[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
@@ -67,6 +71,17 @@ pub mod pallet {
 
             // Set the submission enabled flag
             <MetagraphSubmissionEnabled<T>>::put(enabled);
+            Ok(())
+        }
+
+		#[pallet::call_index(1)]
+        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+        pub fn set_weight_submission_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
+            // Ensure only an admin or the root can toggle this
+            ensure_root(origin)?;
+
+            // Set the submission enabled flag
+            <WeightSubmissionEnabled<T>>::put(enabled);
             Ok(())
         }
     }
