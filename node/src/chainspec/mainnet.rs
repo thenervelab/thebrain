@@ -29,12 +29,12 @@ use hippius_mainnet_runtime::{
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
 pub type ChainSpec = sc_service::GenericChainSpec;
 
-pub const ENDOWMENT: Balance = 1000 * UNIT;
+pub const ENDOWMENT: Balance = 100 * UNIT;
 
 // Our validator's sr25519 key for BABE
 const VALIDATOR_SR25519: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
 // Our validator's ed25519 key for GRANDPA
-const VALIDATOR_ED25519: &str = "5DydE7TkfprjJk8BTmia8wYX9LVoNyGyTnXc9hHYjQ8G2zNx";
+const VALIDATOR_ED25519: &str = "5CnJrbg2PTeL3jkKc8ozaGpjKMerXx1M1Y4uc8ByNxBceauD";
 
 /// Helper function to get account from SS58 string
 fn get_account_from_ss58(ss58: &str) -> AccountId {
@@ -101,14 +101,15 @@ pub fn local_benchmarking_config(chain_id: u64) -> Result<ChainSpec, String> {
 			// Initial PoA authorities
 			vec![authority.clone()],
 			// Pre-funded accounts
-			vec![(account_id.clone(), ENDOWMENT),
+			vec![
+                (account_id.clone(), ENDOWMENT),
             (
                 // Convert sudo account to AccountId32
                 sp_core::sr25519::Public::from_ss58check(SUDO_ACCOUNT)
                     .expect("Invalid SS58 address")
                     .into(),
                 // Add a substantial endowment, e.g., 1 million tokens
-                ENDOWMENT * 10
+                ENDOWMENT * 9
             )],
 			// Sudo account
 			get_sudo_account(),
@@ -145,7 +146,7 @@ pub fn local_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
                     .expect("Invalid SS58 address")
                     .into(),
                 // Add a substantial endowment, e.g., 1 million tokens
-                ENDOWMENT * 10
+                ENDOWMENT * 9
             )],
             // Sudo account
             get_sudo_account(),
@@ -181,7 +182,7 @@ pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
                     .expect("Invalid SS58 address")
                     .into(),
                 // Add a substantial endowment, e.g., 1 million tokens
-                ENDOWMENT * 10
+                ENDOWMENT * 9
             )],
             // Sudo account
             get_sudo_account(),

@@ -1086,7 +1086,7 @@ parameter_types! {
 	pub const FinneyApiUrl: &'static str = "http://127.0.0.1:9945";
     pub const FinneyUidsStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555aab1b4e78e1ea8305462ee53b3686dc84b00";
     pub const FinneyDividendsStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf055586752d66f11480ecef37769cdd736b9b4b00";
-	pub const UidsSubmissionInterval: u32 = 33; 
+	pub const UidsSubmissionInterval: u32 = 100; 
 }
 
 impl pallet_metagraph::Config for Runtime {

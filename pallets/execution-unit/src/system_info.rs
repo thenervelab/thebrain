@@ -247,8 +247,8 @@ impl SystemInfo {
 impl FromStr for SystemInfo {
     type Err = &'static str;
     // parsing the request output
-    fn from_str(s: &str) -> Result<Self, Self::Err> {    
-
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        log::info!("Parsing system info: {}", s);
         // Parse cpu_model
         let cpu_model = if let Some(start) = s.find("\"cpu_model\":\"") {
             let after_key = &s[start + "\"cpu_model\":".len()..];
