@@ -356,7 +356,7 @@ pub mod pallet {
 								Self::process_pending_compute_requests();
 								Self::process_pending_storage_requests(node_id.clone(), block_number);
 								Self::perform_pin_checks_to_miners(node_id.clone());
-								Self::perform_ping_checks_to_miners(node_id.clone());
+								// Self::perform_ping_checks_to_miners(node_id.clone());
 							}
 						} else {
 							log::info!("Skipping execution at block {}", current_block);

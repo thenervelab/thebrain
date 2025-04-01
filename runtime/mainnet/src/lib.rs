@@ -24,7 +24,7 @@ include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 mod filters;
 pub mod frontier_evm;
 pub mod impls;
-pub mod migrations;
+// pub mod migrations;
 pub mod precompiles;
 pub mod balance_transfer_precompile;
 // pub mod hippius_services;
@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 5000,
+	spec_version: 6000,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1780,7 +1780,7 @@ pub type Executive = frame_executive::Executive<
 	frame_system::ChainContext<Runtime>,
 	Runtime,
 	AllPalletsWithSystem,
-	migrations::MigrateSessionKeys<Runtime>,
+	// migrations::MigrateSessionKeys<Runtime>,
 >;
 
 impl fp_self_contained::SelfContainedCall for RuntimeCall {
