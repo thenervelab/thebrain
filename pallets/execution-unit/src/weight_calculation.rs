@@ -116,12 +116,12 @@ impl NodeMetricsData {
         if _node_type == NodeType::StorageMiner && metrics.ipfs_storage_max < 1_000_000_000 {
             return 0;
         }
-
+    
         // Early return for storage miners with bandwidth less than 125 Mbps
         if _node_type == NodeType::StorageMiner && metrics.bandwidth_mbps < 125 {
             return 0;
         }
-
+    
         // Calculate base scores with u64 casting for safety
         let availability_score = (Self::calculate_availability_score(metrics) as u64).saturating_div(100);
         let performance_score = (Self::calculate_performance_score(metrics) as u64).saturating_div(100);
@@ -132,13 +132,13 @@ impl NodeMetricsData {
             NodeType::StorageMiner => (Self::calculate_capacity_score::<T>(metrics) as u64).saturating_div(100),
             _ => 0, 
         };
-
+    
         // Conditionally include storage usage score only for storage miners
         let storage_usage_score = match _node_type {
             NodeType::StorageMiner => (Self::calculate_storage_usage_score::<T>(metrics) as u64).saturating_div(100),
             _ => 0, 
         };
-
+    
         // Conditionally include compute RAM score only for compute miners
         let compute_ram_score = match _node_type {
             NodeType::ComputeMiner => Self::calculate_compute_ram_score(metrics).saturating_div(100),
@@ -153,24 +153,28 @@ impl NodeMetricsData {
         
         let network_score = (Self::calculate_network_score(metrics) as u64).saturating_div(100);
         let diversity_score = (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
-
+    
         // Adjust weight calculation based on node type
         let base_weight = match _node_type {
-            NodeType::StorageMiner => (
-                availability_score.saturating_mul(20)   // Reduced from 35
-                .saturating_add(performance_score.saturating_mul(10))  // Increased from 5
-                .saturating_add(reliability_score.saturating_mul(10))  // Unchanged
-                .saturating_add(capacity_score.saturating_mul(25))     // Increased from 15
-                .saturating_add(storage_usage_score.saturating_mul(15)) // Reduced from 25
-                .saturating_add(network_score.saturating_mul(10))      // Increased from 5
-                .saturating_add(diversity_score.saturating_mul(10))     // Unchanged
-            ) as u32,
+            NodeType::StorageMiner => {
+                // If capacity_score is 0 for StorageMiner, set base_weight to 0 and return early
+                if capacity_score == 0 || storage_usage_score == 0 {
+                    return 0;
+                }
+                (
+                    availability_score.saturating_mul(20)   // Reduced from 35
+                    .saturating_add(performance_score.saturating_mul(10))  // Increased from 5
+                    .saturating_add(reliability_score.saturating_mul(10))  // Unchanged
+                    .saturating_add(capacity_score.saturating_mul(25))     // Increased from 15
+                    .saturating_add(storage_usage_score.saturating_mul(15)) // Reduced from 25
+                    .saturating_add(network_score.saturating_mul(10))      // Increased from 5
+                    .saturating_add(diversity_score.saturating_mul(10))    // Unchanged
+                ) as u32
+            },
             NodeType::StorageS3 => (
                 availability_score.saturating_mul(35)
                 .saturating_add(performance_score.saturating_mul(20))
                 .saturating_add(reliability_score.saturating_mul(15))
-                // .saturating_add(capacity_score.saturating_mul(15)) // Capacity score only for storage
-                // .saturating_add(storage_usage_score.saturating_mul(25)) // Capacity score only for storage
                 .saturating_add(network_score.saturating_mul(15))
                 .saturating_add(diversity_score.saturating_mul(15))
             ) as u32,
@@ -200,7 +204,12 @@ impl NodeMetricsData {
                 .saturating_add(diversity_score.saturating_mul(5))
             ) as u32,
         };
-
+    
+        // Early return if base_weight is 0 (for other node types)
+        if base_weight == 0 {
+            return 0;
+        }
+    
         // Calculate modifiers
         let bonuses = (Self::calculate_bonuses(metrics) as u64).saturating_div(100);
         let penalties = (Self::calculate_penalties(metrics) as u64).saturating_div(100);
@@ -209,31 +218,31 @@ impl NodeMetricsData {
             .saturating_div(100)
             .saturating_add(bonuses)
             .saturating_sub(penalties) as u32;
-
+    
         // Calculate scaling factors
         let network_scaling = Self::_get_network_scaling_factor(all_nodes_metrics).saturating_div(100);
         let relative_position = Self::_calculate_relative_position(metrics, all_nodes_metrics).saturating_div(100);
-
+    
         // Calculate final weight with careful scaling
         let intermediate = (base_weight as u64)
             .saturating_mul(network_scaling as u64)
             .saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
-
+    
         let with_modifier = (intermediate as u64)
             .saturating_mul(modifier as u64)
             .saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
-
+    
         let positioned = (with_modifier as u64)
             .saturating_mul(relative_position as u64)
             .saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
-
+    
         // Scale to 16-bit range with minimum value of 1
         let weight = (positioned as u64)
             .saturating_mul(Self::MAX_SCORE as u64)
             .saturating_div(Self::INTERNAL_SCALING as u64)
             .max(1)
             .min(Self::MAX_SCORE as u64) as u32;
-
+    
         weight
     }
 
