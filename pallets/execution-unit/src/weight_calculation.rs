@@ -8,7 +8,7 @@ impl NodeMetricsData {
     // Configuration constants
     const MIN_PEER_COUNT: u32 = 10;
     const MAX_SCORE: u32 = 65535; // 16-bit maximum
-    const MIN_STORAGE_GB: u32 = 100; // Minimum 100GB storage
+    const MIN_STORAGE_GB: u32 = 2048; // Minimum 2TB storage
     const OPTIMAL_STORAGE_USAGE_MIN: u32 = 60; // 60% minimum usage
     const OPTIMAL_STORAGE_USAGE_MAX: u32 = 80; // 80% maximum usage
     const MAX_RESPONSE_TIME_MS: u32 = 1000;
@@ -157,13 +157,13 @@ impl NodeMetricsData {
         // Adjust weight calculation based on node type
         let base_weight = match _node_type {
             NodeType::StorageMiner => (
-                availability_score.saturating_mul(35)
-                .saturating_add(performance_score.saturating_mul(5))
-                .saturating_add(reliability_score.saturating_mul(10))
-                .saturating_add(capacity_score.saturating_mul(15)) // Capacity score only for storage
-                .saturating_add(storage_usage_score.saturating_mul(25)) // Capacity score only for storage
-                .saturating_add(network_score.saturating_mul(5))
-                .saturating_add(diversity_score.saturating_mul(5))
+                availability_score.saturating_mul(20)   // Reduced from 35
+                .saturating_add(performance_score.saturating_mul(10))  // Increased from 5
+                .saturating_add(reliability_score.saturating_mul(10))  // Unchanged
+                .saturating_add(capacity_score.saturating_mul(25))     // Increased from 15
+                .saturating_add(storage_usage_score.saturating_mul(15)) // Reduced from 25
+                .saturating_add(network_score.saturating_mul(10))      // Increased from 5
+                .saturating_add(diversity_score.saturating_mul(10))     // Unchanged
             ) as u32,
             NodeType::StorageS3 => (
                 availability_score.saturating_mul(35)
@@ -451,7 +451,7 @@ impl NodeMetricsData {
 
         let miner_ipfs_requests = pallet_ipfs_pin::FileStored::<T>::get(metrics.miner_id.clone());
         let mut total_used_storage = 0;
-        for request in miner_ipfs_requests {            
+        for request in miner_ipfs_requests {
             // Count pinned files
             if request.is_pinned {
                 total_used_storage += request.file_size_in_bytes as u64;
@@ -615,34 +615,37 @@ impl NodeMetricsData {
         total_bonus
     }
 
+ 
     fn calculate_penalties(metrics: &NodeMetricsData) -> u32 {
-        // Downtime penalties
+        // Downtime penalties: Unchanged, reliability matters
         let downtime_penalty = (metrics.recent_downtime_hours as u32)
             .saturating_mul(10_000) // 1% per hour
             .min(500_000); // Max 50%
-
-        // Failed challenges penalty
+    
+        // Failed challenges penalty: Unchanged, reliability matters
         let challenge_penalty = (metrics.failed_challenges_count as u32)
             .saturating_mul(5_000) // 0.5% per failure
             .min(300_000); // Max 30%
-
-        // Storage utilization penalty
+    
+        // Storage utilization penalty: Adjusted to support empty disks
         let storage_penalty = if metrics.total_storage_bytes > 0 {
             let usage_percent = (metrics.current_storage_bytes * 100) / metrics.total_storage_bytes;
-            if usage_percent < 30 || usage_percent > 90 {
-                100_000 // 10% penalty for poor utilization
+            if usage_percent < 5 {
+                50_000  // 5% penalty only for extremely low usage (<5%)
+            } else if usage_percent > 90 {
+                50_000  // 5% penalty for overuse (>90%)
             } else {
-                0
+                0       // No penalty between 5% and 90%, including empty disks
             }
         } else {
-            500_000 // 50% penalty for no storage
+            500_000 // Unchanged, but irrelevant due to earlier checks
         };
-
+    
         let total_penalty = downtime_penalty
             .saturating_add(challenge_penalty)
             .saturating_add(storage_penalty)
             .min(800_000); // Maximum 80% total penalty
-
+    
         total_penalty
     }
 
