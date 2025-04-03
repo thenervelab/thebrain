@@ -113,7 +113,7 @@ impl NodeMetricsData {
         geo_distribution: &BTreeMap<Vec<u8>, u32>
     ) -> u32 {
         // Early return for storage miners with less than 1 GB storage
-        if _node_type == NodeType::StorageMiner && metrics.ipfs_storage_max < 1_000_000_000 {
+        if _node_type == NodeType::StorageMiner && metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {
             return 0;
         }
     
@@ -158,7 +158,7 @@ impl NodeMetricsData {
         let base_weight = match _node_type {
             NodeType::StorageMiner => {
                 // If capacity_score is 0 for StorageMiner, set base_weight to 0 and return early
-                if capacity_score == 0 || storage_usage_score == 0 {
+                if capacity_score == 0 {
                     return 0;
                 }
                 (
@@ -358,11 +358,6 @@ impl NodeMetricsData {
         // Add the condition to check for ipfs_storage_max against ipfs_zfs_pool_size
         if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
             return 0; // Set final score to 0
-        }
-
-        // Minimum storage requirement
-        if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {
-            return 0;
         }
 
         // Use a more generic approach to retrieve IPFS pin requests
