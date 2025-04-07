@@ -106,7 +106,6 @@ pub mod pallet {
             // Clear all entries; limit is u32::MAX to ensure we get them all
             let result = UserRequestsCount::<T>::clear(u32::MAX, None);
 
-
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
                 Self::handle_storage_subscription_charging(current_block);

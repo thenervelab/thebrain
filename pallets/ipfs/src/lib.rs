@@ -120,7 +120,23 @@ pub mod pallet {
 
 		/// The identifier type for an offchain worker.
 		type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
+
+		#[pallet::constant]
+		type MaxOffchainRequestsPerPeriod: Get<u32>;
+
+	    #[pallet::constant]
+	    type RequestsClearInterval: Get<u32>;
 	}
+
+	#[pallet::storage]
+	#[pallet::getter(fn requests_count)]
+	pub type RequestsCount<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		T::AccountId, 
+		u32, 
+		ValueQuery
+	>;
 
 	const LOCK_BLOCK_EXPIRATION: u32 = 1;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -259,6 +275,13 @@ pub mod pallet {
 		}
 
 		fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
+
+			// Clear entries every 10 blocks
+			if current_block % T::RequestsClearInterval::get().into() == 0u32.into() {
+				// Clear all entries; limit is u32::MAX to ensure we get them all
+				let _result = RequestsCount::<T>::clear(u32::MAX, None);
+			}
+						
 			// Remove storage requests older than 500 blocks
 			Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(500u32));
 
@@ -400,6 +423,15 @@ pub mod pallet {
 			signature: <T as SigningTypes>::Signature
 		) -> DispatchResultWithPostInfo {
             ensure_none(origin)?;
+
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+
 			let _signature = signature;
 
 			// check if the node is already registered or not here
@@ -540,6 +572,14 @@ pub mod pallet {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
 
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+
 			let miner_node_id_clone = miner_node_id.clone();
 			let file_hash_to_remove_clone = file_hash_to_remove.clone();
 			let new_cid_bounded_clone = new_cid_bounded.clone();
@@ -576,6 +616,14 @@ pub mod pallet {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
 
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+
 			// Set the miner's state to Locked
 			MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
 
@@ -591,6 +639,14 @@ pub mod pallet {
 			cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
+
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
 
 			// Update UserProfile storage
 			UserProfile::<T>::insert(&owner, cid);

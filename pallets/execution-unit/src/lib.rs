@@ -79,17 +79,16 @@ pub mod pallet {
 		AccountId32,
 	};
 	use sp_std::prelude::*;
-	use ipfs_pallet::FileHash;
+	// use ipfs_pallet::FileHash;
 	use ipfs_pallet::MinerProfileItem;
-	use serde_json::to_string;
+	// use serde_json::to_string;
 	use serde_json::Value;
 	use ipfs_pallet::AssignmentEnabled;
 	use pallet_registration::NodeInfo;
-	use pallet_credits::Pallet as CreditsPallet;
+	// use pallet_credits::Pallet as CreditsPallet;
 	use pallet_rankings::Pallet as RankingsPallet;
-	
 	use ipfs_pallet::MinerProfile;
-	use ipfs_pallet::MAX_FILE_HASH_LENGTH;
+	// use ipfs_pallet::MAX_FILE_HASH_LENGTH;
 	use ipfs_pallet::MinerPinRequest;
 	use sp_std::collections::btree_map::BTreeMap;
 	use ipfs_pallet::StorageRequest;
@@ -139,6 +138,12 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type UnregistrationBuffer: Get<u32>;
+
+		#[pallet::constant]
+		type MaxOffchainRequestsPerPeriod: Get<u32>;
+
+	    #[pallet::constant]
+	    type RequestsClearInterval: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -226,8 +231,19 @@ pub mod pallet {
 		InvalidJson,
 		InvalidCid,
 		StorageOverflow,
-		IpfsError
+		IpfsError,
+		TooManyRequests
 	}
+
+	#[pallet::storage]
+	#[pallet::getter(fn requests_count)]
+	pub type RequestsCount<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		T::AccountId, 
+		u32, 
+		ValueQuery
+	>;
 
 	#[pallet::validate_unsigned]
     impl<T: Config> ValidateUnsigned for Pallet<T> {
@@ -316,6 +332,14 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
+			let clear_interval = T::RequestsClearInterval::get();
+
+			// Clear entries every 10 blocks
+			if _n % clear_interval.into() == 0u32.into() {
+				// Clear all entries; limit is u32::MAX to ensure we get them all
+				let _result = RequestsCount::<T>::clear(u32::MAX, None);
+			}
+
             Self::handle_incorrect_registration(_n);
 			
 			// Only purge if the feature is enabled
@@ -398,6 +422,14 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
             ensure_none(origin)?;
 			let _signature = signature;
+
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
 			
 			// Check if specs already exist and are the same
 			// if let Some(existing_specs) = NodeSpecs::<T>::get(&node_id) {
@@ -503,6 +535,14 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?; // Ensure the call is unsigned
 
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+
 			// Fetch existing metrics
 			let mut metrics = NodeMetrics::<T>::get(&node_id).ok_or(Error::<T>::MetricsNotFound)?;
 
@@ -539,6 +579,14 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?; // Ensure the call is unsigned
 
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+
 			// Fetch existing metrics
 			let mut metrics = NodeMetrics::<T>::get(&node_id).ok_or(Error::<T>::MetricsNotFound)?;
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
@@ -574,7 +622,6 @@ pub mod pallet {
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
 
-			Self::deposit_event(Event::PinCheckMetricsUpdated { node_id });
 			Ok(().into())
 		}
 
@@ -587,6 +634,14 @@ pub mod pallet {
 			block_number: BlockNumberFor<T>
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?; // Ensure the call is unsigned
+
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
 		
 			// Fetch the existing vector of block numbers or initialize a new one
 			let blocks_vec = BlockNumbers::<T>::get(node_id.clone()).unwrap_or_else(|| Vec::new());
@@ -1692,9 +1747,18 @@ pub mod pallet {
 					// Process each initial storage request
 					let mut all_new_storage_requests = Vec::new();
 					for initial_request in initial_storage_requests {
-						// The file_hash is now a CID pointing to a JSON array of files
-						let cid_str = sp_std::str::from_utf8(&initial_request.file_hash).map_err(|_| Error::<T>::InvalidCid)?;
-		
+						let file_hash_vec: Vec<u8> = initial_request.file_hash.to_vec();
+
+						let file_hash = hex::decode(file_hash_vec).map_err(|_| {
+							log::error!("Failed to decode file hash");
+							Error::<T>::InvalidCid
+						})?;		
+	
+						let cid_str = sp_std::str::from_utf8(&file_hash).map_err(|_| {
+							log::error!("Failed to convert hash to string");
+							Error::<T>::InvalidCid
+						})?;
+						
 						// Fetch the content from IPFS
 						let content = IpfsPallet::<T>::fetch_ipfs_content(cid_str).map_err(|e| {
 							log::error!("Failed to fetch CID content for request {:?}: {:?}", initial_request.file_hash, e);

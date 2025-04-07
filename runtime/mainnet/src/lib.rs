@@ -1118,6 +1118,8 @@ impl ipfs_pallet::Config for Runtime {
 	type GarbageCollectorInterval = GarbageCollectorInterval;
 	type AuthorityId = ipfs_pallet::crypto::TestAuthId;
 	type PinPinningInterval = PinPinningInterval;
+	type MaxOffchainRequestsPerPeriod = MaxOffchainRequestsPerPeriod;
+	type RequestsClearInterval = RequestsClearInterval;
 }
 
 parameter_types! {
@@ -1324,6 +1326,8 @@ parameter_types! {
 	pub const SystemHealthRpcMethod: &'static str = "system_health";
 	pub const IPFSBaseUrl: &'static str = "http://localhost:5001";
 	pub const UnregistrationBuffer : u32 = 60;
+	pub const MaxOffchainRequestsPerPeriod: u32 = 20;
+	pub const RequestsClearInterval: u32 = 10;
 }
 
 impl pallet_execution_unit::Config for Runtime {
@@ -1337,6 +1341,8 @@ impl pallet_execution_unit::Config for Runtime {
 	type SystemHealthRpcMethod = SystemHealthRpcMethod;
 	type AuthorityId = pallet_execution_unit::crypto::TestAuthId;
 	type UnregistrationBuffer = UnregistrationBuffer;
+	type MaxOffchainRequestsPerPeriod = MaxOffchainRequestsPerPeriod;
+	type RequestsClearInterval = RequestsClearInterval;
 }
 
 impl pallet_offences::Config for Runtime {
@@ -1722,7 +1728,7 @@ construct_runtime!(
 		Storage: pallet_storage_s3 = 72, 
 		AlphaBridge: pallet_alpha_bridge = 73, 
 		PalletIp: pallet_ip = 74,
-		IpfsPalletNew: ipfs_pallet = 75
+		IpfsPallet: ipfs_pallet = 75
 	}
 );
 
