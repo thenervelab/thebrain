@@ -113,6 +113,8 @@ pub mod pallet {
 		#[pallet::constant]
 		type GarbageCollectorInterval: Get<u32>;
 
+		#[pallet::constant]
+		type PinFilesInterval: Get<u32>;
 
 		/// The identifier type for an offchain worker.
 		type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
@@ -165,25 +167,6 @@ pub mod pallet {
 					data.extend_from_slice(&file_hash_to_remove.encode());
 					data.extend_from_slice(&miner_node_id.encode());
 					data.extend_from_slice(&new_cid_bounded.encode());
-					
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-
-					// Ensure unique transaction validity
-					ValidTransaction::with_tag_prefix("IpfsOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(unique_hash)
-						.longevity(3)
-						.propagate(true)
-						.build()
-				},
-				// Handler for `set_miner_state_free` unsigned transaction
-				Call::set_miner_state_free { miner_node_id, .. } => {
-					let current_block = frame_system::Pallet::<T>::block_number();
-
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(&miner_node_id.encode());
 					
 					let unique_hash = sp_io::hashing::blake2_256(&data);
 
@@ -258,14 +241,8 @@ pub mod pallet {
                     let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());	
                     if node_info.is_some() {
 						let node_info = node_info.unwrap();
-                        if node_info.node_type == NodeType::Validator {
-							// let _ = Self::handle_request_assignment(node_id, node_info);
-							// let _ = Self::hanlde_unpin_requests();
-						}
-						else if node_info.node_type == NodeType::StorageMiner {
+						if node_info.node_type == NodeType::StorageMiner {
 							let _ = Self::sync_pinned_files(node_id);
-						}else{
-							log::error!("skipping ipfs checks");
 						}
 					}
                 }
@@ -312,7 +289,7 @@ pub mod pallet {
 
 	// the file size where the key is encoded file hash
 	#[pallet::storage]
-	#[pallet::getter(fn user_total_files_size)]
+	#[pallet::getter(fn miner_files_size)]
 	pub type MinerTotalFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, u128>;
 
 	// the file size where the key is encoded file hash
@@ -367,7 +344,7 @@ pub mod pallet {
 
 	// Saves all the node ids who have pinned for that file hash
 	#[pallet::storage]
-	#[pallet::getter(fn miner_profile)]
+	#[pallet::getter(fn user_profile)]
 	pub type UserProfile<T: Config> = StorageMap<
 		_, 
 		Blake2_128Concat, 
@@ -553,21 +530,6 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		/// Unsigned transaction to set a miner's state to Free
-		#[pallet::call_index(4)]
-		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
-		pub fn set_miner_state_free(
-			origin: OriginFor<T>,
-			miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>
-		) -> DispatchResultWithPostInfo {
-			// Ensure this is an unsigned transaction
-			ensure_none(origin)?;
-
-			// Set the miner's state to Free
-			MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
-
-			Ok(().into())
-		}
 
 		/// Unsigned transaction to set a miner's state to Locked
 		#[pallet::call_index(5)]
@@ -676,46 +638,6 @@ pub mod pallet {
 			Ok(validators[validator_index].clone())
 		}
 
-		/// Helper function to set a miner's state to Free using unsigned transactions
-		pub fn call_set_miner_state_free(miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
-			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-				b"IpfsPin::update_lock",
-				LOCK_BLOCK_EXPIRATION,
-				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-			);
-
-			if let Ok(_guard) = lock.try_lock() {
-				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-
-				if !signer.can_sign() {
-					log::warn!("No accounts available for signing in signer.");
-					return;
-				}
-
-				let results = signer.send_unsigned_transaction(
-					|account| ProcessMinersToRemoveRequestPayload {
-						miner_node_id: miner_node_id.clone(),
-						public: account.public.clone(),
-						_marker: PhantomData,
-					},
-					|payload, _signature| {
-						Call::set_miner_state_free {
-							miner_node_id: payload.miner_node_id,
-						}
-					},
-				);
-
-				for (acc, res) in &results {
-					match res {
-						Ok(()) => log::info!("[{:?}] Successfully set miner state to Free", acc.id),
-						Err(e) => log::error!("[{:?}] Failed to set miner state to Free: {:?}", acc.id, e),
-					}
-				}
-			} else {
-				log::error!("❌ Could not acquire lock for setting miner state");
-			}
-		}
-
 		/// Helper function to set a miner's state to Locked using unsigned transactions
 		pub fn call_set_miner_state_locked(miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
@@ -733,7 +655,7 @@ pub mod pallet {
 				}
 
 				let results = signer.send_unsigned_transaction(
-					|account| ProcessMinersToRemoveRequestPayload {
+					|account| MinerLockPayload {
 						miner_node_id: miner_node_id.clone(),
 						public: account.public.clone(),
 						_marker: PhantomData,
@@ -753,7 +675,7 @@ pub mod pallet {
 				}
 			} else {
 				log::error!("❌ Could not acquire lock for setting miner state");
-			}
+			};
 		}
 
 		// /// Helper function to handle the unpin request logic
@@ -1230,7 +1152,7 @@ pub mod pallet {
 		/// Returns a vector of all unique users who have made storage requests
 		pub fn get_storage_request_users() -> Vec<T::AccountId> {
 			UserProfile::<T>::iter_keys()
-				.map(|(user, _)| user)
+				.map(|user| user)
 				.collect::<collections::BTreeSet<_>>()
 				.into_iter()
 				.collect()
@@ -1584,7 +1506,7 @@ pub mod pallet {
 				return Vec::new();
 			}
 
-			let cid_str = match str::from_utf8(&cid) {
+			let cid_str = match sp_std::str::from_utf8(&cid) {
 				Ok(s) => s,
 				Err(_) => {
 					log::error!("Invalid UTF-8 in UserProfile CID for account {:?}", account);
@@ -1593,7 +1515,7 @@ pub mod pallet {
 			};
 
 			// Fetch content from IPFS
-			let content = match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
+			let content = match Self::fetch_ipfs_content(cid_str) {
 				Ok(content) => content,
 				Err(e) => {
 					log::error!("Failed to fetch UserProfile content for CID {}: {:?}", cid_str, e);
@@ -1664,14 +1586,10 @@ pub mod pallet {
 			// Retrieve the total file size directly from MinerTotalFilesSize storage
 			MinerTotalFilesSize::<T>::get(&miner_id_bounded).unwrap_or(0)
 		}
-		
 
 		/// Check if a miner is in a Free state
 		pub fn is_miner_free(miner_node_id: &BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) -> bool {
-			match MinerStates::<T>::get(miner_node_id) {
-				Some(MinerState::Free) => true,
-				_ => false,
-			}
+			MinerStates::<T>::get(miner_node_id) == MinerState::Free
 		}
 
 		/// Unsigned transaction function to update UserProfile
@@ -1713,7 +1631,7 @@ pub mod pallet {
 				}
 			} else {
 				log::error!("❌ Could not acquire lock for updating UserProfile");
-			}
+			};
 		}
 
 	}

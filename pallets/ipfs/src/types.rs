@@ -21,7 +21,7 @@ pub type FileHash = BoundedVec<u8, ConstU32<MAX_FILE_HASH_LENGTH>>;
 pub type FileName = BoundedVec<u8, ConstU32<MAX_FILE_NAME_LENGTH>>;
 
 // This will store info related storage request
-#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen)]
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
 pub struct StorageRequest<AccountId, BlockNumberFor> {
     pub total_replicas: u32,
     pub owner: AccountId,
@@ -47,6 +47,12 @@ pub struct MinerPinRequest<BlockNumber> {
 pub enum MinerState {
     Free,
     Locked
+}
+
+impl Default for MinerState {
+    fn default() -> Self {
+        MinerState::Free
+    }
 }
 
 #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
@@ -110,12 +116,28 @@ pub struct UserFile {
 pub struct UpdateUserProfilePayload<T: Config> {
     pub owner: T::AccountId,
     pub cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
-    pub public: <T as pallet::Config>::AuthorityId,
+    pub public: T::Public,
     pub _marker: PhantomData<T>,
 }
 
 // Implement SignedPayload for UpdateUserProfilePayload
 impl<T: Config> SignedPayload<T> for UpdateUserProfilePayload<T> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
+}
+
+
+/// Payload for updating UserProfile
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
+pub struct MinerLockPayload<T: Config> {
+    pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub public: T::Public,
+    pub _marker: PhantomData<T>,
+}
+
+// Implement SignedPayload for MinerLockPayload
+impl<T: Config> SignedPayload<T> for MinerLockPayload<T> {
     fn public(&self) -> T::Public {
         self.public.clone()
     }

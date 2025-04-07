@@ -92,6 +92,8 @@ pub mod pallet {
 	use ipfs_pallet::MAX_FILE_HASH_LENGTH;
 	use ipfs_pallet::MinerPinRequest;
 	use sp_std::collections::btree_map::BTreeMap;
+	use ipfs_pallet::StorageRequest;
+	use ipfs_pallet::UserProfile;
 
 	const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
 
@@ -218,7 +220,8 @@ pub mod pallet {
 		MetricsNotFound,
 		InvalidJson,
 		InvalidCid,
-		StorageOverflow
+		StorageOverflow,
+		IpfsError
 	}
 
 	#[pallet::validate_unsigned]
@@ -1637,15 +1640,6 @@ pub mod pallet {
 			BlockNumbers::<T>::remove(&node_id);
 		}
 
-		use sp_std::vec::Vec;
-		use frame_support::{dispatch::DispatchError, traits::Get};
-		use sp_runtime::offchain::http;
-		use sp_std::{str, collections::btree_map::BTreeMap};
-		use serde_json::Value;
-		use codec::{Encode, Decode};
-		use frame_support::BoundedVec;
-		
-		impl<T: Config> Pallet<T> {
 			pub fn handle_request_assignment(
 				node_id: Vec<u8>,
 				node_info: NodeInfo<BlockNumberFor<T>, T::AccountId>,
@@ -1667,7 +1661,7 @@ pub mod pallet {
 					let mut all_new_storage_requests = Vec::new();
 					for initial_request in initial_storage_requests {
 						// The file_hash is now a CID pointing to a JSON array of files
-						let cid_str = str::from_utf8(&initial_request.file_hash).map_err(|_| Error::<T>::InvalidCid)?;
+						let cid_str = sp_std::str::from_utf8(&initial_request.file_hash).map_err(|_| Error::<T>::InvalidCid)?;
 		
 						// Fetch the content from IPFS
 						let content = IpfsPallet::<T>::fetch_ipfs_content(cid_str).map_err(|e| {
@@ -1801,7 +1795,7 @@ pub mod pallet {
 										let existing_cid = MinerProfile::<T>::get(&miner_node_id);
 		
 										let json_content = if !existing_cid.is_empty() {
-											let cid_str = str::from_utf8(&existing_cid).map_err(|_| Error::<T>::InvalidCid)?;
+											let cid_str = sp_std::str::from_utf8(&existing_cid).map_err(|_| Error::<T>::InvalidCid)?;
 											match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
 												Ok(content) => {
 													let existing_data: Value = serde_json::from_slice(&content)
@@ -1858,7 +1852,7 @@ pub mod pallet {
 					// Update UserProfile by appending new requests to existing content
 					let existing_user_cid = UserProfile::<T>::get(&owner);
 					let updated_user_json = if !existing_user_cid.is_empty() {
-						let cid_str = str::from_utf8(&existing_user_cid).map_err(|_| Error::<T>::InvalidCid)?;
+						let cid_str = sp_std::str::from_utf8(&existing_user_cid).map_err(|_| Error::<T>::InvalidCid)?;
 						match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
 							Ok(content) => {
 								let existing_data: Value = serde_json::from_slice(&content)
@@ -1898,9 +1892,9 @@ pub mod pallet {
 
 					match IpfsPallet::<T>::pin_file_to_ipfs(&updated_user_json) {
 						Ok(new_user_cid) => {
-							let new_user_cid_bounded = BoundedVec::try_from(new_user_cid.into_bytes())
+							let new_user_cid_bounded = BoundedVec::try_from(new_user_cid.clone().into_bytes())
 								.map_err(|_| Error::<T>::StorageOverflow)?;
-							IpfsPallet::<T>::call_update_user_profile(&owner, new_user_cid_bounded);
+							IpfsPallet::<T>::call_update_user_profile(owner.clone(), new_user_cid_bounded);
 							log::info!("Updated UserProfile for owner {:?} with CID: {}", owner, new_user_cid);
 						}
 						Err(e) => log::error!("Failed to update UserProfile CID: {:?}", e),
@@ -1908,6 +1902,6 @@ pub mod pallet {
 				}
 				Ok(())
 			}
-		}
+		
 	}
 }

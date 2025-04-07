@@ -91,9 +91,9 @@ pub mod pallet {
     use frame_support::traits::ExistenceRequirement;
     use pallet_compute::ComputeRequestStatus;
     use sp_runtime::traits::Zero;
-    use ipfs_pallet_new::FileInput;
+    use ipfs_pallet::FileInput;
     use sp_core::U256;
-    use ipfs_pallet_new::FileHash;
+    use ipfs_pallet::FileHash;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -124,7 +124,7 @@ pub mod pallet {
     pub trait Config: frame_system::Config + 
                     pallet_registration::Config + 
                     pallet_credits::Config + 
-                    ipfs_pallet_new::Config +
+                    ipfs_pallet::Config +
                     pallet_balances::Config + 
                     pallet_notifications::Config +
                     pallet_compute::Config +
@@ -681,10 +681,10 @@ pub mod pallet {
 
 
         //     // Get storage request by file hash
-        //     let requested_storage = ipfs_pallet_new::Pallet::<T>::get_storage_request_by_hash(owner.clone(), encoded_file_hash.clone());
+        //     let requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_by_hash(owner.clone(), encoded_file_hash.clone());
         //     ensure!(requested_storage.is_some(), Error::<T>::StorageRequestNotFound);
 
-        //     let processed_hash = ipfs_pallet_new::Pallet::<T>::process_unpin_request(owner.clone(), file_hash.to_vec())?;
+        //     let processed_hash = ipfs_pallet::Pallet::<T>::process_unpin_request(owner.clone(), file_hash.to_vec())?;
 
         //     // Emit the event for unpin request
         //     Self::deposit_event(Event::UnpinRequestAdded {
@@ -1253,14 +1253,14 @@ pub mod pallet {
 
         fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
             // Get all users who requested storage
-            let all_users_who_requested_storage = ipfs_pallet_new::Pallet::<T>::get_storage_request_users();
+            let all_users_who_requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_users();
             for user in all_users_who_requested_storage {
                 // Check if the time difference is greater than 1 hour
                 let last_charged_at = StorageLastChargedAt::<T>::get(user.clone());
                 let block_difference = current_block.saturating_sub(last_charged_at);
                 if block_difference > T::BlocksPerHour::get().into() {
                     // Variables to track total file size and fulfilled requests for updating
-                    let total_file_size_in_bs: u128 = ipfs_pallet_new::Pallet::<T>::user_total_files_size(&user).unwrap_or(0);
+                    let total_file_size_in_bs: u128 = ipfs_pallet::Pallet::<T>::user_total_files_size(&user).unwrap_or(0);
             
                     // Skip if no files to charge
                     if total_file_size_in_bs == 0 {
@@ -1309,7 +1309,7 @@ pub mod pallet {
                         } else {
     
                             // remove user storage request and unpin
-                            let _ = ipfs_pallet_new::Pallet::<T>::clear_user_storage_and_add_to_unpin_requests(user.clone());
+                            let _ = ipfs_pallet::Pallet::<T>::clear_user_storage_and_add_to_unpin_requests(user.clone());
 
                             // request to delete all backups of user
                             Self::move_user_to_backup_delete_requests(&user);
@@ -1439,7 +1439,7 @@ pub mod pallet {
             miner_ids: Option<Vec<Vec<u8>>>
         ) -> DispatchResult {
             
-            ipfs_pallet_new::Pallet::<T>::process_storage_request(
+            ipfs_pallet::Pallet::<T>::process_storage_request(
                 owner.clone(), 
                 file_inputs.to_vec(),
                 miner_ids.clone()
