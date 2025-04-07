@@ -62,7 +62,6 @@ pub mod crypto {
 	}
 }
 
-
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
@@ -201,6 +200,7 @@ pub mod pallet {
 		StorageRequestNotFound,
 		OwnerNotFound,
 		FileAlreadyRequestedByUser,
+		InvalidInput,
 	}
 
 	#[pallet::call]
@@ -508,7 +508,7 @@ pub mod pallet {
 	}
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {		
 		fn offchain_worker(_block_number: BlockNumberFor<T>) {
 			let current_block = _block_number.saturated_into::<u32>();
 			if current_block % T::MinerIPFSCHeckInterval::get() == 0 {
@@ -842,7 +842,7 @@ pub mod pallet {
 		// Retrieves the storage request by file hash
 		pub fn get_storage_request_by_file_hash(encoded_hash: FileHash) -> Option<StorageRequest<T::AccountId, BlockNumberFor<T>>> {
 			// Iterate over all entries in `RequestedPin` storage double map
-			for (owner, file_hash, storage_request_opt) in RequestedPin::<T>::iter() {
+			for (_owner, file_hash, storage_request_opt) in RequestedPin::<T>::iter() {
 				// Check if the current file_hash matches the encoded_hash
 				if file_hash == encoded_hash {
 					if let Some(storage_request) = storage_request_opt {

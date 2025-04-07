@@ -32,6 +32,7 @@ sp-runtime = { default-features = false, workspace = true }
 serde_json = { version = "1.0.127", default-features = false }
 sp-io = { default-features = false, workspace = true }
 sp-core = { default-features = false, workspace = true }
+ipfs-pallet-new = { workspace = true, default-features = false }
 
 [dev-dependencies]
 sp-core = { default-features = false, workspace = true }
@@ -54,7 +55,8 @@ std = [
 	"sp-runtime/std",
 	"serde_json/std",
 	"sp-io/std",
-	"sp-core/std"
+	"sp-core/std",
+	"ipfs-pallet-new/std"
 ]
 runtime-benchmarks = [
 	"frame-benchmarking/runtime-benchmarks",

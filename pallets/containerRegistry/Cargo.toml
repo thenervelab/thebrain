@@ -25,6 +25,7 @@ frame-system.workspace = true
 sp-std = { default-features = false, workspace = true }
 pallet-marketplace = { workspace = true, default-features = false }
 log = { version = "0.4.22", default-features = false }
+ipfs-pallet-new = { workspace = true, default-features = false }
 
 [dev-dependencies]
 sp-core = { default-features = true, workspace = true }
@@ -41,7 +42,8 @@ std = [
 	"scale-info/std",
 	"sp-std/std",
 	"pallet-marketplace/std",
-	"log/std"
+	"log/std",
+	"ipfs-pallet-new/std"
 ]
 runtime-benchmarks = [
 	"frame-benchmarking/runtime-benchmarks",

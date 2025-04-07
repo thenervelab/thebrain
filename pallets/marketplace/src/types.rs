@@ -60,12 +60,6 @@ pub struct Plan<Hash> {
     pub name: Vec<u8>,
 }
 
-#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
-pub struct FileInput {
-    pub file_hash: Vec<u8>,
-    pub file_name: Vec<u8>,
-}
-
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo)]
 pub struct ImageDetails {
     pub url: Vec<u8>,

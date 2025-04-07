@@ -109,6 +109,7 @@ pub struct UserFile {
     pub file_name: Vec<u8>,
     pub miner_ids: Vec<Vec<u8>>,
     pub file_size: u32,  // Added file size field
+    pub created_at: u32, // Added created_at field
 }
 
 #[derive( Serialize,Clone,  Deserialize, TypeInfo, Encode, Decode)]

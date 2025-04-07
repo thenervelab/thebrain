@@ -65,11 +65,13 @@ pub mod pallet {
 		pallet_prelude::*,
 	};
 	use pallet_babe::RandomnessFromOneEpochAgo;
-	use pallet_ipfs_pin::Pallet as IpfsPinPallet;
 	use pallet_metagraph::UIDs;
 	use pallet_registration::NodeType;
 	use pallet_registration::Pallet as RegistrationPallet;
+	use ipfs_pallet_new::Pallet as IpfsPallet;
 	use sp_core::offchain::StorageKind;
+	use sp_core::crypto::Ss58Codec;
+	use pallet_utils::Pallet as UtilsPallet;
 	use sp_runtime::{
 		format,
 		offchain::{http, Duration, storage_lock::{StorageLock, BlockAndTime}},
@@ -77,24 +79,32 @@ pub mod pallet {
 		AccountId32,
 	};
 	use sp_std::prelude::*;
-	// use pallet_credits::Pallet as CreditsPallet;
+	use ipfs_pallet_new::FileHash;
+	use ipfs_pallet_new::MinerProfileItem;
+	use serde_json::to_string;
+	use serde_json::Value;
+	use ipfs_pallet_new::AssignmentEnabled;
+	use pallet_registration::NodeInfo;
+	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_rankings::Pallet as RankingsPallet;
+	
+	use ipfs_pallet_new::MinerProfile;
+	use ipfs_pallet_new::MAX_FILE_HASH_LENGTH;
+	use ipfs_pallet_new::MinerPinRequest;
 	use sp_std::collections::btree_map::BTreeMap;
 
 	const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
-	const DUMMY_REQUEST_BODY: &[u8; 78] = b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
-	const MAX_NODES_PER_BLOCK: usize = 20;
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + 
 					  pallet_metagraph::Config + 
 					  pallet_babe::Config + 
-					  pallet_ipfs_pin::Config + 
-					  pallet_marketplace::Config + 
+					  pallet_marketplace::Config +
 					  pallet_timestamp::Config + 
 					  SendTransactionTypes<Call<Self>> + 
 					  frame_system::offchain::SigningTypes +
 					  pallet_credits::Config + 
+					  ipfs_pallet_new::Config + 
 					  pallet_compute::Config +
 					  pallet_balances::Config +
 					  pallet_rankings::Config 
@@ -124,9 +134,6 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type SystemHealthRpcMethod: Get<&'static str>;
-
-		#[pallet::constant]
-		type IPFSBaseUrl: Get<&'static str>;
 
 		#[pallet::constant]
 		type UnregistrationBuffer: Get<u32>;
@@ -209,6 +216,9 @@ pub mod pallet {
 	#[pallet::error]
 	pub enum Error<T> {
 		MetricsNotFound,
+		InvalidJson,
+		InvalidCid,
+		StorageOverflow
 	}
 
 	#[pallet::validate_unsigned]
@@ -290,20 +300,6 @@ pub mod pallet {
 						.propagate(true)
 						.build()
                 },
-				Call::store_offline_status_of_miner { node_id, miner_id, signature: _, block_number } => {
-                    // Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&block_number.encode());
-					data.extend_from_slice(node_id);
-					data.extend_from_slice(miner_id);
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-                    ValidTransaction::with_tag_prefix("ExecutionUnitOffchain")
-                        .priority(TransactionPriority::max_value())
-                        .and_provides(("store_offline_status_of_miner", unique_hash))
-                        .longevity(5)
-                        .propagate(true)
-                        .build()
-                },
                 _ => InvalidTransaction::Call.into(),
             }
         }
@@ -313,19 +309,21 @@ pub mod pallet {
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
 
-            // Self::handle_incorrect_registration(_n);
+            Self::handle_incorrect_registration(_n);
+			Self::purge_nodes_if_deregistered_on_bittensor();
 
             Weight::zero()
         }
 		
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
-			match IpfsPinPallet::<T>::fetch_node_id() {
+			match UtilsPallet::<T>::fetch_node_id() {
 				Ok(node_id) => {
 					let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());    
 					if node_info.is_some() {
 						// Get BABE randomness
 						let random_seed = Self::get_babe_randomness();
-						let node_type = node_info.unwrap().node_type;
+						let node_info = node_info.unwrap();
+						let node_type = node_info.node_type.clone();
 						
 						// update blocktime for uptime tracking
 						let check_intetrval = <T as pallet::Config>::BlockCheckInterval::get();
@@ -348,15 +346,10 @@ pub mod pallet {
 							);
 
 							// Execute tasks with BABE randomness
-							Self::save_hardware_info(node_id.clone(), node_type.clone());
-
-							// commenting purging of nodes bacuse we will have other nodes as well
-							// Self::purge_nodes_if_deregistered_on_bittensor(node_id.clone());							
+							Self::save_hardware_info(node_id.clone(), node_type.clone());				
 							if node_type == NodeType::Validator {
 								Self::process_pending_compute_requests();
-								Self::process_pending_storage_requests(node_id.clone(), block_number);
-								Self::perform_pin_checks_to_miners(node_id.clone());
-								// Self::perform_ping_checks_to_miners(node_id.clone());
+								let _ = Self::handle_request_assignment(node_id, node_info);
 							}
 						} else {
 							log::info!("Skipping execution at block {}", current_block);
@@ -606,41 +599,6 @@ pub mod pallet {
 		
 			Ok(().into())
 		}
-
-		#[pallet::call_index(5)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn store_offline_status_of_miner(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-			miner_id: Vec<u8>,
-			_signature: <T as SigningTypes>::Signature,
-			block_number: BlockNumberFor<T>,
-		) -> DispatchResultWithPostInfo {
-			ensure_none(origin)?; // Ensure the call is unsigned
-		
-			// Create the new OfflineStatus entry
-			let offline_status = OfflineStatus {
-				miner_node_id: miner_id.clone(),
-				reportor_node_id: node_id,
-				at_block: block_number,
-			};
-		
-			// Retrieve the existing downtime status, or initialize an empty vector if it does not exist
-			let mut current_downtime_status = DowntimeStatus::<T>::get();
-		
-			// Add the new OfflineStatus to the list
-			current_downtime_status.push(offline_status);
-		
-			// Store the updated list back in the storage
-			DowntimeStatus::<T>::put(current_downtime_status);
-
-			Self::unregister_and_remove_metrics(miner_id.clone());
-			
-			// Return the result
-			Ok(().into())
-		}
-		
-
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -1044,71 +1002,7 @@ pub mod pallet {
 				log::error!("❌ Could not acquire lock for updating metrics data");
 			};
 		}
-		
-
-		pub fn call_store_offline_status_of_miner(
-			node_id: Vec<u8>,
-			miner_id: Vec<u8>,
-			block_number: BlockNumberFor<T>,
-		) {
-			// Create a unique lock for the operation
-			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-				b"executionunit::store_offline_status_of_miner_lock",
-				LOCK_BLOCK_EXPIRATION,
-				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-			);
-		
-			if let Ok(_guard) = lock.try_lock() {
-				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-		
-				if !signer.can_sign() {
-					log::warn!("No accounts available for signing in signer.");
-					return;
-				}
-		
-				// Prepare and sign the payload
-				let results = signer.send_unsigned_transaction(
-					|account| {
-						StoreOfflineStatusPayload {
-							node_id: node_id.clone(),
-							miner_id: miner_id.clone(),
-							block_number,
-							public: account.public.clone(),
-							_marker: PhantomData,
-						}
-					},
-					|payload, signature| {
-						Call::store_offline_status_of_miner {
-							node_id: payload.node_id,
-							miner_id: payload.miner_id,
-							signature,
-							block_number: payload.block_number,
-						}
-					},
-				);
-		
-				// Process results of the transaction submission
-				for (acc, res) in &results {
-					match res {
-						Ok(()) => log::info!(
-							"[{:?}] Successfully submitted tx for storing offline status of miner",
-							acc.id
-						),
-						Err(e) => log::error!(
-							"[{:?}] Error submitting tx for storing offline status of miner: {:?}",
-							acc.id,
-							e
-						),
-					}
-				}
-			} else {
-				log::error!("❌ Could not acquire lock for storing offline status of miner");
-			};
-		}
-		
-
-		// 
+ 
 		pub fn call_update_block_time(
 			node_id: Vec<u8>,
 			block_number: BlockNumberFor<T>,
@@ -1272,194 +1166,6 @@ pub mod pallet {
 				log::error!("❌ Could not acquire lock for saving hardware info");
 			};
 		}
-		
-		fn fetch_ipfs_file_size(file_hash_vec: Vec<u8>) -> Result<u32, http::Error> {
-		
-			let file_hash = hex::decode(file_hash_vec).map_err(|_| {
-				log::error!("Failed to decode file hash");
-				http::Error::Unknown
-			})?;
-
-			let hash_str = sp_std::str::from_utf8(&file_hash).map_err(|_| {
-				log::error!("Failed to convert hash to string");
-				http::Error::Unknown
-			})?;
-		
-			let url = format!("{}/api/v0/dag/stat?arg={}", T::IPFSBaseUrl::get(), hash_str);
-
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
-			
-			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
-			
-			let pending = request
-				.add_header("Content-Type", "application/json")
-				.deadline(deadline)
-				.send()
-				.map_err(|err| {
-					log::info!("Error making Request: {:?}", err);
-					sp_runtime::offchain::http::Error::IoError
-				})?;
-
-			let response = pending
-				.try_wait(deadline)
-				.map_err(|err| {
-					log::info!("Error getting Response: {:?}", err);
-					sp_runtime::offchain::http::Error::DeadlineReached
-				})??;
-
-			if response.code != 200 {
-				log::info!("Unexpected status code: {}", response.code);
-				return Err(http::Error::Unknown);
-			}
-
-			let body = response.body().collect::<Vec<u8>>();    
-
-			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-				log::error!("IPFS response not valid UTF-8");
-				http::Error::Unknown
-			})?;
-
-			if let Some(size_start) = body_str.find("\"Size\":") {
-				let size_str = &body_str[size_start + 7..];
-				if let Some(size_end) = size_str.find(',') {
-					let size_value = &size_str[..size_end];
-					return size_value.trim().parse::<u32>().map_err(|_| {
-						log::error!("Failed to parse file size");
-						http::Error::Unknown
-					});
-				}
-			}
-		
-			log::error!("Failed to parse IPFS response");
-			Err(http::Error::Unknown)
-		}
-
-		fn fetch_cid_pinned_nodes(cid: &Vec<u8>) -> Result<Vec<Vec<u8>>, http::Error> {
-			let file_hash = hex::decode(cid).map_err(|_| {
-				log::error!("Failed to decode file hash");
-				http::Error::Unknown
-			})?;
-			
-			let hash_str = sp_std::str::from_utf8(&file_hash).map_err(|_| {
-				log::error!("Failed to convert hash to string");
-				http::Error::Unknown
-			})?;
-		
-			let url = format!("{}/api/v0/routing/findprovs?arg={}", T::IPFSBaseUrl::get(), hash_str); // Updated to use the constant
-		
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(8_000));
-			
-			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
-
-			let pending = request
-				.add_header("Content-Type", "application/json")
-				.deadline(deadline)
-				.send()
-				.map_err(|err| {
-					log::info!("Error making Request: {:?}", err);
-					sp_runtime::offchain::http::Error::IoError
-				})?;
-
-			let response = pending
-				.try_wait(deadline)
-				.map_err(|err| {
-					log::info!("Error getting Response: {:?}", err);
-					sp_runtime::offchain::http::Error::DeadlineReached
-				})??;
-
-			if response.code != 200 {
-				log::info!("Unexpected status code: {}", response.code);
-				return Err(http::Error::Unknown);
-			}
-
-			let body = response.body().collect::<Vec<u8>>();
-		
-			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-				http::Error::Unknown
-			})?;
-
-			let json_strings: Vec<&str> = body_str.split('\n').collect(); // Split by newlines
-
-			let mut node_ids = Vec::new();
-		
-			for json_str in json_strings {
-				if json_str.trim().is_empty() {
-					continue; // Skip empty strings
-				}
-		
-				// Parse the JSON response
-				let parsed_response: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-					log::error!("Failed to parse JSON response: {:?}", e);
-					http::Error::Unknown
-				})?;
-		
-				// Extract the node IDs from the JSON response
-				if let Some(responses) = parsed_response["Responses"].as_array() {
-					for response in responses {
-						if let Some(id) = response["ID"].as_str() {
-							node_ids.push(id.as_bytes().to_vec());
-						}
-					}
-				}
-			}
-		
-			if node_ids.is_empty() {
-				log::info!("No nodes found");
-				return Err(http::Error::Unknown);
-			}
-
-			Ok(node_ids)
-		}
-		
-		// Helper function to ping an IPFS node to track uptime
-		fn ping_node(node_id_bytes: Vec<u8>) -> Result<bool, http::Error> {
-			let node_id = sp_std::str::from_utf8(&node_id_bytes).map_err(|_| {
-				log::error!("Failed to convert hash to string");
-				http::Error::Unknown
-			})?;
-			// Update the URL to include the count parameter
-			let url = format!("{}/api/v0/ping?arg={}&count=5", T::IPFSBaseUrl::get(), node_id);
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(15_000));
-
-			// Use POST instead of GET, as ping typically requires a POST request
-			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
-
-			let start_time = sp_io::offchain::timestamp();
-
-			let pending = request
-			.deadline(deadline)
-			.send()
-			.map_err(|err| {
-				log::info!("Error sending ping request: {:?}", err);
-				sp_runtime::offchain::http::Error::IoError
-			})?;
-
-			let response = pending
-			.try_wait(deadline)
-			.map_err(|err| {
-				log::info!("Error waiting for ping response: {:?}", err);
-				sp_runtime::offchain::http::Error::DeadlineReached
-			})??;
-
-			
-			// Check if the response code is 200 (OK)
-			if response.code == 200 {
-				let response_body = response.body().collect::<Vec<u8>>();
-				let body_str = core::str::from_utf8(&response_body).unwrap_or("");
-
-				// Split the response body into lines to count success messages
-				let success_count = body_str.lines().filter(|line| line.contains("\"Success\":true")).count();
-
-				// Check if we have at least 5 successful pings
-				if success_count >= 5 {
-					return Ok(true);
-				} else {
-					return Ok(false);
-				}
-			} else {
-				return Ok(false);
-			}
-		}
 
 		pub fn process_pending_compute_requests() {
 			let active_compute_miners = pallet_registration::Pallet::<T>::get_all_active_compute_miners();
@@ -1568,349 +1274,6 @@ pub mod pallet {
 
 		pub fn get_node_metrics(node_id: Vec<u8>) -> Option<NodeMetricsData> {
 			NodeMetrics::<T>::get(node_id)
-		}
-
-		// Perform health checks and see if the miner is pinning the file / updates the node metrics for miners
-		pub fn perform_pin_checks_to_miners(node_id: Vec<u8>) {
-			let fulfilled_req = IpfsPinPallet::<T>::get_all_fullfilled_requests();
-
-			// For each fulfilled request
-			for request in fulfilled_req {
-				// All active IPFS nodes that have that hash pinned (http req)
-				let ipfs_nodes_who_pinned: Vec<Vec<u8>> = Self::fetch_cid_pinned_nodes(&request.file_hash)
-					.expect("Failed to fetch pinned nodes");
-
-				// All miners who have pinned this file 
-				let request_pinned_by_miners = IpfsPinPallet::<T>::get_pin_requests_by_file_hash(&request.file_hash);
-
-				// Check if the number of IPFS nodes who pinned matches the fulfilled replicas
-				if request_pinned_by_miners.len() != request.total_replicas as usize {
-					if request_pinned_by_miners.len() < request.total_replicas as usize {
-						// Reassign as it is not fulfilled yet
-						let difference = request.total_replicas as i32 - request_pinned_by_miners.len() as i32;
-						let mut updated_req = request.clone();
-
-						// Ensure we do not underflow
-						if updated_req.fullfilled_replicas >= difference as u32 {
-							updated_req.fullfilled_replicas -= difference as u32;
-						} else {
-							updated_req.fullfilled_replicas = 0; // Set to zero if underflow would occur
-						}
-
-						// Update the storage usage request
-						pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(request.owner.clone(), request.file_hash.clone(), Some(updated_req), node_id.clone());
-					}
-				} else {
-					for miner_request in request_pinned_by_miners {
-						let miner_node_id: Vec<u8> = miner_request.miner_node_id;
-
-						match pallet_registration::Pallet::<T>::get_registered_node(miner_node_id.clone()) {
-							Ok(node_info) => {
-								let mut total_pin_checks = 0;
-								let mut successful_pin_checks = 0;
-
-								// Check if ipfs_node_id is present in ipfs_nodes_who_pinned
-								if let Some(ipfs_node_id) = node_info.ipfs_node_id {
-									total_pin_checks += 1;
-
-									if ipfs_nodes_who_pinned.contains(&ipfs_node_id) {
-										// Found pinned the file 
-										successful_pin_checks += 1;
-									} else {
-										// Not found pinned file
-										let mut updated_req = request.clone();
-										if updated_req.fullfilled_replicas > 0 {
-											updated_req.fullfilled_replicas -= 1; // Safely decrement
-										}
-
-										// Update the storage usage request
-										pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(request.owner.clone(), request.file_hash.clone(), Some(updated_req), node_id.clone());
-
-										let mut files_stored_for_miner = pallet_ipfs_pin::Pallet::<T>::get_files_stored(miner_node_id.clone());
-										files_stored_for_miner.retain(|stored_request| {
-											stored_request.file_hash != miner_request.file_hash // Adjust this condition based on your criteria
-										});
-										pallet_ipfs_pin::Pallet::<T>::update_ipfs_request_storage(miner_node_id.clone(), files_stored_for_miner);
-									}
-								} else {
-									log::info!("Node ID {:?} does not have an associated IPFS node ID", sp_std::str::from_utf8(&node_info.node_id).unwrap_or("<Invalid UTF-8>"));
-								}
-
-								// Update node metrics
-								Self::call_update_pin_check_metrics(miner_node_id, total_pin_checks, successful_pin_checks);
-							},
-							Err(err) => {
-								// It is not registered so delete FileRequest and update IPFS request storage
-								let mut updated_req = request.clone();
-								if updated_req.fullfilled_replicas > 0 {
-									updated_req.fullfilled_replicas -= 1; // Safely decrement
-								}
-
-								// Update the storage usage request
-								pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(request.owner.clone(), request.file_hash.clone(), Some(updated_req), node_id.clone());
-
-								let mut files_stored_for_miner = pallet_ipfs_pin::Pallet::<T>::get_files_stored(miner_node_id.clone());
-								files_stored_for_miner.retain(|stored_request| {
-									stored_request.file_hash != miner_request.file_hash // Adjust this condition based on your criteria
-								});
-								pallet_ipfs_pin::Pallet::<T>::update_ipfs_request_storage(miner_node_id.clone(), files_stored_for_miner);
-								log::info!("Failed to get node info: {}", err);
-							},
-						}
-					}
-				}
-			}
-		}
-
-		pub fn perform_ping_checks_to_miners(node_id: Vec<u8>) {
-			let active_miners = pallet_registration::Pallet::<T>::get_all_active_storage_miners();
-
-			// Get last processed index from local storage
-			let storage_key = b"last_processed_miner_index";
-			let last_index: usize = sp_io::offchain::local_storage_get(sp_core::offchain::StorageKind::PERSISTENT, storage_key)
-				.and_then(|v| if v.len() == 8 { Some(u64::from_be_bytes(v.try_into().unwrap()) as usize) } else { None })
-				.unwrap_or(0);
-
-			let miners_to_check = active_miners.iter().skip(last_index).take(MAX_NODES_PER_BLOCK);
-		
-			for miner in miners_to_check {
-				if let Some(ipfs_node_id) = pallet_registration::Pallet::<T>::get_registered_node(miner.node_id.clone()).ok().and_then(|n| n.ipfs_node_id) {
-					match Self::ping_node(ipfs_node_id.clone()) {
-						Ok(is_online) => {
-							if !is_online {
-								let current_block = frame_system::Pallet::<T>::block_number();
-								Self::call_store_offline_status_of_miner(node_id.clone(), miner.node_id.clone(), current_block);
-							}
-						},
-						Err(err) => {
-							log::error!("Error pinging node {}: {:?}", sp_std::str::from_utf8(&miner.node_id).unwrap_or("<Invalid UTF-8>"), err);
-						}
-					}
-				}
-			}
-		
-			// Update last processed index
-			let new_index = last_index + MAX_NODES_PER_BLOCK;
-			if new_index >= active_miners.len() {
-				sp_io::offchain::local_storage_set(sp_core::offchain::StorageKind::PERSISTENT, storage_key, &0u64.to_be_bytes());
-			} else {
-				sp_io::offchain::local_storage_set(sp_core::offchain::StorageKind::PERSISTENT, storage_key, &new_index.to_be_bytes());
-			}
-		}
-
-		pub fn process_pending_storage_requests(node_id: Vec<u8>, block_number: BlockNumberFor<T>) {
-			let active_storage_miners = pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
-			let pending_storage_requests = pallet_ipfs_pin::Pallet::<T>::get_pending_storage_requests();
-
-			// Retrieve the ranked list of nodes
-			let ranked_list = RankingsPallet::<T>::get_ranked_list();
-
-			let mut rank_map: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
-			for ranking in ranked_list.iter() {
-				rank_map.insert(ranking.node_id.clone(), ranking.rank);
-			}
-			
-			// Sort active storage miners by rank
-			let mut sorted_miners: Vec<_> = active_storage_miners
-			.iter()
-			.filter_map(|miner| {
-				if let Some(rank) = rank_map.get(&miner.node_id) {
-					Some((miner, *rank)) // Pair miner with its rank
-				} else {
-					None
-				}
-			})
-			.collect();
-
-			// Sort miners by rank (ascending)
-			sorted_miners.sort_by_key(|(_, rank)| *rank);
-		
-			// Take top 100 miners and shuffle them
-			let mut top_miners: Vec<_> = sorted_miners.into_iter().take(100).collect();
-			
-			// Use block number as a seed for deterministic shuffling
-			let seed = block_number.saturated_into::<u64>();
-			
-			// Deterministic shuffle using a simple algorithm
-			for i in (1..top_miners.len()).rev() {
-				let j = seed.wrapping_mul(i as u64) % (i + 1) as u64;
-				top_miners.swap(i, j as usize);
-			}
-		
-			for storage_request in pending_storage_requests {
-				let file_hash = storage_request.file_hash.clone();								
-				// should not be blacklisted 
-				if !pallet_ipfs_pin::Pallet::<T>::is_file_blacklisted(&file_hash) {
-					// should be an approved request
-					if storage_request.is_approved{
-						// First, try to assign to miners specified in miner_ids
-						let mut assigned = false;
-						if let Some(request_miner_ids) = &storage_request.miner_ids {
-
-							for (miner, _) in top_miners.iter() {
-								// Check if this miner's node_id is in the requested miner_ids
-								if request_miner_ids.iter().any(|id| *id == miner.node_id) {
-									let is_pinned = pallet_ipfs_pin::Pallet::<T>::is_file_already_pinned_by_storage_miner(
-										miner.node_id.clone(), 
-										file_hash.clone() 
-									);
-									if !is_pinned {
-										// Retrieve node metrics to check available storage
-										if let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
-
-											let ipfs_zfs_pool_size = node_metrics.ipfs_zfs_pool_size;
-											let ipfs_storage_max = node_metrics.ipfs_storage_max;
-											if ipfs_zfs_pool_size < (ipfs_storage_max as u128) {
-												// degrade miner 
-												pallet_registration::Pallet::<T>::call_node_status_to_degraded_unsigned(miner.node_id.clone());
-											}else{
-												// Calculate available storage using IPFS metrics
-												let available_storage = ipfs_storage_max.saturating_sub(node_metrics.ipfs_repo_size);
-												// Fetch file size
-												match Self::fetch_ipfs_file_size(file_hash.clone()) {
-													Ok(file_size) => {
-														// Check if miner has enough storage
-														if (file_size as u64) <= available_storage  {
-															
-															pallet_ipfs_pin::Pallet::<T>::store_ipfs_pin_request(
-																storage_request.owner.clone(),
-																file_hash.clone(), 
-																miner.node_id.clone(),
-																file_size
-															);
-															assigned = true;
-															break;
-														} else {
-															log::info!(
-																"Miner {:?} does not have enough storage. Available: {} bytes, Required: {} bytes", 
-																sp_std::str::from_utf8(&miner.node_id).unwrap_or("Unknown"),
-																available_storage,
-																file_size
-															);
-														}
-													},
-													Err(e) => {
-														log::error!("Failed to fetch file size: {:?}", e);
-														continue;
-													}
-												}
-											}
-
-
-										} else {
-											log::warn!(
-												"No metrics found for miner {:?}", 
-												sp_std::str::from_utf8(&miner.node_id).unwrap_or("Unknown")
-											);
-										}
-									}
-								}
-							}
-						}
-						// If not assigned to specified miners, fall back to general assignment
-						if !assigned {
-							for (miner, _) in top_miners.iter() {
-								let is_pinned = pallet_ipfs_pin::Pallet::<T>::is_file_already_pinned_by_storage_miner(
-									miner.node_id.clone(), 
-									file_hash.clone()
-								);										
-								if !is_pinned { 
-									// Retrieve node metrics to check available storage
-									if let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
-										// Calculate available storage
-										let available_storage = node_metrics.total_storage_bytes.saturating_sub(node_metrics.current_storage_bytes);
-
-										// Fetch file size
-										match Self::fetch_ipfs_file_size(file_hash.clone()) {
-											Ok(file_size) => {
-												// Check if miner has enough storage
-												if (file_size as u64) <= available_storage {
-													if let (Some(file_hash_str), Some(miner_id_str)) = (
-														sp_std::str::from_utf8(&file_hash).ok(),
-														sp_std::str::from_utf8(&miner.node_id).ok(),
-													) {
-														log::info!(
-															"Assigning file {:?} to specified miner {:?}. Available storage: {} bytes, File size: {} bytes", 
-															file_hash_str, 
-															miner_id_str,
-															available_storage,
-															file_size
-														);
-													}
-
-													pallet_ipfs_pin::Pallet::<T>::store_ipfs_pin_request(
-														storage_request.owner.clone(),
-														file_hash.clone(), 
-														miner.node_id.clone(),
-														file_size
-													);
-													assigned = true;
-													break;
-												} else {
-													log::info!(
-														"Miner {:?} does not have enough storage. Available: {} bytes, Required: {} bytes", 
-														sp_std::str::from_utf8(&miner.node_id).unwrap_or("Unknown"),
-														available_storage,
-														file_size
-													);
-												}
-											},
-											Err(e) => {
-												log::error!("Failed to fetch file size: {:?}", e);
-												continue;
-											}
-										}
-									} else {
-										log::warn!(
-											"No metrics found for miner {:?}", 
-											sp_std::str::from_utf8(&miner.node_id).unwrap_or("Unknown")
-										);
-									}
-								}
-							}
-						}						
-					}else{
-						// check if file size is less then free space or not 
-						match Self::fetch_ipfs_file_size(file_hash.clone()) {
-							Ok(file_size) => {
-								// since the file size in bytes so convertng
-								let one_gb_into_bytes = 1_073_741_824.0;
-
-								// Get the current price per GB from the marketplace pallet
-								let price_per_gb = pallet_marketplace::Pallet::<T>::get_price_per_gb();
-								
-								// Calculate the file size in GB with ceiling rounding
-								let file_size_in_gb = file_size as f64 / one_gb_into_bytes;
-
-								// Calculate the total cost for storing the file
-								// Round up to the nearest whole number of GBs
-								let rounded_gbs = ((file_size_in_gb).floor() as u128) + 1;
-								let storage_cost = price_per_gb * rounded_gbs;                    
-
-								let free_credits = pallet_credits::Pallet::<T>::free_credits(storage_request.owner.clone());
-												
-								if free_credits >= storage_cost {									
-									// approve the stauts of the request and update storage 
-									let mut updated_req = storage_request.clone();
-									updated_req.is_approved = true;
-									updated_req.last_charged_at = block_number;
-
-									let _ = pallet_marketplace::Pallet::<T>::call_storage_request_approval_charging(storage_request.owner.clone(), storage_cost);
-									
-									pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(updated_req.owner.clone(), file_hash.clone(), Some(updated_req) , node_id.clone());
-								}else{
-									// not enough space left delete storage
-									pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(storage_request.owner.clone(), file_hash.clone(), None , node_id.clone());
-								}
-							},
-							Err(e) => {
-								log::error!("Failed to fetch file size: {:?}", e);
-								continue;
-							}
-						}
-					}
-				}
-			}
 		}
 
 		/// Fetch the storage proof time in milliseconds
@@ -2139,126 +1502,106 @@ pub mod pallet {
 			Some((uptime_minutes, total_uptime_minutes, consecutive_reliable_days, recent_downtime_hours))
 		}
 
-		// // Helper function purge miners if deregistered on bittensor 
-		// pub fn purge_nodes_if_deregistered_on_bittensor(node_id: Vec<u8>){
-		// 	// get all nodes 
-		// 	let active_stroage_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
+		// Helper function purge miners if deregistered on bittensor 
+		pub fn purge_nodes_if_deregistered_on_bittensor(){
+			// get all nodes 
+			let active_stroage_miners = pallet_registration::Pallet::<T>::get_all_coldkey_active_nodes();
 
-		// 	// Retrieve UIDs from storage and match miners with uids
-		// 	// Iterate through all active miners
-		// 	for miner in active_stroage_miners {
-		// 		// Check if the miner's owner is in UIDs
-		// 		let is_registered = Self::is_owner_in_uids(&miner.owner);
+			// Retrieve UIDs from storage and match miners with uids
+			// Iterate through all active miners
+			for miner in active_stroage_miners {
+				// Check if the miner's owner is in UIDs
+				let is_registered = Self::is_owner_in_uids(&miner.owner);
 
-		// 		// if not ,change status to degraded 
-		// 		// perform unpin and assign to other miners 		
-		// 		if !is_registered {
-
-		// 			// get all files pinned by this miner
-		// 			let files_pinned_by_miners = pallet_ipfs_pin::Pallet::<T>::get_files_stored(miner.node_id.clone());
-					
-		// 			// degrading by calling unisgned tx
-		// 			pallet_registration::Pallet::<T>::call_node_status_to_degraded_unsigned(miner.node_id);
-
-		// 			// all storage requests fullfilled replicas should be -1 and then update storage;
-		// 			for files_pinned in files_pinned_by_miners {
-		// 				// Attempt to get the storage request
-		// 				if let Some(mut req) = pallet_ipfs_pin::Pallet::<T>::get_storage_request_by_hash(files_pinned.file_hash.clone()) {
-		// 					// Update the fulfilled replicas count
-		// 					req.fullfilled_replicas = req.fullfilled_replicas.saturating_sub(1); // Ensure no underflow
-							
-		// 					// Update the storage usage request
-		// 					pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(
-		// 						files_pinned.file_hash.clone(),
-		// 						Some(req),
-		// 						node_id.clone(),
-		// 					);
-		// 				}
-		// 			}
-		// 		}
-		// 	}
-		// }
+				// update storage request and remove files
+				if !is_registered {
+					// unRegister and check if storage miner than unpin and update storage 
+					let _ = ipfs_pallet_new::Pallet::<T>::clear_miner_profile(miner.node_id);
+				}
+			}
+		}
 
 		pub fn is_owner_in_uids(owner: &T::AccountId) -> bool {
-			// Convert `owner` to bytes
-			let account_bytes = owner.encode(); // This gives a Vec<u8>
+			if let Ok(account_bytes) = owner.encode().try_into() {
+				// Retrieve UIDs from storage
+				let uids= UIDs::<T>::get();
+				let account = AccountId32::new(account_bytes);
+				let owner_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default()).to_ss58check();
+				// Check if validator is in UIDs or matches the keep address
+				let is_in_uids = uids.iter().any(|uid| uid.substrate_address.to_ss58check() == owner_ss58);
+				return is_in_uids
+			}
+			false
+		}
 
-			// Attempt to create AccountId32 from bytes
-			let owner_account32 = match AccountId32::try_from(account_bytes.as_slice()) {
-				Ok(account) => account,
-				Err(_) => {
-					log::error!("Failed to convert AccountId to AccountId32");
-					return false;
+		/// Get randomness from BABE
+		fn get_babe_randomness() -> [u8; 32] {
+			// Get current subject for randomness
+			let subject = sp_io::hashing::blake2_256(b"babe_randomness");
+			
+			// Try to get randomness from one epoch ago
+			let (random_hash, _block_number) = <RandomnessFromOneEpochAgo<T> as Randomness<T::Hash, BlockNumberFor<T>>>::random(&subject);
+			let random_seed = random_hash.as_ref();
+			
+			let mut bytes = [0u8; 32];
+			bytes.copy_from_slice(&random_seed[..32]);
+			bytes
+		}
+
+		fn handle_incorrect_registration(current_block_number: BlockNumberFor<T>) {
+			let unregistration_period: BlockNumberFor<T> = T::UnregistrationBuffer::get().into();
+			let min_period = 50u32;
+			let max_period = 70u32;
+			let range = max_period - min_period;
+		
+			// Use block number to create a pseudo-random offset
+			let pseudo_random_offset = (current_block_number % range.into()) + min_period.into();
+			let adjusted_period = unregistration_period + pseudo_random_offset - (range / 2).into();
+		
+			// Check if current block matches the adjusted period
+			if current_block_number % adjusted_period == 0u32.into() {
+				let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
+				for miner in active_miners {
+					// Check if the miner has been registered for more than 36 blocks
+					if current_block_number - miner.registered_at > 36u32.into() {
+					
+						let blocks_online = Self::block_numbers(miner.node_id.clone());
+							
+						if let Some(blocks) = blocks_online {
+							if let Some(&last_block) = blocks.last() {
+								let difference = current_block_number - last_block;
+								// Check if the difference exceeds 500 for deregistration
+								if difference > 500u32.into() {
+									// Call your deregistration logic here
+									Self::unregister_and_remove_metrics(miner.node_id.clone());
+								}
+							}
+						}
+					}
 				}
-			};
-
-			// Retrieve UIDs from storage
-			let uids_vec = UIDs::<T>::get();
-
-			// Check if the owner is present in the UIDs
-			uids_vec.iter().any(|uid| uid.substrate_address == owner_account32)
+			}
 		}
 
-    /// Get randomness from BABE
-    fn get_babe_randomness() -> [u8; 32] {
-        // Get current subject for randomness
-        let subject = sp_io::hashing::blake2_256(b"babe_randomness");
-        
-        // Try to get randomness from one epoch ago
-        let (random_hash, _block_number) = <RandomnessFromOneEpochAgo<T> as Randomness<T::Hash, BlockNumberFor<T>>>::random(&subject);
-        let random_seed = random_hash.as_ref();
-        
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(&random_seed[..32]);
-        bytes
-    }
+		/// Determine if we should execute offchain worker tasks based on BABE randomness
+		fn should_execute_offchain(current_block: u32, _random_seed: [u8; 32]) -> bool {
+			// Get last execution time
+			let last_run = sp_io::offchain::local_storage_get(
+				sp_core::offchain::StorageKind::PERSISTENT,
+				STORAGE_KEY,
+			);
 
-	// fn handle_incorrect_registration(current_block_number: BlockNumberFor<T>) {
-	// 	let unregistration_period: BlockNumberFor<T> = T::UnregistrationBuffer::get().into();
-	// 	let min_period = 50u32;
-	// 	let max_period = 70u32;
-	// 	let range = max_period - min_period;
-	
-	// 	// Use block number to create a pseudo-random offset
-	// 	let pseudo_random_offset = (current_block_number % range.into()) + min_period.into();
-	// 	let adjusted_period = unregistration_period + pseudo_random_offset - (range / 2).into();
-	
-	// 	// Check if current block matches the adjusted period
-	// 	if current_block_number % adjusted_period == 0u32.into() {
-	// 		let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
-	// 		for miner in active_miners {
-	// 			// Check if the miner has been registered for more than 36 blocks
-	// 			if current_block_number - miner.registered_at > 36u32.into() {
-	// 				let metrics = Self::get_node_metrics(miner.node_id.clone());
-	// 				if metrics.is_none() {
-	// 					// If node metrics are not there, delete it
-	// 					Self::unregister_and_remove_metrics(miner.node_id.clone());
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	// }
+			match last_run {
+				Some(last_block_bytes) => {
+					let last_block = u32::from_be_bytes(last_block_bytes.try_into().unwrap_or([0; 4]));
+					let blocks_passed = current_block.saturating_sub(last_block);
 
-	/// Determine if we should execute offchain worker tasks based on BABE randomness
-	fn should_execute_offchain(current_block: u32, _random_seed: [u8; 32]) -> bool {
-		// Get last execution time
-		let last_run = sp_io::offchain::local_storage_get(
-			sp_core::offchain::StorageKind::PERSISTENT,
-			STORAGE_KEY,
-		);
-
-		match last_run {
-			Some(last_block_bytes) => {
-				let last_block = u32::from_be_bytes(last_block_bytes.try_into().unwrap_or([0; 4]));
-				let blocks_passed = current_block.saturating_sub(last_block);
-
-				// Minimum gap of 7 blocks
-				// Maximum gap of 15 blocks
-				blocks_passed >= 7 && blocks_passed <= 15 // Execute if within range
-			},
-			None => true, // If there's no last run, allow execution
+					// Minimum gap of 7 blocks
+					// Maximum gap of 15 blocks
+					blocks_passed >= 7 && blocks_passed <= 15 // Execute if within range
+				},
+				None => true, // If there's no last run, allow execution
+			}
 		}
-	}
 
 		/// Get node metrics for multiple node IDs
 		pub fn get_node_metrics_batch(node_ids: Vec<Vec<u8>>) -> Vec<Option<NodeMetricsData>> {
@@ -2285,35 +1628,187 @@ pub mod pallet {
 			// Check if the miner is a StorageMiner
 			if let Some(miner) = node_info {
 				if miner.node_type == NodeType::StorageMiner {
-					// get all files pinned by this miner
-					let files_pinned_by_miners = pallet_ipfs_pin::Pallet::<T>::get_files_stored(miner.node_id.clone());
-					
 					// degrading by calling unsigned tx
 					pallet_registration::Pallet::<T>::call_node_status_to_degraded_unsigned(miner.node_id);
-
-					// all storage requests fullfilled replicas should be -1 and then update storage;
-					for files_pinned in files_pinned_by_miners {
-						// Attempt to get the storage request
-						if let Some(mut req) = pallet_ipfs_pin::Pallet::<T>::get_storage_request_by_file_hash(files_pinned.file_hash.clone()) {
-							// Update the fulfilled replicas count
-							req.fullfilled_replicas = req.fullfilled_replicas.saturating_sub(1); // Ensure no underflow
-							
-							// Update the storage usage request
-							pallet_ipfs_pin::Pallet::<T>::update_storage_usage_request(
-								req.owner.clone(),
-								files_pinned.file_hash.clone(),
-								Some(req),
-								node_id.clone(),
-							);
-	 					    // Remove the entry from FileStored for this miner
-							pallet_ipfs_pin::Pallet::<T>::remove_file_stored(&node_id);
-						}
-					}
 				}
 			}
 			pallet_registration::Pallet::<T>::do_unregister_node(node_id.clone());
 			NodeMetrics::<T>::remove(&node_id);
 			BlockNumbers::<T>::remove(&node_id);
+		}
+
+
+		pub fn handle_request_assignment(
+			node_id: Vec<u8>,
+			node_info: NodeInfo<BlockNumberFor<T>, T::AccountId>,
+		) -> Result<(), DispatchError> {
+			if AssignmentEnabled::<T>::get() {
+				let storage_requests = IpfsPallet::<T>::get_unassigned_storage_requests_for_validator(node_info.owner.clone());
+				let active_storage_miners = pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
+				let ranked_list = RankingsPallet::<T>::get_ranked_list();
+	
+				let mut rank_map: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+				for ranking in ranked_list.iter() {
+					rank_map.insert(ranking.node_id.clone(), ranking.rank);
+				}
+	
+				for storage_request in storage_requests {
+					let mut available_miners: Vec<_> = active_storage_miners
+						.iter()
+						.filter_map(|miner| {
+							if let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
+								let ipfs_storage_max = node_metrics.ipfs_storage_max;
+								let available_storage = ipfs_storage_max.saturating_sub(node_metrics.ipfs_repo_size);
+								let storage_threshold = ipfs_storage_max.saturating_mul(10) / 100;
+	
+								if available_storage >= storage_threshold {
+									if let Some(rank) = rank_map.get(&miner.node_id) {
+										Some((miner.clone(), *rank, available_storage))
+									} else {
+										None
+									}
+								} else {
+									None
+								}
+							} else {
+								None
+							}
+						})
+						.collect();
+	
+					available_miners.sort_by(|a, b| 
+						a.1.cmp(&b.1).then(b.2.cmp(&a.2))
+					);
+	
+					let mut selected_miners = Vec::new();
+					let num_replicas = storage_request.total_replicas.min(available_miners.len() as u32);
+	
+					if let Some(requested_miners) = &storage_request.miner_ids {
+						for requested_miner_id in requested_miners.iter() {
+							if selected_miners.len() >= num_replicas as usize {
+								break;
+							}
+							if let Some((miner, rank, available_storage)) = available_miners.iter().find(|m| m.0.node_id == requested_miner_id.clone().to_vec()) {
+								selected_miners.push((miner.clone(), *rank, *available_storage));
+							}
+						}
+					}
+	
+					if selected_miners.len() < num_replicas as usize {
+						let remaining_needed = num_replicas as usize - selected_miners.len();
+						let mut top_miners: Vec<_> = available_miners
+							.into_iter()
+							.filter(|m| !selected_miners.iter().any(|sm| sm.0.node_id == m.0.node_id))
+							.take(remaining_needed)
+							.collect();
+	
+						let seed = frame_system::Pallet::<T>::block_number().saturated_into::<u64>();
+						for i in (1..top_miners.len()).rev() {
+							let j = seed.wrapping_mul(i as u64) % (i + 1) as u64;
+							top_miners.swap(i, j as usize);
+						}
+						selected_miners.extend(top_miners);
+					}
+	
+					if selected_miners.len() == storage_request.total_replicas as usize {
+						match IpfsPallet::<T>::fetch_ipfs_file_size(storage_request.file_hash.clone().to_vec()) {
+							Ok(file_size) => {
+								log::info!("File size: {}", file_size);
+								log::info!(
+									"Selected {} miners for storage request with file hash {:?}:",
+									selected_miners.len(),
+									storage_request.file_hash
+								);
+	
+								let current_block = frame_system::Pallet::<T>::block_number();
+								let miner_pin_requests: Vec<MinerPinRequest<BlockNumberFor<T>>> = selected_miners
+									.iter()
+									.map(|(miner, _, _)| MinerPinRequest {
+										miner_node_id: BoundedVec::try_from(miner.node_id.clone()).unwrap(),
+										file_hash: storage_request.file_hash.clone(),
+										created_at: current_block,
+										file_size_in_bytes: file_size,
+									})
+									.collect();
+	
+								for pin_request in miner_pin_requests.iter() {
+									let file_hash_vec = pin_request.file_hash.clone().to_vec();
+									log::info!(
+										"Pinning file for Miner Node ID: {:?}, File Hash: {:?}, File Size: {}",
+										pin_request.miner_node_id,
+										file_hash_vec,
+										pin_request.file_size_in_bytes
+									);
+	
+									// Check if CID exists in MinerProfile for this miner
+									let miner_node_id = pin_request.miner_node_id.clone();
+									let existing_cid = MinerProfile::<T>::get(&miner_node_id);
+	
+									let json_content = if !existing_cid.is_empty() {
+										// Fetch existing content from IPFS
+										let binding = existing_cid.to_vec();
+										let cid_str = sp_std::str::from_utf8(&binding).map_err(|_| Error::<T>::InvalidCid)?;
+											match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
+												Ok(content) => {
+													let existing_data: Value = serde_json::from_slice(&content)
+														.map_err(|_| Error::<T>::InvalidJson)?;
+													let mut requests_array = if existing_data.is_array() {
+														existing_data.as_array().unwrap().clone()
+													} else {
+														vec![existing_data]
+													};
+													// Append new pin request
+													let new_request = serde_json::to_value(pin_request)
+														.map_err(|_| Error::<T>::InvalidJson)?;
+													requests_array.push(new_request);
+													to_string(&requests_array).unwrap()
+												}
+												Err(e) => {
+													log::error!("Failed to fetch existing CID content: {:?}", e);
+													// Fallback to creating a new array
+													to_string(&vec![pin_request]).unwrap()
+												}
+											}
+									} else {
+										// No existing CID, create a new array with this request
+										to_string(&vec![pin_request]).unwrap()
+									};
+	
+									// Pin the updated or new content to IPFS
+									match IpfsPallet::<T>::pin_file_to_ipfs(&json_content) {
+										Ok(new_cid) => {
+											let update_hash: BoundedVec<u8, ConstU32<MAX_FILE_HASH_LENGTH>> =
+												BoundedVec::try_from(new_cid.clone().into_bytes())
+													.map_err(|_| Error::<T>::StorageOverflow)?;
+	
+											let miner_profile_items: Vec<MinerProfileItem> = miner_pin_requests
+												.iter()
+												.map(|pin_request| MinerProfileItem {
+													miner_node_id: pin_request.miner_node_id.clone(),
+													cid: update_hash.clone(),
+												})
+												.collect();
+	
+											IpfsPallet::<T>::update_ipfs_request_storage(
+												node_id.clone(),
+												miner_profile_items,
+												storage_request.clone(),
+												file_size as u128,
+											);
+											log::info!("Successfully pinned file with CID: {}", new_cid);
+										}
+										Err(e) => log::error!("Failed to pin file: {:?}", e),
+									}
+								}
+							}
+							Err(e) => {
+								log::error!("Failed to fetch file size: {:?}", e);
+							}
+						}
+					}
+				}
+			}
+			Ok(())
 		}
 	}
 }

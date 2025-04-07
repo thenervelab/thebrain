@@ -52,8 +52,6 @@ pub mod pallet {
     };
     use sp_runtime::traits::Zero;
     use pallet_proxy::Pallet as ProxyPallet;
-    // use frame_support::traits::OnRuntimeUpgrade;
-    // use crate::migrations::MigrateNodeRegistration;
 
     const LOCK_BLOCK_EXPIRATION: u32 = 1;
     const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -98,6 +96,9 @@ pub mod pallet {
         type BlocksPerDay: Get<u32>;     
         
         type ProxyTypeCompatType: ProxyTypeCompat;
+
+        #[pallet::constant]
+        type NodeCooldownPeriod: Get<BlockNumberFor<Self>>;
     }
 
 	#[pallet::pallet]
@@ -128,7 +129,7 @@ pub mod pallet {
     /// Tracks when nodes were deregistered
     #[pallet::storage]
     #[pallet::getter(fn last_deregistered_nodes)]
-    pub type LastDeregisteredNodes<T: Config> = StorageMap<
+    pub type NodeLastDeregisteredAt<T: Config> = StorageMap<
         _, 
         Blake2_128Concat, 
         Vec<u8>,     // Node ID
@@ -234,6 +235,7 @@ pub mod pallet {
         InvalidProxyType,
         AccountNotRegistered,
         NodeNotInUids,
+        NodeCooldownPeriodNotExpired,
     }
 
     #[pallet::validate_unsigned]
@@ -327,6 +329,15 @@ pub mod pallet {
             pay_in_credits: bool,
             ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
             let who = ensure_signed(origin)?;
+
+            // Check cooldown period
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            let last_deregistered = NodeLastDeregisteredAt::<T>::get(&node_id);
+            let cooldown_period = T::NodeCooldownPeriod::get();
+            ensure!(
+                current_block >= last_deregistered + cooldown_period,
+                Error::<T>::NodeCooldownPeriodNotExpired
+            );
 
             // Ensure that if the node type is `StorageMiner`, the `ipfs_node_id` is not `None`
             match node_type {
@@ -471,6 +482,15 @@ pub mod pallet {
             ipfs_node_id: Option<Vec<u8>>) -> DispatchResultWithPostInfo {  
             let who = ensure_signed(origin)?;
 
+            // Check cooldown period
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            let last_deregistered = NodeLastDeregisteredAt::<T>::get(&node_id);
+            let cooldown_period = T::NodeCooldownPeriod::get();
+            ensure!(
+                current_block >= last_deregistered + cooldown_period,
+                Error::<T>::NodeCooldownPeriodNotExpired
+            );
+            
             // Check if the caller is a proxy and retrieve the real (main) account
             let proxy_def = ProxyPallet::<T>::find_proxy(
                 &coldkey, 
@@ -1141,6 +1161,29 @@ pub mod pallet {
                 }
             }
         
+            active_nodes
+        }
+
+        /// Fetch all registered miners whose status is not degraded
+        pub fn get_all_coldkey_active_nodes() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+            // Vector to store filtered node info
+            let mut active_nodes = Vec::new();
+            let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
+
+            // Iterate over all registered nodes in the NodeRegistration storage map
+            for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+                if let Some(node_info) = node_info_opt {
+                    // Check if the node's status is not Degraded
+                    if !matches!(node_info.status, Status::Degraded) {
+                        // Check for uniqueness
+                        if !seen_node_ids.contains(&node_info.node_id) {
+                            seen_node_ids.push(node_info.node_id.clone());
+                            active_nodes.push(node_info);
+                        }
+                    }
+                }
+            }
+
             active_nodes
         }
 

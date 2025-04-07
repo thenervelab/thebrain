@@ -353,7 +353,8 @@ rpc-weight = { path = "client/rpc/weights" }
 evm-tracer = { path = "evm-tracer", default-features = false }
 
 pallet-execution-unit = { path = "pallets/execution-unit", default-features = false }
-pallet-ipfs-pin  = { path = "pallets/ipfs-pin", default-features = false }
+
+ipfs-pallet-new  = { path = "pallets/ipfs-pallet-new", default-features = false }
 pallet-alpha-bridge = { path = "pallets/alpha-bridge", default-features = false }
 pallet-storage-s3 = { path = "pallets/storage-s3", default-features = false }
 pallet-ip = { path = "pallets/ip", default-features = false }

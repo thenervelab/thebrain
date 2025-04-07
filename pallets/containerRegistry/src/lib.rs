@@ -12,7 +12,7 @@ pub mod pallet {
 	use sp_std::{vec, vec::Vec};
     use frame_system::pallet_prelude::*;
     use crate::types::*;
-    use pallet_marketplace::FileInput;
+    use ipfs_pallet_new::FileInput;
 
     #[pallet::pallet]
     #[pallet::without_storage_info]

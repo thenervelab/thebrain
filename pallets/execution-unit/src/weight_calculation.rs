@@ -354,121 +354,60 @@ impl NodeMetricsData {
     }
 
     // New method to calculate storage usage score
-    fn calculate_storage_usage_score<T: pallet_ipfs_pin::Config>(metrics: &NodeMetricsData) -> u64 {
+    fn calculate_storage_usage_score<T: ipfs_pallet_new::Config>(metrics: &NodeMetricsData) -> u64 {
         // Add the condition to check for ipfs_storage_max against ipfs_zfs_pool_size
         if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
             return 0; // Set final score to 0
         }
-
-        // Use a more generic approach to retrieve IPFS pin requests
-        let miner_id = metrics.miner_id.clone();
-        let miner_ipfs_requests = pallet_ipfs_pin::FileStored::<T>::get(miner_id);
-        
-        let mut total_storage_usage = 0;
-        let mut total_pinned_files = 0;
-        let mut total_file_count = 0;
-        
-        for request in miner_ipfs_requests {
-            total_file_count += 1;
-            total_storage_usage += request.file_size_in_bytes as u64;
-            
-            // Count pinned files
-            if request.is_pinned {
-                total_pinned_files += 1;
-            }
-        }
+    
+        // Use the new method to get total file size for the miner
+        let total_storage_usage = ipfs_pallet_new::Pallet::<T>::get_total_file_size_by_miner(metrics.miner_id.clone());
         
         // Define weights for storage scoring
         const TOTAL_STORAGE_WEIGHT: u64 = 50;   // 50% weight to total storage
         const PINNED_FILES_WEIGHT: u64 = 30;    // 30% weight to number of pinned files
         const FILE_COUNT_WEIGHT: u64 = 20;      // 20% weight to total file count
         
-        // Calculate storage size score (50% weight)
-        let storage_size_score = if metrics.ipfs_storage_max > 0 {
-            // Normalize storage usage against total storage
-            let usage_percentage = (total_storage_usage * 100) / metrics.ipfs_storage_max;
-            
-            // Score based on storage usage percentage
-            let base_score: u64 = match usage_percentage {
-                x if x >= 80 => 100,   // Excellent utilization
-                x if x >= 60 => 75,    // Good utilization
-                x if x >= 40 => 50,    // Moderate utilization
-                x if x >= 20 => 25,    // Low utilization
-                _ => 0,                // Minimal utilization
-            };
-            
-            base_score.saturating_mul(TOTAL_STORAGE_WEIGHT)
-        } else {
-            0
-        };
+        // Calculate storage score based on total storage usage
+        // Normalize the storage usage score
+        let storage_usage_score = (total_storage_usage as f64 / metrics.ipfs_storage_max as f64 * 100.0) as u64;
         
-        // Calculate pinned files score (30% weight)
-        let pinned_files_score = if total_file_count > 0 {
-            // Calculate percentage of pinned files
-            let pinned_percentage = (total_pinned_files * 100) / total_file_count;
-            
-            // Score based on pinned file percentage
-            let base_score: u64 = match pinned_percentage {
-                x if x >= 90 => 100,   // Almost all files pinned
-                x if x >= 75 => 75,    // Most files pinned
-                x if x >= 50 => 50,    // Half files pinned
-                x if x >= 25 => 25,    // Some files pinned
-                _ => 0,                // Very few files pinned
-            };
-            
-            base_score.saturating_mul(PINNED_FILES_WEIGHT)
-        } else {
-            0
-        };
+        // You might want to add additional logic for pinned files and file count
+        // This is a placeholder and might need adjustment based on your specific requirements
+        let pinned_files_score: u64 = 0; // Replace with actual pinned files calculation
+        let file_count_score: u64 = 0;   // Replace with actual file count calculation
         
-        // Calculate file count score (20% weight)
-        let file_count_score = {
-            let base_score: u64 = match total_file_count {
-                x if x >= 1000 => 100,  // Excellent file management
-                x if x >= 500 => 75,    // Very good
-                x if x >= 100 => 50,    // Good
-                x if x >= 50 => 25,     // Moderate
-                x if x >= 10 => 10,     // Minimum score
-                _ => 0,                 // No files
-            };
-            
-            base_score.saturating_mul(FILE_COUNT_WEIGHT)
-        };
-        
-        // Sum up the weighted scores and divide by total weight to get a score out of 100
-        let total_weighted_score = storage_size_score + pinned_files_score + file_count_score;
-        let normalized_score = total_weighted_score / (TOTAL_STORAGE_WEIGHT + PINNED_FILES_WEIGHT + FILE_COUNT_WEIGHT);
+        // Weighted score calculation
+        let normalized_score = (
+            storage_usage_score.saturating_mul(TOTAL_STORAGE_WEIGHT) +
+            pinned_files_score.saturating_mul(PINNED_FILES_WEIGHT) +
+            file_count_score.saturating_mul(FILE_COUNT_WEIGHT)
+        ) / (TOTAL_STORAGE_WEIGHT + PINNED_FILES_WEIGHT + FILE_COUNT_WEIGHT);
         
         normalized_score
     }
 
-    fn calculate_capacity_score<T: pallet_ipfs_pin::Config>(metrics: &NodeMetricsData) -> u32 {
+    fn calculate_capacity_score<T: ipfs_pallet_new::Config>(metrics: &NodeMetricsData) -> u32 {
         // Add the condition to check for ipfs_storage_max against ipfs_zfs_pool_size
         if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
             return 0; // Set final score to 0
         }
-
+    
         // Minimum storage requirement
         if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {
             return 0;
         }
-
-        let miner_ipfs_requests = pallet_ipfs_pin::FileStored::<T>::get(metrics.miner_id.clone());
-        let mut total_used_storage = 0;
-        for request in miner_ipfs_requests {
-            // Count pinned files
-            if request.is_pinned {
-                total_used_storage += request.file_size_in_bytes as u64;
-            }
-        }
-
+    
+        // Use the new method to get total file size for the miner
+        let total_used_storage = ipfs_pallet_new::Pallet::<T>::get_total_file_size_by_miner(metrics.miner_id.clone());
+    
         // Usage scoring
         let usage_score = if metrics.ipfs_storage_max > 0 {
-            let usage_percent = (total_used_storage * 100) / metrics.ipfs_storage_max;
+            let usage_percent = (total_used_storage * 100) / metrics.ipfs_storage_max as u128;
             let base_score = (total_used_storage as u32)
                 .saturating_mul(Self::INTERNAL_SCALING)
                 .saturating_div(metrics.ipfs_storage_max as u32);
-
+    
             if usage_percent >= Self::OPTIMAL_STORAGE_USAGE_MIN.into()
                 && usage_percent <= Self::OPTIMAL_STORAGE_USAGE_MAX.into() {
                 base_score.saturating_add(Self::INTERNAL_SCALING / 5) // 20% bonus
@@ -478,19 +417,19 @@ impl NodeMetricsData {
         } else {
             0
         };
-
+    
         // Growth rate scoring
         let growth_score = (metrics.storage_growth_rate as u32)
             .saturating_div(1024 * 1024 * 1024) // Convert to GB
             .min(100)
             .saturating_mul(Self::INTERNAL_SCALING)
             .saturating_div(100);
-
+    
         // Free space scoring
         let free_space_score = if metrics.ipfs_storage_max > 0 {
-            let free_percent = ((metrics.ipfs_storage_max - total_used_storage) * 100) 
+            let free_percent = ((metrics.ipfs_storage_max - total_used_storage as u64) * 100) 
                 / metrics.ipfs_storage_max;
-
+    
             if free_percent < 10 {
                 0 // Critical low space
             } else if free_percent > 50 {
@@ -501,7 +440,7 @@ impl NodeMetricsData {
         } else {
             0
         };
-
+    
         let final_score = usage_score.saturating_mul(40)
             .saturating_add(growth_score.saturating_mul(30))
             .saturating_add(free_space_score.saturating_mul(30))

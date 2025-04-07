@@ -70,13 +70,11 @@ pub mod pallet {
     use pallet_registration::BalanceOf;
     use pallet_registration::Pallet as RegistrationPallet;
     use pallet_registration::NodeType;
-    use pallet_ipfs_pin::FileHash;
     use pallet_credits::Pallet as CreditsPallet;
     use pallet_storage_s3::Pallet as StorageS3Pallet;
     use pallet_utils::SubscriptionId;
     use sp_core::H256;
     use sp_std::{vec, vec::Vec};
-    use pallet_ipfs_pin::StorageRequest;
     use num_traits::float::FloatCore;
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_subaccount::traits::SubAccounts;
@@ -93,7 +91,9 @@ pub mod pallet {
     use frame_support::traits::ExistenceRequirement;
     use pallet_compute::ComputeRequestStatus;
     use sp_runtime::traits::Zero;
+    use ipfs_pallet_new::FileInput;
     use sp_core::U256;
+    use ipfs_pallet_new::FileHash;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -102,6 +102,10 @@ pub mod pallet {
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {    
+
+            // Clear all entries; limit is u32::MAX to ensure we get them all
+            let result = UserRequestsCount::<T>::clear(u32::MAX, None);
+
 
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
@@ -120,7 +124,7 @@ pub mod pallet {
     pub trait Config: frame_system::Config + 
                     pallet_registration::Config + 
                     pallet_credits::Config + 
-                    pallet_ipfs_pin::Config + 
+                    ipfs_pallet_new::Config +
                     pallet_balances::Config + 
                     pallet_notifications::Config +
                     pallet_compute::Config +
@@ -181,6 +185,9 @@ pub mod pallet {
 
         /// The block interval for executing certain pallet operations
         type BlockChargeCheckInterval: Get<u32>;
+
+        #[pallet::constant]
+        type MaxRequestsPerBlock: Get<u32>;
     }
 
 	const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -259,6 +266,10 @@ pub mod pallet {
         T::AccountId, 
         Vec<u64>
     >;
+
+    #[pallet::storage]
+    #[pallet::getter(fn is_storage_operations_enabled)]
+    pub type IsStorageOperationsEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
     // Next batch ID
     #[pallet::storage]
@@ -382,6 +393,7 @@ pub mod pallet {
         SpecificMinerRequestFeeUpdated { fee: BalanceOf<T> },
         BatchDeposited { owner: T::AccountId, batch_id: u64 },   // (owner, batch_id)
         CreditsConsumed { owner: T::AccountId, credits: u128 },
+	    StorageOperationsStatusChanged { enabled: bool },
 	}
 
 	#[pallet::error]
@@ -426,7 +438,19 @@ pub mod pallet {
         InvalidOSDiskImageUrl,
         /// No subscription found for the given user
         NoSubscriptionFound,
+        StorageOperationsDisabled,
+        TooManyRequests
 	}
+    
+	#[pallet::storage]
+	#[pallet::getter(fn user_requests_count)]
+	pub type UserRequestsCount<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		T::AccountId, 
+		u32, 
+		ValueQuery
+	>;
 
     #[pallet::storage]
     #[pallet::getter(fn sudo_key)]
@@ -470,6 +494,14 @@ pub mod pallet {
             // Ensure the caller is signed
             let account_id = ensure_signed(origin)?;
 
+            // Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&account_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			UserRequestsCount::<T>::insert(&account_id, user_requests_count + 1);
+
             // Check if the account is a sub-account, and if so, use the main account
             let main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(account_id.clone()) {
                 Ok(main) => main,
@@ -496,6 +528,11 @@ pub mod pallet {
         ) -> DispatchResult {
             // Ensure the caller is signed
             let account_id = ensure_signed(origin)?;
+
+            // Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&account_id);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
             // Check if the account is a sub-account, and if so, use the main account
             let main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(account_id.clone()) {
@@ -552,6 +589,17 @@ pub mod pallet {
             miner_ids: Option<Vec<Vec<u8>>>
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
+
+            // Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&caller);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+            // Check if storage operations are enabled
+            ensure!(
+                Self::is_storage_operations_enabled(),
+                Error::<T>::StorageOperationsDisabled
+            );
 
             // Check if the StorageMiner node type is disabled
             ensure!(
@@ -610,6 +658,17 @@ pub mod pallet {
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
+            // Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&caller);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+            // Check if storage operations are enabled
+            ensure!(
+                Self::is_storage_operations_enabled(),
+                Error::<T>::StorageOperationsDisabled
+            );
+
             // Check if the account is a sub-account, and if so, use the main account
             let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
                 Ok(main) => main,
@@ -620,12 +679,12 @@ pub mod pallet {
             let file_hash_encoded = hex::encode(file_hash.clone());
             let encoded_file_hash: Vec<u8> = file_hash_encoded.clone().into();
 
+
             // Get storage request by file hash
-            let requested_storage = pallet_ipfs_pin::Pallet::<T>::get_storage_request_by_hash(owner.clone(),encoded_file_hash.clone());
+            let requested_storage = ipfs_pallet_new::Pallet::<T>::get_storage_request_by_hash(owner.clone(), encoded_file_hash.clone());
             ensure!(requested_storage.is_some(), Error::<T>::StorageRequestNotFound);
 
-            // Call the helper function to process the unpin request
-            let processed_hash = pallet_ipfs_pin::Pallet::<T>::process_unpin_request(owner.clone(), file_hash)?;
+            let processed_hash = ipfs_pallet_new::Pallet::<T>::process_unpin_request(owner.clone(), file_hash.to_vec())?;
 
             // Emit the event for unpin request
             Self::deposit_event(Event::UnpinRequestAdded {
@@ -687,6 +746,11 @@ pub mod pallet {
             miner_id: Option<Vec<u8>>
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
+
+            // Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&caller);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
             // Check if a specific miner is requested and charge an additional fee
             if miner_id.is_some() {
@@ -880,6 +944,12 @@ pub mod pallet {
         ) -> DispatchResult {
             // Ensure the caller is an authority
             let authority = ensure_signed(origin)?;
+
+            // Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&authority);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
             CreditsPallet::<T>::ensure_is_authority(&authority)?;
 
             // Update the SpecificMinerRequestFee storage value
@@ -933,6 +1003,24 @@ pub mod pallet {
             // Set the new sudo key in storage
             SudoKey::<T>::put(Some(new_sudo_key)); // Store as Some(value)
     
+            Ok(())
+        }
+
+        #[pallet::call_index(17)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_set_storage_operations(
+            origin: OriginFor<T>,
+            enabled: bool
+        ) -> DispatchResult {
+            // Ensure the origin is a sudo account
+            ensure_root(origin)?;
+
+            // Set the storage operations flag
+            IsStorageOperationsEnabled::<T>::put(enabled);
+
+            // Emit an event (optional, but recommended)
+            Self::deposit_event(Event::StorageOperationsStatusChanged { enabled });
+
             Ok(())
         }
 	}
@@ -1093,32 +1181,6 @@ pub mod pallet {
             Ok(())
         }
 
-        // Add this new helper function
-        fn handle_unpin_of_inactive_subscription(account: &T::AccountId, file_hash_to_unpin: Vec<u8>)  {
-            if let Ok(file_hash) = hex::decode(&file_hash_to_unpin) {
-                let update_unpin_hash: Vec<u8> = file_hash.into();
-                // Mutate the existing file hashes for the account
-                UserFileHashes::<T>::mutate(account, |file_hashes| {
-                    // Remove the specific file hash if it exists
-                    file_hashes.retain(|hash| *hash != update_unpin_hash);
-                });
-
-                // Add the file hash to the registry CID delete request
-                RegistryCidDeleteRequests::<T>::mutate(|cid_delete_requests| {
-                    if !cid_delete_requests.contains(&update_unpin_hash) {
-                        cid_delete_requests.push(update_unpin_hash.clone());
-                    }
-                });
-            }
-
-            let mut unpin_request = pallet_ipfs_pin::Pallet::<T>::unpin_requests();
-            
-            // Add files to unpin
-            unpin_request.push(file_hash_to_unpin);
-            
-            // Update unpin items storage
-            pallet_ipfs_pin::Pallet::<T>::overwrite_unpin_requests(unpin_request);  
-        }
         
         // charging logic for compute
         fn handle_compute_subscription_charging(current_block: BlockNumberFor<T>) {
@@ -1191,30 +1253,15 @@ pub mod pallet {
 
         fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
             // Get all users who requested storage
-            let all_users_who_requested_storage = pallet_ipfs_pin::Pallet::<T>::storage_request_users();
+            let all_users_who_requested_storage = ipfs_pallet_new::Pallet::<T>::get_storage_request_users();
             for user in all_users_who_requested_storage {
                 // Check if the time difference is greater than 1 hour
                 let last_charged_at = StorageLastChargedAt::<T>::get(user.clone());
                 let block_difference = current_block.saturating_sub(last_charged_at);
                 if block_difference > T::BlocksPerHour::get().into() {
-                    // Retrieve all fulfilled storage requests for this user
-                    let fulfilled_requests = pallet_ipfs_pin::Pallet::<T>::get_owner_fulfilled_requests(user.clone());
-
                     // Variables to track total file size and fulfilled requests for updating
-                    let mut total_file_size_in_bs: u128 = 0;
-                    let mut requests_to_update: Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> = Vec::new();
+                    let total_file_size_in_bs: u128 = ipfs_pallet_new::Pallet::<T>::user_total_files_size(&user).unwrap_or(0);
             
-                    // Calculate total file size for requests older than 1 hour
-                    for request in fulfilled_requests {
-                        let block_difference = current_block.saturating_sub(request.last_charged_at);
-                        if block_difference > T::BlocksPerHour::get().into() {
-                            if let Some(file_size_in_bytes) = pallet_ipfs_pin::Pallet::<T>::get_file_size(request.file_hash.clone()) {
-                                total_file_size_in_bs += file_size_in_bytes as u128;
-                                requests_to_update.push(request);
-                            }
-                        }
-                    }
-                
                     // Skip if no files to charge
                     if total_file_size_in_bs == 0 {
                         continue;
@@ -1244,45 +1291,29 @@ pub mod pallet {
                             charge_amount.into(),
                         );
 
-                        // Update last charged block for each request
-                        for mut request in requests_to_update.clone() {
-                            request.last_charged_at = current_block;
-                            // update user subscription last charged at
-                            pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), Some(request));
-                        }
                         let _ = Self::update_storage_last_charged_at(&user);
                     } else {
-                        // Iterate through requests to update
-                        for request in requests_to_update {
-                            // Check if the request has exceeded the storage grace period
-                            let subscription = UserPlanSubscriptions::<T>::get(&user);
-                            if let Some(_subscription) = subscription {
-                                let blocks_per_hour = T::BlocksPerHour::get();
-                                let grace_period_blocks = T::StorageGracePeriod::get();
-                                
-                                // Calculate grace period start after hourly charging
-                                let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
-                                
-                                // Check if the current block is within the grace period
-                                if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
-                                    // Still within grace period
-                                    log::info!(
-                                        "Storage request for user {:?} is in grace period",
-                                        user
-                                    );
-                                } else {
-                                    // Cancel the request after grace period
-                                    pallet_ipfs_pin::Pallet::<T>::update_storage_request(request.owner.clone(), request.file_hash.clone(), None);
-            
-                                    // request to delete all backups of user
-                                    Self::move_user_to_backup_delete_requests(&user);
-            
-                                    // Handle unpinning for inactive subscription
-                                    Self::handle_unpin_of_inactive_subscription(&user, request.file_hash.clone());
+                        let blocks_per_hour = T::BlocksPerHour::get();
+                        let grace_period_blocks = T::StorageGracePeriod::get();
+                        
+                        // Calculate grace period start after hourly charging
+                        let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
+                        
+                        // Check if the current block is within the grace period
+                        if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
+                            // Still within grace period
+                            log::info!(
+                                "Storage request for user {:?} is in grace period",
+                                user
+                            );
+                        } else {
+    
+                            // remove user storage request and unpin
+                            let _ = ipfs_pallet_new::Pallet::<T>::clear_user_storage_and_add_to_unpin_requests(user.clone());
 
-                                    Self::remove_storage_last_charged_at(&user);
-                                }
-                            }
+                            // request to delete all backups of user
+                            Self::move_user_to_backup_delete_requests(&user);
+                            Self::remove_storage_last_charged_at(&user);
                         }
                     }
                 }
@@ -1407,23 +1438,12 @@ pub mod pallet {
             file_inputs: &[FileInput],
             miner_ids: Option<Vec<Vec<u8>>>
         ) -> DispatchResult {
-            // Process each file hash
-            for file_input in file_inputs.iter() {
-                // Call the helper function for each file
-                pallet_ipfs_pin::Pallet::<T>::process_storage_request(
-                    owner.clone(), 
-                    file_input.file_hash.clone(),
-                    file_input.file_name.clone(),
-                    miner_ids.clone()
-                )?;
-
-                // Emit event for each file
-                Self::deposit_event(Event::PinRequested {
-                    who: owner.clone(),
-                    file_hash: file_input.file_hash.clone(),
-                    replicas: 3u32,
-                });
-            }
+            
+            ipfs_pallet_new::Pallet::<T>::process_storage_request(
+                owner.clone(), 
+                file_inputs.to_vec(),
+                miner_ids.clone()
+            )?;
 
             // Add file hashes to user's file hashes
             UserFileHashes::<T>::mutate(owner.clone(), |existing_hashes| {

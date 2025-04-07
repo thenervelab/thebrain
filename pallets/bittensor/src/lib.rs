@@ -40,7 +40,7 @@ pub mod pallet {
     };
     use serde_json::Value;
     use codec::alloc::string::ToString;
-    
+
     #[pallet::config]
     pub trait Config: frame_system::Config + pallet_session::Config 
                       + pallet_registration::Config + pallet_execution_unit::Config 
@@ -186,12 +186,6 @@ pub mod pallet {
                                     if difference > buffer.into() { // Ensure buffer is of the correct type
                                         total_weight -= weight as u32; // Accumulate weight
                                     }
-
-                                    // Check if the difference exceeds 500 for deregistration
-                                    if difference > 500u32.into() {
-                                        // Call your deregistration logic here
-                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
-                                    }
                                 }
                             }
                             // Retrieve node info using the linked node ID
@@ -221,12 +215,6 @@ pub mod pallet {
                                 let difference = current_block_number - last_block;
                                 if difference > buffer.into() { // Ensure buffer is of the correct type
                                     weight = 0; // Accumulate weight
-                                }
-
-                                // Check if the difference exceeds 500 for deregistration
-                                if difference > 500u32.into() {
-                                    // Call your deregistration logic here
-                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
                                 }
                             }
                         }
@@ -310,12 +298,6 @@ pub mod pallet {
                                     if difference > buffer.into() { // Ensure buffer is of the correct type
                                         total_weight -= weight as u32; // Accumulate weight
                                     }
-
-                                    // Check if the difference exceeds 500 for deregistration
-                                    if difference > 500u32.into() {
-                                        // Call your deregistration logic here
-                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
-                                    }
                                 }
                             }                   
                             // Retrieve node info using the linked node ID
@@ -345,12 +327,6 @@ pub mod pallet {
                                 let difference = current_block_number - last_block;
                                 if difference > buffer.into() { // Ensure buffer is of the correct type
                                     weight = 0; // Accumulate weight
-                                }
-
-                                // Check if the difference exceeds 500 for deregistration
-                                if difference > 500u32.into() {
-                                    // Call your deregistration logic here
-                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
                                 }
                             }
                         }
@@ -431,12 +407,6 @@ pub mod pallet {
                                     if difference > buffer.into() { // Ensure buffer is of the correct type
                                         total_weight -= weight as u32; // Accumulate weight
                                     }
-
-                                    // Check if the difference exceeds 500 for deregistration
-                                    if difference > 500u32.into() {
-                                        // Call your deregistration logic here
-                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
-                                    }
                                 }
                             }
 
@@ -467,12 +437,6 @@ pub mod pallet {
                                 let difference = current_block_number - last_block;
                                 if difference > buffer.into() { // Ensure buffer is of the correct type
                                     weight = 0; // Accumulate weight
-                                }
-
-                                // Check if the difference exceeds 500 for deregistration
-                                if difference > 500u32.into() {
-                                    // Call your deregistration logic here
-                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
                                 }
                             }
                         }
@@ -553,12 +517,6 @@ pub mod pallet {
                                     if difference > buffer.into() { // Ensure buffer is of the correct type
                                         total_weight -= weight as u32; // Accumulate weight
                                     }
-
-                                    // Check if the difference exceeds 500 for deregistration
-                                    if difference > 500u32.into() {
-                                        // Call your deregistration logic here
-                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
-                                    }
                                 }
                             }
 
@@ -589,12 +547,6 @@ pub mod pallet {
                                 let difference = current_block_number - last_block;
                                 if difference > buffer.into() { // Ensure buffer is of the correct type
                                     weight = 0; // Accumulate weight
-                                }
-
-                                // Check if the difference exceeds 500 for deregistration
-                                if difference > 500u32.into() {
-                                    // Call your deregistration logic here
-                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
                                 }
                             }
                         }
@@ -675,12 +627,6 @@ pub mod pallet {
                                     if difference > buffer.into() { // Ensure buffer is of the correct type
                                         total_weight -= weight as u32; // Accumulate weight
                                     }
-
-                                    // Check if the difference exceeds 500 for deregistration
-                                    if difference > 500u32.into() {
-                                        // Call your deregistration logic here
-                                        ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
-                                    }
                                 }
                             }
 
@@ -711,12 +657,6 @@ pub mod pallet {
                                 let difference = current_block_number - last_block;
                                 if difference > buffer.into() { // Ensure buffer is of the correct type
                                     weight = 0; // Accumulate weight
-                                }
-
-                                // Check if the difference exceeds 500 for deregistration
-                                if difference > 500u32.into() {
-                                    // Call your deregistration logic here
-                                    ExecutionPallet::<T>::unregister_and_remove_metrics(miner.node_id.clone());
                                 }
                             }
                         }

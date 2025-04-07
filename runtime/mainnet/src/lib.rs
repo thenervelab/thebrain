@@ -90,6 +90,7 @@ use sp_version::RuntimeVersion;
 use static_assertions::const_assert;
 use frame_support::traits::ExistenceRequirement;
 use sp_runtime::SaturatedConversion;
+use sp_runtime::traits::ConstU64;
 
 pub use frame_support::{
 	construct_runtime,
@@ -173,7 +174,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius-mainnet"),
 	impl_name: create_runtime_str!("hippius-mainnet"),
 	authoring_version: 1,
-	spec_version: 9000,
+	spec_version: 9001,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -563,6 +564,7 @@ parameter_types! {
 	// storage and compute grace periods
 	pub const StorageGracePeriod: u32 = 0;
 	pub const ComputeGracePeriod: u32 = 0;
+	pub const MaxRequestsPerBlock: u32 = 15;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -581,6 +583,7 @@ impl pallet_marketplace::Config for Runtime {
 	type BlocksPerHour = BlocksPerHour;
 	type BlockChargeCheckInterval = BlockChargeCheckInterval;
 	type AuthorityId = pallet_marketplace::crypto::TestAuthId;
+	type MaxRequestsPerBlock = MaxRequestsPerBlock;
 }
 
 parameter_types! {
@@ -1104,17 +1107,21 @@ parameter_types! {
 	pub const MinerIPFSCHeckInterval : u32 = 5;
 }
 
-impl pallet_ipfs_pin::Config for Runtime {
+
+
+parameter_types! {
+	pub const MaxStorageRequestsPerBlock: u32 = 10;
+}
+
+impl ipfs_pallet_new::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
-    type WeightInfo = pallet_ipfs_pin::weights::SubstrateWeight<Runtime>;
-    type IpfsBaseUrl = IpfsBaseUrl;
+	type IPFSBaseUrl = IpfsBaseUrl;
 	type GarbageCollectorInterval = GarbageCollectorInterval;
-	type MinerIPFSCHeckInterval = MinerIPFSCHeckInterval;
-	type AuthorityId = pallet_ipfs_pin::crypto::TestAuthId;
+	type AuthorityId = ipfs_pallet_new::crypto::TestAuthId;
 }
 
 parameter_types! {
-    pub const AlphaPalletId: PalletId = PalletId(*b"Alpha123");
+    pub const AlphaPalletId: PalletId = PalletId(*b"Alpha123"); 
 }
 
 impl pallet_alpha_bridge::Config for Runtime {
@@ -1172,6 +1179,7 @@ impl pallet_registration::Config for Runtime {
     type GpuMinerInitialFee = GpuMinerInitialFee;
 	type BlocksPerDay = BlocksPerDay;
 	type ProxyTypeCompatType = ProxyType;
+	type NodeCooldownPeriod = ConstU64<100>;
 }
 
 parameter_types! {
@@ -1327,7 +1335,6 @@ impl pallet_execution_unit::Config for Runtime {
 	type BlockCheckInterval = BlockCheckInterval;
 	type GetReadProofRpcMethod = GetReadProofRpcMethod;
 	type SystemHealthRpcMethod = SystemHealthRpcMethod;
-	type IPFSBaseUrl = IPFSBaseUrl;
 	type AuthorityId = pallet_execution_unit::crypto::TestAuthId;
 	type UnregistrationBuffer = UnregistrationBuffer;
 }
@@ -1696,8 +1703,6 @@ construct_runtime!(
 		BaseFee: pallet_base_fee = 37,
 		HotfixSufficients: pallet_hotfix_sufficients = 38,
 		Proxy: pallet_proxy = 44, 
-
-		IpfsPin : pallet_ipfs_pin=52, 
 		Registration : pallet_registration=53, 
 		ExecutionUnit : pallet_execution_unit=54, 
 		Metagraph : pallet_metagraph=55, 
@@ -1718,7 +1723,8 @@ construct_runtime!(
 		ContainerRegistry: pallet_container_registry = 69, 
 		Storage: pallet_storage_s3 = 72, 
 		AlphaBridge: pallet_alpha_bridge = 73, 
-		PalletIp: pallet_ip = 74 		
+		PalletIp: pallet_ip = 74,
+		IpfsPalletNew: ipfs_pallet_new = 75
 	}
 );
 
@@ -3321,17 +3327,18 @@ impl_runtime_apis! {
 		}
 
 		fn calculate_total_file_size(account: AccountId32) -> u128 {
-			<pallet_ipfs_pin::Pallet<Runtime>>::calculate_total_file_size(&account)
+			<ipfs_pallet_new::Pallet<Runtime>>::user_total_files_size(&account).unwrap_or(0)
 		}
 
 		fn get_user_files(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserFile> {
-			<pallet_ipfs_pin::Pallet<Runtime>>::get_user_files(account)
+			<ipfs_pallet_new::Pallet<Runtime>>::get_user_files(account)
 			.into_iter()
 			.map(|file| rpc_primitives_node_metrics::UserFile {
-				file_hash: file.file_hash.clone(),
-				file_name: file.file_name.clone(),
+				file_hash: file.file_hash.to_vec(),
+				file_name: file.file_name.to_vec(),
 				miner_ids: file.miner_ids.clone(),
 				file_size: file.file_size,
+				created_at: file.created_at,
 			})
 			.collect()
 		}
@@ -3373,7 +3380,7 @@ impl_runtime_apis! {
 		}
 
 		fn total_file_size_fulfilled(account_id: AccountId32) -> u128 {
-			<pallet_ipfs_pin::Pallet<Runtime>>::total_file_size_fulfilled(account_id)
+			<ipfs_pallet_new::Pallet<Runtime>>::user_total_files_size(&account_id).unwrap_or(0)
 		}
 	}
 

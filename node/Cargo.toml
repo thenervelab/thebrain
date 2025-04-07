@@ -84,7 +84,6 @@ pallet-babe = { default-features = false, workspace = true }
 pallet-marketplace = { workspace = true, default-features = false }
 pallet-session = { workspace = true }
 pallet-timestamp = { default-features = false, workspace = true }
-pallet-ipfs-pin = { workspace = true, default-features = false }
 
 pallet-transaction-payment = { workspace = true }
 pallet-transaction-payment-rpc = { workspace = true }
