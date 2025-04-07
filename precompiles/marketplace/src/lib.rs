@@ -76,11 +76,9 @@
 // 	// 	let user_address: H160 = user.into();
 // 	// 	let user_account = Runtime::AddressMapping::into_account_id(user_address);
 
-
 // 	// 	// Get subscription info
 // 	// 	let subscription = MarketplacePallet::<Runtime>::get_user_subscription(user_account, subscription_id)
 // 	// 		.ok_or_else(|| revert("Subscription not found"))?;
-
 
 // 	// 	Ok((
 // 	// 		subscription.id,
@@ -119,12 +117,11 @@
 // 	// 	tier: u8,
 // 	// ) -> EvmResult<(u8, u32, u32, u32, u32, u32)> {
 // 	// 	handle.record_db_read::<Runtime>(100)?;
-		
+
 // 	// 	// Get caller's EVM address
 // 	// 	let caller = handle.context().caller;
 // 	// 	// Convert to Substrate address
 // 	// 	let substrate_account = Runtime::AddressMapping::into_account_id(caller);
-		
 
 // 	// 	log::info!(
 // 	// 		target: "marketplace-precompile",
@@ -230,7 +227,7 @@
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
 
 // 	// 	// Create and dispatch the call
-// 	// 	let call = MarketplaceCall::<Runtime>::purchase_package { 
+// 	// 	let call = MarketplaceCall::<Runtime>::purchase_package {
 // 	// 		tier: package_tier,
 // 	// 		cdn_location_id: None,
 // 	// 		refferal_code: None,
@@ -262,7 +259,7 @@
 // 	// // 		.map_err(|_| revert("Amount overflow"))?;
 
 // 	// // 	// Create the call
-// 	// // 	let call = MarketplaceCall::<Runtime>::purchase_points { 
+// 	// // 	let call = MarketplaceCall::<Runtime>::purchase_points {
 // 	// // 		amount: points_amount,
 // 	// // 	};
 
@@ -296,7 +293,7 @@
 // 	// 	// Get package price to verify sent value
 // 	// 	let package = MarketplacePallet::<Runtime>::get_package(subscription.package.tier)
 // 	// 		.ok_or_else(|| revert("Package not found"))?;
-		
+
 // 	// 	// // Verify sent value matches package price if enabling auto-renewal
 // 	// 	// if enabled && value != package.price_native.into() {
 // 	// 	// 	return Err(revert("Incorrect payment amount"));
@@ -304,7 +301,7 @@
 
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
 // 	// 	// Create the call
-// 	// 	let call = MarketplaceCall::<Runtime>::set_auto_renewal { 
+// 	// 	let call = MarketplaceCall::<Runtime>::set_auto_renewal {
 // 	// 		subscription_id,
 // 	// 		enabled
 // 	// 	};
@@ -331,14 +328,14 @@
 // 	// 	handle.record_cost(0)?;
 
 // 	// 	let caller = handle.context().caller;
-		
+
 // 	// 	// Convert owner Address to AccountId
 // 	// 	let owner_address: H160 = owner.into();
 // 	// 	let owner_account = Runtime::AddressMapping::into_account_id(owner_address);
 
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
 // 	// 	// Create the call
-// 	// 	let call = MarketplaceCall::<Runtime>::storage_request { 
+// 	// 	let call = MarketplaceCall::<Runtime>::storage_request {
 // 	// 		owner: owner_account,
 // 	// 		file_hashes: file_hashes,
 // 	// 		subscription_id: subscription_id,
@@ -367,7 +364,7 @@
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
 
 // 	// 	// Create the call
-// 	// 	let call = MarketplaceCall::<Runtime>::storage_unpin_request { 
+// 	// 	let call = MarketplaceCall::<Runtime>::storage_unpin_request {
 // 	// 		file_hash: file_hash,
 // 	// 	};
 
@@ -422,7 +419,6 @@
 // 	// 	// Convert address to AccountId
 // 	// 	let user_address: H160 = user.into();
 // 	// 	let user_account = Runtime::AddressMapping::into_account_id(user_address);
-
 
 // 	// 	// Get subscription details
 // 	// 	let subscription = MarketplacePallet::<Runtime>::get_user_subscription(
@@ -494,7 +490,7 @@
 // 	// #[precompile::view]
 // 	// fn get_total_referral_rewards(handle: &mut impl PrecompileHandle) -> EvmResult<u128> {
 // 	// 	let total = pallet_marketplace::Pallet::<Runtime>::get_total_referral_rewards();
-// 	// 	// Convert the Balance type to 
+// 	// 	// Convert the Balance type to
 // 	// 	Ok(total.try_into().unwrap_or_default())
 // 	// }
 
@@ -507,9 +503,9 @@
 // 	// ) -> EvmResult<u128> {
 // 	// 	// Convert BoundedBytes to Vec<u8>
 // 	// 	let code: Vec<u8> = referral_code.into();
-		
+
 // 	// 	let rewards = pallet_marketplace::Pallet::<Runtime>::get_referral_code_rewards(code);
-// 	// 	// Convert the Balance type to 
+// 	// 	// Convert the Balance type to
 // 	// 	Ok(rewards.try_into().unwrap_or_default())
 // 	// }
 
@@ -522,7 +518,7 @@
 // 	// ) -> EvmResult<u32> {
 // 	// 	// Convert BoundedBytes to Vec<u8>
 // 	// 	let code: Vec<u8> = referral_code.into();
-		
+
 // 	// 	let count = pallet_marketplace::Pallet::<Runtime>::get_referral_code_usage_count(code);
 // 	// 	Ok(count)
 // 	// }
@@ -533,7 +529,7 @@
 // 	// fn get_pot_balance(handle: &mut impl PrecompileHandle) -> EvmResult<u128> {
 // 	// 	// Get the pallet's balance
 // 	// 	let balance = pallet_marketplace::Pallet::<Runtime>::balance();
-		
+
 // 	// 	// Convert the Balance type to  for EVM compatibility
 // 	// 	Ok(balance.try_into().unwrap_or_default())
 // 	// }
@@ -546,14 +542,14 @@
 // 	// 	subscription_id: u32,
 // 	// ) -> EvmResult {
 // 	// 	let caller = handle.context().caller;
-		
+
 // 	// 	// Convert to Address to AccountId
 // 	// 	let to_address: H160 = to.into();
 // 	// 	let to_account = Runtime::AddressMapping::into_account_id(to_address);
 
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
 // 	// 	// Create the call
-// 	// 	let call = MarketplaceCall::<Runtime>::transfer_subscription { 
+// 	// 	let call = MarketplaceCall::<Runtime>::transfer_subscription {
 // 	// 		to: to_account,
 // 	// 		subscription_id,
 // 	// 	};
@@ -580,7 +576,7 @@
 // 	// 	handle.record_cost(0)?;
 
 // 	// 	let caller = handle.context().caller;
-		
+
 // 	// 	// Convert to Address to AccountId
 // 	// 	let to_address: H160 = to.into();
 // 	// 	let to_account = Runtime::AddressMapping::into_account_id(to_address);
@@ -595,7 +591,7 @@
 
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
 // 	// 	// Create the call
-// 	// 	let call = MarketplaceCall::<Runtime>::grant_access { 
+// 	// 	let call = MarketplaceCall::<Runtime>::grant_access {
 // 	// 		subscription_id,
 // 	// 		to: to_account,
 // 	// 		permission: permission_level,
@@ -622,14 +618,14 @@
 // 	// 	handle.record_cost(0)?;
 
 // 	// 	let caller = handle.context().caller;
-		
+
 // 	// 	// Convert from Address to AccountId
 // 	// 	let from_address: H160 = from.into();
 // 	// 	let from_account = Runtime::AddressMapping::into_account_id(from_address);
 
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
 // 	// 	// Create the call
-// 	// 	let call = MarketplaceCall::<Runtime>::revoke_access { 
+// 	// 	let call = MarketplaceCall::<Runtime>::revoke_access {
 // 	// 		subscription_id,
 // 	// 		from: from_account,
 // 	// 	};
@@ -653,7 +649,7 @@
 // 	// 	new_permission: u8,
 // 	// ) -> EvmResult {
 // 	// 	let caller = handle.context().caller;
-		
+
 // 	// 	// Convert user Address to AccountId
 // 	// 	let user_address: H160 = user.into();
 // 	// 	let user_account = Runtime::AddressMapping::into_account_id(user_address);
@@ -668,7 +664,7 @@
 
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
 // 	// 	// Create the call
-// 	// 	let call = MarketplaceCall::<Runtime>::update_access_permission { 
+// 	// 	let call = MarketplaceCall::<Runtime>::update_access_permission {
 // 	// 		subscription_id,
 // 	// 		user: user_account,
 // 	// 		new_permission: permission_level,
@@ -694,7 +690,7 @@
 // 	// ) -> EvmResult {
 // 	// 	let caller = handle.context().caller;
 // 	// 	let value = handle.context().apparent_value;
-		
+
 // 	// 	// Convert tier to PackageTier
 // 	// 	let package_tier = match new_tier {
 // 	// 		0 => PackageTier::Starter,
@@ -704,9 +700,9 @@
 // 	// 	};
 
 // 	// 	let origin = Runtime::AddressMapping::into_account_id(caller);
-		
+
 // 	// 	// Create the call
-// 	// 	let call = MarketplaceCall::<Runtime>::switch_package { 
+// 	// 	let call = MarketplaceCall::<Runtime>::switch_package {
 // 	// 		subscription_id,
 // 	// 		new_tier: package_tier,
 // 	// 	};
@@ -733,7 +729,7 @@
 //     //     let who = Runtime::AddressMapping::into_account_id(caller);
 
 //     //     // Create the call
-//     //     let call = MarketplaceCall::<Runtime>::increase_package_storage { 
+//     //     let call = MarketplaceCall::<Runtime>::increase_package_storage {
 //     //         // subscription_id,
 //     //         gbs_needed,
 //     //     };

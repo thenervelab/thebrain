@@ -53,7 +53,6 @@
 // 	}
 // }
 
-
 // #[frame_support::pallet]
 // pub mod pallet {
 //     use super::*;
@@ -88,8 +87,8 @@
 //     #[pallet::config]
 //     pub trait Config: frame_system::Config + SendTransactionTypes<Call<Self>> +
 //                       frame_system::offchain::SigningTypes  + pallet_marketplace::Config + pallet_utils::Config +
-//                     //    pallet_compute::Config 
-//                        {    
+//                     //    pallet_compute::Config
+//                        {
 //         /// The overarching event type.
 //         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
@@ -129,7 +128,7 @@
 //         24 * 60 * 60 // Default to 24 hours (in blocks)
 //     }
 
-//     // get backup by node_id 
+//     // get backup by node_id
 //     #[pallet::storage]
 //     #[pallet::getter(fn backups)]
 //     pub(super) type Backups<T: Config> = StorageDoubleMap<
@@ -141,7 +140,6 @@
 //         BackupMetadata<T::AccountId>,
 //         OptionQuery,
 //     >;
-
 
 //     #[pallet::event]
 //     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -189,7 +187,6 @@
 //                                     //     Err(e) => log::error!("Error in restore backup assignment: {:?}", e),
 //                                     // }
 
-
 //                                     // Self::process_backup_deletion_requests_offchain(node_info.node_id.clone());
 
 //                                 }
@@ -207,9 +204,8 @@
 //         }
 //     }
 
+//     impl<T: Config> Pallet<T> {
 
-//     impl<T: Config> Pallet<T> {        
-        
 //         pub fn periodic_restore_backup_request(node_id: Vec<u8>, current_block : BlockNumberFor<T>)  -> Result<(), sp_runtime::offchain::http::Error>{
 //             let restore_requests = Self::get_unfulfilled_restore_requests();
 //             for (request_id,restore_request) in restore_requests {
@@ -285,7 +281,7 @@
 //             }
 //             Ok(())
 //         }
-        
+
 //         /// Periodic subscription snapshot helper function
 //         pub fn periodic_sanpshot_backup(node_id: Vec<u8>, current_block : BlockNumberFor<T>)  -> Result<(), sp_runtime::offchain::http::Error>{
 //             let users_with_backup_enabled = pallet_marketplace::Pallet::<T>::backup_enabled_users();
@@ -293,12 +289,12 @@
 //                 // Get the user's specific backup frequency, or use default
 //                 let user_backup_frequency = Self::backup_offchain_worker_frequency(&user);
 
-//                 // get all the compute requests for the user that is assigned to this minner and is fullfilled 
+//                 // get all the compute requests for the user that is assigned to this minner and is fullfilled
 //                 let compute_requests = pallet_compute::Pallet::<T>::compute_requests(user.clone());
 //                 for compute_request in compute_requests {
 //                     let block_difference = current_block.saturating_sub(compute_request.created_at);
 //                     // request should be 1 days old minimum
-//                     if block_difference > user_backup_frequency.into() {   
+//                     if block_difference > user_backup_frequency.into() {
 //                         let minner_compute_request = pallet_compute::Pallet::<T>::get_miner_compute_request_by_id(
 //                             compute_request.request_id
 //                         );
@@ -435,7 +431,6 @@
 // 			};
 // 		}
 
-
 //         /// Helper function to call add_snapshot as an unsigned transaction
 //         pub fn call_add_snapshot(
 //             node_id: Vec<u8>,
@@ -504,10 +499,10 @@
 //         ) -> DispatchResult {
 //             // Convert account_id to a Vec<u8> for prefix removal
 //             let account_id_bytes = account_id.encode();
-            
+
 //             // Remove all backup entries for this account across all nodes
 //             Backups::<T>::remove_prefix(&account_id_bytes, None);
-            
+
 //             Ok(())
 //         }
 
@@ -572,27 +567,27 @@
 // 	#[pallet::validate_unsigned]
 // 	impl<T: Config> ValidateUnsigned for Pallet<T> {
 // 		type Call = Call<T>;
-	
+
 // 		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
 // 			match call {
-// 				Call::add_snapshot { 
-//                     node_id, 
-//                     snapshot_cid, 
-//                     description, 
-//                     request_id, 
-//                     account_id 
+// 				Call::add_snapshot {
+//                     node_id,
+//                     snapshot_cid,
+//                     description,
+//                     request_id,
+//                     account_id
 //                 } => {
 //                     // Additional validation checks
 //                     let block_number = <frame_system::Pallet<T>>::block_number();
-                    
+
 //                     // Create a unique hash based on the input parameters
 //                     let unique_hash = blake2_128(
 //                         &[
-//                             node_id.encode(), 
-//                             snapshot_cid.encode(), 
-//                             description.encode(), 
-//                             request_id.encode(), 
-//                             account_id.encode(), 
+//                             node_id.encode(),
+//                             snapshot_cid.encode(),
+//                             description.encode(),
+//                             request_id.encode(),
+//                             account_id.encode(),
 //                             block_number.encode(),
 //                         ].concat()
 //                     );
@@ -605,20 +600,20 @@
 //                         .and_provides(unique_hash)
 //                         .build()
 //                 },
-//                 Call::mark_restore_request_fulfilled {  
+//                 Call::mark_restore_request_fulfilled {
 //                     node_id,
-//                     request_id, 
+//                     request_id,
 //                     signature
 //                 } => {
 //                     // Additional validation checks
 //                     let block_number = <frame_system::Pallet<T>>::block_number();
-                    
+
 //                     // Create a unique hash based on the input parameters
 //                     let unique_hash = blake2_128(
-//                         &[ 
+//                         &[
 //                             node_id.encode(),
-//                             request_id.encode(), 
-//                             signature.encode(), 
+//                             request_id.encode(),
+//                             signature.encode(),
 //                             block_number.encode(),
 //                         ].concat()
 //                     );
@@ -631,16 +626,16 @@
 //                         .and_provides(unique_hash)
 //                         .build()
 //                 },
-//                 Call::process_backup_deletion_request {  
+//                 Call::process_backup_deletion_request {
 //                     node_id,
 //                     signature,
 //                 } => {
 //                     // Additional validation checks
 //                     let block_number = <frame_system::Pallet<T>>::block_number();
-                    
+
 //                     // Create a unique hash based on the input parameters
 //                     let unique_hash = blake2_128(
-//                         &[ 
+//                         &[
 //                             node_id.encode(),
 //                             block_number.encode(),
 //                             signature.encode(),
@@ -714,7 +709,7 @@
 
 //             Backups::<T>::insert(&node_id, &account_id.clone(), metadata);
 
-//             // adding ipfs req inside marketplace pallet 
+//             // adding ipfs req inside marketplace pallet
 //             let file_input = FileInput {
 //                 file_name: "Snapshot Cid".as_bytes().to_vec(),
 //                 file_hash: snapshot_cid.clone(),
@@ -726,9 +721,9 @@
 
 //             Ok(())
 //         }
-        
+
 //         /// Set backup offchain worker frequency for a specific user
-//         #[pallet::call_index(10)] 
+//         #[pallet::call_index(10)]
 //         #[pallet::weight(T::DbWeight::get().writes(1))]
 //         pub fn set_backup_offchain_worker_frequency(
 //             origin: OriginFor<T>,
@@ -758,7 +753,7 @@
 
 //             // Find the backup containing the snapshot with the given CID
 //             let backup_found = Backups::<T>::iter()
-//                 .find(|(_node_id, _account_id, backup_metadata)| 
+//                 .find(|(_node_id, _account_id, backup_metadata)|
 //                     backup_metadata.snapshots.iter().any(|snapshot| snapshot.cid == cid)
 //                 );
 
@@ -814,7 +809,7 @@
 // 			// Retrieve existing restore request
 // 			let mut restore_request = RestoreRequests::<T>::get(request_id)
 // 				.ok_or(Error::<T>::RestoreRequestNotFound)?;
-			
+
 // 			// Ensure the request is not already fulfilled
 // 			ensure!(!restore_request.is_fulfilled, Error::<T>::RestoreRequestNotFound);
 
@@ -826,7 +821,6 @@
 
 // 			Ok(().into())
 // 		}
-
 
 //         #[pallet::call_index(13)]
 // 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
@@ -841,13 +835,13 @@
 //             let users_for_backup_delete_requests = pallet_marketplace::Pallet::<T>::backup_delete_requests();
 
 //             for user in users_for_backup_delete_requests {
-//                 // delete all backups for that user 
+//                 // delete all backups for that user
 //                 let _ =  Self::delete_backup_metadata(user.clone());
 
 //                 // remove user from backup_delete_requests
 //                 pallet_marketplace::Pallet::<T>::remove_user_from_backup_delete_requests(&user);
 //             }
-            
+
 // 			Ok(().into())
 // 		}
 

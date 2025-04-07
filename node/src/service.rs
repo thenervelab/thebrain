@@ -21,21 +21,21 @@ use crate::eth::{
 	StorageOverrideHandler,
 };
 use futures::FutureExt;
+use hippius_primitives::Block;
 use sc_client_api::{Backend, BlockBackend};
 use sc_consensus::BasicQueue;
 use sc_consensus_babe::{BabeWorkerHandle, SlotProportion};
 use sc_consensus_grandpa::SharedVoterState;
 #[allow(deprecated)]
 pub use sc_executor::NativeElseWasmExecutor;
+use sc_network::PeerId;
 use sc_service::{error::Error as ServiceError, ChainType, Configuration, TaskManager};
 use sc_telemetry::{Telemetry, TelemetryWorker};
 use sc_transaction_pool_api::OffchainTransactionPoolFactory;
+use sp_core::offchain::OffchainStorage;
 use sp_core::U256;
 use sp_runtime::traits::Block as BlockT;
-use std::{path::Path, sync::Arc, time::Duration};
-use hippius_primitives::Block;
-use sc_network::PeerId;
-use sp_core::offchain::OffchainStorage; // Import the OffchainStorage trait
+use std::{path::Path, sync::Arc, time::Duration}; // Import the OffchainStorage trait
 
 #[cfg(not(feature = "mainnet"))]
 use hippius_mainnet_runtime::{self, RuntimeApi, TransactionConverter};
@@ -147,7 +147,6 @@ pub fn new_partial(
 	##:::: ##:'####: ##:::::::: ##::::::::'####:. #######::. ######:::::::::::::::::::: ##:::: ##:::: ##: ########:::: ########:: ##:::. ##: ##:::: ##:'####: ##::. ##:
 	..:::::..::....::..:::::::::..:::::::::....:::.......::::......:::::::::::::::::::::..:::::..:::::..::........:::::........:::..:::::..::..:::::..::....::..::::..::
 	\n");
-
 
 	let telemetry = config
 		.telemetry_endpoints
@@ -298,9 +297,19 @@ pub struct RunFullParams {
 
 /// Builds a new service for a full client.
 pub async fn new_full<Network: sc_network::NetworkBackend<Block, <Block as BlockT>::Hash>>(
-	RunFullParams { mut config, eth_config, rpc_config, debug_output: _, auto_insert_keys, bandwidth_mbps, storage_bytes, uptime, peers, latency }: RunFullParams
-) -> Result<TaskManager, ServiceError>
-{
+	RunFullParams {
+		mut config,
+		eth_config,
+		rpc_config,
+		debug_output: _,
+		auto_insert_keys,
+		bandwidth_mbps,
+		storage_bytes,
+		uptime,
+		peers,
+		latency,
+	}: RunFullParams,
+) -> Result<TaskManager, ServiceError> {
 	let sc_service::PartialComponents {
 		client,
 		backend,
@@ -414,7 +423,6 @@ pub async fn new_full<Network: sc_network::NetworkBackend<Block, <Block as Block
 			metrics,
 		})?;
 
-
 	let role = config.role.clone();
 	let force_authoring = config.force_authoring;
 	let name = config.network.node_name.clone();
@@ -455,7 +463,6 @@ pub async fn new_full<Network: sc_network::NetworkBackend<Block, <Block as Block
 		}
 
 		if let Some(bandwidth_mbps) = bandwidth_mbps {
-
 			// Convert `bandwidth_mbps` (u16) to a byte representation
 			let bandwidth_mbps_bytes = bandwidth_mbps.to_le_bytes();
 
@@ -471,7 +478,6 @@ pub async fn new_full<Network: sc_network::NetworkBackend<Block, <Block as Block
 		}
 
 		if let Some(storage) = storage_bytes {
-
 			// Convert `storage_bytes` (u16) to a byte representation
 			let storage_bytes = storage.to_le_bytes();
 
@@ -487,7 +493,6 @@ pub async fn new_full<Network: sc_network::NetworkBackend<Block, <Block as Block
 		}
 
 		if let Some(uptime) = uptime {
-
 			// Convert `uptime` (u16) to a byte representation
 			let uptime_bytes = uptime.to_le_bytes();
 
@@ -518,7 +523,6 @@ pub async fn new_full<Network: sc_network::NetworkBackend<Block, <Block as Block
 		}
 
 		if let Some(latency) = latency {
-
 			// Convert `latency` (u16) to a byte representation
 			let latency_bytes = latency.to_le_bytes();
 
@@ -806,7 +810,7 @@ pub async fn new_full<Network: sc_network::NetworkBackend<Block, <Block as Block
 #[allow(clippy::type_complexity)]
 pub fn new_chain_ops(
 	config: &mut Configuration,
-	eth_config: &EthConfiguration
+	eth_config: &EthConfiguration,
 ) -> Result<
 	(Arc<FullClient>, Arc<FullBackend>, BasicQueue<Block>, TaskManager, FrontierBackend),
 	ServiceError,

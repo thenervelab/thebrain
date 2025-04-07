@@ -52,23 +52,38 @@ pub struct Cli {
 	pub sealing: Sealing,
 
 	/// Custom metrics argument (optional).
-	#[arg(long, help = "Specify the importance in weight of bandwidth_mbps to use in calculation (e.g., 2, 3, 4.)")]
+	#[arg(
+		long,
+		help = "Specify the importance in weight of bandwidth_mbps to use in calculation (e.g., 2, 3, 4.)"
+	)]
 	pub bandwidth_mbps: Option<f32>,
 
 	/// Custom metrics argument (optional).
-	#[arg(long, help = "Specify the importance in weight of storage_bytes to use in calculation (e.g., 2, 3.)")]
+	#[arg(
+		long,
+		help = "Specify the importance in weight of storage_bytes to use in calculation (e.g., 2, 3.)"
+	)]
 	pub storage_bytes: Option<f32>,
 
 	/// Custom metrics argument (optional).
-	#[arg(long, help = "Specify the importance in weight of uptime to use in calculation (e.g., 2, 3, 4.)")]
+	#[arg(
+		long,
+		help = "Specify the importance in weight of uptime to use in calculation (e.g., 2, 3, 4.)"
+	)]
 	pub uptime: Option<f32>,
-	
+
 	/// Custom metrics argument (optional).
-	#[arg(long, help = "Specify the importance in weight of peers to use in calculation (e.g., 2, 3.)")]
+	#[arg(
+		long,
+		help = "Specify the importance in weight of peers to use in calculation (e.g., 2, 3.)"
+	)]
 	pub peers: Option<f32>,
 
 	/// Custom metrics argument (optional).
-	#[arg(long, help = "Specify the importance in weight of latency to use in calculation (e.g., 2, 3.)")]
+	#[arg(
+		long,
+		help = "Specify the importance in weight of latency to use in calculation (e.g., 2, 3.)"
+	)]
 	pub latency: Option<f32>,
 }
 

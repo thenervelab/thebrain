@@ -19,9 +19,9 @@ use crate::{
 };
 use frame_benchmarking_cli::{BenchmarkCmd, SUBSTRATE_REFERENCE_HARDWARE};
 use futures::TryFutureExt;
+use hippius_primitives::types::Block;
 use sc_cli::SubstrateCli;
 use sc_service::PartialComponents;
-use hippius_primitives::types::Block;
 // use pallet_execution_unit::Call;
 // use hippius_runtime as runtime;
 
@@ -92,8 +92,7 @@ impl SubstrateCli for Cli {
 }
 
 /// Parse and run command line arguments
-pub fn run() -> sc_cli::Result<()>
-{
+pub fn run() -> sc_cli::Result<()> {
 	let cli = Cli::from_args();
 
 	match &cli.subcommand {
@@ -307,7 +306,7 @@ pub fn run() -> sc_cli::Result<()>
 
 			runner.run_node_until_exit(|config| async move {
 				service::new_full::<
-					sc_network::NetworkWorker<Block, <Block as sp_runtime::traits::Block>::Hash>
+					sc_network::NetworkWorker<Block, <Block as sp_runtime::traits::Block>::Hash>,
 				>(service::RunFullParams {
 					config,
 					rpc_config,
@@ -316,11 +315,11 @@ pub fn run() -> sc_cli::Result<()>
 					auto_insert_keys: cli.auto_insert_keys,
 					#[cfg(feature = "manual-seal")]
 					sealing: cli.sealing,
-					bandwidth_mbps: cli.bandwidth_mbps,		
-					storage_bytes: cli.storage_bytes,		
+					bandwidth_mbps: cli.bandwidth_mbps,
+					storage_bytes: cli.storage_bytes,
 					uptime: cli.uptime,
 					peers: cli.peers,
-					latency: cli.latency
+					latency: cli.latency,
 				})
 				.map_err(Into::into)
 				.await

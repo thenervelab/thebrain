@@ -60,10 +60,10 @@ pub(crate) const SPECULATIVE_NUM_SPANS: u32 = 32;
 
 #[frame_support::pallet]
 pub mod pallet {
-	use frame_election_provider_support::ElectionDataProvider;
-	use crate::{BenchmarkingConfig, PagedExposureMetadata};
 	use super::*;
-	
+	use crate::{BenchmarkingConfig, PagedExposureMetadata};
+	use frame_election_provider_support::ElectionDataProvider;
+
 	/// The in-code storage version.
 	const STORAGE_VERSION: StorageVersion = StorageVersion::new(15);
 
@@ -795,8 +795,8 @@ pub mod pallet {
 					_ => Ok(()),
 				});
 				assert!(
-					ValidatorCount::<T>::get() <=
-						<T::ElectionProvider as ElectionProviderBase>::MaxWinners::get()
+					ValidatorCount::<T>::get()
+						<= <T::ElectionProvider as ElectionProviderBase>::MaxWinners::get()
 				);
 			}
 
@@ -959,8 +959,8 @@ pub mod pallet {
 
 			// ensure election results are always bounded with the same value
 			assert!(
-				<T::ElectionProvider as ElectionProviderBase>::MaxWinners::get() ==
-					<T::GenesisElectionProvider as ElectionProviderBase>::MaxWinners::get()
+				<T::ElectionProvider as ElectionProviderBase>::MaxWinners::get()
+					== <T::GenesisElectionProvider as ElectionProviderBase>::MaxWinners::get()
 			);
 
 			assert!(
@@ -1005,17 +1005,17 @@ pub mod pallet {
 			let stash = ensure_signed(origin)?;
 
 			if StakingLedger::<T>::is_bonded(StakingAccount::Stash(stash.clone())) {
-				return Err(Error::<T>::AlreadyBonded.into())
+				return Err(Error::<T>::AlreadyBonded.into());
 			}
 
 			// An existing controller cannot become a stash.
 			if StakingLedger::<T>::is_bonded(StakingAccount::Controller(stash.clone())) {
-				return Err(Error::<T>::AlreadyPaired.into())
+				return Err(Error::<T>::AlreadyPaired.into());
 			}
 
 			// Reject a bond which is considered to be _dust_.
 			if value < T::Currency::minimum_balance() {
-				return Err(Error::<T>::InsufficientBond.into())
+				return Err(Error::<T>::InsufficientBond.into());
 			}
 
 			frame_system::Pallet::<T>::inc_consumers(&stash).map_err(|_| Error::<T>::BadState)?;
@@ -1700,10 +1700,10 @@ pub mod pallet {
 			let origin_balance = T::Currency::total_balance(&stash);
 			let ledger_total =
 				Self::ledger(Stash(stash.clone())).map(|l| l.total).unwrap_or_default();
-			let reapable = origin_balance < ed ||
-				origin_balance.is_zero() ||
-				ledger_total < ed ||
-				ledger_total.is_zero();
+			let reapable = origin_balance < ed
+				|| origin_balance.is_zero()
+				|| ledger_total < ed
+				|| ledger_total.is_zero();
 			ensure!(reapable, Error::<T>::FundedTarget);
 
 			// Remove all staking-related information and lock.
@@ -1864,7 +1864,7 @@ pub mod pallet {
 
 			if Nominators::<T>::contains_key(&stash) && Nominators::<T>::get(&stash).is_none() {
 				Self::chill_stash(&stash);
-				return Ok(())
+				return Ok(());
 			}
 
 			if caller != controller {

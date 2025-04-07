@@ -1,7 +1,7 @@
 // use crate as pallet_ranking;
 // use frame_support::{
-//     derive_impl, 
-//     parameter_types, 
+//     derive_impl,
+//     parameter_types,
 //     traits::{ConstU16, ConstU32, ConstU64},
 // };
 // use frame_system::EnsureRoot;
@@ -20,7 +20,6 @@
 // use sp_core::offchain::KeyTypeId;
 // use frame_system::offchain::SendTransactionTypes;
 
-
 // use sp_runtime::{
 //     traits::{  Verify, IdentifyAccount},
 //     MultiSignature, MultiSigner,
@@ -33,7 +32,7 @@
 
 // // Construct a mock runtime
 // frame_support::construct_runtime!(
-//     pub enum Test 
+//     pub enum Test
 //     {
 //         System: frame_system,
 //         Balances: pallet_balances,
@@ -59,7 +58,7 @@
 //     pub const ExistentialDeposit: u128 = 1;
 //     pub const MaxLocks: u32 = 50;
 //     pub const MaxReserves: u32 = 50;
-    
+
 //     // Ranking pallet specific parameters
 //     pub const PalletId: frame_support::PalletId = frame_support::PalletId(*b"mrktplce");
 //     pub const RelayNodesRewardPercentage: u32 = 40;
@@ -141,7 +140,6 @@
 //     type Extrinsic = UncheckedExtrinsic;
 // }
 
-
 // impl pallet_staking::Config for Test {
 //     type RuntimeEvent = RuntimeEvent;
 //     type Currency = Balances;
@@ -171,7 +169,7 @@
 //         traits::Verify,
 //         MultiSignature, MultiSigner,
 //     };
-    
+
 //     app_crypto!(sr25519, crate::KEY_TYPE);
 
 //     pub struct TestAuthId;
@@ -183,7 +181,6 @@
 //     }
 // }
 
-
 // // parameter_types! {
 // // 	// NOTE: Currently it is not possible to change the epoch duration after the chain has started.
 // // 	//       Attempting to do so will brick block production.
@@ -194,7 +191,6 @@
 // // 	pub const MaxAuthorities: u32 = 1000;
 // // 	pub const MaxNominators: u32 = 1000;
 // // }
-
 
 // // impl pallet_babe::Config for Test {
 // // 	type EpochDuration = EpochDuration;

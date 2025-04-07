@@ -5,9 +5,9 @@ use super::*;
 #[allow(unused)]
 use crate::Pallet as SubAccounts;
 use frame_benchmarking::v2::*;
+use frame_support::BoundedVec;
 use frame_system::RawOrigin;
 use traits::profile::ProfileInterface;
-use frame_support::BoundedVec;
 
 #[benchmarks( 
 	where
@@ -22,7 +22,7 @@ mod benchmarks {
 		let caller: T::AccountId = account("account", 0, 0);
 
 		// Sub account of main account.
-		let sub_account: T::AccountId =  account("another account", 1, 0);
+		let sub_account: T::AccountId = account("another account", 1, 0);
 
 		// Create user so sub account can be created.
 		let _ = T::Profile::create_user(
@@ -50,7 +50,7 @@ mod benchmarks {
 			BoundedVec::try_from("personal_token_symbol".as_bytes().to_vec()).unwrap(),
 			BoundedVec::try_from("project_token_symbol".as_bytes().to_vec()).unwrap(),
 			BoundedVec::try_from("profile_picture_color_hex".as_bytes().to_vec()).unwrap(),
-			BoundedVec::try_from("profile_picture_initials".as_bytes().to_vec()).unwrap()
+			BoundedVec::try_from("profile_picture_initials".as_bytes().to_vec()).unwrap(),
 		);
 
 		#[extrinsic_call]
@@ -67,7 +67,7 @@ mod benchmarks {
 		let caller: T::AccountId = account("account", 0, 0);
 
 		// Sub account of main account.
-		let sub_account: T::AccountId =  account("another account", 1, 0);
+		let sub_account: T::AccountId = account("another account", 1, 0);
 
 		// Create user so sub account can be created.
 		let _ = T::Profile::create_user(
@@ -95,11 +95,15 @@ mod benchmarks {
 			BoundedVec::try_from("personal_token_symbol".as_bytes().to_vec()).unwrap(),
 			BoundedVec::try_from("project_token_symbol".as_bytes().to_vec()).unwrap(),
 			BoundedVec::try_from("profile_picture_color_hex".as_bytes().to_vec()).unwrap(),
-			BoundedVec::try_from("profile_picture_initials".as_bytes().to_vec()).unwrap()
+			BoundedVec::try_from("profile_picture_initials".as_bytes().to_vec()).unwrap(),
 		);
 
 		// Create sub account so it can be removed.
-		let _ = SubAccounts::<T>::add_sub_account(RawOrigin::Signed(caller.clone()).into(), caller.clone(), sub_account.clone());
+		let _ = SubAccounts::<T>::add_sub_account(
+			RawOrigin::Signed(caller.clone()).into(),
+			caller.clone(),
+			sub_account.clone(),
+		);
 
 		#[extrinsic_call]
 		remove_sub_account(RawOrigin::Signed(caller.clone()), caller.clone(), sub_account.clone());

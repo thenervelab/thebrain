@@ -18,6 +18,9 @@
 use jsonrpsee::RpcModule;
 use std::sync::Arc;
 // Substrate
+use hippius_mainnet_runtime::BlockNumber;
+use hippius_mainnet_runtime::{AccountId, AssetId, Balance, Hash, Index};
+use hippius_primitives::Block;
 use sc_client_api::{
 	backend::{Backend, StorageProvider},
 	client::BlockchainEvents,
@@ -36,9 +39,6 @@ use sp_consensus::SelectChain;
 use sp_consensus_babe::BabeApi;
 use sp_keystore::KeystorePtr;
 use sp_runtime::traits::Block as BlockT;
-use hippius_primitives::Block;
-use hippius_mainnet_runtime::BlockNumber;
-use hippius_mainnet_runtime::{Hash, AccountId, AssetId, Balance, Index};
 // Runtime
 #[cfg(feature = "mainnet")]
 use hippius_mainnet_runtime::{AccountId, AssetId, Balance, Index};
@@ -46,7 +46,7 @@ use hippius_mainnet_runtime::{AccountId, AssetId, Balance, Index};
 pub mod eth;
 pub mod tracing;
 pub use self::eth::{create_eth, EthDeps};
-	
+
 /// Extra dependencies for BABE.
 pub struct BabeDeps {
 	/// A handle to the BABE worker for issuing requests.
@@ -115,11 +115,7 @@ where
 	C::Api: substrate_frame_rpc_system::AccountNonceApi<Block, AccountId, Index>,
 	C::Api: sp_block_builder::BlockBuilder<Block>,
 	C::Api: pallet_transaction_payment_rpc::TransactionPaymentRuntimeApi<Block, Balance>,
-	C::Api: pallet_services_rpc::ServicesRuntimeApi<
-		Block,
-		AccountId,
-		AssetId,
-	>,
+	C::Api: pallet_services_rpc::ServicesRuntimeApi<Block, AccountId, AssetId>,
 	C::Api: fp_rpc::ConvertTransactionRuntimeApi<Block>,
 	C::Api: fp_rpc::EthereumRuntimeRPCApi<Block>,
 	C::Api: rpc_primitives_debug::DebugRuntimeApi<Block>,

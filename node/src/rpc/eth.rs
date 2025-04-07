@@ -156,15 +156,15 @@ where
 {
 	use fc_rpc::{
 		Eth, EthApiServer, EthDevSigner, EthFilter, EthFilterApiServer, EthPubSub,
-		EthPubSubApiServer, EthSigner, Net, NetApiServer, Web3, Web3ApiServer
+		EthPubSubApiServer, EthSigner, Net, NetApiServer, Web3, Web3ApiServer,
 	};
-	use rpc_net::{Extra, ExtraApiServer};
-	use rpc_system::{SystemInfoApiServer, SystemInfoImpl};
-	use rpc_docker_registry::{DockerRegistryImpl, DockerRegistryApiServer};
-	use rpc_node_metrics::{NodeMetricsApiServer, NodeMetricsImpl};
-	use rpc_weight::{WeightsInfoApiServer,WeightsInfoImpl};
 	use rpc_debug::{Debug, DebugServer};
+	use rpc_docker_registry::{DockerRegistryApiServer, DockerRegistryImpl};
+	use rpc_net::{Extra, ExtraApiServer};
+	use rpc_node_metrics::{NodeMetricsApiServer, NodeMetricsImpl};
+	use rpc_system::{SystemInfoApiServer, SystemInfoImpl};
 	use rpc_trace::{Trace, TraceServer};
+	use rpc_weight::{WeightsInfoApiServer, WeightsInfoImpl};
 
 	#[cfg(feature = "txpool")]
 	use fc_rpc::{TxPool, TxPoolApiServer};
@@ -270,12 +270,15 @@ where
 	io.merge(DockerRegistryImpl::new(client.clone()).into_rpc())?;
 	io.merge(NodeMetricsImpl::new(client.clone()).into_rpc())?;
 
-    // Get the keystore
-    io.merge(WeightsInfoImpl::new(
-        client.clone(),
-        deps.keystore.clone(), // Assuming keystore is part of deps
-    ).into_rpc())?;
-	
+	// Get the keystore
+	io.merge(
+		WeightsInfoImpl::new(
+			client.clone(),
+			deps.keystore.clone(), // Assuming keystore is part of deps
+		)
+		.into_rpc(),
+	)?;
+
 	io.merge(Web3::new(client.clone()).into_rpc())?;
 
 	#[cfg(feature = "txpool")]

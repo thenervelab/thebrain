@@ -45,12 +45,12 @@ use frame_support::{
 	traits::Currency,
 };
 
+use hippius_primitives::types::WrappedAccountId32;
 use pallet_evm::AddressMapping;
 use precompile_utils::prelude::*;
 use sp_core::{H160, H256, U256};
 use sp_runtime::traits::{Dispatchable, StaticLookup};
 use sp_std::{marker::PhantomData, vec::Vec};
-use hippius_primitives::types::WrappedAccountId32;
 
 type BalanceOf<Runtime> = <<Runtime as pallet_vesting::Config>::Currency as Currency<
 	<Runtime as frame_system::Config>::AccountId,

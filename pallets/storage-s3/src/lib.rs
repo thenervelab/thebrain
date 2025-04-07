@@ -13,8 +13,8 @@ pub mod pallet {
 	use super::*;
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
-	use scale_info::prelude::vec::Vec;
 	use scale_info::prelude::vec;
+	use scale_info::prelude::vec::Vec;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -28,47 +28,37 @@ pub mod pallet {
 	// New storage map for bucket names
 	#[pallet::storage]
 	#[pallet::getter(fn bucket_names)]
-	pub type BucketNames<T: Config> = StorageMap<
-		_, 
-		Blake2_128Concat, 
-		T::AccountId, 
-		Vec<Vec<u8>>, 
-		ValueQuery
-	>;
+	pub type BucketNames<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, Vec<Vec<u8>>, ValueQuery>;
 
 	// New storage map for bucket size for names
 	#[pallet::storage]
 	#[pallet::getter(fn bucket_size)]
 	pub type BucketSize<T: Config> = StorageMap<
-		_, 
-		Blake2_128Concat, 
-		Vec<u8>, 
-		u128, // size in bytes 
-		ValueQuery
+		_,
+		Blake2_128Concat,
+		Vec<u8>,
+		u128, // size in bytes
+		ValueQuery,
 	>;
 
 	// New storage map for bandwidth size for users
 	#[pallet::storage]
 	#[pallet::getter(fn user_bandwidth)]
 	pub type UserBandwidth<T: Config> = StorageMap<
-		_, 
-		Blake2_128Concat, 
-		T::AccountId, // user identifier 
-		Vec<u128>,   // bandwidth size in bytes 
-		ValueQuery
+		_,
+		Blake2_128Concat,
+		T::AccountId, // user identifier
+		Vec<u128>,    // bandwidth size in bytes
+		ValueQuery,
 	>;
 
 	// New storage map for bucket names
 	#[pallet::storage]
 	#[pallet::getter(fn last_charged_at)]
-	pub type LastChargeAt<T: Config> = StorageMap<
-		_, 
-		Blake2_128Concat, 
-		T::AccountId, 
-		BlockNumberFor<T>, 
-		ValueQuery
-	>;
-	
+	pub type LastChargeAt<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, BlockNumberFor<T>, ValueQuery>;
+
 	/// Represents a bucket with its name and size
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo)]
 	pub struct UserBucket {
@@ -79,18 +69,9 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		BucketNameStored {
-            who: T::AccountId,
-            bucket_name: Vec<u8>,
-        },
-		BucketSizeSet {
-			bucket_name: Vec<u8>,
-			size: u128,
-		},
-		UserBandwidthSet {
-			user_id: T::AccountId,
-			bandwidth: u128,
-		},
+		BucketNameStored { who: T::AccountId, bucket_name: Vec<u8> },
+		BucketSizeSet { bucket_name: Vec<u8>, size: u128 },
+		UserBandwidthSet { user_id: T::AccountId, bandwidth: u128 },
 	}
 
 	#[pallet::error]
@@ -105,12 +86,16 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-        // New method to store bucket name
-        #[pallet::call_index(0)]
-        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-        pub fn store_bucket_name(origin: OriginFor<T>,account: T::AccountId,  bucket_name: Vec<u8>) -> DispatchResult {
-            ensure_root(origin)?;
-            
+		// New method to store bucket name
+		#[pallet::call_index(0)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		pub fn store_bucket_name(
+			origin: OriginFor<T>,
+			account: T::AccountId,
+			bucket_name: Vec<u8>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+
 			// Retrieve the existing bucket names or initialize a new vector
 			BucketNames::<T>::mutate(&account, |buckets| {
 				if buckets.is_empty() {
@@ -121,13 +106,10 @@ pub mod pallet {
 			});
 
 			// Deposit an event
-			Self::deposit_event(Event::BucketNameStored {
-				who: account,
-				bucket_name,
-			});
+			Self::deposit_event(Event::BucketNameStored { who: account, bucket_name });
 
-            Ok(())
-        }
+			Ok(())
+		}
 
 		#[pallet::call_index(1)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::Yes))]
@@ -151,10 +133,7 @@ pub mod pallet {
 			BucketSize::<T>::insert(&bucket_name, size);
 
 			// Emit an event about the bucket size being set
-			Self::deposit_event(Event::BucketSizeSet {
-				bucket_name,
-				size,
-			});
+			Self::deposit_event(Event::BucketSizeSet { bucket_name, size });
 
 			Ok(())
 		}
@@ -168,33 +147,30 @@ pub mod pallet {
 		) -> DispatchResult {
 			// Ensure the caller is the root/sudo account
 			ensure_root(origin)?;
-		
+
 			// Optional: Add a maximum bandwidth limit if needed
 			// For example, limit to 1 TB per month (1024 * 1024 * 1024 * 1024 bytes)
 			const MAX_USER_BANDWIDTH: u128 = 1_099_511_627_776;
 			ensure!(bandwidth <= MAX_USER_BANDWIDTH, Error::<T>::BandwidthTooLarge);
-		
+
 			// Get the current bandwidth for the user or initialize a new vector
 			let mut current_bandwidth = UserBandwidth::<T>::get(&user_id);
-			
+
 			// Add the new bandwidth to the vector
 			current_bandwidth.push(bandwidth);
-		
+
 			// Set the updated user bandwidth in storage
 			UserBandwidth::<T>::insert(&user_id, current_bandwidth);
-		
+
 			// Emit an event about the user bandwidth being set
-			Self::deposit_event(Event::UserBandwidthSet {
-				user_id,
-				bandwidth,
-			});
-		
+			Self::deposit_event(Event::UserBandwidthSet { user_id, bandwidth });
+
 			Ok(())
 		}
-    }
+	}
 
 	impl<T: Config> Pallet<T> {
-	    /// Retrieve all users who have at least one bucket
+		/// Retrieve all users who have at least one bucket
 		pub fn get_users_with_buckets() -> Vec<T::AccountId> {
 			BucketNames::<T>::iter()
 				.filter(|(_, buckets)| !buckets.is_empty())
@@ -238,10 +214,7 @@ pub mod pallet {
 					// Retrieve the size for each bucket
 					let bucket_size = Self::bucket_size(&bucket_name);
 
-					UserBucket {
-						bucket_name,
-						bucket_size: vec![bucket_size],
-					}
+					UserBucket { bucket_name, bucket_size: vec![bucket_size] }
 				})
 				.collect()
 		}
@@ -258,7 +231,7 @@ pub mod pallet {
 
 			// Retrieve bucket names for the user
 			let bucket_names = BucketNames::<T>::get(account_id);
-			
+
 			// Sum the sizes of each bucket if there are any bucket names
 			if !bucket_names.is_empty() {
 				for bucket_name in bucket_names {
@@ -284,5 +257,5 @@ pub mod pallet {
 		// 		}
 		// 	}
 		// }
-    }
+	}
 }

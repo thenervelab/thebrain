@@ -44,13 +44,13 @@ use frame_support::{
 	dispatch::{GetDispatchInfo, PostDispatchInfo},
 	traits::Currency,
 };
-use sp_core::Encode;
+use hippius_primitives::types::WrappedAccountId32;
 use pallet_evm::AddressMapping;
 use precompile_utils::prelude::*;
+use sp_core::Encode;
 use sp_core::{H160, H256, U256};
 use sp_runtime::traits::{Dispatchable, StaticLookup};
 use sp_std::{convert::TryInto, marker::PhantomData, vec, vec::Vec};
-use hippius_primitives::types::WrappedAccountId32;
 
 type BalanceOf<Runtime> = <<Runtime as pallet_staking::Config>::Currency as Currency<
 	<Runtime as frame_system::Config>::AccountId,
@@ -405,7 +405,7 @@ where
 	#[precompile::view]
 	fn get_validators(handle: &mut impl PrecompileHandle) -> EvmResult<Vec<Address>> {
 		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
-		
+
 		// Get all validators
 		let validators = pallet_staking::Validators::<Runtime>::iter()
 			.map(|(validator_account, _)| {

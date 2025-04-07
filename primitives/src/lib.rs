@@ -74,7 +74,7 @@ pub mod time {
 	//       Attempting to do so will brick block production.
 	#[cfg(not(feature = "fast-runtime"))]
 	pub const EPOCH_DURATION_IN_BLOCKS: BlockNumber = 4 * HOURS;
-	// pub const EPOCH_DURATION_IN_BLOCKS: BlockNumber = HOURS / 16; // 7 mins for testing 
+	// pub const EPOCH_DURATION_IN_BLOCKS: BlockNumber = HOURS / 16; // 7 mins for testing
 	pub const EPOCH_DURATION_IN_SLOTS: u64 = {
 		const SLOT_FILL_RATE: f64 = MILLISECS_PER_BLOCK as f64 / SLOT_DURATION as f64;
 
@@ -323,7 +323,6 @@ pub const MAXIMUM_BLOCK_WEIGHT: Weight =
 	Weight::from_parts(WEIGHT_MILLISECS_PER_BLOCK * WEIGHT_REF_TIME_PER_MILLIS, u64::MAX);
 
 pub use sp_consensus_babe::AuthorityId as BabeId;
-
 
 pub const MAINNET_SS58_PREFIX: u16 = 42;
 pub const MAINNET_CHAIN_ID: u64 = MAINNET_SS58_PREFIX as u64;

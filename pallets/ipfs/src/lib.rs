@@ -196,7 +196,7 @@ pub mod pallet {
 						.propagate(true)
 						.build()
 				},
-				Call::update_user_profile { owner, cid, node_identity, .. } => {
+				Call::update_user_profile { owner, node_identity, cid, .. } => {
 					let current_block = frame_system::Pallet::<T>::block_number();
 
 					// Create a unique hash combining all relevant data
@@ -223,6 +223,26 @@ pub mod pallet {
 					let mut data = Vec::new();
 					data.extend_from_slice(&current_block.encode());
 					data.extend_from_slice(&miner_node_id.encode());
+					
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					// Ensure unique transaction validity
+					ValidTransaction::with_tag_prefix("IpfsOffchain")
+						.priority(TransactionPriority::max_value())
+						.and_provides(unique_hash)
+						.longevity(3)
+						.propagate(true)
+						.build()
+				},
+				// Handler for `mark_storage_request_assigned` unsigned transaction
+				Call::mark_storage_request_assigned { owner, file_hash } => {
+					let current_block = frame_system::Pallet::<T>::block_number();
+
+					// Create a unique hash combining all relevant data
+					let mut data = Vec::new();
+					data.extend_from_slice(&current_block.encode());
+					data.extend_from_slice(&owner.encode());
+					data.extend_from_slice(&file_hash.encode());
 					
 					let unique_hash = sp_io::hashing::blake2_256(&data);
 
@@ -339,7 +359,7 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn user_storage_requests)]
 	pub type UserStorageRequests<T: Config> = StorageDoubleMap<
-		_,
+		_, 
 		Blake2_128Concat, 
 		T::AccountId,     // First key: Account ID of the owner
 		Blake2_128Concat, 
@@ -387,7 +407,7 @@ pub mod pallet {
 		_, 
 		Blake2_128Concat, 
 		T::AccountId, // node id     
-		BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, // cid
+		FileHash, // cid
 		ValueQuery
 	>;	
 
@@ -479,19 +499,6 @@ pub mod pallet {
 					}
 				);
 			}
-
-			// Update UserStorageRequests to mark the request as fulfilled
-			<UserStorageRequests<T>>::mutate(
-				storage_request.owner.clone(), 
-				storage_request.file_hash.clone(), 
-				|request| {
-					if let Some(ref mut req) = request {
-						let mut updated_req = req.clone();
-						updated_req.is_assigned = true;
-						*request = Some(updated_req);
-					}
-				}
-			);
 
 			// Update FileSize for the specific file hash
 			<FileSize<T>>::insert(storage_request.file_hash.clone(), file_size as u32);
@@ -637,7 +644,7 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			owner: T::AccountId,
 			node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
-			cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+			cid: FileHash,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
 
@@ -651,6 +658,32 @@ pub mod pallet {
 
 			// Update UserProfile storage
 			UserProfile::<T>::insert(&owner, cid);
+
+			Ok(().into())
+		}
+
+		/// Unsigned transaction to mark a storage request as assigned
+		#[pallet::call_index(7)]
+		#[pallet::weight(10_000)]
+		pub fn mark_storage_request_assigned(
+			origin: OriginFor<T>,
+			owner: T::AccountId,
+			file_hash: FileHash,
+		) -> DispatchResultWithPostInfo {
+			ensure_none(origin)?;
+
+			// Mark the storage request as assigned
+			<UserStorageRequests<T>>::mutate(
+				owner, 
+				file_hash, 
+				|request| {
+					if let Some(ref mut req) = request {
+						let mut updated_req = req.clone();
+						updated_req.is_assigned = true;
+						*request = Some(updated_req);
+					}
+				}
+			);
 
 			Ok(().into())
 		}
@@ -770,40 +803,55 @@ pub mod pallet {
 			};
 		}
 
-		// /// Helper function to handle the unpin request logic
-		// pub fn process_unpin_request(
-		// 	who: T::AccountId,
-		// 	file_hash: Vec<u8>,
-		// ) -> Result<FileHash, Error<T>> {
-		// 	let current_block = frame_system::Pallet::<T>::block_number();
+		/// Helper function to mark a storage request as assigned
+		pub fn call_mark_storage_request_assigned(
+			owner: T::AccountId, 
+			file_hash: FileHash
+		) {
+			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+				b"IpfsPin::update_lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+			);
+		
+			if let Ok(_guard) = lock.try_lock() {
+				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
 
-		// 	// Convert file hash to a hex-encoded string
-		// 	let file_hash_encoded = hex::encode(&file_hash);
-		// 	let update_hash_vec: Vec<u8> = file_hash_encoded.clone().into();
-		// 	let update_hash: FileHash = BoundedVec::try_from(update_hash_vec)
-		// 		.map_err(|_| Error::<T>::StorageOverflow)?;
+				if signer.can_sign() {
+					log::info!("Signer has accounts available for signing.");
+				} else {
+					log::warn!("No accounts available for signing in signer.");
+					return;
+				}
 
-		// 	// Check if the request exists in UserStorageRequests
-		// 	let storage_request = UserStorageRequests::<T>::get(&who, &update_hash)
-		// 		.ok_or(Error::<T>::RequestDoesNotExists)?;
+				let results = signer.send_unsigned_transaction(
+					|account| {
+						MarkStorageRequestAssignedPayload {
+							owner: owner.clone(),
+							file_hash: file_hash.clone(),
+							public: account.public.clone(),
+							_marker: PhantomData, // Ensure compatibility with generic payload types
+						}
+					},
+					|payload, signature| {
+						Call::mark_storage_request_assigned {
+							owner: payload.owner,
+							file_hash: payload.file_hash,
+						}
+					},
+				);
 
-		// 	// Validate ownership
-		// 	ensure!(storage_request.owner == who, Error::<T>::OwnerNotFound);
-
-		// 	// Add to UnpinRequests if not already present
-		// 	UnpinRequests::<T>::try_mutate(|requests| -> Result<(), Error<T>> {
-		// 		if !requests.contains(&update_hash) {
-		// 			requests.try_push(update_hash.clone())
-		// 				.map_err(|_| Error::<T>::TooManyUnpinRequests)?;
-		// 		}
-		// 		Ok(())
-		// 	})?;
-
-		// 	// Remove the storage request
-		// 	UserStorageRequests::<T>::remove(&who, &update_hash);
-
-		// 	Ok(update_hash)
-		// }
+				// Process the results of the transaction submission
+				for (acc, res) in &results {
+					match res {
+						Ok(()) => log::info!("[{:?}] Successfully marked storage request as assigned", acc.id),
+						Err(e) => log::error!("[{:?}] Failed to mark storage request as assigned: {:?}", acc.id, e),
+					}
+				}
+			} else {
+				log::error!("❌ Could not acquire lock for marking storage request as assigned");
+			};
+		}
 
 		pub fn fetch_ipfs_file_size(file_hash_vec: Vec<u8>) -> Result<u32, http::Error> {
 		
@@ -1092,7 +1140,7 @@ pub mod pallet {
 				log::error!("IPFS response not valid UTF-8");
 				http::Error::Unknown
 			})?;
-		
+
 			// Parse the JSON response
 			let parsed_response: serde_json::Value = serde_json::from_str(body_str).map_err(|e| {
 				log::error!("Failed to parse JSON response: {:?}", e);
@@ -1108,7 +1156,6 @@ pub mod pallet {
 			Err(http::Error::Unknown)
 		}
 
-
 		pub fn call_process_miners_to_remove(owner: T::AccountId, file_hash_to_remove: FileHash, miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, new_cid_bounded: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"IpfsPin::update_lock",
@@ -1118,14 +1165,14 @@ pub mod pallet {
 		
 			if let Ok(_guard) = lock.try_lock() {
 				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-		
+
 				if signer.can_sign() {
 					log::info!("Signer has accounts available for signing.");
 				} else {
 					log::warn!("No accounts available for signing in signer.");
 					return;
 				}
-		
+
 				let results = signer.send_unsigned_transaction(
 					|account| {
 						ProcessMinersToRemoveRequestPayload {
@@ -1146,7 +1193,7 @@ pub mod pallet {
 						}
 					},
 				);
-		
+
 				// Process the results of the transaction submission
 				for (acc, res) in &results {
 					match res {
@@ -1683,7 +1730,7 @@ pub mod pallet {
 		}
 
 		/// Unsigned transaction function to update UserProfile
-		pub fn call_update_user_profile(owner: T::AccountId, cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
+		pub fn call_update_user_profile(owner: T::AccountId, node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, cid: FileHash) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"IpfsPin::update_lock",
 				LOCK_BLOCK_EXPIRATION,
@@ -1709,8 +1756,8 @@ pub mod pallet {
 					|payload, _signature| {
 						Call::update_user_profile {
 							owner: payload.owner,
-							cid: payload.cid,
 							node_identity: payload.node_identity,
+							cid: payload.cid,
 						}
 					},
 				);

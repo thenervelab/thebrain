@@ -25,9 +25,9 @@ use sp_api::ProvideRuntimeApi;
 use sp_blockchain::HeaderBackend;
 use sp_runtime::traits::Block as BlockT;
 // Frontier
-pub use rpc_core_net::{types::PeerCount, ExtraApiServer};
+use fc_rpc::internal_err;
 use fp_rpc::EthereumRuntimeRPCApi;
-use fc_rpc::{ internal_err};
+pub use rpc_core_net::{types::PeerCount, ExtraApiServer};
 // use crate::internal_err;
 
 /// Net API implementation.
@@ -39,12 +39,7 @@ pub struct Extra<B: BlockT, C> {
 }
 impl<B: BlockT, C> Extra<B, C> {
 	pub fn new(client: Arc<C>, network: Arc<dyn NetworkService>, peer_count_as_hex: bool) -> Self {
-		Self {
-			client,
-			network,
-			peer_count_as_hex,
-			_phantom_data: Default::default(),
-		}
+		Self { client, network, peer_count_as_hex, _phantom_data: Default::default() }
 	}
 }
 

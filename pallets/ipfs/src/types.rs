@@ -115,7 +115,7 @@ pub struct UserFile {
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
 pub struct UpdateUserProfilePayload<T: Config> {
     pub owner: T::AccountId,
-    pub cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub cid: FileHash,
     pub node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
     pub public: T::Public,
     pub _marker: PhantomData<T>,
@@ -139,6 +139,21 @@ pub struct MinerLockPayload<T: Config> {
 
 // Implement SignedPayload for MinerLockPayload
 impl<T: Config> SignedPayload<T> for MinerLockPayload<T> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
+}
+
+#[derive(Encode, Decode, TypeInfo)]
+pub struct MarkStorageRequestAssignedPayload<T: Config> {
+    pub owner: T::AccountId,
+    pub file_hash: FileHash,
+    pub public: T::Public,
+    pub _marker: PhantomData<T>,
+}
+
+// Implement SignedPayload for MinerLockPayload
+impl<T: Config> SignedPayload<T> for MarkStorageRequestAssignedPayload<T> {
     fn public(&self) -> T::Public {
         self.public.clone()
     }

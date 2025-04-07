@@ -25,6 +25,7 @@ use futures::future;
 use futures::FutureExt;
 use futures::{channel::mpsc, prelude::*};
 use futures_timer::Delay;
+use hippius_primitives::Block;
 use sc_client_api::{Backend, BlockBackend};
 use sc_consensus::BasicQueue;
 use sc_consensus_babe::BabeLink;
@@ -42,7 +43,6 @@ use sp_runtime::traits::Block as BlockT;
 use std::cell::RefCell;
 use std::{path::Path, sync::Arc, time::Duration};
 use substrate_prometheus_endpoint::Registry;
-use hippius_primitives::Block;
 
 #[cfg(not(feature = "mainnet"))]
 use hippius_runtime::{self, RuntimeApi, TransactionConverter};

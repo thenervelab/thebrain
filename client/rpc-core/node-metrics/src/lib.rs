@@ -3,14 +3,19 @@ use sp_std::vec::Vec;
 pub mod types;
 use sp_runtime::AccountId32;
 
-use rpc_primitives_node_metrics::{NodeType, Batch, Status , NodeMetricsData, MinerRewardSummary, UserFile, UserBucket, UserVmDetails};
+use rpc_primitives_node_metrics::{
+	Batch, MinerRewardSummary, NodeMetricsData, NodeType, Status, UserBucket, UserFile,
+	UserVmDetails,
+};
 
 /// Net rpc interface.
 #[rpc(server)]
 pub trait NodeMetricsApi {
-
 	#[method(name = "get_active_nodes_metrics_by_type")]
-	fn get_active_nodes_metrics_by_type(&self, node_type: NodeType) -> RpcResult<Vec<Option<NodeMetricsData>>>;
+	fn get_active_nodes_metrics_by_type(
+		&self,
+		node_type: NodeType,
+	) -> RpcResult<Vec<Option<NodeMetricsData>>>;
 
 	#[method(name = "get_node_metrics")]
 	fn get_node_metrics(&self, node_id: Vec<u8>) -> RpcResult<Option<NodeMetricsData>>;
@@ -25,10 +30,14 @@ pub trait NodeMetricsApi {
 	fn get_miners_total_rewards(&self, node_type: NodeType) -> RpcResult<Vec<MinerRewardSummary>>;
 
 	#[method(name = "get_account_pending_rewards")]
-	fn get_account_pending_rewards(&self, account: AccountId32) -> RpcResult<Vec<MinerRewardSummary>>;
+	fn get_account_pending_rewards(
+		&self,
+		account: AccountId32,
+	) -> RpcResult<Vec<MinerRewardSummary>>;
 
 	#[method(name = "get_miners_pending_rewards")]
-	fn get_miners_pending_rewards(&self, node_type: NodeType) -> RpcResult<Vec<MinerRewardSummary>>;
+	fn get_miners_pending_rewards(&self, node_type: NodeType)
+		-> RpcResult<Vec<MinerRewardSummary>>;
 
 	#[method(name = "calculate_total_file_size")]
 	fn calculate_total_file_size(&self, account: AccountId32) -> RpcResult<u128>;
@@ -67,13 +76,19 @@ pub trait NodeMetricsApi {
 	fn get_miner_info(&self, account_id: AccountId32) -> RpcResult<Option<(NodeType, Status)>>;
 
 	#[method(name = "get_batches_for_user")]
-	fn get_batches_for_user(&self, account_id: AccountId32) -> RpcResult<Vec<Batch<AccountId32, u32>>>;
+	fn get_batches_for_user(
+		&self,
+		account_id: AccountId32,
+	) -> RpcResult<Vec<Batch<AccountId32, u32>>>;
 
 	#[method(name = "get_batch_by_id")]
 	fn get_batch_by_id(&self, batch_id: u64) -> RpcResult<Option<Batch<AccountId32, u32>>>;
 
 	#[method(name = "get_free_credits")]
-	fn get_free_credits_rpc(&self, account: Option<AccountId32>) -> RpcResult<Vec<(AccountId32, u128)>>;
+	fn get_free_credits_rpc(
+		&self,
+		account: Option<AccountId32>,
+	) -> RpcResult<Vec<(AccountId32, u128)>>;
 
 	#[method(name = "get_referred_users")]
 	fn get_referred_users(&self, account_id: AccountId32) -> RpcResult<Vec<AccountId32>>;

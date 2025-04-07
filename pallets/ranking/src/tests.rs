@@ -8,7 +8,7 @@
 //     Pallet as RankingPallet,
 // };
 // use frame_support::{
-//     assert_noop, 
+//     assert_noop,
 //     assert_ok,
 //     traits::Get,
 // };
@@ -51,9 +51,9 @@
 //         // Update rankings
 //         assert_ok!(
 //             RankingPallet::<Test>::do_update_rankings(
-//                 weights.clone(), 
-//                 node_ss58_addresses.clone(), 
-//                 node_ids.clone(), 
+//                 weights.clone(),
+//                 node_ss58_addresses.clone(),
+//                 node_ids.clone(),
 //                 node_types.clone()
 //             )
 //         );
@@ -83,9 +83,9 @@
 
 //         assert_noop!(
 //             RankingPallet::<Test>::do_update_rankings(
-//                 weights, 
-//                 node_ss58_addresses, 
-//                 node_ids, 
+//                 weights,
+//                 node_ss58_addresses,
+//                 node_ids,
 //                 node_types
 //             ),
 //             Error::<Test>::InvalidInput
@@ -103,7 +103,7 @@
 //         // Update limit via sudo
 //         assert_ok!(
 //             RankingPallet::<Test>::update_rank_distribution_limit(
-//                 RawOrigin::Root.into(), 
+//                 RawOrigin::Root.into(),
 //                 20
 //             )
 //         );
@@ -149,9 +149,9 @@
 //         // Update rankings
 //         assert_ok!(
 //             RankingPallet::<Test>::do_update_rankings(
-//                 weights.clone(), 
-//                 node_ss58_addresses.clone(), 
-//                 node_ids.clone(), 
+//                 weights.clone(),
+//                 node_ss58_addresses.clone(),
+//                 node_ids.clone(),
 //                 node_types.clone()
 //             )
 //         );
@@ -159,20 +159,20 @@
 //         // Add initial balance to pallet account for rewards
 //         let pallet_account = RankingPallet::<Test>::account_id();
 //         let initial_reward_balance = 10_000;
-        
+
 //         // Manually set pallet account balance
 //         <pallet_balances::Pallet::<Test> as frame_support::traits::Currency<_>>::make_free_balance_be(
-//             &pallet_account, 
+//             &pallet_account,
 //             initial_reward_balance
 //         );
 
 //         // Trigger on_initialize to distribute rewards
 //         let weight_used = RankingPallet::<Test>::on_initialize(1);
-        
+
 //         // Verify non-zero weight used
 //         assert!(!weight_used.is_zero());
 
-//         // Additional checks could include verifying reward events, 
+//         // Additional checks could include verifying reward events,
 //         // checking account balances, etc.
 //     });
 // }
@@ -183,7 +183,7 @@
 //         // Non-root origin should fail to update distribution limit
 //         assert_noop!(
 //             RankingPallet::<Test>::update_rank_distribution_limit(
-//                 RawOrigin::Signed(1).into(), 
+//                 RawOrigin::Signed(1).into(),
 //                 20
 //             ),
 //             frame_system::Error::<Test>::CallFiltered

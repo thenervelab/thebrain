@@ -12,7 +12,7 @@
 //         let mut ext = frame_system::GenesisConfig::default()
 //             .build_storage::<Test>()
 //             .unwrap();
-        
+
 //         // Optionally pre-populate some locked credits
 //         let test_account = account_key("test_account");
 //         let test_credits = vec![
@@ -26,7 +26,7 @@
 //                 is_migrated: false,  // Explicitly set to false
 //             }
 //         ];
-        
+
 //         // Manually insert test data
 //         frame_support::storage::unhashed::put(
 //             &LockedCredits::<Test>::storage_map_final_key(test_account),
@@ -51,7 +51,7 @@
 
 //             // Verify is_migrated flag is set
 //             assert!(migrated_credits[0].is_migrated, "Migration flag should be set");
-            
+
 //             // Verify other fields remain unchanged
 //             assert_eq!(migrated_credits[0].amount_locked, 1000);
 //             assert_eq!(migrated_credits[0].id, 1);

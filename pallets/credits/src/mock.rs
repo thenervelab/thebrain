@@ -1,6 +1,6 @@
 // use crate as pallet_credits;
 // use frame_support::{
-//     derive_impl, 
+//     derive_impl,
 //     traits::{ConstU16,  ConstU64},
 // };
 // use sp_core::H256;
@@ -54,7 +54,6 @@
 // 	type ExistentialDeposit = ConstU64<1>;
 // 	type AccountStore = System;
 // }
-
 
 // impl pallet_credits::Config for Test {
 //     type RuntimeEvent = RuntimeEvent;

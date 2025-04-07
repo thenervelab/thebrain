@@ -9,5 +9,5 @@ pub use crate::types::SubmitWeightsParams;
 pub trait WeightsInfoApi {
 	/// Returns protocol version.
 	#[method(name = "submit_weights")]
-    fn submit_weights(&self, params: SubmitWeightsParams)-> String;
+	fn submit_weights(&self, params: SubmitWeightsParams) -> String;
 }
