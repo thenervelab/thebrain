@@ -3727,7 +3727,7 @@ checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 
 [[package]]
 name = "hippius"
-version = "1.2.3"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -3826,7 +3826,7 @@ dependencies = [
 
 [[package]]
 name = "hippius-crypto-primitives"
-version = "1.2.3"
+version = "2.0.0"
 dependencies = [
  "parity-scale-codec",
  "scale-info",
@@ -3835,7 +3835,7 @@ dependencies = [
 
 [[package]]
 name = "hippius-mainnet-runtime"
-version = "1.2.3"
+version = "2.0.0"
 dependencies = [
  "evm-tracer",
  "fixed",
@@ -3968,7 +3968,7 @@ dependencies = [
 
 [[package]]
 name = "hippius-primitives"
-version = "1.2.3"
+version = "2.0.0"
 dependencies = [
  "ark-bn254",
  "ark-crypto-primitives",
