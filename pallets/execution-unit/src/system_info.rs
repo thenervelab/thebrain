@@ -92,52 +92,52 @@ impl SystemInfo {
     // fetching ip details like Private/Pub , loc etc
     fn fetch_ip_details() -> Result<Option<NetworkDetails>, http::Error> {
 
-        let url = format!("https://api.ipify.org");
+        // let url = format!("https://api.ipify.org");
         
-        // Increase timeout to 10 seconds
-        let deadline = sp_io::offchain::timestamp()
-            .add(Duration::from_millis(10_000));
+        // // Increase timeout to 10 seconds
+        // let deadline = sp_io::offchain::timestamp()
+        //     .add(Duration::from_millis(10_000));
             
-        let request = sp_runtime::offchain::http::Request::get(url.as_str());
+        // let request = sp_runtime::offchain::http::Request::get(url.as_str());
 
-        let pending = request
-        .add_header("Content-Type", "application/json")
-        .deadline(deadline)
-        .send()
-        .map_err(|err| {
-            log::warn!("Error making Request: {:?}", err);
-            sp_runtime::offchain::http::Error::IoError
-        })?;
+        // let pending = request
+        // .add_header("Content-Type", "application/json")
+        // .deadline(deadline)
+        // .send()
+        // .map_err(|err| {
+        //     log::warn!("Error making Request: {:?}", err);
+        //     sp_runtime::offchain::http::Error::IoError
+        // })?;
         
-        // Wait for response with better error handling
-        let response = match pending.try_wait(deadline) {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                log::error!("Request failed: {:?}", e);
-                return Err(e);
-            }
-            Err(e) => {
-                log::error!("Deadline reached: {:?}", e);
-                return Err(http::Error::DeadlineReached);
-            }
-        };
+        // // Wait for response with better error handling
+        // let response = match pending.try_wait(deadline) {
+        //     Ok(Ok(r)) => r,
+        //     Ok(Err(e)) => {
+        //         log::error!("Request failed: {:?}", e);
+        //         return Err(e);
+        //     }
+        //     Err(e) => {
+        //         log::error!("Deadline reached: {:?}", e);
+        //         return Err(http::Error::DeadlineReached);
+        //     }
+        // };
         
-        // Check the response status code
-        if response.code != 200 {
-            log::warn!("Unexpected status code: {}", response.code);
-            return Err(http::Error::Unknown);
-        }
+        // // Check the response status code
+        // if response.code != 200 {
+        //     log::warn!("Unexpected status code: {}", response.code);
+        //     return Err(http::Error::Unknown);
+        // }
         
-        // Read the response body
-        let body = response.body().collect::<Vec<u8>>();	
+        // // Read the response body
+        // let body = response.body().collect::<Vec<u8>>();	
 
-        // Convert the body to a string
-        let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-            log::warn!("Response body is not valid UTF-8");
-            http::Error::Unknown
-        })?;
+        // // Convert the body to a string
+        // let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+        //     log::warn!("Response body is not valid UTF-8");
+        //     http::Error::Unknown
+        // })?;
         
-        let url = format!("https://ipinfo.io/{}/json", body_str);
+        let url = format!("https://ip-api.hippius.network/?format=json");
         
         // Increase timeout to 10 seconds
         let deadline = sp_io::offchain::timestamp()

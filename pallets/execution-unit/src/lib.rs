@@ -366,6 +366,11 @@ pub mod pallet {
 						if block_number % check_intetrval.into() == Zero::zero() {
 							Self::call_update_block_time(node_id.clone(), block_number);
 							Self::do_update_metrics_data(node_id.clone(), node_type.clone(), block_number);
+
+							if node_type == NodeType::Validator {
+								// Self::process_pending_compute_requests();
+								let _ = Self::handle_request_assignment(node_id, node_info);
+							}
 						}
 	
 						let current_block = block_number.saturated_into::<u32>();
@@ -379,13 +384,9 @@ pub mod pallet {
 								STORAGE_KEY,
 								&current_block.to_be_bytes(),
 							);
-
 							// Execute tasks with BABE randomness
 							Self::save_hardware_info(node_id.clone(), node_type.clone());				
-							if node_type == NodeType::Validator {
-								// Self::process_pending_compute_requests();
-								let _ = Self::handle_request_assignment(node_id, node_info);
-							}
+							
 						} else {
 							log::info!("Skipping execution at block {}", current_block);
 						}
@@ -1742,8 +1743,7 @@ pub mod pallet {
 					}
 		
 					let current_block = frame_system::Pallet::<T>::block_number();
-					let owner = node_info.owner.clone();
-		
+					
 					// Process each initial storage request
 					let mut all_new_storage_requests = Vec::new();
 					for initial_request in initial_storage_requests {
@@ -1758,6 +1758,7 @@ pub mod pallet {
 							log::error!("Failed to convert hash to string");
 							Error::<T>::InvalidCid
 						})?;
+
 						log::info!("Fetching CID content for request {:?}", cid_str);
 						// Fetch the content from IPFS
 						let content = IpfsPallet::<T>::fetch_ipfs_content(cid_str).map_err(|e| {
@@ -1781,7 +1782,7 @@ pub mod pallet {
 		
 								Some(StorageRequest {
 									total_replicas: initial_request.total_replicas, // Inherit from initial request
-									owner: owner.clone(),
+									owner: initial_request.owner.clone(),
 									file_hash,
 									file_name: BoundedVec::try_from(filename.as_bytes().to_vec()).ok()?,
 									last_charged_at: current_block,
@@ -1861,7 +1862,11 @@ pub mod pallet {
 						}
 		
 						if selected_miners.len() == storage_request.total_replicas as usize {
-							match IpfsPallet::<T>::fetch_ipfs_file_size(storage_request.file_hash.clone().to_vec()) {
+							// Encode hahs as our fn exepcts encoded one 
+							let file_hash_key = hex::encode(storage_request.file_hash.clone());
+							let update_hash_vec: Vec<u8> = file_hash_key.into();
+
+							match IpfsPallet::<T>::fetch_ipfs_file_size(update_hash_vec.clone()) {
 								Ok(file_size) => {
 									for (miner, _, _) in &selected_miners {
 										let miner_node_id = BoundedVec::try_from(miner.node_id.clone())
@@ -1880,7 +1885,7 @@ pub mod pallet {
 										.iter()
 										.map(|(miner, _, _)| MinerPinRequest {
 											miner_node_id: BoundedVec::try_from(miner.node_id.clone()).unwrap(),
-											file_hash: storage_request.file_hash.clone(),
+											file_hash: BoundedVec::try_from(update_hash_vec.clone()).unwrap(),
 											created_at: current_block,
 											file_size_in_bytes: file_size,
 										})
@@ -1946,7 +1951,7 @@ pub mod pallet {
 					}
 		
 					// Update UserProfile by appending new requests to existing content
-					let existing_user_cid = UserProfile::<T>::get(&owner);
+					let existing_user_cid = UserProfile::<T>::get(&initial_request.owner);
 					let updated_user_json = if !existing_user_cid.is_empty() {
 						let cid_str = sp_std::str::from_utf8(&existing_user_cid).map_err(|_| Error::<T>::InvalidCid)?;
 						match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
@@ -1991,8 +1996,8 @@ pub mod pallet {
 							let new_user_cid_bounded = BoundedVec::try_from(new_user_cid.clone().into_bytes())
 								.map_err(|_| Error::<T>::StorageOverflow)?;
 							let bounded_node_id: BoundedVec<u8, ConstU32<64>> = BoundedVec::try_from(node_id.clone()).map_err(|_| Error::<T>::StorageOverflow)?;
-							IpfsPallet::<T>::call_update_user_profile(owner.clone(), new_user_cid_bounded, bounded_node_id);								
-							log::info!("Updated UserProfile for owner {:?} with CID: {}", owner, new_user_cid);
+							IpfsPallet::<T>::call_update_user_profile(initial_request.owner.clone(), new_user_cid_bounded, bounded_node_id);								
+							log::info!("Updated UserProfile for owner {:?} with CID: {}", initial_request.owner, new_user_cid);
 						}
 						Err(e) => log::error!("Failed to update UserProfile CID: {:?}", e),
 					}

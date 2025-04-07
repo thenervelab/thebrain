@@ -1355,10 +1355,8 @@ pub mod pallet {
 						.iter()
 						.filter_map(|v| v.as_u64().map(|n| n as u8))
 						.collect();
-					
 					// Decode the file hash bytes
 					let decoded_file_hash = hex::decode(file_hash_bytes).ok()?;
-					
 					sp_std::str::from_utf8(&decoded_file_hash)
 						.map(|s| s.to_string())
 						.ok()
