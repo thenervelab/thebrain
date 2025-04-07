@@ -106,7 +106,7 @@ pub mod pallet {
 					  frame_system::offchain::SigningTypes +
 					  pallet_credits::Config + 
 					  ipfs_pallet::Config + 
-					  pallet_compute::Config +
+					//   pallet_compute::Config +
 					  pallet_balances::Config +
 					  pallet_rankings::Config 
 		{
@@ -240,7 +240,7 @@ pub mod pallet {
 	pub type RequestsCount<T: Config> = StorageMap<
 		_, 
 		Blake2_128Concat, 
-		T::AccountId, 
+		Vec<u8>, 
 		u32, 
 		ValueQuery
 	>;
@@ -332,7 +332,7 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
-			let clear_interval = T::RequestsClearInterval::get();
+			let clear_interval = <T as pallet::Config>::RequestsClearInterval::get();
 
 			// Clear entries every 10 blocks
 			if _n % clear_interval.into() == 0u32.into() {
@@ -383,7 +383,7 @@ pub mod pallet {
 							// Execute tasks with BABE randomness
 							Self::save_hardware_info(node_id.clone(), node_type.clone());				
 							if node_type == NodeType::Validator {
-								Self::process_pending_compute_requests();
+								// Self::process_pending_compute_requests();
 								let _ = Self::handle_request_assignment(node_id, node_info);
 							}
 						} else {
@@ -424,7 +424,7 @@ pub mod pallet {
 			let _signature = signature;
 
 			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(&node_id);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
@@ -536,7 +536,7 @@ pub mod pallet {
 			ensure_none(origin)?; // Ensure the call is unsigned
 
 			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(&node_id);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
@@ -580,7 +580,7 @@ pub mod pallet {
 			ensure_none(origin)?; // Ensure the call is unsigned
 
 			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(&node_id);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
@@ -636,7 +636,7 @@ pub mod pallet {
 			ensure_none(origin)?; // Ensure the call is unsigned
 
 			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(&node_id);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
@@ -1257,110 +1257,110 @@ pub mod pallet {
 			};
 		}
 
-		pub fn process_pending_compute_requests() {
-			let active_compute_miners = pallet_registration::Pallet::<T>::get_all_active_compute_miners();
-			let pending_compute_requests = pallet_compute::Pallet::<T>::get_pending_compute_requests();
+		// pub fn process_pending_compute_requests() {
+		// 	let active_compute_miners = pallet_registration::Pallet::<T>::get_all_active_compute_miners();
+		// 	let pending_compute_requests = pallet_compute::Pallet::<T>::get_pending_compute_requests();
 			
-			for compute_request in pending_compute_requests {
-				// Parse the plan technical description (assuming JSON format)
-				let plan_specs = match sp_std::str::from_utf8(&compute_request.plan_technical_description) {
-					Ok(specs_str) => {
-						match serde_json::from_str::<serde_json::Value>(specs_str) {
-							Ok(json) => json,
-							Err(e) => {
-								log::error!(
-									"Failed to parse plan technical description JSON: {:?}, raw string: {}",
-									e,
-									specs_str
-								);
-								continue; // Skip if JSON parsing fails
-							}
-						}
-					},
-					Err(e) => {
-						log::error!(
-							"Failed to convert plan technical description to UTF-8: {:?}, raw bytes: {:?}",
-							e,
-							compute_request.plan_technical_description
-						);
-						continue; // Skip if UTF-8 conversion fails
-					}
-				};
+		// 	for compute_request in pending_compute_requests {
+		// 		// Parse the plan technical description (assuming JSON format)
+		// 		let plan_specs = match sp_std::str::from_utf8(&compute_request.plan_technical_description) {
+		// 			Ok(specs_str) => {
+		// 				match serde_json::from_str::<serde_json::Value>(specs_str) {
+		// 					Ok(json) => json,
+		// 					Err(e) => {
+		// 						log::error!(
+		// 							"Failed to parse plan technical description JSON: {:?}, raw string: {}",
+		// 							e,
+		// 							specs_str
+		// 						);
+		// 						continue; // Skip if JSON parsing fails
+		// 					}
+		// 				}
+		// 			},
+		// 			Err(e) => {
+		// 				log::error!(
+		// 					"Failed to convert plan technical description to UTF-8: {:?}, raw bytes: {:?}",
+		// 					e,
+		// 					compute_request.plan_technical_description
+		// 				);
+		// 				continue; // Skip if UTF-8 conversion fails
+		// 			}
+		// 		};
 
-				// Find a suitable miner with matching or exceeding specs
-				if let Some(suitable_miner) = active_compute_miners.iter().find(|miner| {
-					// Check if a specific miner ID is requested
-					let miner_id_match = match &compute_request.miner_id {
-						Some(requested_miner_id) => miner.node_id == *requested_miner_id,
-						None => true, // No specific miner requested, so all miners are valid
-					};
+		// 		// Find a suitable miner with matching or exceeding specs
+		// 		if let Some(suitable_miner) = active_compute_miners.iter().find(|miner| {
+		// 			// Check if a specific miner ID is requested
+		// 			let miner_id_match = match &compute_request.miner_id {
+		// 				Some(requested_miner_id) => miner.node_id == *requested_miner_id,
+		// 				None => true, // No specific miner requested, so all miners are valid
+		// 			};
 
-					// Retrieve node metrics
-					let node_metrics_match = match Self::get_node_metrics(miner.node_id.clone()) {
-						Some(node_metrics) if miner_id_match => {
-							// Define the minimum resource reservation percentage
-							const MIN_RESERVED_PERCENTAGE: f64 = 0.1; // 10%
+		// 			// Retrieve node metrics
+		// 			let node_metrics_match = match Self::get_node_metrics(miner.node_id.clone()) {
+		// 				Some(node_metrics) if miner_id_match => {
+		// 					// Define the minimum resource reservation percentage
+		// 					const MIN_RESERVED_PERCENTAGE: f64 = 0.1; // 10%
 
-							// Check CPU cores requirement with 10% reservation
-							let total_cpu_cores = node_metrics.cpu_cores as f64;
-							let cpu_cores_match = plan_specs["cpu_cores"].as_u64()
-								.map_or(true, |req_cores| {
-									let requested_cores = req_cores as f64;
-									(total_cpu_cores - requested_cores) / total_cpu_cores >= MIN_RESERVED_PERCENTAGE
-								});
+		// 					// Check CPU cores requirement with 10% reservation
+		// 					let total_cpu_cores = node_metrics.cpu_cores as f64;
+		// 					let cpu_cores_match = plan_specs["cpu_cores"].as_u64()
+		// 						.map_or(true, |req_cores| {
+		// 							let requested_cores = req_cores as f64;
+		// 							(total_cpu_cores - requested_cores) / total_cpu_cores >= MIN_RESERVED_PERCENTAGE
+		// 						});
 
-							// Check RAM requirement with 10% reservation (convert MB to GB)
-							let total_ram_gb = (node_metrics.free_memory_mb / 1024) as f64;
-							let ram_match = plan_specs["ram_gb"].as_u64()
-								.map_or(true, |req_ram| {
-									let requested_ram = req_ram as f64;
-									(total_ram_gb - requested_ram) / total_ram_gb >= MIN_RESERVED_PERCENTAGE
-								});
+		// 					// Check RAM requirement with 10% reservation (convert MB to GB)
+		// 					let total_ram_gb = (node_metrics.free_memory_mb / 1024) as f64;
+		// 					let ram_match = plan_specs["ram_gb"].as_u64()
+		// 						.map_or(true, |req_ram| {
+		// 							let requested_ram = req_ram as f64;
+		// 							(total_ram_gb - requested_ram) / total_ram_gb >= MIN_RESERVED_PERCENTAGE
+		// 						});
 
-							// Check storage requirement with 10% reservation
-							let current_storage_gb = (node_metrics.current_storage_bytes / (1024 * 1024 * 1024)) as f64;
-							let storage_match = plan_specs["storage_gb"].as_u64()
-								.map_or(true, |req_storage| {
-									let requested_storage = req_storage as f64;
-									(current_storage_gb - requested_storage) / current_storage_gb >= MIN_RESERVED_PERCENTAGE
-								});
+		// 					// Check storage requirement with 10% reservation
+		// 					let current_storage_gb = (node_metrics.current_storage_bytes / (1024 * 1024 * 1024)) as f64;
+		// 					let storage_match = plan_specs["storage_gb"].as_u64()
+		// 						.map_or(true, |req_storage| {
+		// 							let requested_storage = req_storage as f64;
+		// 							(current_storage_gb - requested_storage) / current_storage_gb >= MIN_RESERVED_PERCENTAGE
+		// 						});
 
-							// New check for SEV
-							let sev_match = plan_specs["is_sev_enabled"].as_bool()
-							.map_or(true, |req_sev| {
-								!req_sev || node_metrics.is_sev_enabled
-							});
+		// 					// New check for SEV
+		// 					let sev_match = plan_specs["is_sev_enabled"].as_bool()
+		// 					.map_or(true, |req_sev| {
+		// 						!req_sev || node_metrics.is_sev_enabled
+		// 					});
 
-							// Return true if all specified requirements are met and 10% resources remain
-							cpu_cores_match && ram_match && storage_match && sev_match
-						},
-						_ => false // No metrics available or miner ID mismatch
-					};
+		// 					// Return true if all specified requirements are met and 10% resources remain
+		// 					cpu_cores_match && ram_match && storage_match && sev_match
+		// 				},
+		// 				_ => false // No metrics available or miner ID mismatch
+		// 			};
 
-					node_metrics_match
-				}) {
+		// 			node_metrics_match
+		// 		}) {
 
-					let failed_requests = pallet_compute::Pallet::<T>::get_miner_compute_requests_with_failure(compute_request.request_id);
+		// 			let failed_requests = pallet_compute::Pallet::<T>::get_miner_compute_requests_with_failure(compute_request.request_id);
 
-					// Check if the suitable miner's node ID is not in the failed requests
-					let is_miner_failed = failed_requests.iter().any(|req| 
-						req.miner_node_id == suitable_miner.node_id
-					);
+		// 			// Check if the suitable miner's node ID is not in the failed requests
+		// 			let is_miner_failed = failed_requests.iter().any(|req| 
+		// 				req.miner_node_id == suitable_miner.node_id
+		// 			);
 					
-                    // only assign if not already assigned
-					if !is_miner_failed {
-					    // Assign the compute request to the suitable miner
-					    pallet_compute::Pallet::<T>::save_compute_request(
-					    	suitable_miner.node_id.clone(), 
-					    	compute_request.plan_id, 
-					    	compute_request.request_id,
-					    	compute_request.owner
-					    );						
-					}
+        //             // only assign if not already assigned
+		// 			if !is_miner_failed {
+		// 			    // Assign the compute request to the suitable miner
+		// 			    pallet_compute::Pallet::<T>::save_compute_request(
+		// 			    	suitable_miner.node_id.clone(), 
+		// 			    	compute_request.plan_id, 
+		// 			    	compute_request.request_id,
+		// 			    	compute_request.owner
+		// 			    );						
+		// 			}
 
-				}
-			}
-		}
+		// 		}
+		// 	}
+		// }
 
 		pub fn get_node_metrics(node_id: Vec<u8>) -> Option<NodeMetricsData> {
 			NodeMetrics::<T>::get(node_id)
@@ -1758,7 +1758,7 @@ pub mod pallet {
 							log::error!("Failed to convert hash to string");
 							Error::<T>::InvalidCid
 						})?;
-						
+						log::info!("Fetching CID content for request {:?}", cid_str);
 						// Fetch the content from IPFS
 						let content = IpfsPallet::<T>::fetch_ipfs_content(cid_str).map_err(|e| {
 							log::error!("Failed to fetch CID content for request {:?}: {:?}", initial_request.file_hash, e);
@@ -1788,7 +1788,7 @@ pub mod pallet {
 									created_at: current_block,
 									miner_ids: initial_request.miner_ids.clone(), // Inherit from initial request
 									selected_validator: initial_request.selected_validator.clone(),
-									is_assigned: false,
+									is_assigned: true,
 								})
 							})
 							.collect();
@@ -1990,7 +1990,8 @@ pub mod pallet {
 						Ok(new_user_cid) => {
 							let new_user_cid_bounded = BoundedVec::try_from(new_user_cid.clone().into_bytes())
 								.map_err(|_| Error::<T>::StorageOverflow)?;
-							IpfsPallet::<T>::call_update_user_profile(owner.clone(), new_user_cid_bounded);
+							let bounded_node_id: BoundedVec<u8, ConstU32<64>> = BoundedVec::try_from(node_id.clone()).map_err(|_| Error::<T>::StorageOverflow)?;
+							IpfsPallet::<T>::call_update_user_profile(owner.clone(), new_user_cid_bounded, bounded_node_id);								
 							log::info!("Updated UserProfile for owner {:?} with CID: {}", owner, new_user_cid);
 						}
 						Err(e) => log::error!("Failed to update UserProfile CID: {:?}", e),

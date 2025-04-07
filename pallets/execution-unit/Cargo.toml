@@ -26,7 +26,7 @@ hex = { workspace = true }
 sysinfo = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 pallet-babe = { default-features = false, workspace = true }
-pallet-compute = { workspace = true, default-features = false }
+#pallet-compute = { workspace = true, default-features = false }
 pallet-credits = { default-features = false, workspace = true }
 pallet-balances = { default-features = false, workspace = true }
 pallet-rankings = { default-features = false, workspace = true }
@@ -61,7 +61,7 @@ std = [
     "sp-debug-derive/std",
 	"pallet-metagraph/std",
     "pallet-babe/std",
-    "pallet-compute/std",
+    #"pallet-compute/std",
     "pallet-credits/std",
     "pallet-balances/std",
     "pallet-rankings/std",

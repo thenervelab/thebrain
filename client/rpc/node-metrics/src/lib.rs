@@ -122,25 +122,25 @@ where
 		})
 	}
 
-	fn get_user_buckets(&self, account: AccountId32) -> RpcResult<Vec<UserBucket>>{
+	// fn get_user_buckets(&self, account: AccountId32) -> RpcResult<Vec<UserBucket>>{
 		
-		let api = self.client.runtime_api();
-		let best_hash = self.client.info().best_hash;
+	// 	let api = self.client.runtime_api();
+	// 	let best_hash = self.client.info().best_hash;
 
-		api.get_user_buckets(best_hash, account).map_err(|err| {
-			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
-		})
-	}
+	// 	api.get_user_buckets(best_hash, account).map_err(|err| {
+	// 		internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+	// 	})
+	// }
 
-	fn get_user_vms(&self, account: AccountId32) -> RpcResult<Vec<UserVmDetails<AccountId32,  u32, [u8; 32]>>>{
+	// fn get_user_vms(&self, account: AccountId32) -> RpcResult<Vec<UserVmDetails<AccountId32,  u32, [u8; 32]>>>{
 		
-		let api = self.client.runtime_api();
-		let best_hash = self.client.info().best_hash;
+	// 	let api = self.client.runtime_api();
+	// 	let best_hash = self.client.info().best_hash;
 
-		api.get_user_vms(best_hash, account).map_err(|err| {
-			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
-		})
-	}
+	// 	api.get_user_vms(best_hash, account).map_err(|err| {
+	// 		internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+	// 	})
+	// }
 
 
 	fn get_client_ip(&self, client_id: AccountId32) -> RpcResult<Option<Vec<u8>>>{
@@ -181,32 +181,32 @@ where
 		})
 	}
 
-	fn get_total_bucket_size(&self, account_id: AccountId32) -> RpcResult<u128>{
-		let api = self.client.runtime_api();
-		let best_hash = self.client.info().best_hash;
+	// fn get_total_bucket_size(&self, account_id: AccountId32) -> RpcResult<u128>{
+	// 	let api = self.client.runtime_api();
+	// 	let best_hash = self.client.info().best_hash;
 
-		api.get_total_bucket_size(best_hash, account_id).map_err(|err| {
-			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
-		})
-	}
+	// 	api.get_total_bucket_size(best_hash, account_id).map_err(|err| {
+	// 		internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+	// 	})
+	// }
 
-	fn get_user_bandwidth(&self, account_id: AccountId32) -> RpcResult<u128>{
-		let api = self.client.runtime_api();
-		let best_hash = self.client.info().best_hash;
+	// fn get_user_bandwidth(&self, account_id: AccountId32) -> RpcResult<u128>{
+	// 	let api = self.client.runtime_api();
+	// 	let best_hash = self.client.info().best_hash;
 
-		api.get_user_bandwidth(best_hash, account_id).map_err(|err| {
-			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
-		})
-	}
+	// 	api.get_user_bandwidth(best_hash, account_id).map_err(|err| {
+	// 		internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+	// 	})
+	// }
 
-	fn get_bucket_size(&self, bucket_name: Vec<u8>) -> RpcResult<u128>{
-		let api = self.client.runtime_api();
-		let best_hash = self.client.info().best_hash;
+	// fn get_bucket_size(&self, bucket_name: Vec<u8>) -> RpcResult<u128>{
+	// 	let api = self.client.runtime_api();
+	// 	let best_hash = self.client.info().best_hash;
 
-		api.get_bucket_size(best_hash, bucket_name).map_err(|err| {
-			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
-		})
-	}
+	// 	api.get_bucket_size(best_hash, bucket_name).map_err(|err| {
+	// 		internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
+	// 	})
+	// }
 
 	fn get_miner_info(&self, account_id: AccountId32) -> RpcResult<Option<(NodeType, Status)>>{
 		let api = self.client.runtime_api();

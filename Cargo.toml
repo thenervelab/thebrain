@@ -356,7 +356,7 @@ pallet-execution-unit = { path = "pallets/execution-unit", default-features = fa
 
 ipfs-pallet  = { path = "pallets/ipfs", default-features = false }
 pallet-alpha-bridge = { path = "pallets/alpha-bridge", default-features = false }
-pallet-storage-s3 = { path = "pallets/storage-s3", default-features = false }
+#pallet-storage-s3 = { path = "pallets/storage-s3", default-features = false }
 pallet-ip = { path = "pallets/ip", default-features = false }
 pallet-rankings   = { path = "pallets/ranking", default-features = false }
 pallet-utils  = { path = "pallets/utils", default-features = false }
@@ -365,7 +365,7 @@ pallet-account-profile  = { path = "pallets/account-profile", default-features =
 pallet-notifications  = { path = "pallets/notifications", default-features = false }
 pallet-registration  = { path = "pallets/registration", default-features = false }
 pallet-subaccount  = { path = "pallets/subAccounts", default-features = false }
-pallet-backup = { path = "pallets/backup", default-features = false }
+#pallet-backup = { path = "pallets/backup", default-features = false }
 pallet-credits = { path = "pallets/credits", default-features = false }
 pallet-compute = { path = "pallets/compute", default-features = false }
 pallet-container-registry = { path = "pallets/containerRegistry", default-features = false }

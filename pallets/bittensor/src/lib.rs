@@ -46,10 +46,11 @@ pub mod pallet {
                       + pallet_registration::Config + pallet_execution_unit::Config 
                       + pallet_metagraph::Config + pallet_rankings::Config 
                       + pallet_rankings::Config 
-                      + pallet_rankings::Config<pallet_rankings::Instance2>
+                    //   + pallet_rankings::Config<pallet_rankings::Instance2>
                       + pallet_rankings::Config<pallet_rankings::Instance3>
-                      + pallet_rankings::Config<pallet_rankings::Instance4> 
-                      + pallet_rankings::Config<pallet_rankings::Instance5> {
+                    //   + pallet_rankings::Config<pallet_rankings::Instance4> 
+                    //   + pallet_rankings::Config<pallet_rankings::Instance5> 
+                      {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
         #[pallet::constant]
@@ -936,17 +937,17 @@ pub mod pallet {
                         [storage_miners_node_id.clone(), linked_storage_miners_node_id.clone()].concat(), 
                         [storage_miners_node_types.clone(), linked_storage_miners_node_types.clone()].concat(), block_number, 1u32);
 
-            let _ = RankingsPallet::<T, pallet_rankings::Instance2>::save_rankings_update([compute_weights.clone(), linked_compute_miners_weights.clone()].concat(), 
-                        [compute_all_nodes_ss58.clone(), linked_compute_miners_ss58.clone()].concat(), [compute_all_miners_node_id.clone(), linked_compute_miners_node_id.clone()].concat(), [compute_all_miners_node_types.clone(), linked_compute_miners_node_types.clone()].concat(), block_number, 2u32);
+            // let _ = RankingsPallet::<T, pallet_rankings::Instance2>::save_rankings_update([compute_weights.clone(), linked_compute_miners_weights.clone()].concat(), 
+            //             [compute_all_nodes_ss58.clone(), linked_compute_miners_ss58.clone()].concat(), [compute_all_miners_node_id.clone(), linked_compute_miners_node_id.clone()].concat(), [compute_all_miners_node_types.clone(), linked_compute_miners_node_types.clone()].concat(), block_number, 2u32);
 
             let _ = RankingsPallet::<T, pallet_rankings::Instance3>::save_rankings_update([validator_weights.clone(), linked_validator_miners_weights.clone()].concat(), 
                     [validator_all_nodes_ss58.clone(), linked_validator_miners_ss58.clone()].concat(), [validator_all_miners_node_id.clone(), linked_validator_miners_node_id.clone()].concat(), [validator_all_miners_node_types.clone(), linked_validator_miners_node_types.clone()].concat(), block_number, 3u32); 
 
-            let _ = RankingsPallet::<T, pallet_rankings::Instance4>::save_rankings_update([gpu_weights.clone(), linked_gpu_miners_weights.clone()].concat(), 
-                    [gpu_all_nodes_ss58.clone(), linked_gpu_miners_ss58.clone()].concat(), [gpu_all_miners_node_id.clone(), linked_gpu_miners_node_id.clone()].concat(), [gpu_all_miners_node_types.clone(), linked_gpu_miners_node_types.clone()].concat(), block_number,  4u32);
+            // let _ = RankingsPallet::<T, pallet_rankings::Instance4>::save_rankings_update([gpu_weights.clone(), linked_gpu_miners_weights.clone()].concat(), 
+            //         [gpu_all_nodes_ss58.clone(), linked_gpu_miners_ss58.clone()].concat(), [gpu_all_miners_node_id.clone(), linked_gpu_miners_node_id.clone()].concat(), [gpu_all_miners_node_types.clone(), linked_gpu_miners_node_types.clone()].concat(), block_number,  4u32);
 
-            let _ = RankingsPallet::<T, pallet_rankings::Instance5>::save_rankings_update([storage_s3_weights.clone(), linked_storage_s3_miners_weights.clone()].concat(), 
-                    [storage_s3_all_nodes_ss58.clone(), linked_storage_s3_miners_ss58.clone()].concat(), [storage_s3_all_miners_node_id.clone(), linked_storage_s3_miners_node_id.clone()].concat(), [storage_s3_all_miners_node_types.clone(), linked_storage_s3_miners_node_types.clone()].concat(), block_number, 5u32);
+            // let _ = RankingsPallet::<T, pallet_rankings::Instance5>::save_rankings_update([storage_s3_weights.clone(), linked_storage_s3_miners_weights.clone()].concat(), 
+            //         [storage_s3_all_nodes_ss58.clone(), linked_storage_s3_miners_ss58.clone()].concat(), [storage_s3_all_miners_node_id.clone(), linked_storage_s3_miners_node_id.clone()].concat(), [storage_s3_all_miners_node_types.clone(), linked_storage_s3_miners_node_types.clone()].concat(), block_number, 5u32);
 
             // Ensure both vectors have the same length and are greater than 1
             if all_dests_on_bittensor.len() != all_weights_on_bitensor.len() {

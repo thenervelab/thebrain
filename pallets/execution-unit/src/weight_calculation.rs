@@ -1,7 +1,7 @@
 pub use crate::types::{NodeMetricsData};
 use sp_std::{collections::btree_map::BTreeMap, vec::Vec};
 use pallet_registration::NodeType;
-use pallet_compute::TechnicalDescription;
+// use pallet_compute::TechnicalDescription;
 // use frame_system;
 
 impl NodeMetricsData {
@@ -60,53 +60,53 @@ impl NodeMetricsData {
         combined_ram_score
     }
 
-    // New method to calculate compute usage score
-    fn calculate_compute_usage_score<T: pallet_compute::Config + pallet_marketplace::Config>(metrics: &NodeMetricsData) -> u64 {
-        // Use a more generic approach to retrieve compute requests
-        let miner_id = metrics.miner_id.clone();
-        let miner_compute_requests = pallet_compute::MinerComputeRequests::<T>::get(miner_id);
+    // // New method to calculate compute usage score
+    // fn calculate_compute_usage_score<T: pallet_compute::Config + pallet_marketplace::Config>(metrics: &NodeMetricsData) -> u64 {
+    //     // Use a more generic approach to retrieve compute requests
+    //     let miner_id = metrics.miner_id.clone();
+    //     let miner_compute_requests = pallet_compute::MinerComputeRequests::<T>::get(miner_id);
         
-        let mut total_ram_usage = 0;
-        let mut total_cpu_usage = 0;
-        let mut total_storage_usage = 0;
+    //     let mut total_ram_usage = 0;
+    //     let mut total_cpu_usage = 0;
+    //     let mut total_storage_usage = 0;
         
-        for request in miner_compute_requests {
-            // Skip unfulfilled requests
-            if !request.fullfilled {
-                continue;
-            }       
+    //     for request in miner_compute_requests {
+    //         // Skip unfulfilled requests
+    //         if !request.fullfilled {
+    //             continue;
+    //         }       
             
-            // Retrieve the plan to get technical description
-            if let Some(plan) = pallet_marketplace::Plans::<T>::get(request.plan_id) {
-                // Deserialize technical description
-                if let Ok(tech_desc) = serde_json::from_slice::<TechnicalDescription>(&plan.plan_technical_description) {
-                    // Accumulate resource usage
-                    total_ram_usage += tech_desc.ram_gb as u64;
-                    total_cpu_usage += tech_desc.cpu_cores as u64;
-                    total_storage_usage += tech_desc.storage_gb as u64;
-                }
-            }
-        }
+    //         // Retrieve the plan to get technical description
+    //         if let Some(plan) = pallet_marketplace::Plans::<T>::get(request.plan_id) {
+    //             // Deserialize technical description
+    //             if let Ok(tech_desc) = serde_json::from_slice::<TechnicalDescription>(&plan.plan_technical_description) {
+    //                 // Accumulate resource usage
+    //                 total_ram_usage += tech_desc.ram_gb as u64;
+    //                 total_cpu_usage += tech_desc.cpu_cores as u64;
+    //                 total_storage_usage += tech_desc.storage_gb as u64;
+    //             }
+    //         }
+    //     }
         
-        // Define weights for each resource type
-        const RAM_WEIGHT: u64 = 50;   // 50% importance
-        const CPU_WEIGHT: u64 = 30;   // 30% importance
-        const STORAGE_WEIGHT: u64 = 20;  // 20% importance
+    //     // Define weights for each resource type
+    //     const RAM_WEIGHT: u64 = 50;   // 50% importance
+    //     const CPU_WEIGHT: u64 = 30;   // 30% importance
+    //     const STORAGE_WEIGHT: u64 = 20;  // 20% importance
         
-        // Normalize and calculate weighted score out of 100
-        // First, calculate individual resource scores
-        let ram_score = total_ram_usage.saturating_mul(RAM_WEIGHT);
-        let cpu_score = total_cpu_usage.saturating_mul(CPU_WEIGHT);
-        let storage_score = total_storage_usage.saturating_mul(STORAGE_WEIGHT);
+    //     // Normalize and calculate weighted score out of 100
+    //     // First, calculate individual resource scores
+    //     let ram_score = total_ram_usage.saturating_mul(RAM_WEIGHT);
+    //     let cpu_score = total_cpu_usage.saturating_mul(CPU_WEIGHT);
+    //     let storage_score = total_storage_usage.saturating_mul(STORAGE_WEIGHT);
         
-        // Sum up the weighted scores and divide by total weight to get a score out of 100
-        let total_weighted_score = ram_score + cpu_score + storage_score;
-        let normalized_score = total_weighted_score / (RAM_WEIGHT + CPU_WEIGHT + STORAGE_WEIGHT);
+    //     // Sum up the weighted scores and divide by total weight to get a score out of 100
+    //     let total_weighted_score = ram_score + cpu_score + storage_score;
+    //     let normalized_score = total_weighted_score / (RAM_WEIGHT + CPU_WEIGHT + STORAGE_WEIGHT);
         
-        normalized_score
-    }
+    //     normalized_score
+    // }
     
-    pub fn calculate_weight<T: pallet_compute::Config + pallet_marketplace::Config>(
+    pub fn calculate_weight<T: pallet_marketplace::Config>(
         _node_type: NodeType,
         metrics: &NodeMetricsData,
         all_nodes_metrics: &[NodeMetricsData],
@@ -146,10 +146,11 @@ impl NodeMetricsData {
         };
         
         // Conditionally include compute usage score only for compute miners
-        let compute_usage_score = match _node_type {
-            NodeType::ComputeMiner => Self::calculate_compute_usage_score::<T>(metrics).saturating_div(100),
-            _ => 0,
-        };
+        // let compute_usage_score = match _node_type {
+        //     NodeType::ComputeMiner => Self::calculate_compute_usage_score::<T>(metrics).saturating_div(100),
+        //     _ => 0,
+        // };
+        let compute_usage_score : u64= 0;
         
         let network_score = (Self::calculate_network_score(metrics) as u64).saturating_div(100);
         let diversity_score = (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);

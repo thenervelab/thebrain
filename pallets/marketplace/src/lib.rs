@@ -71,7 +71,7 @@ pub mod pallet {
     use pallet_registration::Pallet as RegistrationPallet;
     use pallet_registration::NodeType;
     use pallet_credits::Pallet as CreditsPallet;
-    use pallet_storage_s3::Pallet as StorageS3Pallet;
+    // use pallet_storage_s3::Pallet as StorageS3Pallet;
     use pallet_utils::SubscriptionId;
     use sp_core::H256;
     use sp_std::{vec, vec::Vec};
@@ -89,7 +89,7 @@ pub mod pallet {
     use frame_system::offchain::SigningTypes;
     use frame_system::offchain::SendUnsignedTransaction;
     use frame_support::traits::ExistenceRequirement;
-    use pallet_compute::ComputeRequestStatus;
+    // use pallet_compute::ComputeRequestStatus;
     use sp_runtime::traits::Zero;
     use ipfs_pallet::FileInput;
     use sp_core::U256;
@@ -109,8 +109,8 @@ pub mod pallet {
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
                 Self::handle_storage_subscription_charging(current_block);
-                Self::handle_storage_s3_subscription_charging(current_block);
-                Self::handle_compute_subscription_charging(current_block);
+                // Self::handle_storage_s3_subscription_charging(current_block);
+                // Self::handle_compute_subscription_charging(current_block);
 
             }
 
@@ -126,14 +126,14 @@ pub mod pallet {
                     ipfs_pallet::Config +
                     pallet_balances::Config + 
                     pallet_notifications::Config +
-                    pallet_compute::Config +
-                    pallet_storage_s3::Config +
+                    // pallet_compute::Config +
+                    // pallet_storage_s3::Config +
                     pallet_rankings::Config +
                     pallet_subaccount::Config +
-                    pallet_rankings::Config<pallet_rankings::Instance2> +
+                    // pallet_rankings::Config<pallet_rankings::Instance2> +
                     pallet_rankings::Config<pallet_rankings::Instance3> +
-                    pallet_rankings::Config<pallet_rankings::Instance4> +
-                    pallet_rankings::Config<pallet_rankings::Instance5> +
+                    // pallet_rankings::Config<pallet_rankings::Instance4> +
+                    // pallet_rankings::Config<pallet_rankings::Instance5> +
 					SendTransactionTypes<Call<Self>> + 
 					frame_system::offchain::SigningTypes 
         {
@@ -732,85 +732,85 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Purchase a plan (storage or compute) using points
-        #[pallet::call_index(7)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn purchase_plan(
-            origin: OriginFor<T>,
-            plan_id: T::Hash,
-            location_id: Option<u32>,
-            selected_image_name: Vec<u8>,
-            cloud_init_cid: Option<Vec<u8>>,
-            pay_for: Option<T::AccountId>,
-            miner_id: Option<Vec<u8>>
-        ) -> DispatchResult {
-            let caller = ensure_signed(origin)?;
+        // /// Purchase a plan (storage or compute) using points
+        // #[pallet::call_index(7)]
+        // #[pallet::weight((0, Pays::No))]
+        // pub fn purchase_plan(
+        //     origin: OriginFor<T>,
+        //     plan_id: T::Hash,
+        //     location_id: Option<u32>,
+        //     selected_image_name: Vec<u8>,
+        //     cloud_init_cid: Option<Vec<u8>>,
+        //     pay_for: Option<T::AccountId>,
+        //     miner_id: Option<Vec<u8>>
+        // ) -> DispatchResult {
+        //     let caller = ensure_signed(origin)?;
 
-            // Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxRequestsPerBlock::get();
-			let user_requests_count = UserRequestsCount::<T>::get(&caller);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+        //     // Rate limit: maximum storage requests per block per user
+		// 	let max_requests_per_block = T::MaxRequestsPerBlock::get();
+		// 	let user_requests_count = UserRequestsCount::<T>::get(&caller);
+		// 	ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
-            // Check if a specific miner is requested and charge an additional fee
-            if miner_id.is_some() {
-                // Define a fixed fee for requesting a specific miner
-                let specific_miner_fee = Self::specific_miner_request_fee();
+        //     // Check if a specific miner is requested and charge an additional fee
+        //     if miner_id.is_some() {
+        //         // Define a fixed fee for requesting a specific miner
+        //         let specific_miner_fee = Self::specific_miner_request_fee();
                 
-                // Ensure the payer has sufficient balance
-                ensure!(
-                    <pallet_balances::Pallet<T>>::free_balance(&caller) >= specific_miner_fee,
-                    Error::<T>::InsufficientBalance
-                );
+        //         // Ensure the payer has sufficient balance
+        //         ensure!(
+        //             <pallet_balances::Pallet<T>>::free_balance(&caller) >= specific_miner_fee,
+        //             Error::<T>::InsufficientBalance
+        //         );
 
-                // Charge the specific miner request fee
-                <pallet_balances::Pallet<T>>::transfer(
-                    &caller.clone(), 
-                    &Self::account_id(), 
-                    specific_miner_fee, 
-                    ExistenceRequirement::AllowDeath
-                )?;
-            }
+        //         // Charge the specific miner request fee
+        //         <pallet_balances::Pallet<T>>::transfer(
+        //             &caller.clone(), 
+        //             &Self::account_id(), 
+        //             specific_miner_fee, 
+        //             ExistenceRequirement::AllowDeath
+        //         )?;
+        //     }
             
-            // Check if the caller is a sub-account, and if so, use the main account
-            let caller_main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
-                Ok(main) => main,
-                Err(_) => caller.clone(), // If not a sub-account, use the original account
-            };
+        //     // Check if the caller is a sub-account, and if so, use the main account
+        //     let caller_main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
+        //         Ok(main) => main,
+        //         Err(_) => caller.clone(), // If not a sub-account, use the original account
+        //     };
 
-            // Determine the owner of the plan
-            let owner = match pay_for {
-                Some(specified_owner) => {
-                    // If a specific owner is provided, check if it's a sub-account
-                    match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(specified_owner.clone()) {
-                        Ok(main) => main,
-                        Err(_) => specified_owner.clone(), // If not a sub-account, use the original account
-                    }
+        //     // Determine the owner of the plan
+        //     let owner = match pay_for {
+        //         Some(specified_owner) => {
+        //             // If a specific owner is provided, check if it's a sub-account
+        //             match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(specified_owner.clone()) {
+        //                 Ok(main) => main,
+        //                 Err(_) => specified_owner.clone(), // If not a sub-account, use the original account
+        //             }
 
-                },
-                None => caller_main_account.clone(),
-            };
+        //         },
+        //         None => caller_main_account.clone(),
+        //     };
 
-            let result = Self::do_purchase_plan(
-                owner.clone(),
-                plan_id,
-                location_id,
-                selected_image_name.clone(),
-                cloud_init_cid.clone(),
-                miner_id
-            )?;
+        //     let result = Self::do_purchase_plan(
+        //         owner.clone(),
+        //         plan_id,
+        //         location_id,
+        //         selected_image_name.clone(),
+        //         cloud_init_cid.clone(),
+        //         miner_id
+        //     )?;
 
-            // Emit an event for the plan purchase
-            Self::deposit_event(Event::PlanPurchased {
-                caller,
-                owner,
-                plan_id,
-                location_id,
-                selected_image_name,
-                cloud_init_cid,
-            });
+        //     // Emit an event for the plan purchase
+        //     Self::deposit_event(Event::PlanPurchased {
+        //         caller,
+        //         owner,
+        //         plan_id,
+        //         location_id,
+        //         selected_image_name,
+        //         cloud_init_cid,
+        //     });
 
-            Ok(result)
-        }
+        //     Ok(result)
+        // }
 
         /// Sudo function to set the price per GB for storage
         #[pallet::call_index(8)]
@@ -1053,103 +1053,103 @@ pub mod pallet {
         }
 
 
-        fn do_purchase_plan(
-            who: T::AccountId,
-            plan_id: T::Hash,
-            location_id: Option<u32>,
-            selected_image_name: Vec<u8>,
-            cloud_init_cid: Option<Vec<u8>>,
-            miner_id: Option<Vec<u8>>
-            // referral_code: Option<Vec<u8>>,
-            // pay_upfront: Option<u128>,
-        ) -> DispatchResult {
-            // Check if the ComputeMiner node type is disabled
-            ensure!(
-                !RegistrationPallet::<T>::is_node_type_disabled(NodeType::ComputeMiner),
-                Error::<T>::NodeTypeDisabled
-            );
+        // fn do_purchase_plan(
+        //     who: T::AccountId,
+        //     plan_id: T::Hash,
+        //     location_id: Option<u32>,
+        //     selected_image_name: Vec<u8>,
+        //     cloud_init_cid: Option<Vec<u8>>,
+        //     miner_id: Option<Vec<u8>>
+        //     // referral_code: Option<Vec<u8>>,
+        //     // pay_upfront: Option<u128>,
+        // ) -> DispatchResult {
+        //     // Check if the ComputeMiner node type is disabled
+        //     ensure!(
+        //         !RegistrationPallet::<T>::is_node_type_disabled(NodeType::ComputeMiner),
+        //         Error::<T>::NodeTypeDisabled
+        //     );
 
-            let pay_upfront: Option<u128> = None;
-            // Check if plan exists
-            let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
+        //     let pay_upfront: Option<u128> = None;
+        //     // Check if plan exists
+        //     let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
-            ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
+        //     ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
-            // Check if the selected image name exists in OSDiskImageUrls storage
-            ensure!(
-                Self::os_disk_image_urls(selected_image_name.clone()).is_some(), 
-                Error::<T>::InvalidImageSelection
-            );
+        //     // Check if the selected image name exists in OSDiskImageUrls storage
+        //     ensure!(
+        //         Self::os_disk_image_urls(selected_image_name.clone()).is_some(), 
+        //         Error::<T>::InvalidImageSelection
+        //     );
 
-            let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
+        //     let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
 
-            // Convert marketplace ImageMetadata to compute pallet ImageMetadata
-            let compute_image_metadata = pallet_compute::ImageMetadata {
-                name: selected_image_name.clone(),
-                image_url: image_url.url,
-            };
+        //     // Convert marketplace ImageMetadata to compute pallet ImageMetadata
+        //     let compute_image_metadata = pallet_compute::ImageMetadata {
+        //         name: selected_image_name.clone(),
+        //         image_url: image_url.url,
+        //     };
 
-            // Determine the price (using the price from the plan)
-            let mut plan_price_native = plan.price;
+        //     // Determine the price (using the price from the plan)
+        //     let mut plan_price_native = plan.price;
                 
-            if let Some(upfront_months) = pay_upfront {
-                plan_price_native = plan_price_native.saturating_mul(upfront_months);
-            }
+        //     if let Some(upfront_months) = pay_upfront {
+        //         plan_price_native = plan_price_native.saturating_mul(upfront_months);
+        //     }
         
-            // Check user's native token balance 
-            let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
-            ensure!(user_free_credits >= plan_price_native, Error::<T>::InsufficientFreeCredits);
+        //     // Check user's native token balance 
+        //     let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
+        //     ensure!(user_free_credits >= plan_price_native, Error::<T>::InsufficientFreeCredits);
         
-            // Validate location if specified
-            if let Some(location_id) = location_id {
-                ensure!(CdnLocations::<T>::contains_key(location_id), Error::<T>::LocationNotFound);
-            }
+        //     // Validate location if specified
+        //     if let Some(location_id) = location_id {
+        //         ensure!(CdnLocations::<T>::contains_key(location_id), Error::<T>::LocationNotFound);
+        //     }
         
-            // Generate new subscription ID
-            let subscription_id = NextSubscriptionId::<T>::mutate(|id| {
-                let current_id = *id;
-                *id = id.saturating_add(1);
-                current_id
-            });
+        //     // Generate new subscription ID
+        //     let subscription_id = NextSubscriptionId::<T>::mutate(|id| {
+        //         let current_id = *id;
+        //         *id = id.saturating_add(1);
+        //         current_id
+        //     });
 
-            let _ = Self::consume_credits(who.clone(), plan_price_native,
-            Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
+        //     let _ = Self::consume_credits(who.clone(), plan_price_native,
+        //     Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
                     
-            // Record transaction
-            Self::record_native_transaction(
-                &who,
-                NativeTransactionType::Subscription,
-                (plan_price_native).into(),
-            )?;
+        //     // Record transaction
+        //     Self::record_native_transaction(
+        //         &who,
+        //         NativeTransactionType::Subscription,
+        //         (plan_price_native).into(),
+        //     )?;
 
-            let current_block_number = <frame_system::Pallet<T>>::block_number();
+        //     let current_block_number = <frame_system::Pallet<T>>::block_number();
 			
-            // Create subscription (simplified due to removed plan_type)
-            let subscription = UserPlanSubscription {
-                id: subscription_id,
-                owner: who.clone(),
-                package: plan.clone(),
-                cdn_location_id: location_id,
-                active: true,
-                last_charged_at: current_block_number,
-                selected_image_name,
-                _phantom: PhantomData,
-            };
+        //     // Create subscription (simplified due to removed plan_type)
+        //     let subscription = UserPlanSubscription {
+        //         id: subscription_id,
+        //         owner: who.clone(),
+        //         package: plan.clone(),
+        //         cdn_location_id: location_id,
+        //         active: true,
+        //         last_charged_at: current_block_number,
+        //         selected_image_name,
+        //         _phantom: PhantomData,
+        //     };
         
-            // Store subscription
-            UserPlanSubscriptions::<T>::insert(&who, subscription);
+        //     // Store subscription
+        //     UserPlanSubscriptions::<T>::insert(&who, subscription);
 
-            pallet_compute::Pallet::<T>::create_compute_request(
-                who.clone(),
-                plan.plan_technical_description.clone(),
-                plan_id,
-                compute_image_metadata,
-                cloud_init_cid,
-                miner_id
-            )?;
+        //     pallet_compute::Pallet::<T>::create_compute_request(
+        //         who.clone(),
+        //         plan.plan_technical_description.clone(),
+        //         plan_id,
+        //         compute_image_metadata,
+        //         cloud_init_cid,
+        //         miner_id
+        //     )?;
 
-            Ok(())
-        }
+        //     Ok(())
+        // }
 
         fn record_native_transaction(
             who: &T::AccountId,
@@ -1181,74 +1181,74 @@ pub mod pallet {
         }
 
         
-        // charging logic for compute
-        fn handle_compute_subscription_charging(current_block: BlockNumberFor<T>) {
-            // Retrieve all fulfilled compute requests
-            let compute_subscriptions = Self::get_active_compute_subscriptions();
-            for (account_id, mut subscription) in compute_subscriptions {
-                // Check if the time difference is greater than 1 hour
-                let block_difference = current_block.saturating_sub(subscription.last_charged_at);
-                if block_difference > T::BlocksPerHour::get().into() {
+        // // charging logic for compute
+        // fn handle_compute_subscription_charging(current_block: BlockNumberFor<T>) {
+        //     // Retrieve all fulfilled compute requests
+        //     let compute_subscriptions = Self::get_active_compute_subscriptions();
+        //     for (account_id, mut subscription) in compute_subscriptions {
+        //         // Check if the time difference is greater than 1 hour
+        //         let block_difference = current_block.saturating_sub(subscription.last_charged_at);
+        //         if block_difference > T::BlocksPerHour::get().into() {
                     
-                    // only charge if the request is fulfilled by assigned minner 
-                    let minner_compute_request = pallet_compute::Pallet::<T>::get_miner_compute_request(
-                        account_id.clone(),
-                        subscription.package.id
-                    );
-                    if minner_compute_request.is_some() {
-                        let compute_request = minner_compute_request.unwrap();
-                        if compute_request.fullfilled {
-                            // charge the user for the compute requests for blocks in an hour 
-                            let price_per_block = &subscription.package.price;
-                            let user_free_credits = CreditsPallet::<T>::get_free_credits(&account_id);
+        //             // only charge if the request is fulfilled by assigned minner 
+        //             let minner_compute_request = pallet_compute::Pallet::<T>::get_miner_compute_request(
+        //                 account_id.clone(),
+        //                 subscription.package.id
+        //             );
+        //             if minner_compute_request.is_some() {
+        //                 let compute_request = minner_compute_request.unwrap();
+        //                 if compute_request.fullfilled {
+        //                     // charge the user for the compute requests for blocks in an hour 
+        //                     let price_per_block = &subscription.package.price;
+        //                     let user_free_credits = CreditsPallet::<T>::get_free_credits(&account_id);
 
-                            // total blocks in an hour
-                            let charge_amount = price_per_block * ( T::BlocksPerHour::get() as u128);
+        //                     // total blocks in an hour
+        //                     let charge_amount = price_per_block * ( T::BlocksPerHour::get() as u128);
                         
-                            if user_free_credits >= charge_amount {
-                                // Decrease user credits
-                                let _ = Self::consume_credits(account_id.clone(), charge_amount,
-                                    Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
+        //                     if user_free_credits >= charge_amount {
+        //                         // Decrease user credits
+        //                         let _ = Self::consume_credits(account_id.clone(), charge_amount,
+        //                             Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
 
-                                // Record transaction
-                                let _ = Self::record_native_transaction(
-                                    &account_id,
-                                    NativeTransactionType::Subscription,
-                                    charge_amount.into(),
-                                );
+        //                         // Record transaction
+        //                         let _ = Self::record_native_transaction(
+        //                             &account_id,
+        //                             NativeTransactionType::Subscription,
+        //                             charge_amount.into(),
+        //                         );
 
-                                // Update the storage (Gbs Used , Last Charged at) for this subscription
-                                subscription.last_charged_at = current_block;
-                                UserPlanSubscriptions::<T>::insert(&account_id, subscription.clone());
+        //                         // Update the storage (Gbs Used , Last Charged at) for this subscription
+        //                         subscription.last_charged_at = current_block;
+        //                         UserPlanSubscriptions::<T>::insert(&account_id, subscription.clone());
 
-                                let compute_request = pallet_compute::Pallet::<T>::get_compute_request_by_id(compute_request.request_id);
+        //                         let compute_request = pallet_compute::Pallet::<T>::get_compute_request_by_id(compute_request.request_id);
 
-                                if compute_request.unwrap().status == ComputeRequestStatus::Stopped {
-                                    let _ = pallet_compute::Pallet::<T>::add_miner_compute_boot_request(
-                                        account_id.clone(),
-                                        subscription.package.id
-                                    );
-                                }
-                            } else {
-                                if Self::is_compute_request_in_grace_period(subscription.last_charged_at, current_block) {
-                                    // Still within grace period
-                                    // Check if a stop request exists before creating one
-                                    if !pallet_compute::Pallet::<T>::compute_stop_request_exists(&account_id, &subscription.package.id) {
-                                        let _ = pallet_compute::Pallet::<T>::add_miner_compute_stop_request(
-                                            account_id.clone(),
-                                            subscription.package.id
-                                        );
-                                    }
-                                } else {
-                                    // Cancel subscription if no credits
-                                    let _ = Self::do_cancel_subscription(&account_id);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        //                         if compute_request.unwrap().status == ComputeRequestStatus::Stopped {
+        //                             let _ = pallet_compute::Pallet::<T>::add_miner_compute_boot_request(
+        //                                 account_id.clone(),
+        //                                 subscription.package.id
+        //                             );
+        //                         }
+        //                     } else {
+        //                         if Self::is_compute_request_in_grace_period(subscription.last_charged_at, current_block) {
+        //                             // Still within grace period
+        //                             // Check if a stop request exists before creating one
+        //                             if !pallet_compute::Pallet::<T>::compute_stop_request_exists(&account_id, &subscription.package.id) {
+        //                                 let _ = pallet_compute::Pallet::<T>::add_miner_compute_stop_request(
+        //                                     account_id.clone(),
+        //                                     subscription.package.id
+        //                                 );
+        //                             }
+        //                         } else {
+        //                             // Cancel subscription if no credits
+        //                             let _ = Self::do_cancel_subscription(&account_id);
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
 
         fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
             // Get all users who requested storage
@@ -1319,98 +1319,98 @@ pub mod pallet {
             }
         }
         
-        // charge user for buckets and bandwidth 
-        fn handle_storage_s3_subscription_charging(current_block: BlockNumberFor<T>) {
-            // get total files stores , charge users every hour
-            let users_with_buckets = StorageS3Pallet::<T>::get_users_with_buckets();
-            for user in users_with_buckets {
-                // last_charged_at
-                let last_charged_at = StorageS3Pallet::<T>::last_charged_at(&user);
-                let block_difference = current_block.saturating_sub(last_charged_at);
-                if block_difference > T::BlocksPerHour::get().into() {
-                    // check user last charged_at and if the hour has passed 
-                    let bucket_names = StorageS3Pallet::<T>::bucket_names(user.clone());
-                    // Track total size for the user's buckets
-                    let mut user_total_size: u128 = 0;
+        // // charge user for buckets and bandwidth 
+        // fn handle_storage_s3_subscription_charging(current_block: BlockNumberFor<T>) {
+        //     // get total files stores , charge users every hour
+        //     let users_with_buckets = StorageS3Pallet::<T>::get_users_with_buckets();
+        //     for user in users_with_buckets {
+        //         // last_charged_at
+        //         let last_charged_at = StorageS3Pallet::<T>::last_charged_at(&user);
+        //         let block_difference = current_block.saturating_sub(last_charged_at);
+        //         if block_difference > T::BlocksPerHour::get().into() {
+        //             // check user last charged_at and if the hour has passed 
+        //             let bucket_names = StorageS3Pallet::<T>::bucket_names(user.clone());
+        //             // Track total size for the user's buckets
+        //             let mut user_total_size: u128 = 0;
     
-                    // Process the bucket names
-                    for bucket_name in bucket_names {
-                        // let bucket_name_str = String::from_utf8_lossy(&bucket_name);
+        //             // Process the bucket names
+        //             for bucket_name in bucket_names {
+        //                 // let bucket_name_str = String::from_utf8_lossy(&bucket_name);
     
-                        // Perform HTTP request to list bucket contents
-                        let size = StorageS3Pallet::<T>::bucket_size(bucket_name);
-                        user_total_size += size;
+        //                 // Perform HTTP request to list bucket contents
+        //                 let size = StorageS3Pallet::<T>::bucket_size(bucket_name);
+        //                 user_total_size += size;
                         
-                    }
+        //             }
 
-                    // Skip if no files to charge
-                    if user_total_size == 0 {
-                        continue;
-                    }
+        //             // Skip if no files to charge
+        //             if user_total_size == 0 {
+        //                 continue;
+        //             }
 
-                    // Convert total file size to gigabytes
-                    let total_file_size_in_gbs = user_total_size as f64 / 1_073_741_824.0;
+        //             // Convert total file size to gigabytes
+        //             let total_file_size_in_gbs = user_total_size as f64 / 1_073_741_824.0;
 
-                    // Get the current price per GB from the marketplace pallet
-                    let price_per_gb = Self::get_price_per_gb();
+        //             // Get the current price per GB from the marketplace pallet
+        //             let price_per_gb = Self::get_price_per_gb();
 
-                    // Round up to the nearest whole number of GBs
-                    let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
-                    let buckets_charge_amount = price_per_gb * rounded_gbs;     
+        //             // Round up to the nearest whole number of GBs
+        //             let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
+        //             let buckets_charge_amount = price_per_gb * rounded_gbs;     
                     
                     
-                    let bandwidth_user_total_size = StorageS3Pallet::<T>::get_user_bandwidth(user.clone());
-                    // Convert total file size to gigabytes
-                    let bandwidth_total_file_size_in_gbs = bandwidth_user_total_size as f64 / 1_073_741_824.0;
+        //             let bandwidth_user_total_size = StorageS3Pallet::<T>::get_user_bandwidth(user.clone());
+        //             // Convert total file size to gigabytes
+        //             let bandwidth_total_file_size_in_gbs = bandwidth_user_total_size as f64 / 1_073_741_824.0;
 
-                    // Get the current price per GB from the marketplace pallet
-                    let bandwidth_price_per_gb = Self::get_price_per_bandwidth();
+        //             // Get the current price per GB from the marketplace pallet
+        //             let bandwidth_price_per_gb = Self::get_price_per_bandwidth();
                     
-                    // Round up to the nearest whole number of GBs
-                    let bandwidth_rounded_gbs = ((bandwidth_total_file_size_in_gbs).floor() as u128) + 1;
-                    let bandwidth_charge_amount = bandwidth_price_per_gb * bandwidth_rounded_gbs;    
+        //             // Round up to the nearest whole number of GBs
+        //             let bandwidth_rounded_gbs = ((bandwidth_total_file_size_in_gbs).floor() as u128) + 1;
+        //             let bandwidth_charge_amount = bandwidth_price_per_gb * bandwidth_rounded_gbs;    
                     
-                    let charge_amount = bandwidth_charge_amount + buckets_charge_amount;
+        //             let charge_amount = bandwidth_charge_amount + buckets_charge_amount;
                                         
-                    let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
+        //             let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
 
-                    if user_free_credits >= charge_amount {
-                        // Decrease user credits
-                        let _ = Self::consume_credits(user.clone(), charge_amount,
-                        Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id().clone());
+        //             if user_free_credits >= charge_amount {
+        //                 // Decrease user credits
+        //                 let _ = Self::consume_credits(user.clone(), charge_amount,
+        //                 Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id().clone());
 
-                        // Record transaction
-                        let _ = Self::record_native_transaction(
-                            &user,
-                            NativeTransactionType::Subscription,
-                            charge_amount.into(),
-                        );
+        //                 // Record transaction
+        //                 let _ = Self::record_native_transaction(
+        //                     &user,
+        //                     NativeTransactionType::Subscription,
+        //                     charge_amount.into(),
+        //                 );
 
-                        // Update last charged block for each request
-                        StorageS3Pallet::<T>::update_last_charged_at(&user, current_block);
+        //                 // Update last charged block for each request
+        //                 StorageS3Pallet::<T>::update_last_charged_at(&user, current_block);
                         
-                    } else {
-                        let blocks_per_hour = T::BlocksPerHour::get();
-                        let grace_period_blocks = T::StorageGracePeriod::get();
+        //             } else {
+        //                 let blocks_per_hour = T::BlocksPerHour::get();
+        //                 let grace_period_blocks = T::StorageGracePeriod::get();
                         
-                        // Calculate grace period start after hourly charging
-                        let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
+        //                 // Calculate grace period start after hourly charging
+        //                 let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
                         
-                        // Check if the current block is within the grace period
-                        if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
-                            // Still within grace period
-                            // log::info!(
-                            //     "Storage request for user {:?} is in grace period",
-                            //     user
-                            // );
-                        } else {
-                            // Cancel the request after grace period
-                            // and delete storage 
-                        }
-                    }
-                }
-            }
-        }
+        //                 // Check if the current block is within the grace period
+        //                 if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
+        //                     // Still within grace period
+        //                     // log::info!(
+        //                     //     "Storage request for user {:?} is in grace period",
+        //                     //     user
+        //                     // );
+        //                 } else {
+        //                     // Cancel the request after grace period
+        //                     // and delete storage 
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
 
         /// Helper function to get the current price per GB
         pub fn get_price_per_gb() -> u128 {
@@ -1476,28 +1476,28 @@ pub mod pallet {
             })
         }
 
-        /// Cancel a user's subscription
-        fn do_cancel_subscription(account_id: &T::AccountId) -> DispatchResult {
-            // Retrieve the current subscription
-            let subscription = UserPlanSubscriptions::<T>::get(account_id)
-                .ok_or(Error::<T>::NoActiveSubscription)?;
+        // /// Cancel a user's subscription
+        // fn do_cancel_subscription(account_id: &T::AccountId) -> DispatchResult {
+        //     // Retrieve the current subscription
+        //     let subscription = UserPlanSubscriptions::<T>::get(account_id)
+        //         .ok_or(Error::<T>::NoActiveSubscription)?;
 
-            // Remove the subscription from storage
-            UserPlanSubscriptions::<T>::remove(account_id);
+        //     // Remove the subscription from storage
+        //     UserPlanSubscriptions::<T>::remove(account_id);
 
-            // Delete associated miner compute request
-            let _ = pallet_compute::Pallet::<T>::add_delete_miner_compute_request(
-                subscription.package.id, 
-                account_id.clone()
-            );
+        //     // Delete associated miner compute request
+        //     let _ = pallet_compute::Pallet::<T>::add_delete_miner_compute_request(
+        //         subscription.package.id, 
+        //         account_id.clone()
+        //     );
 
-            // Emit an event about subscription cancellation
-            Self::deposit_event(Event::SubscriptionCancelled {
-                who: account_id.clone(),
-            });
+        //     // Emit an event about subscription cancellation
+        //     Self::deposit_event(Event::SubscriptionCancelled {
+        //         who: account_id.clone(),
+        //     });
 
-            Ok(())
-        }
+        //     Ok(())
+        // }
 
           /// Disable backup for a user's subscription
           pub fn disable_backup(

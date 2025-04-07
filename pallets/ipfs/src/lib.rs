@@ -133,7 +133,7 @@ pub mod pallet {
 	pub type RequestsCount<T: Config> = StorageMap<
 		_, 
 		Blake2_128Concat, 
-		T::AccountId, 
+		BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, 
 		u32, 
 		ValueQuery
 	>;
@@ -196,7 +196,7 @@ pub mod pallet {
 						.propagate(true)
 						.build()
 				},
-				Call::update_user_profile { owner, cid, .. } => {
+				Call::update_user_profile { owner, cid, node_identity, .. } => {
 					let current_block = frame_system::Pallet::<T>::block_number();
 
 					// Create a unique hash combining all relevant data
@@ -426,11 +426,11 @@ pub mod pallet {
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_identity.clone()));
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_identity.clone()), user_requests_count + 1);
 
 			let _signature = signature;
 
@@ -574,11 +574,11 @@ pub mod pallet {
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			let user_requests_count = RequestsCount::<T>::get(&miner_node_id);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			RequestsCount::<T>::insert(&miner_node_id, user_requests_count + 1);
 
 			let miner_node_id_clone = miner_node_id.clone();
 			let file_hash_to_remove_clone = file_hash_to_remove.clone();
@@ -618,11 +618,11 @@ pub mod pallet {
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			let user_requests_count = RequestsCount::<T>::get(&miner_node_id);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			RequestsCount::<T>::insert(&miner_node_id, user_requests_count + 1);
 
 			// Set the miner's state to Locked
 			MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
@@ -636,17 +636,18 @@ pub mod pallet {
 		pub fn update_user_profile(
 			origin: OriginFor<T>,
 			owner: T::AccountId,
+			node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
 			cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			let user_requests_count = RequestsCount::<T>::get(&node_identity);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			RequestsCount::<T>::insert(&node_identity, user_requests_count + 1);
 
 			// Update UserProfile storage
 			UserProfile::<T>::insert(&owner, cid);
@@ -1684,7 +1685,7 @@ pub mod pallet {
 		}
 
 		/// Unsigned transaction function to update UserProfile
-		pub fn call_update_user_profile(owner: T::AccountId, cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
+		pub fn call_update_user_profile(owner: T::AccountId, cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"IpfsPin::update_lock",
 				LOCK_BLOCK_EXPIRATION,
@@ -1703,6 +1704,7 @@ pub mod pallet {
 					|account| UpdateUserProfilePayload {
 						owner: owner.clone(),
 						cid: cid.clone(),
+						node_identity: node_identity.clone(),
 						public: account.public.clone(),
 						_marker: PhantomData,
 					},
@@ -1710,6 +1712,7 @@ pub mod pallet {
 						Call::update_user_profile {
 							owner: payload.owner,
 							cid: payload.cid,
+							node_identity: payload.node_identity,
 						}
 					},
 				);

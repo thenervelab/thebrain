@@ -2933,37 +2933,37 @@ pub mod pallet {
 		}
 
 
-		// Retrieves all VM details for a given user
-		pub fn get_user_vms(account: T::AccountId) -> Vec<UserVmDetails<T::AccountId, BlockNumberFor<T>, T::Hash>> {
-			// Retrieve all compute requests for the user
-			let compute_requests = Self::compute_requests(account.clone());
+		// // Retrieves all VM details for a given user
+		// pub fn get_user_vms(account: T::AccountId) -> Vec<UserVmDetails<T::AccountId, BlockNumberFor<T>, T::Hash>> {
+		// 	// Retrieve all compute requests for the user
+		// 	let compute_requests = Self::compute_requests(account.clone());
 			
-			// Collect VM details
-			compute_requests.into_iter().map(|compute_request| {
-				// Find the corresponding miner compute request
-				let miner_details = MinerComputeRequests::<T>::iter()
-					.find_map(|(_, miner_compute_requests)| {
-						miner_compute_requests.iter()
-							.find(|mcr| mcr.request_id == compute_request.request_id)
-							.cloned()
-					});
+		// 	// Collect VM details
+		// 	compute_requests.into_iter().map(|compute_request| {
+		// 		// Find the corresponding miner compute request
+		// 		let miner_details = MinerComputeRequests::<T>::iter()
+		// 			.find_map(|(_, miner_compute_requests)| {
+		// 				miner_compute_requests.iter()
+		// 					.find(|mcr| mcr.request_id == compute_request.request_id)
+		// 					.cloned()
+		// 			});
 				
-				// Construct user VM details
-				UserVmDetails {
-					request_id: compute_request.request_id,
-					status: compute_request.status,
-					plan_id: compute_request.plan_id,
-					created_at: compute_request.created_at,
-					miner_node_id: miner_details.as_ref().map(|md| md.miner_node_id.clone()),
-					miner_account_id: miner_details.as_ref().map(|md| md.miner_account_id.clone()),
-					hypervisor_ip: miner_details.as_ref().and_then(|md| md.hypervisor_ip.clone()),
-					vnc_port: miner_details.as_ref().and_then(|md| md.vnc_port),
-					ip_assigned: miner_details.as_ref().and_then(|md| md.ip_assigned.clone()),
-					error: miner_details.as_ref().and_then(|md| md.fail_reason.clone()),
-					is_fulfilled: miner_details.map(|md| md.fullfilled).unwrap_or(false),
-				}
-			}).collect()
-		}	
+		// 		// Construct user VM details
+		// 		UserVmDetails {
+		// 			request_id: compute_request.request_id,
+		// 			status: compute_request.status,
+		// 			plan_id: compute_request.plan_id,
+		// 			created_at: compute_request.created_at,
+		// 			miner_node_id: miner_details.as_ref().map(|md| md.miner_node_id.clone()),
+		// 			miner_account_id: miner_details.as_ref().map(|md| md.miner_account_id.clone()),
+		// 			hypervisor_ip: miner_details.as_ref().and_then(|md| md.hypervisor_ip.clone()),
+		// 			vnc_port: miner_details.as_ref().and_then(|md| md.vnc_port),
+		// 			ip_assigned: miner_details.as_ref().and_then(|md| md.ip_assigned.clone()),
+		// 			error: miner_details.as_ref().and_then(|md| md.fail_reason.clone()),
+		// 			is_fulfilled: miner_details.map(|md| md.fullfilled).unwrap_or(false),
+		// 		}
+		// 	}).collect()
+		// }	
 	}
 
 	#[pallet::hooks]

@@ -96,7 +96,7 @@ hippius-crypto-primitives = { workspace = true }
 
 ipfs-pallet = { workspace = true }
 pallet-alpha-bridge = { workspace = true }
-pallet-storage-s3 = { workspace = true }
+#pallet-storage-s3 = { workspace = true }
 pallet-utils = { workspace = true }
 pallet-registration = { workspace = true }
 pallet-execution-unit = { workspace = true }
@@ -106,9 +106,9 @@ pallet-subaccount  = { workspace = true }
 pallet-notifications = { workspace = true }
 pallet-account-profile  = { workspace = true }
 pallet-rankings  = { workspace = true }
-pallet-backup = { workspace = true }
+#pallet-backup = { workspace = true }
 pallet-credits = { workspace = true }
-pallet-compute = { workspace = true }
+#pallet-compute = { workspace = true }
 pallet-container-registry = { workspace = true }
 
 # Frontier dependencies
@@ -278,7 +278,7 @@ std = [
     "pallet-ip/std",
     "ipfs-pallet/std",
     "pallet-alpha-bridge/std",
-    "pallet-storage-s3/std",
+    #"pallet-storage-s3/std",
 	"pallet-registration/std",
     "pallet-execution-unit/std",
     "pallet-metagraph/std",
@@ -289,9 +289,9 @@ std = [
     "pallet-account-profile/std",
     "pallet-utils/std",
     "pallet-rankings/std",
-    "pallet-backup/std",
+    #"pallet-backup/std",
     "pallet-credits/std",
-    "pallet-compute/std",   
+    #"pallet-compute/std",   
     "pallet-container-registry/std",
 
     # Frontier

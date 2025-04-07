@@ -269,20 +269,20 @@ pub mod pallet {
 			total_size
 		}
 
-		// Getter function to retrieve the bandwidth size for a user by their account ID
-		pub fn get_user_bandwidth(account_id: T::AccountId) -> u128 {
-			let bandwidths = UserBandwidth::<T>::get(account_id);
+		// // Getter function to retrieve the bandwidth size for a user by their account ID
+		// pub fn get_user_bandwidth(account_id: T::AccountId) -> u128 {
+		// 	let bandwidths = UserBandwidth::<T>::get(account_id);
 
-			// Check the length of the bandwidth vector
-			match bandwidths.len() {
-				0 => 0, // If there are no bandwidth records, return 0
-				1 => bandwidths[0], // If there's only one record, return it
-				_ => {
-					// If there are two or more records, return the difference between the last two
-					let last_index = bandwidths.len() - 1;
-					bandwidths[last_index] - bandwidths[last_index - 1]
-				}
-			}
-		}
+		// 	// Check the length of the bandwidth vector
+		// 	match bandwidths.len() {
+		// 		0 => 0, // If there are no bandwidth records, return 0
+		// 		1 => bandwidths[0], // If there's only one record, return it
+		// 		_ => {
+		// 			// If there are two or more records, return the difference between the last two
+		// 			let last_index = bandwidths.len() - 1;
+		// 			bandwidths[last_index] - bandwidths[last_index - 1]
+		// 		}
+		// 	}
+		// }
     }
 }

@@ -1189,11 +1189,11 @@ parameter_types! {
 	pub const BlocksPerBackupCheck: u32 =  30;
 }
 
-impl pallet_backup::Config for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-	type AuthorityId = pallet_backup::crypto::TestAuthId;
-	type BlocksPerDay = BlocksPerBackupCheck ;
-}
+// impl pallet_backup::Config for Runtime {
+//     type RuntimeEvent = RuntimeEvent;
+// 	type AuthorityId = pallet_backup::crypto::TestAuthId;
+// 	type BlocksPerDay = BlocksPerBackupCheck ;
+// }
 
 
 impl pallet_credits::Config for Runtime {
@@ -1203,16 +1203,16 @@ impl pallet_credits::Config for Runtime {
 	// type OnRuntimeUpgrade = pallet_credits::migrations::Migrate<Runtime>;
 }
 
-parameter_types! {
-	pub const ComputeIpReleasePeriod: u64 = 15 * DAYS;
-}
+// parameter_types! {
+// 	pub const ComputeIpReleasePeriod: u64 = 15 * DAYS;
+// }
 
-impl pallet_compute::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type AuthorityId = pallet_compute::crypto::TestAuthId;
-	type OffchainWorkerInterval = ConstU32<19>;
-	type IpReleasePeriod = ComputeIpReleasePeriod;
-}
+// impl pallet_compute::Config for Runtime {
+// 	type RuntimeEvent = RuntimeEvent;
+// 	type AuthorityId = pallet_compute::crypto::TestAuthId;
+// 	type OffchainWorkerInterval = ConstU32<19>;
+// 	type IpReleasePeriod = ComputeIpReleasePeriod;
+// }
 
 parameter_types! {
 	pub const MaxCidLenght: u32 = 2;
@@ -1248,16 +1248,16 @@ impl pallet_rankings::Config for Runtime {
 	type BlocksPerEra = BlocksPerEra;
 }
 
-// Add a second ranking pallet implementation
-impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type PalletId = SecondRankingPalletId;
-    type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-    type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
-	type InstanceID = RankingsInstanceId2;
-	type AuthorityId = pallet_rankings::crypto::TestAuthId;
-	type BlocksPerEra = BlocksPerEra;
-}
+// // Add a second ranking pallet implementation
+// impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
+//     type RuntimeEvent = RuntimeEvent;
+//     type PalletId = SecondRankingPalletId;
+//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
+//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
+// 	type InstanceID = RankingsInstanceId2;
+// 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
+// 	type BlocksPerEra = BlocksPerEra;
+// }
 
 // Add a Third ranking pallet implementation
 impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
@@ -1270,27 +1270,27 @@ impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 	type BlocksPerEra = BlocksPerEra;
 }
 
-// Add a Fourth ranking pallet implementation
-impl pallet_rankings::Config<pallet_rankings::Instance4> for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type PalletId = FourthRankingPalletId;
-    type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-    type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
-	type InstanceID = RankingsInstanceId4;
-	type AuthorityId = pallet_rankings::crypto::TestAuthId;
-	type BlocksPerEra = BlocksPerEra;
-}
+// // Add a Fourth ranking pallet implementation
+// impl pallet_rankings::Config<pallet_rankings::Instance4> for Runtime {
+//     type RuntimeEvent = RuntimeEvent;
+//     type PalletId = FourthRankingPalletId;
+//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
+//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
+// 	type InstanceID = RankingsInstanceId4;
+// 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
+// 	type BlocksPerEra = BlocksPerEra;
+// }
 
-// Add a Fourth ranking pallet implementation
-impl pallet_rankings::Config<pallet_rankings::Instance5> for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type PalletId = FourthRankingPalletId;
-    type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-    type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
-	type InstanceID = RankingsInstanceId5;
-	type AuthorityId = pallet_rankings::crypto::TestAuthId;
-	type BlocksPerEra = BlocksPerEra;
-}
+// // Add a Fourth ranking pallet implementation
+// impl pallet_rankings::Config<pallet_rankings::Instance5> for Runtime {
+//     type RuntimeEvent = RuntimeEvent;
+//     type PalletId = FourthRankingPalletId;
+//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
+//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
+// 	type InstanceID = RankingsInstanceId5;
+// 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
+// 	type BlocksPerEra = BlocksPerEra;
+// }
 
 parameter_types! {
     pub const LocalRpcUrl: &'static str = "http://localhost:9944";
@@ -1518,9 +1518,9 @@ impl pallet_tx_pause::Config for Runtime {
 	type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
 }
 
-impl pallet_storage_s3::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-}
+// impl pallet_storage_s3::Config for Runtime {
+// 	type RuntimeEvent = RuntimeEvent;
+// }
 
 parameter_types! {
 	pub const BasicDeposit: Balance = deposit(0, 100);
@@ -1717,15 +1717,15 @@ construct_runtime!(
 		AccountProfile: pallet_account_profile = 60, 
 		Utils: pallet_utils = 62, 
         RankingStorage: pallet_rankings =63, 
-        RankingCompute: pallet_rankings::<Instance2> = 68, 
+        // RankingCompute: pallet_rankings::<Instance2> = 68, 
 		RankingValidators: pallet_rankings::<Instance3> = 70, 
-		RankingGpu: pallet_rankings::<Instance4> = 71, 
-		RankingS3: pallet_rankings::<Instance5> = 77, 
-		Backup: pallet_backup = 64,	
+		// RankingGpu: pallet_rankings::<Instance4> = 71, 
+		// RankingS3: pallet_rankings::<Instance5> = 77, 
+		// Backup: pallet_backup = 64,	
 		Credits: pallet_credits = 65, 
-		Compute: pallet_compute = 67, 
+		// Compute: pallet_compute = 67, 
 		ContainerRegistry: pallet_container_registry = 69, 
-		Storage: pallet_storage_s3 = 72, 
+		// Storage: pallet_storage_s3 = 72, 
 		AlphaBridge: pallet_alpha_bridge = 73, 
 		PalletIp: pallet_ip = 74,
 		IpfsPallet: ipfs_pallet = 75
@@ -3178,13 +3178,13 @@ impl_runtime_apis! {
 			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(miner_id)
 		}    
 
-		fn get_bucket_size( bucket_name: Vec<u8>) -> u128{
-			<pallet_storage_s3::Pallet<Runtime>>::get_bucket_size(bucket_name)
-		}
+		// fn get_bucket_size( bucket_name: Vec<u8>) -> u128{
+		// 	<pallet_storage_s3::Pallet<Runtime>>::get_bucket_size(bucket_name)
+		// }
 
-		fn get_user_bandwidth( account_id: AccountId32) -> u128{
-			<pallet_storage_s3::Pallet<Runtime>>::get_user_bandwidth(account_id)
-		}
+		// fn get_user_bandwidth( account_id: AccountId32) -> u128{
+		// 	<pallet_storage_s3::Pallet<Runtime>>::get_user_bandwidth(account_id)
+		// }
 
 		fn get_free_credits_rpc(account: Option<AccountId32>) -> Vec<(AccountId32, u128)>{
 			<pallet_credits::Pallet<Runtime>>::get_free_credits_rpc(account)
@@ -3264,9 +3264,9 @@ impl_runtime_apis! {
 			}
 		}
 
-		fn get_total_bucket_size( account_id: AccountId32) -> u128{
-			<pallet_storage_s3::Pallet<Runtime>>::get_total_bucket_size(account_id)
-		}
+		// fn get_total_bucket_size( account_id: AccountId32) -> u128{
+		// 	<pallet_storage_s3::Pallet<Runtime>>::get_total_bucket_size(account_id)
+		// }
 
 		fn get_total_distributed_rewards_by_node_type(node_type: rpc_primitives_node_metrics::NodeType) -> u128 {
 			// Convert RPC NodeType to Pallet NodeType
@@ -3347,41 +3347,41 @@ impl_runtime_apis! {
 			.collect()
 		}
 
-		fn get_user_buckets(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserBucket> {
-			<pallet_storage_s3::Pallet<Runtime>>::get_user_buckets(account)
-			.into_iter()
-			.map(|bucket| rpc_primitives_node_metrics::UserBucket {
-				bucket_name: bucket.bucket_name.clone(),
-				bucket_size: bucket.bucket_size.clone(),
-			})
-			.collect()
-		}
+		// fn get_user_buckets(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserBucket> {
+		// 	<pallet_storage_s3::Pallet<Runtime>>::get_user_buckets(account)
+		// 	.into_iter()
+		// 	.map(|bucket| rpc_primitives_node_metrics::UserBucket {
+		// 		bucket_name: bucket.bucket_name.clone(),
+		// 		bucket_size: bucket.bucket_size.clone(),
+		// 	})
+		// 	.collect()
+		// }
 
-		fn get_user_vms(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserVmDetails<AccountId32, u32, [u8; 32]>> {
-			Compute::get_user_vms(account)
-			.into_iter()
-			.map(|vm| rpc_primitives_node_metrics::UserVmDetails {
-				request_id: vm.request_id,
-				status: match vm.status {
-					pallet_compute::ComputeRequestStatus::Pending => rpc_primitives_node_metrics::ComputeRequestStatus::Pending,
-					pallet_compute::ComputeRequestStatus::Stopped => rpc_primitives_node_metrics::ComputeRequestStatus::Stopped,
-					pallet_compute::ComputeRequestStatus::InProgress => rpc_primitives_node_metrics::ComputeRequestStatus::InProgress,
-					pallet_compute::ComputeRequestStatus::Running => rpc_primitives_node_metrics::ComputeRequestStatus::Running,
-					pallet_compute::ComputeRequestStatus::Failed => rpc_primitives_node_metrics::ComputeRequestStatus::Failed,
-					pallet_compute::ComputeRequestStatus::Cancelled => rpc_primitives_node_metrics::ComputeRequestStatus::Cancelled,
-				},
-				plan_id: vm.plan_id.into(),
-				created_at: vm.created_at as u32,
-				miner_node_id: vm.miner_node_id,
-				miner_account_id: vm.miner_account_id,
-				hypervisor_ip: vm.hypervisor_ip,
-				vnc_port: vm.vnc_port,
-				ip_assigned: vm.ip_assigned,
-				error: vm.error,
-				is_fulfilled: vm.is_fulfilled,
-			})
-			.collect()
-		}
+		// fn get_user_vms(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserVmDetails<AccountId32, u32, [u8; 32]>> {
+		// 	Compute::get_user_vms(account)
+		// 	.into_iter()
+		// 	.map(|vm| rpc_primitives_node_metrics::UserVmDetails {
+		// 		request_id: vm.request_id,
+		// 		status: match vm.status {
+		// 			pallet_compute::ComputeRequestStatus::Pending => rpc_primitives_node_metrics::ComputeRequestStatus::Pending,
+		// 			pallet_compute::ComputeRequestStatus::Stopped => rpc_primitives_node_metrics::ComputeRequestStatus::Stopped,
+		// 			pallet_compute::ComputeRequestStatus::InProgress => rpc_primitives_node_metrics::ComputeRequestStatus::InProgress,
+		// 			pallet_compute::ComputeRequestStatus::Running => rpc_primitives_node_metrics::ComputeRequestStatus::Running,
+		// 			pallet_compute::ComputeRequestStatus::Failed => rpc_primitives_node_metrics::ComputeRequestStatus::Failed,
+		// 			pallet_compute::ComputeRequestStatus::Cancelled => rpc_primitives_node_metrics::ComputeRequestStatus::Cancelled,
+		// 		},
+		// 		plan_id: vm.plan_id.into(),
+		// 		created_at: vm.created_at as u32,
+		// 		miner_node_id: vm.miner_node_id,
+		// 		miner_account_id: vm.miner_account_id,
+		// 		hypervisor_ip: vm.hypervisor_ip,
+		// 		vnc_port: vm.vnc_port,
+		// 		ip_assigned: vm.ip_assigned,
+		// 		error: vm.error,
+		// 		is_fulfilled: vm.is_fulfilled,
+		// 	})
+		// 	.collect()
+		// }
 
 		fn total_file_size_fulfilled(account_id: AccountId32) -> u128 {
 			<ipfs_pallet::Pallet<Runtime>>::user_total_files_size(&account_id).unwrap_or(0)

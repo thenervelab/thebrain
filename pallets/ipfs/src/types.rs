@@ -116,6 +116,7 @@ pub struct UserFile {
 pub struct UpdateUserProfilePayload<T: Config> {
     pub owner: T::AccountId,
     pub cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
     pub public: T::Public,
     pub _marker: PhantomData<T>,
 }
