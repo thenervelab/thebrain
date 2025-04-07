@@ -361,19 +361,6 @@ pub mod pallet {
 		ValueQuery
 	>;
 
-	// Tracks the miners storing a specific file, with FileHash and MinerNodeId as keys
-	#[pallet::storage]
-	#[pallet::getter(fn file_storage_miners)]
-	pub type FileStorageMiners<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat, 
-		T::AccountId,     // First key: Account ID of the owner
-		Blake2_128Concat, 
-		FileHash,         // Second key: File Hash
-		BoundedVec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, ConstU32<MAX_NODE_ID_LENGTH>>,
-		ValueQuery
-	>;
-
 	//  Blacklist storage item containing the blacklisted Files Hashes
 	#[pallet::storage]
 	pub type Blacklist<T: Config> = StorageValue<_, BoundedVec<FileHash, ConstU32<MAX_BLACKLIST_ENTRIES>>, ValueQuery>;
@@ -474,25 +461,6 @@ pub mod pallet {
 				);
 			}
 
-			// Update FileStorageMiners for each miner pin request
-			for miner_profile in miner_pin_requests.iter() {
-				// Retrieve current miner node IDs for this owner and file hash
-				<FileStorageMiners<T>>::mutate(
-					storage_request.owner.clone(),
-					storage_request.file_hash.clone(), 
-					|miner_node_ids| {
-						// Try to add the new miner node ID if it's not already present
-						if !miner_node_ids.contains(&miner_profile.miner_node_id) {
-							miner_node_ids.try_push(miner_profile.miner_node_id.clone())
-								.unwrap_or_else(|_| {
-									// If the vector is full, you might want to log or handle this case
-									log::warn!("Maximum miner node IDs reached for file");
-								});
-						}
-					}
-				);
-			}
-
 			// Update or insert UserTotalFilesSize
 			<UserTotalFilesSize<T>>::mutate(storage_request.owner.clone(), |total_size| {
 				*total_size = Some(total_size.unwrap_or(0) + file_size);
@@ -583,18 +551,9 @@ pub mod pallet {
 
 			MinerProfile::<T>::insert(&miner_node_id_clone, new_cid_bounded_clone);
 
-			// Optionally, remove the miner from FileStorageMiners for this file_hash
-			FileStorageMiners::<T>::mutate(&owner, file_hash_to_remove_clone.clone(), |miners| {
-				miners.retain(|id| *id != miner_node_id_clone);
-			});
-
-			// Clear the processed unpin request only if no miners remain
-			let remaining_miners = FileStorageMiners::<T>::get(&owner, file_hash_to_remove_clone.clone());
-			if remaining_miners.is_empty() {
-				UnpinRequests::<T>::mutate(|requests| {
-					requests.retain(|fh| *fh != file_hash_to_remove_clone);
-				});
-			}
+			// UnpinRequests::<T>::mutate(|requests| {
+				// requests.retain(|fh| *fh != file_hash_to_remove_clone);
+			// });
 
 			// Set the miner's state to Free
 			MinerStates::<T>::insert(&miner_node_id.clone(), MinerState::Free);
@@ -712,9 +671,10 @@ pub mod pallet {
 					Error::<T>::RequestAlreadyExists
 				);
 
+				
 				// Create the storage request
 				let request_info = StorageRequest {
-					total_replicas: 1u32,  
+					total_replicas: 7u32,  
 					owner: owner.clone(),
 					file_hash: update_hash.clone(),
 					file_name: bounded_file_name,
@@ -1671,12 +1631,7 @@ pub mod pallet {
 						.and_then(|vec| BoundedVec::try_from(vec).ok())?;
 					let created_at = request["created_at"].as_u64().unwrap_or(0) as u32;
 
-					// Get miners who have stored this file
-					let miner_ids = FileStorageMiners::<T>::get(&account, &file_hash);
-					let miner_ids_vec: Vec<Vec<u8>> = miner_ids
-						.into_iter()
-						.map(|bounded_vec| bounded_vec.to_vec())
-						.collect();
+					let miner_ids_vec: Vec<Vec<u8>> = Vec::new();
 
 					// Fetch file size
 					let file_size = match Self::fetch_ipfs_file_size(file_hash.to_vec()) {

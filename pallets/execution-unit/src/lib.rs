@@ -1883,7 +1883,6 @@ pub mod pallet {
 				let storage_request_refs: Vec<&StorageRequest<T::AccountId, BlockNumberFor<T>>> = 
 					all_new_storage_requests.iter().collect();
 
-
 				// Assign new storage requests to miners
 				for storage_request in modifiable_storage_requests.iter_mut() {
 					let mut available_miners: Vec<_> = active_storage_miners
