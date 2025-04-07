@@ -172,6 +172,7 @@ pub mod pallet {
 		PinCheckMetricsUpdated {
 			node_id: Vec<u8>,
 		},
+		PurgeDeregisteredNodesStatusChanged { enabled: bool },
 	}
 
 	#[derive(Debug, Encode, Decode, Clone, PartialEq, Eq, TypeInfo)]
@@ -214,6 +215,10 @@ pub mod pallet {
         BenchmarkResult<BlockNumberFor<T>>,
         ValueQuery        
     >;
+
+	#[pallet::storage]
+	#[pallet::getter(fn purge_deregistered_nodes_enabled)]
+	pub type PurgeDeregisteredNodesEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
 	#[pallet::error]
 	pub enum Error<T> {
@@ -311,9 +316,12 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
-
             Self::handle_incorrect_registration(_n);
-			Self::purge_nodes_if_deregistered_on_bittensor();
+			
+			// Only purge if the feature is enabled
+			if Self::purge_deregistered_nodes_enabled() {
+				Self::purge_nodes_if_deregistered_on_bittensor();
+			}
 
             Weight::zero()
         }
@@ -601,6 +609,30 @@ pub mod pallet {
 			BlockNumbers::<T>::insert(node_id, unique_blocks);
 		
 			Ok(().into())
+		}
+
+		/// Sudo function to enable purging of deregistered nodes
+		#[pallet::call_index(5)]
+		#[pallet::weight(10_000)]
+		pub fn sudo_enable_purge_deregistered_nodes(origin: OriginFor<T>) -> DispatchResult {
+			ensure_root(origin)?;
+			
+			PurgeDeregisteredNodesEnabled::<T>::put(true);
+			
+			Self::deposit_event(Event::PurgeDeregisteredNodesStatusChanged { enabled: true });
+			Ok(())
+		}
+
+		/// Sudo function to disable purging of deregistered nodes
+		#[pallet::call_index(6)]
+		#[pallet::weight(10_000)]
+		pub fn sudo_disable_purge_deregistered_nodes(origin: OriginFor<T>) -> DispatchResult {
+			ensure_root(origin)?;
+			
+			PurgeDeregisteredNodesEnabled::<T>::put(false);
+			
+			Self::deposit_event(Event::PurgeDeregisteredNodesStatusChanged { enabled: false });
+			Ok(())
 		}
 	}
 

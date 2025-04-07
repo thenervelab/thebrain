@@ -114,7 +114,7 @@ pub mod pallet {
 		type GarbageCollectorInterval: Get<u32>;
 
 		#[pallet::constant]
-		type PinFilesInterval: Get<u32>;
+		type PinPinningInterval: Get<u32>;
 
 		/// The identifier type for an offchain worker.
 		type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
@@ -236,21 +236,22 @@ pub mod pallet {
 				}
 			}
 
-			match UtilsPallet::<T>::fetch_node_id() {
-                Ok(node_id) => {
-                    let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());	
-                    if node_info.is_some() {
-						let node_info = node_info.unwrap();
-						if node_info.node_type == NodeType::StorageMiner {
-							let _ = Self::sync_pinned_files(node_id);
+			if current_block % <T as pallet::Config>::PinPinningInterval::get() == 0 {
+				match UtilsPallet::<T>::fetch_node_id() {
+					Ok(node_id) => {
+						let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());	
+						if node_info.is_some() {
+							let node_info = node_info.unwrap();
+							if node_info.node_type == NodeType::StorageMiner {
+								let _ = Self::sync_pinned_files(node_id);
+							}
 						}
 					}
-                }
-				Err(e) => {
-					log::error!("Error fetching node identity inside bittensor pallet: {:?}", e);
+					Err(e) => {
+						log::error!("Error fetching node identity inside bittensor pallet: {:?}", e);
+					}
 				}
-            }
-        
+			}        
 		}
 	}
 

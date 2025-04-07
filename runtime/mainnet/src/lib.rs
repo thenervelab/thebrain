@@ -1109,6 +1109,7 @@ parameter_types! {
 
 parameter_types! {
 	pub const MaxStorageRequestsPerBlock: u32 = 10;
+	pub const PinPinningInterval: u32 = 150;
 }
 
 impl ipfs_pallet::Config for Runtime {
@@ -1116,6 +1117,7 @@ impl ipfs_pallet::Config for Runtime {
 	type IPFSBaseUrl = IpfsBaseUrl;
 	type GarbageCollectorInterval = GarbageCollectorInterval;
 	type AuthorityId = ipfs_pallet::crypto::TestAuthId;
+	type PinPinningInterval = PinPinningInterval;
 }
 
 parameter_types! {
@@ -1687,13 +1689,11 @@ construct_runtime!(
 		Scheduler: pallet_scheduler = 25,
 		Preimage: pallet_preimage = 26,
 		Offences: pallet_offences = 27,
-
 		TxPause: pallet_tx_pause = 28,
 		ImOnline: pallet_im_online = 29,
 		Identity: pallet_identity = 30,
 		Utility: pallet_utility = 31,
 		Multisig: pallet_multisig = 32,
-
 		Ethereum: pallet_ethereum = 33,
 		EVM: pallet_evm = 34,
 		EVMChainId: pallet_evm_chain_id = 35,
