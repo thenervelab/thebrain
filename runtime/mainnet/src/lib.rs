@@ -171,8 +171,8 @@ pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
 /// This runtime version.
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
-	spec_name: create_runtime_str!("hippius-mainnet"),
-	impl_name: create_runtime_str!("hippius-mainnet"),
+	spec_name: create_runtime_str!("hippius"),
+	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
 	spec_version: 9001,
 	impl_version: 1,
@@ -1107,17 +1107,15 @@ parameter_types! {
 	pub const MinerIPFSCHeckInterval : u32 = 5;
 }
 
-
-
 parameter_types! {
 	pub const MaxStorageRequestsPerBlock: u32 = 10;
 }
 
-impl ipfs_pallet_new::Config for Runtime {
+impl ipfs_pallet::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
 	type IPFSBaseUrl = IpfsBaseUrl;
 	type GarbageCollectorInterval = GarbageCollectorInterval;
-	type AuthorityId = ipfs_pallet_new::crypto::TestAuthId;
+	type AuthorityId = ipfs_pallet::crypto::TestAuthId;
 }
 
 parameter_types! {
@@ -1724,7 +1722,7 @@ construct_runtime!(
 		Storage: pallet_storage_s3 = 72, 
 		AlphaBridge: pallet_alpha_bridge = 73, 
 		PalletIp: pallet_ip = 74,
-		IpfsPalletNew: ipfs_pallet_new = 75
+		IpfsPalletNew: ipfs_pallet = 75
 	}
 );
 
@@ -3327,11 +3325,11 @@ impl_runtime_apis! {
 		}
 
 		fn calculate_total_file_size(account: AccountId32) -> u128 {
-			<ipfs_pallet_new::Pallet<Runtime>>::user_total_files_size(&account).unwrap_or(0)
+			<ipfs_pallet::Pallet<Runtime>>::user_total_files_size(&account).unwrap_or(0)
 		}
 
 		fn get_user_files(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserFile> {
-			<ipfs_pallet_new::Pallet<Runtime>>::get_user_files(account)
+			<ipfs_pallet::Pallet<Runtime>>::get_user_files(account)
 			.into_iter()
 			.map(|file| rpc_primitives_node_metrics::UserFile {
 				file_hash: file.file_hash.to_vec(),
@@ -3380,7 +3378,7 @@ impl_runtime_apis! {
 		}
 
 		fn total_file_size_fulfilled(account_id: AccountId32) -> u128 {
-			<ipfs_pallet_new::Pallet<Runtime>>::user_total_files_size(&account_id).unwrap_or(0)
+			<ipfs_pallet::Pallet<Runtime>>::user_total_files_size(&account_id).unwrap_or(0)
 		}
 	}
 

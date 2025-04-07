@@ -3854,7 +3854,7 @@ dependencies = [
  "hex-literal 0.4.1",
  "hippius-crypto-primitives",
  "hippius-primitives",
- "ipfs-pallet-new",
+ "ipfs-pallet",
  "log",
  "num_enum",
  "pallet-account-profile",
@@ -4616,7 +4616,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ipfs-pallet-new"
+name = "ipfs-pallet"
 version = "4.0.0-dev"
 dependencies = [
  "frame-benchmarking",
@@ -6640,7 +6640,7 @@ dependencies = [
  "frame-benchmarking",
  "frame-support",
  "frame-system",
- "ipfs-pallet-new",
+ "ipfs-pallet",
  "log",
  "pallet-compute",
  "pallet-marketplace",
@@ -6813,7 +6813,7 @@ dependencies = [
  "frame-benchmarking",
  "frame-support",
  "frame-system",
- "ipfs-pallet-new",
+ "ipfs-pallet",
  "log",
  "pallet-marketplace",
  "parity-scale-codec",
@@ -7420,7 +7420,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "hex",
- "ipfs-pallet-new",
+ "ipfs-pallet",
  "log",
  "num-traits",
  "num_cpus",
@@ -7565,26 +7565,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-ipfs-pin"
-version = "0.1.0"
-dependencies = [
- "frame-benchmarking",
- "frame-support",
- "frame-system",
- "hex",
- "log",
- "pallet-registration",
- "pallet-utils",
- "parity-scale-codec",
- "scale-info",
- "sp-core",
- "sp-debug-derive",
- "sp-io",
- "sp-runtime",
- "sp-std 14.0.0",
-]
-
-[[package]]
 name = "pallet-marketplace"
 version = "0.1.0"
 dependencies = [
@@ -7592,7 +7572,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "hex",
- "ipfs-pallet-new",
+ "ipfs-pallet",
  "log",
  "num-traits",
  "pallet-assets",

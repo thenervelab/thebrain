@@ -1,6 +1,6 @@
 
 [package]
-name = "ipfs-pallet-new"
+name = "ipfs-pallet"
 version = "4.0.0-dev"
 description = "FRAME pallet template for defining custom runtime logic."
 authors = ["Substrate DevHub <https://github.com/substrate-developer-hub>"]

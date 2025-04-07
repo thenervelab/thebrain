@@ -34,7 +34,7 @@ num-traits = { version = "0.2.17", default-features = false }
 pallet-utils = { default-features = false, workspace = true }
 sp-debug-derive = { default-features = false, workspace = true }
 serde_json = { workspace = true }
-ipfs-pallet-new = { workspace = true, default-features = false }
+ipfs-pallet = { workspace = true, default-features = false }
 pallet-marketplace = { workspace = true, default-features = false }
 
 
@@ -51,7 +51,7 @@ std = [
     "sp-core/std",
     "sp-io/std",
     "pallet-timestamp/std",
-    "ipfs-pallet-new/std",
+    "ipfs-pallet/std",
     "pallet-registration/std",
     "log/std",
     "parking_lot",

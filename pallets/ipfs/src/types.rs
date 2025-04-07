@@ -43,6 +43,12 @@ pub struct MinerPinRequest<BlockNumber> {
     pub file_size_in_bytes: u32,
 }
 
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
+pub enum MinerState {
+    Free,
+    Locked
+}
+
 #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub struct MinerProfileItem {
     pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
@@ -97,4 +103,20 @@ pub struct UserFile {
     pub miner_ids: Vec<Vec<u8>>,
     pub file_size: u32,
     pub created_at: u32,
+}
+
+/// Payload for updating UserProfile
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
+pub struct UpdateUserProfilePayload<T: Config> {
+    pub owner: T::AccountId,
+    pub cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub public: <T as pallet::Config>::AuthorityId,
+    pub _marker: PhantomData<T>,
+}
+
+// Implement SignedPayload for UpdateUserProfilePayload
+impl<T: Config> SignedPayload<T> for UpdateUserProfilePayload<T> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
 }

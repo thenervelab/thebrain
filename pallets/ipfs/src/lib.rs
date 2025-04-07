@@ -176,12 +176,68 @@ pub mod pallet {
 						.propagate(true)
 						.build()
 				},
+				// Handler for `set_miner_state_free` unsigned transaction
+				Call::set_miner_state_free { miner_node_id, .. } => {
+					let current_block = frame_system::Pallet::<T>::block_number();
+
+					// Create a unique hash combining all relevant data
+					let mut data = Vec::new();
+					data.extend_from_slice(&current_block.encode());
+					data.extend_from_slice(&miner_node_id.encode());
+					
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					// Ensure unique transaction validity
+					ValidTransaction::with_tag_prefix("IpfsOffchain")
+						.priority(TransactionPriority::max_value())
+						.and_provides(unique_hash)
+						.longevity(3)
+						.propagate(true)
+						.build()
+				},
+				Call::update_user_profile { owner, cid, .. } => {
+					let current_block = frame_system::Pallet::<T>::block_number();
+
+					// Create a unique hash combining all relevant data
+					let mut data = Vec::new();
+					data.extend_from_slice(&current_block.encode());
+					data.extend_from_slice(&owner.encode());
+					data.extend_from_slice(&cid.encode());
+					
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					// Ensure unique transaction validity
+					ValidTransaction::with_tag_prefix("IpfsOffchain")
+						.priority(TransactionPriority::max_value())
+						.and_provides(unique_hash)
+						.longevity(3)
+						.propagate(true)
+						.build()
+				},
+				// Handler for `set_miner_state_locked` unsigned transaction
+				Call::set_miner_state_locked { miner_node_id, .. } => {
+					let current_block = frame_system::Pallet::<T>::block_number();
+
+					// Create a unique hash combining all relevant data
+					let mut data = Vec::new();
+					data.extend_from_slice(&current_block.encode());
+					data.extend_from_slice(&miner_node_id.encode());
+					
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					// Ensure unique transaction validity
+					ValidTransaction::with_tag_prefix("IpfsOffchain")
+						.priority(TransactionPriority::max_value())
+						.and_provides(unique_hash)
+						.longevity(3)
+						.propagate(true)
+						.build()
+				},
 				// Default case for invalid calls
 				_ => InvalidTransaction::Call.into(),
 			}
 		}
 	}
-
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -204,7 +260,7 @@ pub mod pallet {
 						let node_info = node_info.unwrap();
                         if node_info.node_type == NodeType::Validator {
 							// let _ = Self::handle_request_assignment(node_id, node_info);
-							let _ = Self::hanlde_unpin_requests();
+							// let _ = Self::hanlde_unpin_requests();
 						}
 						else if node_info.node_type == NodeType::StorageMiner {
 							let _ = Self::sync_pinned_files(node_id);
@@ -256,6 +312,11 @@ pub mod pallet {
 
 	// the file size where the key is encoded file hash
 	#[pallet::storage]
+	#[pallet::getter(fn user_total_files_size)]
+	pub type MinerTotalFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, u128>;
+
+	// the file size where the key is encoded file hash
+	#[pallet::storage]
 	#[pallet::getter(fn file_size)]
 	pub type FileSize<T: Config> = StorageMap<_, Blake2_128Concat, FileHash, u32>;
 
@@ -304,9 +365,30 @@ pub mod pallet {
 		ValueQuery
 	>;
 
+	// Saves all the node ids who have pinned for that file hash
+	#[pallet::storage]
+	#[pallet::getter(fn miner_profile)]
+	pub type UserProfile<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		T::AccountId, // node id     
+		BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, // cid
+		ValueQuery
+	>;	
+
 	#[pallet::storage]
     #[pallet::getter(fn assignment_enabled)]
     pub type AssignmentEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn miner_state)]
+	pub type MinerStates<T: Config> = StorageMap<
+		_, 
+		Blake2_128Concat, 
+		BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, // Miner ID
+		MinerState,  // Miner's current state
+		ValueQuery   // Default to Free if not set
+	>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -391,6 +473,19 @@ pub mod pallet {
 				*total_size = Some(total_size.unwrap_or(0) + file_size);
 			});
 
+			// Set all miners free after processing the pin request
+			for miner_profile in miner_pin_requests.iter() {
+				// Set the miner's state to Free
+				MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
+			}
+			
+			// Update MinerTotalFilesSize for each miner
+			for miner_profile in miner_pin_requests.iter() {
+				<MinerTotalFilesSize<T>>::mutate(&miner_profile.miner_node_id, |total_size| {
+					*total_size = Some(total_size.unwrap_or(0) + file_size);
+				});
+			}
+
 			// Deposit an event to log the pin request update
 			Self::deposit_event(Event::StorageRequestUpdated {
 				owner: storage_request.owner,
@@ -451,6 +546,57 @@ pub mod pallet {
 					requests.retain(|fh| *fh != file_hash_to_remove_clone);
 				});
 			}
+
+			// Set the miner's state to Free
+			MinerStates::<T>::insert(&miner_node_id.clone(), MinerState::Free);
+
+			Ok(().into())
+		}
+
+		/// Unsigned transaction to set a miner's state to Free
+		#[pallet::call_index(4)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn set_miner_state_free(
+			origin: OriginFor<T>,
+			miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>
+		) -> DispatchResultWithPostInfo {
+			// Ensure this is an unsigned transaction
+			ensure_none(origin)?;
+
+			// Set the miner's state to Free
+			MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
+
+			Ok(().into())
+		}
+
+		/// Unsigned transaction to set a miner's state to Locked
+		#[pallet::call_index(5)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn set_miner_state_locked(
+			origin: OriginFor<T>,
+			miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>
+		) -> DispatchResultWithPostInfo {
+			// Ensure this is an unsigned transaction
+			ensure_none(origin)?;
+
+			// Set the miner's state to Locked
+			MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
+
+			Ok(().into())
+		}
+
+		/// Unsigned call to update UserProfile
+		#[pallet::call_index(6)]  // Replace X with the next available call index
+		#[pallet::weight(10_000)]
+		pub fn update_user_profile(
+			origin: OriginFor<T>,
+			owner: T::AccountId,
+			cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+		) -> DispatchResultWithPostInfo {
+			ensure_none(origin)?;
+
+			// Update UserProfile storage
+			UserProfile::<T>::insert(&owner, cid);
 
 			Ok(().into())
 		}
@@ -530,46 +676,120 @@ pub mod pallet {
 			Ok(validators[validator_index].clone())
 		}
 
-		// get all files stored my miners 
-		pub fn get_storage_request_by_hash(owner: T::AccountId, encoded_hash: Vec<u8>) -> Option<StorageRequest<T::AccountId,BlockNumberFor<T>>>{
-			let update_hash: FileHash = BoundedVec::try_from(encoded_hash).ok()?;
-			UserStorageRequests::<T>::get(owner, update_hash)
-		}
+		/// Helper function to set a miner's state to Free using unsigned transactions
+		pub fn call_set_miner_state_free(miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
+			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+				b"IpfsPin::update_lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+			);
 
-		/// Helper function to handle the unpin request logic
-		pub fn process_unpin_request(
-			who: T::AccountId,
-			file_hash: Vec<u8>,
-		) -> Result<FileHash, Error<T>> {
-			let current_block = frame_system::Pallet::<T>::block_number();
+			if let Ok(_guard) = lock.try_lock() {
+				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
 
-			// Convert file hash to a hex-encoded string
-			let file_hash_encoded = hex::encode(&file_hash);
-			let update_hash_vec: Vec<u8> = file_hash_encoded.clone().into();
-			let update_hash: FileHash = BoundedVec::try_from(update_hash_vec)
-				.map_err(|_| Error::<T>::StorageOverflow)?;
-
-			// Check if the request exists in UserStorageRequests
-			let storage_request = UserStorageRequests::<T>::get(&who, &update_hash)
-				.ok_or(Error::<T>::RequestDoesNotExists)?;
-
-			// Validate ownership
-			ensure!(storage_request.owner == who, Error::<T>::OwnerNotFound);
-
-			// Add to UnpinRequests if not already present
-			UnpinRequests::<T>::try_mutate(|requests| -> Result<(), Error<T>> {
-				if !requests.contains(&update_hash) {
-					requests.try_push(update_hash.clone())
-						.map_err(|_| Error::<T>::TooManyUnpinRequests)?;
+				if !signer.can_sign() {
+					log::warn!("No accounts available for signing in signer.");
+					return;
 				}
-				Ok(())
-			})?;
 
-			// Remove the storage request
-			UserStorageRequests::<T>::remove(&who, &update_hash);
+				let results = signer.send_unsigned_transaction(
+					|account| ProcessMinersToRemoveRequestPayload {
+						miner_node_id: miner_node_id.clone(),
+						public: account.public.clone(),
+						_marker: PhantomData,
+					},
+					|payload, _signature| {
+						Call::set_miner_state_free {
+							miner_node_id: payload.miner_node_id,
+						}
+					},
+				);
 
-			Ok(update_hash)
+				for (acc, res) in &results {
+					match res {
+						Ok(()) => log::info!("[{:?}] Successfully set miner state to Free", acc.id),
+						Err(e) => log::error!("[{:?}] Failed to set miner state to Free: {:?}", acc.id, e),
+					}
+				}
+			} else {
+				log::error!("❌ Could not acquire lock for setting miner state");
+			}
 		}
+
+		/// Helper function to set a miner's state to Locked using unsigned transactions
+		pub fn call_set_miner_state_locked(miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
+			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+				b"IpfsPin::update_lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+			);
+
+			if let Ok(_guard) = lock.try_lock() {
+				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
+
+				if !signer.can_sign() {
+					log::warn!("No accounts available for signing in signer.");
+					return;
+				}
+
+				let results = signer.send_unsigned_transaction(
+					|account| ProcessMinersToRemoveRequestPayload {
+						miner_node_id: miner_node_id.clone(),
+						public: account.public.clone(),
+						_marker: PhantomData,
+					},
+					|payload, _signature| {
+						Call::set_miner_state_locked {
+							miner_node_id: payload.miner_node_id,
+						}
+					},
+				);
+
+				for (acc, res) in &results {
+					match res {
+						Ok(()) => log::info!("[{:?}] Successfully set miner state to Locked", acc.id),
+						Err(e) => log::error!("[{:?}] Failed to set miner state to Locked: {:?}", acc.id, e),
+					}
+				}
+			} else {
+				log::error!("❌ Could not acquire lock for setting miner state");
+			}
+		}
+
+		// /// Helper function to handle the unpin request logic
+		// pub fn process_unpin_request(
+		// 	who: T::AccountId,
+		// 	file_hash: Vec<u8>,
+		// ) -> Result<FileHash, Error<T>> {
+		// 	let current_block = frame_system::Pallet::<T>::block_number();
+
+		// 	// Convert file hash to a hex-encoded string
+		// 	let file_hash_encoded = hex::encode(&file_hash);
+		// 	let update_hash_vec: Vec<u8> = file_hash_encoded.clone().into();
+		// 	let update_hash: FileHash = BoundedVec::try_from(update_hash_vec)
+		// 		.map_err(|_| Error::<T>::StorageOverflow)?;
+
+		// 	// Check if the request exists in UserStorageRequests
+		// 	let storage_request = UserStorageRequests::<T>::get(&who, &update_hash)
+		// 		.ok_or(Error::<T>::RequestDoesNotExists)?;
+
+		// 	// Validate ownership
+		// 	ensure!(storage_request.owner == who, Error::<T>::OwnerNotFound);
+
+		// 	// Add to UnpinRequests if not already present
+		// 	UnpinRequests::<T>::try_mutate(|requests| -> Result<(), Error<T>> {
+		// 		if !requests.contains(&update_hash) {
+		// 			requests.try_push(update_hash.clone())
+		// 				.map_err(|_| Error::<T>::TooManyUnpinRequests)?;
+		// 		}
+		// 		Ok(())
+		// 	})?;
+
+		// 	// Remove the storage request
+		// 	UserStorageRequests::<T>::remove(&who, &update_hash);
+
+		// 	Ok(update_hash)
+		// }
 
 		pub fn fetch_ipfs_file_size(file_hash_vec: Vec<u8>) -> Result<u32, http::Error> {
 		
@@ -815,9 +1035,6 @@ pub mod pallet {
 			// Convert JSON string to bytes
 			let json_bytes = json_string.as_bytes();
 		
-			// Create a simple multipart form body
-			// Note: In a real-world scenario, you might want to use a proper multipart library,
-			// but for simplicity, we'll construct it manually here.
 			let boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
 			let mut body = Vec::new();
 			body.extend_from_slice(b"--");
@@ -877,6 +1094,7 @@ pub mod pallet {
 			Err(http::Error::Unknown)
 		}
 
+
 		pub fn call_process_miners_to_remove(owner: T::AccountId, file_hash_to_remove: FileHash, miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, new_cid_bounded: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"IpfsPin::update_lock",
@@ -928,7 +1146,7 @@ pub mod pallet {
 
 		}
 
-		/// A helper function to fetch the node ID and hardware info, then store it in `NodeSpecs`.
+		/// Helper function to fetch the node ID and hardware info, then store it in `NodeSpecs`.
 		pub fn update_ipfs_request_storage(node_id: Vec<u8>, pin_requests: Vec<MinerProfileItem>, storage_requests: StorageRequest<T::AccountId, BlockNumberFor<T>> , file_size: u128) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"IpfsPin::update_lock",
@@ -1009,12 +1227,9 @@ pub mod pallet {
 			Ok(response.body().collect::<Vec<u8>>())
 		}
 
-
-	
-
 		/// Returns a vector of all unique users who have made storage requests
 		pub fn get_storage_request_users() -> Vec<T::AccountId> {
-			UserStorageRequests::<T>::iter_keys()
+			UserProfile::<T>::iter_keys()
 				.map(|(user, _)| user)
 				.collect::<collections::BTreeSet<_>>()
 				.into_iter()
@@ -1241,106 +1456,115 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// Process unpin requests and update MinerProfile accordingly
-		pub fn hanlde_unpin_requests() -> Result<(), DispatchError> {
-			let unpin_requests = UnpinRequests::<T>::get();
-			let blacklist_entries = Blacklist::<T>::get();
+		// // Process unpin requests and update MinerProfile accordingly
+		// pub fn hanlde_unpin_requests() -> Result<(), DispatchError> {
+		// 	let unpin_requests = UnpinRequests::<T>::get();
+		// 	let blacklist_entries = Blacklist::<T>::get();
 
-			// Combine unpin requests and blacklist entries
-			let all_file_hashes = unpin_requests.iter().chain(blacklist_entries.iter());
+		// 	// Combine unpin requests and blacklist entries
+		// 	let all_file_hashes = unpin_requests.iter().chain(blacklist_entries.iter());
 
-			if unpin_requests.is_empty() {
-				log::info!("No unpin requests to process.");
-				return Ok(());
-			}
+		// 	if unpin_requests.is_empty() {
+		// 		log::info!("No unpin requests to process.");
+		// 		return Ok(());
+		// 	}
 
-			// Iterate over each file hash in UnpinRequests
-			for file_hash in all_file_hashes {
-				// Find the owner for this file hash from UserStorageRequests
-				let owner = UserStorageRequests::<T>::iter_keys()
-				.find(|(_, hash)| hash == file_hash)
-				.map(|(account, _)| account)
-				.ok_or(Error::<T>::OwnerNotFound)?;
+		// 	// Iterate over each file hash in UnpinRequests
+		// 	for file_hash in all_file_hashes {
+		// 		// Find the owner for this file hash from UserStorageRequests
+		// 		let owner = UserStorageRequests::<T>::iter_keys()
+		// 		.find(|(_, hash)| hash == file_hash)
+		// 		.map(|(account, _)| account)
+		// 		.ok_or(Error::<T>::OwnerNotFound)?;
 
-				// Get the miners storing this file hash
-				let miners = FileStorageMiners::<T>::get(&owner, file_hash);
-				if miners.is_empty() {
-					log::info!("No miners found for file hash: {:?}", file_hash);
-					continue;
-				}
+		// 		// Get the miners storing this file hash
+		// 		let miners = FileStorageMiners::<T>::get(&owner, file_hash);
+		// 		if miners.is_empty() {
+		// 			log::info!("No miners found for file hash: {:?}", file_hash);
+		// 			continue;
+		// 		}
 
-				// Process each miner
-				for miner_node_id in miners.iter() {
-					// Get the CID from MinerProfile
-					let cid = MinerProfile::<T>::get(miner_node_id);
-					if cid.is_empty() {
-						log::info!("No CID found for miner_node_id: {:?}", miner_node_id);
-						continue;
-					}
+		// 		// Lock all selected miners after they are chosen
+		// 		for (miner, _, _) in &miners {
+		// 			let miner_node_id = BoundedVec::try_from(miner.node_id.clone())
+		// 				.map_err(|_| Error::<T>::StorageOverflow)?;
+					
+		// 			// Call the set_miner_state_locked function from the IPFS pallet
+		// 			Self::call_set_miner_state_locked(miner_node_id);	
+		// 		}
 
-					let cid_str = sp_std::str::from_utf8(&cid).map_err(|_| Error::<T>::InvalidCid)?;
+		// 		// Process each miner
+		// 		for miner_node_id in miners.iter() {
+		// 			// Get the CID from MinerProfile
+		// 			let cid = MinerProfile::<T>::get(miner_node_id);
+		// 			if cid.is_empty() {
+		// 				log::info!("No CID found for miner_node_id: {:?}", miner_node_id);
+		// 				continue;
+		// 			}
 
-					// Fetch content from IPFS
-					let content = Self::fetch_ipfs_content(cid_str).map_err(|e| {
-						log::error!("Failed to fetch content for CID {}: {:?}", cid_str, e);
-						Error::<T>::IpfsError
-					})?;
+		// 			let cid_str = sp_std::str::from_utf8(&cid).map_err(|_| Error::<T>::InvalidCid)?;
 
-					// Parse the JSON array
-					let mut requests: Vec<Value> = serde_json::from_slice(&content).map_err(|e| {
-						log::error!("Failed to parse JSON content: {:?}", e);
-						Error::<T>::InvalidJson
-					})?;
+		// 			// Fetch content from IPFS
+		// 			let content = Self::fetch_ipfs_content(cid_str).map_err(|e| {
+		// 				log::error!("Failed to fetch content for CID {}: {:?}", cid_str, e);
+		// 				Error::<T>::IpfsError
+		// 			})?;
 
-					// Convert file_hash to Vec<u8> for comparison
-					let file_hash_vec = file_hash.clone().into_inner();
+		// 			// Parse the JSON array
+		// 			let mut requests: Vec<Value> = serde_json::from_slice(&content).map_err(|e| {
+		// 				log::error!("Failed to parse JSON content: {:?}", e);
+		// 				Error::<T>::InvalidJson
+		// 			})?;
 
-					// Filter out the object with the matching file_hash
-					let original_len = requests.len();
-					requests.retain(|request| {
-						let req_file_hash = request["file_hash"].as_array()
-							.map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect::<Vec<u8>>())
-							.unwrap_or_default();
-						req_file_hash != file_hash_vec
-					});
+		// 			// Convert file_hash to Vec<u8> for comparison
+		// 			let file_hash_vec = file_hash.clone().into_inner();
 
-					if requests.len() == original_len {
-						log::info!("No matching file_hash found in CID {} for removal.", cid_str);
-						continue;
-					}
+		// 			// Filter out the object with the matching file_hash
+		// 			let original_len = requests.len();
+		// 			requests.retain(|request| {
+		// 				let req_file_hash = request["file_hash"].as_array()
+		// 					.map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect::<Vec<u8>>())
+		// 					.unwrap_or_default();
+		// 				req_file_hash != file_hash_vec
+		// 			});
 
-					// Serialize the updated array back to JSON
-					let updated_json = serde_json::to_string(&requests).map_err(|e| {
-						log::error!("Failed to serialize updated JSON: {:?}", e);
-						Error::<T>::InvalidJson
-					})?;
+		// 			if requests.len() == original_len {
+		// 				log::info!("No matching file_hash found in CID {} for removal.", cid_str);
+		// 				continue;
+		// 			}
 
-					// Pin the updated content to IPFS
-					match Self::pin_file_to_ipfs(&updated_json) {
-						Ok(new_cid) => {
-							log::info!("Successfully pinned updated content with new CID: {}", new_cid);
+		// 			// Serialize the updated array back to JSON
+		// 			let updated_json = serde_json::to_string(&requests).map_err(|e| {
+		// 				log::error!("Failed to serialize updated JSON: {:?}", e);
+		// 				Error::<T>::InvalidJson
+		// 			})?;
 
-							// Update MinerProfile with the new CID
-							let new_cid_vec = new_cid.into_bytes();
-							let new_cid_bounded = BoundedVec::try_from(new_cid_vec)
-								.map_err(|_| Error::<T>::StorageOverflow)?;
+		// 			// Pin the updated content to IPFS
+		// 			match Self::pin_file_to_ipfs(&updated_json) {
+		// 				Ok(new_cid) => {
+		// 					log::info!("Successfully pinned updated content with new CID: {}", new_cid);
 
-							Self::call_process_miners_to_remove(owner.clone(), file_hash.clone(), miner_node_id.clone(), new_cid_bounded);
+		// 					// Update MinerProfile with the new CID
+		// 					let new_cid_vec = new_cid.into_bytes();
+		// 					let new_cid_bounded = BoundedVec::try_from(new_cid_vec)
+		// 						.map_err(|_| Error::<T>::StorageOverflow)?;
 
-							// Unpin the old CID from the local node (if desired)
-							if let Err(e) = Self::unpin_file_from_ipfs(cid_str) {
-								log::error!("Failed to unpin old CID {}: {:?}", cid_str, e);
-							}
-						}
-						Err(e) => {
-							log::error!("Failed to pin updated content: {:?}", e);
-						}
-					}
-				}
-			}
+		// 					Self::call_process_miners_to_remove(owner.clone(), file_hash.clone(), miner_node_id.clone(), new_cid_bounded);
 
-			Ok(())
-		}
+		// 					// Unpin the old CID from the local node (if desired)
+		// 					if let Err(e) = Self::unpin_file_from_ipfs(cid_str) {
+		// 						log::error!("Failed to unpin old CID {}: {:?}", cid_str, e);
+		// 					}
+		// 				}
+		// 				Err(e) => {
+		// 					log::error!("Failed to pin updated content: {:?}", e);
+		// 				}
+		// 			}
+		// 		}
+		// 	}
+
+		// 	Ok(())
+		// }
 
 		/// Retrieves all files for a given account with their pinning information
 		///
@@ -1352,28 +1576,75 @@ pub mod pallet {
 		///
 		/// A vector of UserFile structs containing file details and pinning miners
 		pub fn get_user_files(account: T::AccountId) -> Vec<UserFile> {
-			UserStorageRequests::<T>::iter_prefix(&account)
-				.filter_map(|(file_hash, storage_request)| {
-					storage_request.map(|req| {
-						// Find miners who have stored this file
-						let miner_ids = FileStorageMiners::<T>::get(&account, &file_hash);
-		
-						// Convert BoundedVec to Vec
-						let miner_ids_vec: Vec<Vec<u8>> = miner_ids
-							.into_iter()
-							.map(|bounded_vec| bounded_vec.to_vec())
-							.collect();
-		
-						// Retrieve file size from FileSize storage, default to 0 if not found
-						let file_size = Self::file_size(&file_hash).unwrap_or(0);
-		
-						UserFile {
-							file_hash,
-							file_name: req.file_name,
-							miner_ids: miner_ids_vec,
-							file_size,
-							created_at: req.created_at.try_into().unwrap_or(0),
+			let cid = UserProfile::<T>::get(&account);
+			
+			// If no CID exists, return an empty vector
+			if cid.is_empty() {
+				log::info!("No UserProfile CID found for account {:?}", account);
+				return Vec::new();
+			}
+
+			let cid_str = match str::from_utf8(&cid) {
+				Ok(s) => s,
+				Err(_) => {
+					log::error!("Invalid UTF-8 in UserProfile CID for account {:?}", account);
+					return Vec::new();
+				}
+			};
+
+			// Fetch content from IPFS
+			let content = match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
+				Ok(content) => content,
+				Err(e) => {
+					log::error!("Failed to fetch UserProfile content for CID {}: {:?}", cid_str, e);
+					return Vec::new();
+				}
+			};
+
+			// Parse the JSON array
+			let requests: Vec<Value> = match serde_json::from_slice(&content) {
+				Ok(requests) => requests,
+				Err(e) => {
+					log::error!("Failed to parse UserProfile JSON content: {:?}", e);
+					return Vec::new();
+				}
+			};
+
+			// Convert JSON array to UserFile structs
+			requests
+				.into_iter()
+				.filter_map(|request| {
+					// Extract fields from the StorageRequest JSON
+					let file_hash = request["file_hash"].as_array()
+						.and_then(|arr| arr.iter().map(|v| v.as_u64().map(|n| n as u8)).collect::<Option<Vec<u8>>>())
+						.and_then(|vec| BoundedVec::try_from(vec).ok())?;
+					let file_name = request["file_name"].as_array()
+						.and_then(|arr| arr.iter().map(|v| v.as_u64().map(|n| n as u8)).collect::<Option<Vec<u8>>>())
+						.and_then(|vec| BoundedVec::try_from(vec).ok())?;
+					let created_at = request["created_at"].as_u64().unwrap_or(0) as u32;
+
+					// Get miners who have stored this file
+					let miner_ids = FileStorageMiners::<T>::get(&account, &file_hash);
+					let miner_ids_vec: Vec<Vec<u8>> = miner_ids
+						.into_iter()
+						.map(|bounded_vec| bounded_vec.to_vec())
+						.collect();
+
+					// Fetch file size
+					let file_size = match Self::fetch_ipfs_file_size(file_hash.to_vec()) {
+						Ok(size) => size,
+						Err(e) => {
+							log::error!("Failed to fetch file size for hash {:?}: {:?}", file_hash, e);
+							0 // Default to 0 if fetching fails
 						}
+					};
+
+					Some(UserFile {
+						file_hash,
+						file_name,
+						miner_ids: miner_ids_vec,
+						file_size,
+						created_at,
 					})
 				})
 				.collect()
@@ -1381,24 +1652,69 @@ pub mod pallet {
 
 		/// Get the total file size pinned by a specific miner
 		pub fn get_total_file_size_by_miner(miner_id: Vec<u8>) -> u128 {
-			let mut total_file_size: u128 = 0;
+			// Convert miner_id to BoundedVec
+			let miner_id_bounded = match BoundedVec::try_from(miner_id) {
+				Ok(bounded) => bounded,
+				Err(_) => {
+					log::error!("Failed to convert miner_id to BoundedVec");
+					return 0;
+				}
+			};
 
-			// Iterate through all storage requests to find files associated with this miner
-			for (owner, file_hash, storage_request) in UserStorageRequests::<T>::iter() {
-				if let Some(request) = storage_request {
-					// Check if the miner is in the list of miners for this storage request
-					if let Some(miner_ids) = &request.miner_ids {
-						if miner_ids.iter().any(|id| id == &miner_id) {
-							// Get the file size for this file hash
-							if let Some(file_size) = FileSize::<T>::get(&file_hash) {
-								total_file_size += file_size as u128;
-							}
+			// Retrieve the total file size directly from MinerTotalFilesSize storage
+			MinerTotalFilesSize::<T>::get(&miner_id_bounded).unwrap_or(0)
+		}
+		
+
+		/// Check if a miner is in a Free state
+		pub fn is_miner_free(miner_node_id: &BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) -> bool {
+			match MinerStates::<T>::get(miner_node_id) {
+				Some(MinerState::Free) => true,
+				_ => false,
+			}
+		}
+
+		/// Unsigned transaction function to update UserProfile
+		pub fn call_update_user_profile(owner: T::AccountId, cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
+			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+				b"IpfsPin::update_lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+			);
+
+			if let Ok(_guard) = lock.try_lock() {
+				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
+
+				if !signer.can_sign() {
+					log::warn!("No accounts available for signing in signer.");
+					return;
+				}
+
+				let results = signer.send_unsigned_transaction(
+					|account| UpdateUserProfilePayload {
+						owner: owner.clone(),
+						cid: cid.clone(),
+						public: account.public.clone(),
+						_marker: PhantomData,
+					},
+					|payload, _signature| {
+						Call::update_user_profile {
+							owner: payload.owner,
+							cid: payload.cid,
 						}
+					},
+				);
+
+				for (acc, res) in &results {
+					match res {
+						Ok(()) => log::info!("[{:?}] Successfully updated UserProfile", acc.id),
+						Err(e) => log::error!("[{:?}] Failed to update UserProfile: {:?}", acc.id, e),
 					}
 				}
+			} else {
+				log::error!("❌ Could not acquire lock for updating UserProfile");
 			}
-
-			total_file_size
 		}
+
 	}
 }

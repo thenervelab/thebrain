@@ -94,7 +94,7 @@ pallet-vesting = { workspace = true }
 hippius-primitives = { workspace = true, features = ["verifying"] }
 hippius-crypto-primitives = { workspace = true }
 
-ipfs-pallet-new = { workspace = true }
+ipfs-pallet = { workspace = true }
 pallet-alpha-bridge = { workspace = true }
 pallet-storage-s3 = { workspace = true }
 pallet-utils = { workspace = true }
@@ -276,7 +276,7 @@ std = [
     "hippius-crypto-primitives/std",
     
     "pallet-ip/std",
-    "ipfs-pallet-new/std",
+    "ipfs-pallet/std",
     "pallet-alpha-bridge/std",
     "pallet-storage-s3/std",
 	"pallet-registration/std",

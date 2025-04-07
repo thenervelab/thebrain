@@ -354,14 +354,14 @@ impl NodeMetricsData {
     }
 
     // New method to calculate storage usage score
-    fn calculate_storage_usage_score<T: ipfs_pallet_new::Config>(metrics: &NodeMetricsData) -> u64 {
+    fn calculate_storage_usage_score<T: ipfs_pallet::Config>(metrics: &NodeMetricsData) -> u64 {
         // Add the condition to check for ipfs_storage_max against ipfs_zfs_pool_size
         if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
             return 0; // Set final score to 0
         }
     
         // Use the new method to get total file size for the miner
-        let total_storage_usage = ipfs_pallet_new::Pallet::<T>::get_total_file_size_by_miner(metrics.miner_id.clone());
+        let total_storage_usage = ipfs_pallet::Pallet::<T>::get_total_file_size_by_miner(metrics.miner_id.clone());
         
         // Define weights for storage scoring
         const TOTAL_STORAGE_WEIGHT: u64 = 50;   // 50% weight to total storage
@@ -387,7 +387,7 @@ impl NodeMetricsData {
         normalized_score
     }
 
-    fn calculate_capacity_score<T: ipfs_pallet_new::Config>(metrics: &NodeMetricsData) -> u32 {
+    fn calculate_capacity_score<T: ipfs_pallet::Config>(metrics: &NodeMetricsData) -> u32 {
         // Add the condition to check for ipfs_storage_max against ipfs_zfs_pool_size
         if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
             return 0; // Set final score to 0
@@ -399,7 +399,7 @@ impl NodeMetricsData {
         }
     
         // Use the new method to get total file size for the miner
-        let total_used_storage = ipfs_pallet_new::Pallet::<T>::get_total_file_size_by_miner(metrics.miner_id.clone());
+        let total_used_storage = ipfs_pallet::Pallet::<T>::get_total_file_size_by_miner(metrics.miner_id.clone());
     
         // Usage scoring
         let usage_score = if metrics.ipfs_storage_max > 0 {
