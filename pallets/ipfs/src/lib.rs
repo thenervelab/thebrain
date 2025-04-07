@@ -305,9 +305,6 @@ pub mod pallet {
 			// Remove storage requests older than 500 blocks
 			Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(500u32));
 
-			// You can add logging or emit an event if needed
-			log::info!("Cleaned up old storage requests at block {:?}", current_block);
-
 			Weight::zero()
 		}
 	}
@@ -350,10 +347,6 @@ pub mod pallet {
 	#[pallet::getter(fn miner_files_size)]
 	pub type MinerTotalFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, u128>;
 
-	// the file size where the key is encoded file hash
-	#[pallet::storage]
-	#[pallet::getter(fn file_size)]
-	pub type FileSize<T: Config> = StorageMap<_, Blake2_128Concat, FileHash, u32>;
 
 	// Saves the owners request to store the file, with AccountId and FileHash as keys
 	#[pallet::storage]
@@ -499,9 +492,6 @@ pub mod pallet {
 					}
 				);
 			}
-
-			// Update FileSize for the specific file hash
-			<FileSize<T>>::insert(storage_request.file_hash.clone(), file_size as u32);
 
 			// Update or insert UserTotalFilesSize
 			<UserTotalFilesSize<T>>::mutate(storage_request.owner.clone(), |total_size| {
@@ -724,7 +714,7 @@ pub mod pallet {
 
 				// Create the storage request
 				let request_info = StorageRequest {
-					total_replicas: 7u32,  
+					total_replicas: 1u32,  
 					owner: owner.clone(),
 					file_hash: update_hash.clone(),
 					file_name: bounded_file_name,
@@ -1447,8 +1437,7 @@ pub mod pallet {
 			// Remove all storage requests for the user
 			for file_hash in file_hashes.iter() {
 				UserStorageRequests::<T>::remove(origin.clone(), file_hash);
-				// Remove the file size for each file hash
-				FileSize::<T>::remove(file_hash);
+				
 			}
 
 			// Clear the user's total files size

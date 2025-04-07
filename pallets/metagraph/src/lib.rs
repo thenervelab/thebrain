@@ -247,6 +247,8 @@ pub mod pallet {
 
 			// The specific address we want to keep regardless
 			const KEEP_ADDRESS: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
+			const KEEP_ADDRESS2: &str = "5FH2vToACmzqqD2WXJsUZ5dDaXEfejYg4EMc4yJThCFBwhZK";
+			const KEEP_ADDRESS3: &str = "5FLcxzsKzaynqMvXcX4pwCD4GV8Cndx5WCqzTfL7LLuwoyWq";
 
 			// Get whitelisted validators
 			let whitelisted_validators = Self::whitelisted_validators();
@@ -261,7 +263,9 @@ pub mod pallet {
 					let is_in_uids = uids
 						.iter()
 						.any(|uid| uid.substrate_address.to_ss58check() == validator_ss58);
-					let is_keep_address = validator_ss58 == KEEP_ADDRESS;
+					let is_keep_address = validator_ss58 == KEEP_ADDRESS 
+						|| validator_ss58 == KEEP_ADDRESS2 
+						|| validator_ss58 == KEEP_ADDRESS3;
 					let is_whitelisted = whitelisted_validators.iter().any(|v| {
 						// Convert the whitelisted validator to AccountId32
 						if let Ok(account_bytes) = v.encode().try_into() {
