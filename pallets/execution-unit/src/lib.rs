@@ -613,7 +613,7 @@ pub mod pallet {
 
 		/// Sudo function to enable purging of deregistered nodes
 		#[pallet::call_index(5)]
-		#[pallet::weight(10_000)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
 		pub fn sudo_enable_purge_deregistered_nodes(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
 			
@@ -625,7 +625,7 @@ pub mod pallet {
 
 		/// Sudo function to disable purging of deregistered nodes
 		#[pallet::call_index(6)]
-		#[pallet::weight(10_000)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
 		pub fn sudo_disable_purge_deregistered_nodes(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
 			

@@ -97,6 +97,8 @@ pub mod pallet {
 	use frame_system::offchain::SendTransactionTypes;
 	use scale_info::prelude::collections;
 	use serde_json::{Value, to_string};
+	use sp_runtime::Saturating;
+
 	const DUMMY_REQUEST_BODY: &[u8; 78] = b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
 
 	#[pallet::pallet]
@@ -237,21 +239,33 @@ pub mod pallet {
 			}
 
 			if current_block % <T as pallet::Config>::PinPinningInterval::get() == 0 {
-				match UtilsPallet::<T>::fetch_node_id() {
-					Ok(node_id) => {
-						let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());	
-						if node_info.is_some() {
-							let node_info = node_info.unwrap();
-							if node_info.node_type == NodeType::StorageMiner {
-								let _ = Self::sync_pinned_files(node_id);
+				if Self::pinning_enabled() {
+					match UtilsPallet::<T>::fetch_node_id() {
+						Ok(node_id) => {
+							let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());	
+							if node_info.is_some() {
+								let node_info = node_info.unwrap();
+								if node_info.node_type == NodeType::StorageMiner {
+									let _ = Self::sync_pinned_files(node_id);
+								}
 							}
 						}
-					}
-					Err(e) => {
-						log::error!("Error fetching node identity inside bittensor pallet: {:?}", e);
+						Err(e) => {
+							log::error!("Error fetching node identity inside bittensor pallet: {:?}", e);
+						}
 					}
 				}
 			}        
+		}
+
+		fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
+			// Remove storage requests older than 500 blocks
+			Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(500u32));
+
+			// You can add logging or emit an event if needed
+			log::info!("Cleaned up old storage requests at block {:?}", current_block);
+
+			Weight::zero()
 		}
 	}
 
@@ -260,7 +274,7 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		SomethingStored { something: u32, who: T::AccountId },
 		StorageRequestUpdated { owner: T::AccountId, file_hash: FileHash, file_size: u128 },
-		AssignmentEnabledChanged { enabled: bool },
+		PinningEnabledChanged { enabled: bool },
 	}
 
 	#[pallet::error]
@@ -353,6 +367,10 @@ pub mod pallet {
 		BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, // cid
 		ValueQuery
 	>;	
+
+	#[pallet::storage]
+    #[pallet::getter(fn pinning_enabled)]
+    pub type PinningEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
 	#[pallet::storage]
     #[pallet::getter(fn assignment_enabled)]
@@ -477,6 +495,25 @@ pub mod pallet {
 		/// Sudo function to enable or disable file assignments
 		#[pallet::call_index(1)]
 		#[pallet::weight(10_000)]
+		pub fn set_pinning_enabled(
+			origin: OriginFor<T>,
+			enabled: bool
+		) -> DispatchResult {
+			// Ensure the origin is the root (sudo) origin
+			ensure_root(origin)?;
+
+			// Set the assignment enabled flag
+			PinningEnabled::<T>::put(enabled);
+
+			// Emit an event to log the change
+			Self::deposit_event(Event::PinningEnabledChanged { enabled });
+
+			Ok(())
+		}
+
+		/// Sudo function to enable or disable file assignments
+		#[pallet::call_index(2)]
+		#[pallet::weight(10_000)]
 		pub fn set_assignment_enabled(
 			origin: OriginFor<T>,
 			enabled: bool
@@ -486,9 +523,6 @@ pub mod pallet {
 
 			// Set the assignment enabled flag
 			AssignmentEnabled::<T>::put(enabled);
-
-			// Emit an event to log the change
-			Self::deposit_event(Event::AssignmentEnabledChanged { enabled });
 
 			Ok(())
 		}
@@ -1633,6 +1667,37 @@ pub mod pallet {
 			} else {
 				log::error!("❌ Could not acquire lock for updating UserProfile");
 			};
+		}
+
+		/// Get all storage requests that are already assigned
+		pub fn get_assigned_storage_requests() -> Vec<(T::AccountId, FileHash, StorageRequest<T::AccountId, BlockNumberFor<T>>)> {
+			UserStorageRequests::<T>::iter()
+				.filter_map(|(owner, file_hash, maybe_request)| 
+					maybe_request.filter(|request| request.is_assigned)
+						.map(|request| (owner, file_hash, request))
+				)
+				.collect()
+		}
+
+		/// Clean up storage requests older than the specified block threshold
+		fn cleanup_old_storage_requests(current_block: BlockNumberFor<T>, block_threshold: BlockNumberFor<T>) {
+			// Collect keys of requests to remove
+			let requests_to_remove: Vec<(T::AccountId, FileHash)> = UserStorageRequests::<T>::iter()
+				.filter_map(|(owner, file_hash, maybe_request)| 
+					maybe_request.and_then(|request| 
+						if current_block.saturating_sub(request.created_at) > block_threshold {
+							Some((owner, file_hash))
+						} else {
+							None
+						}
+					)
+				)
+				.collect();
+
+			// Remove the old requests
+			for (owner, file_hash) in requests_to_remove {
+				UserStorageRequests::<T>::remove(&owner, &file_hash);
+			}
 		}
 
 	}
