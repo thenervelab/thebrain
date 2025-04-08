@@ -1876,15 +1876,8 @@ pub mod pallet {
 					all_new_storage_requests.extend(new_storage_requests);
 				}
 
-				// Create a mutable clone for modifications
-				let mut modifiable_storage_requests = all_new_storage_requests.clone();
-
-				// Collect references before any mutation
-				let storage_request_refs: Vec<&StorageRequest<T::AccountId, BlockNumberFor<T>>> = 
-					all_new_storage_requests.iter().collect();
-
 				// Assign new storage requests to miners
-				for storage_request in modifiable_storage_requests.iter_mut() {
+				for storage_request in all_new_storage_requests.iter_mut() {
 					let mut available_miners: Vec<_> = active_storage_miners
 						.iter()
 						.filter_map(|miner| {
@@ -2065,92 +2058,72 @@ pub mod pallet {
 							Err(e) => log::error!("Failed to fetch file size: {:?}", e),
 						}
 
-						// Group storage requests by owner using the references
-						let mut user_requests: BTreeMap<
-							T::AccountId,
-							Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>>,
-						> = BTreeMap::new();
-						for storage_request in &storage_request_refs {
-							user_requests
-								.entry(storage_request.owner.clone())
-								.or_insert_with(Vec::new)
-								.push((*storage_request).clone());
-						}
-
-						// Update UserProfile for each unique user
-						for (owner, requests) in user_requests.iter() {
-							let existing_user_cid = UserProfile::<T>::get(owner);
-							let updated_user_json =
-								if !existing_user_cid.is_empty() {
-									let cid_str = sp_std::str::from_utf8(&existing_user_cid)
-										.map_err(|_| Error::<T>::InvalidCid)?;
-									match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
-										Ok(content) => {
-											let existing_data: Value = serde_json::from_slice(&content)
+						let existing_user_cid = UserProfile::<T>::get(storage_request.owner.clone());
+						let updated_user_json =
+							if !existing_user_cid.is_empty() {
+								let cid_str = sp_std::str::from_utf8(&existing_user_cid)
+									.map_err(|_| Error::<T>::InvalidCid)?;
+								match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
+									Ok(content) => {
+										let existing_data: Value = serde_json::from_slice(&content)
+											.map_err(|_| Error::<T>::InvalidJson)?;
+										let mut requests_array = if existing_data.is_array() {
+											existing_data.as_array().unwrap().clone()
+										} else {
+											vec![existing_data]
+										};
+	
+										let new_request_value =
+											serde_json::to_value(&*storage_request)
 												.map_err(|_| Error::<T>::InvalidJson)?;
-											let mut requests_array = if existing_data.is_array() {
-												existing_data.as_array().unwrap().clone()
-											} else {
-												vec![existing_data]
-											};
-
-											// Append all new requests for this user
-											for storage_request in requests {
-												let new_request_value =
-													serde_json::to_value(storage_request)
-														.map_err(|_| Error::<T>::InvalidJson)?;
-												requests_array.push(new_request_value);
-											}
-
-											serde_json::to_string(&requests_array).map_err(|e| {
-												log::error!(
-													"Failed to serialize updated user requests: {:?}",
-													e
-												);
-												Error::<T>::InvalidJson
-											})?
-										},
-										Err(e) => {
-											log::error!("Failed to fetch existing UserProfile CID content: {:?}", e);
-											// Fallback to just the new requests
-											serde_json::to_string(requests).map_err(|e| {
-												log::error!(
-													"Failed to serialize new user requests: {:?}",
-													e
-												);
-												Error::<T>::InvalidJson
-											})?
-										},
-									}
-								} else {
-									// No existing CID, create a new array with the new requests
-									serde_json::to_string(requests).map_err(|e| {
-										log::error!("Failed to serialize new user requests: {:?}", e);
-										Error::<T>::InvalidJson
-									})?
-								};
-
-							match IpfsPallet::<T>::pin_file_to_ipfs(&updated_user_json) {
-								Ok(new_user_cid) => {
-									let new_user_cid_bounded =
-										BoundedVec::try_from(new_user_cid.clone().into_bytes())
-											.map_err(|_| Error::<T>::StorageOverflow)?;
-									let bounded_node_id: BoundedVec<u8, ConstU32<64>> =
-										BoundedVec::try_from(node_id.clone())
-											.map_err(|_| Error::<T>::StorageOverflow)?;
-									IpfsPallet::<T>::call_update_user_profile(
-										owner.clone(),
-										bounded_node_id,
-										new_user_cid_bounded,
-									);
-									log::info!(
-										"Updated UserProfile for owner {:?} with CID: {}",
-										owner,
-										new_user_cid
-									);
-								},
-								Err(e) => log::error!("Failed to update UserProfile CID: {:?}", e),
-							}
+										requests_array.push(new_request_value);
+										
+										serde_json::to_string(&requests_array).map_err(|e| {
+											log::error!(
+												"Failed to serialize updated user requests: {:?}",
+												e
+											);
+											Error::<T>::InvalidJson
+										})?
+									},
+									Err(e) => {
+										log::error!("Failed to fetch existing UserProfile CID content: {:?}", e);
+										serde_json::to_string(&*storage_request).map_err(|e| {
+											log::error!(
+												"Failed to serialize new user requests: {:?}",
+												e
+											);
+											Error::<T>::InvalidJson
+										})?
+									},
+								}
+							} else {
+								serde_json::to_string(&*storage_request).map_err(|e| {
+									log::error!("Failed to serialize new user requests: {:?}", e);
+									Error::<T>::InvalidJson
+								})?
+							};
+	
+						match IpfsPallet::<T>::pin_file_to_ipfs(&updated_user_json) {
+							Ok(new_user_cid) => {
+								let new_user_cid_bounded =
+									BoundedVec::try_from(new_user_cid.clone().into_bytes())
+										.map_err(|_| Error::<T>::StorageOverflow)?;
+								let bounded_node_id: BoundedVec<u8, ConstU32<64>> =
+									BoundedVec::try_from(node_id.clone())
+										.map_err(|_| Error::<T>::StorageOverflow)?;
+								IpfsPallet::<T>::call_update_user_profile(
+									storage_request.owner.clone(),
+									bounded_node_id,
+									new_user_cid_bounded,
+								);
+								log::info!(
+									"Updated UserProfile for owner {:?} with CID: {}",
+									storage_request.owner,
+									new_user_cid
+								);
+							},
+							Err(e) => log::error!("Failed to update UserProfile CID: {:?}", e),
 						}
 					}
 				}

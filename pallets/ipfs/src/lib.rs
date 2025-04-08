@@ -670,11 +670,10 @@ pub mod pallet {
 					!UserStorageRequests::<T>::contains_key(&owner, &update_hash),
 					Error::<T>::RequestAlreadyExists
 				);
-
 				
 				// Create the storage request
 				let request_info = StorageRequest {
-					total_replicas: 7u32,  
+					total_replicas: 1u32,  
 					owner: owner.clone(),
 					file_hash: update_hash.clone(),
 					file_name: bounded_file_name,
