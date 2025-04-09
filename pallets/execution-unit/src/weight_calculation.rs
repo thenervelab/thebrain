@@ -661,55 +661,56 @@ impl NodeMetricsData {
 		final_position
 	}
 
-	fn _get_composite_score(metrics: &NodeMetricsData) -> u32 {
-		// Calculate individual components
-		let uptime_score = if metrics.total_minutes > 0 {
-			(metrics.uptime_minutes as u64)
-				.saturating_mul(Self::INTERNAL_SCALING as u64)
-				.saturating_div(metrics.total_minutes as u64) as u32
-		} else {
-			0
-		};
+ fn _get_composite_score(metrics: &NodeMetricsData) -> u32 {
+    // Uptime score
+    let uptime_score = if metrics.total_minutes > 0 {
+        (metrics.uptime_minutes as u64)
+            .saturating_mul(Self::INTERNAL_SCALING as u64)
+            .saturating_div(metrics.total_minutes as u64) as u32
+    } else {
+        0
+    };
 
-		let challenge_score = if metrics.total_challenges > 0 {
-			(metrics.successful_challenges as u64)
-				.saturating_mul(Self::INTERNAL_SCALING as u64)
-				.saturating_div(metrics.total_challenges as u64) as u32
-		} else {
-			0
-		};
+    // Challenge success score
+    let challenge_score = if metrics.total_challenges > 0 {
+        (metrics.successful_challenges as u64)
+            .saturating_mul(Self::INTERNAL_SCALING as u64)
+            .saturating_div(metrics.total_challenges as u64) as u32
+    } else {
+        0
+    };
 
-		let response_score =
-			Self::INTERNAL_SCALING.saturating_div(metrics.avg_response_time_ms.max(1).min(1000));
+    // Response time score
+    let response_score =
+        Self::INTERNAL_SCALING.saturating_div(metrics.avg_response_time_ms.max(1).min(1000));
 
-		let storage_score = if metrics.total_storage_bytes > 0 {
-			(metrics.current_storage_bytes as u32)
-				.saturating_mul(Self::INTERNAL_SCALING)
-				.saturating_div(metrics.total_storage_bytes as u32)
-		} else {
-			0
-		};
+    // Storage capacity score (new)
+    let max_storage_reference = 100 * 1024 * 1024 * 1024 * 1024; // 100TB in bytes
+    let storage_capacity_score = (metrics.ipfs_storage_max as u64)
+        .saturating_mul(Self::INTERNAL_SCALING as u64)
+        .saturating_div(max_storage_reference)
+        .min(Self::INTERNAL_SCALING as u64) as u32;
 
-		// Combine scores with weights
-		let weighted_score = uptime_score
-			.saturating_mul(30)
-			.saturating_add(challenge_score.saturating_mul(30))
-			.saturating_add(response_score.saturating_mul(20))
-			.saturating_add(storage_score.saturating_mul(20))
-			.saturating_div(100);
+    // Weighted sum: 20% each for uptime, challenge, response; 40% for capacity
+    let weighted_score = uptime_score
+        .saturating_mul(20)
+        .saturating_add(challenge_score.saturating_mul(20))
+        .saturating_add(response_score.saturating_mul(20))
+        .saturating_add(storage_capacity_score.saturating_mul(40))
+        .saturating_div(100);
 
-		// Apply penalties
-		let penalty_multiplier = Self::INTERNAL_SCALING.saturating_sub(
-			metrics
-				.failed_challenges_count
-				.saturating_mul(50_000) // 5% per failure
-				.min(500_000), // Max 50% penalty
-		);
+    // Apply penalties
+    let penalty_multiplier = Self::INTERNAL_SCALING.saturating_sub(
+        metrics
+            .failed_challenges_count
+            .saturating_mul(50_000) // 5% per failure
+            .min(500_000), // Max 50% penalty
+    );
 
-		let final_score = weighted_score
-			.saturating_mul(penalty_multiplier)
-			.saturating_div(Self::INTERNAL_SCALING);
+    let final_score = weighted_score
+        .saturating_mul(penalty_multiplier)
+        .saturating_div(Self::INTERNAL_SCALING);
 
-		final_score
-	}
+    final_score
+} 
 }
