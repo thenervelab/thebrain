@@ -79,7 +79,7 @@ pub mod pallet {
 		AccountId32,
 	};
 	use sp_std::prelude::*;
-	// use ipfs_pallet::FileHash;
+	use ipfs_pallet::{FileHash, MAX_NODE_ID_LENGTH};
 	use ipfs_pallet::MinerProfileItem;
 	// use serde_json::to_string;
 	use ipfs_pallet::AssignmentEnabled;
@@ -1846,7 +1846,6 @@ pub mod pallet {
 							.filter_map(|file| {
 								let filename = file["filename"].as_str()?;
 								let cid = file["cid"].as_str()?;
-
 								let cid_vec: Vec<u8> = cid.as_bytes().to_vec();
 								// Encode hahs as our fn exepcts encoded one
 								let file_hash_key = hex::encode(cid_vec.clone());
@@ -1966,6 +1965,7 @@ pub mod pallet {
 
 						match IpfsPallet::<T>::fetch_ipfs_file_size(storage_request.file_hash.to_vec().clone()) {
 							Ok(file_size) => {
+								// lock miner profile
 								for (miner, _, _) in &selected_miners {
 									let miner_node_id = BoundedVec::try_from(miner.node_id.clone())
 										.map_err(|_| Error::<T>::StorageOverflow)?;
@@ -2128,6 +2128,181 @@ pub mod pallet {
 					}
 				}
 			}
+			Ok(())
+		}
+
+		pub fn update_all_miners_with_profiles(
+			node_id: Vec<u8>,
+			selected_validator: T::AccountId,
+		) -> Result<(), DispatchError> {
+			// Get all active storage miners
+			let active_storage_miners = pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
+			let ranked_list = RankingsPallet::<T>::get_ranked_list();
+			
+			// Create rank map
+			let mut rank_map: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+			for ranking in ranked_list.iter() {
+				rank_map.insert(ranking.node_id.clone(), ranking.rank);
+			}
+		
+			// Collect all CIDs from MinerProfile
+			let mut all_cids: Vec<FileHash> = Vec::new();
+			MinerProfile::<T>::iter().for_each(|(miner_id, cid)| {
+				let file_hash = BoundedVec::try_from(cid.to_vec())
+					.unwrap_or_else(|_| BoundedVec::try_from(vec![0; MAX_NODE_ID_LENGTH as usize]).unwrap());
+				all_cids.push(file_hash);
+			});
+		
+			// Collect all CIDs from UserProfile
+			UserProfile::<T>::iter().for_each(|(_, cid)| {
+				all_cids.push(
+					cid,
+				);
+			});
+		
+			let current_block = frame_system::Pallet::<T>::block_number();
+			const MAX_MINERS: usize = 7;
+		
+			for cid in all_cids {
+				// Get available miners using same filtering logic
+				let mut available_miners: Vec<_> = active_storage_miners
+					.iter()
+					.filter_map(|miner| {
+						let miner_node_id = BoundedVec::try_from(miner.node_id.clone()).ok()?;
+						let is_miner_free = IpfsPallet::<T>::is_miner_free(&miner_node_id);
+		
+						if is_miner_free {
+							if let Some(node_metrics) = Self::get_node_metrics(miner.node_id.clone()) {
+								let ipfs_storage_max = node_metrics.ipfs_storage_max;
+								let available_storage = ipfs_storage_max
+									.saturating_sub(node_metrics.ipfs_repo_size);
+								let storage_threshold = ipfs_storage_max.saturating_mul(10) / 100;
+		
+								if available_storage >= storage_threshold {
+									if let Some(rank) = rank_map.get(&miner.node_id) {
+										Some((miner.clone(), *rank, available_storage))
+									} else {
+										None
+									}
+								} else {
+									None
+								}
+							} else {
+								None
+							}
+						} else {
+							None
+						}
+					})
+					.collect();
+		
+				// Sort miners by rank and available storage
+				available_miners.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
+		
+				// Select exactly 7 miners (or fewer if not enough available)
+				let selected_miners: Vec<_> = available_miners
+					.into_iter()
+					.take(MAX_MINERS)
+					.collect();
+		
+				// Ensure we have at least one miner before proceeding
+				if !selected_miners.is_empty() {
+					// since we are updating this we need to set the miner locks 
+					for (miner, _, _) in &selected_miners {
+						let miner_node_id = BoundedVec::try_from(miner.node_id.clone())
+							.map_err(|_| Error::<T>::StorageOverflow)?;
+						IpfsPallet::<T>::call_set_miner_state_locked(miner_node_id);
+					}
+
+					// Fetch existing content
+					let cid_str = sp_std::str::from_utf8(&cid)
+						.map_err(|_| Error::<T>::InvalidCid)?;
+					let content = IpfsPallet::<T>::fetch_ipfs_content(cid_str)
+						.map_err(|_| Error::<T>::IpfsError)?;
+					
+					let existing_data: Value = serde_json::from_slice(&content)
+						.map_err(|_| Error::<T>::InvalidJson)?;
+		
+					// Replace file_size fetch with match statement
+					let file_size = match IpfsPallet::<T>::fetch_ipfs_file_size(cid.to_vec()) {
+						Ok(size) => size,
+						Err(e) => {
+							log::error!("Failed to fetch IPFS file size: {:?}", e);
+							return Err(Error::<T>::IpfsError.into()); // Map the error to DispatchError
+						}
+					};
+					
+					let miner_pin_requests: Vec<MinerPinRequest<BlockNumberFor<T>>> = selected_miners
+						.iter()
+						.map(|(miner, _, _)| MinerPinRequest {
+							miner_node_id: BoundedVec::try_from(miner.node_id.clone()).unwrap(),
+							file_hash: cid.clone(),
+							created_at: current_block,
+							file_size_in_bytes: file_size,
+						})
+						.collect();
+		
+					// Process each miner's update
+					for pin_request in miner_pin_requests.iter() {
+						let miner_node_id = pin_request.miner_node_id.clone();
+						let existing_cid = MinerProfile::<T>::get(&miner_node_id);
+		
+						let json_content = if !existing_cid.is_empty() {
+							let existing_cid_str = sp_std::str::from_utf8(&existing_cid)
+								.map_err(|_| Error::<T>::InvalidCid)?;
+							match IpfsPallet::<T>::fetch_ipfs_content(existing_cid_str) {
+								Ok(content) => {
+									let existing_data: Value = serde_json::from_slice(&content)
+										.map_err(|_| Error::<T>::InvalidJson)?;
+									let mut requests_array = if existing_data.is_array() {
+										existing_data.as_array().unwrap().clone()
+									} else {
+										vec![existing_data]
+									};
+									let new_request = serde_json::to_value(pin_request)
+										.map_err(|_| Error::<T>::InvalidJson)?;
+									requests_array.push(new_request);
+									serde_json::to_string(&requests_array).unwrap()
+								},
+								Err(_) => {
+									serde_json::to_string(&vec![pin_request]).unwrap()
+								},
+							}
+						} else {
+							serde_json::to_string(&vec![pin_request]).unwrap()
+						};
+		
+						// Pin and update miner profile
+						match IpfsPallet::<T>::pin_file_to_ipfs(&json_content) {
+							Ok(new_cid) => {
+								let cid_vec: Vec<u8> = new_cid.clone().into_bytes();
+								// Encode hahs as our fn exepcts encoded one
+								let file_hash_key = hex::encode(cid_vec.clone());
+								let update_hash_vec: Vec<u8> = file_hash_key.into();
+								let update_hash =
+									BoundedVec::try_from(update_hash_vec).map_err(|_| Error::<T>::StorageOverflow)?;
+		
+								let miner_profile_items = vec![MinerProfileItem {
+									miner_node_id: miner_node_id.clone(),
+									cid: update_hash.clone(),
+								}];
+		
+								// an Unsigned tx Update miner profile storage
+		
+								log::info!(
+									"Successfully updated miner {:?} with CID: {}",
+									miner_node_id,
+									new_cid
+								);
+							},
+							Err(e) => log::error!("Failed to pin file for miner {:?}: {:?}", miner_node_id, e),
+						}
+					}
+				} else {
+					log::warn!("No available miners found for CID: {:?}", cid);
+				}
+			}
+		
 			Ok(())
 		}
 	}

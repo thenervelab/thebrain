@@ -196,7 +196,7 @@ pub mod pallet {
 						.propagate(true)
 						.build()
 				},
-				Call::update_user_profile { owner, node_identity, cid, .. } => {
+				Call::update_user_profile { owner, node_identity: _, cid, .. } => {
 					let current_block = frame_system::Pallet::<T>::block_number();
 
 					// Create a unique hash combining all relevant data
@@ -315,6 +315,7 @@ pub mod pallet {
 		SomethingStored { something: u32, who: T::AccountId },
 		StorageRequestUpdated { owner: T::AccountId, file_hash: FileHash, file_size: u128 },
 		PinningEnabledChanged { enabled: bool },
+		MinerProfilesUpdated { miner_count: u32 },
 	}
 
 	#[pallet::error]
@@ -633,6 +634,42 @@ pub mod pallet {
 					}
 				}
 			);
+
+			Ok(().into())
+		}
+
+		/// Update MinerProfile for multiple miners with signature verification
+		#[pallet::call_index(8)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn update_miner_profiles(
+			origin: OriginFor<T>,
+			miner_pin_requests: Vec<MinerProfileItem>, 
+			signature: <T as SigningTypes>::Signature
+		) -> DispatchResultWithPostInfo {
+			ensure_none(origin)?;
+
+			let _signature = signature;
+
+			// Update MinerProfile storage for each miner pin request
+			for miner_profile in miner_pin_requests.iter() {
+				// Update MinerProfile storage with node ID and CID
+				<MinerProfile<T>>::insert(
+					miner_profile.miner_node_id.clone(), 
+					BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(
+						miner_profile.cid.clone().into_inner().to_vec()
+					).unwrap_or_else(|v: Vec<u8>| 
+						BoundedVec::truncate_from(v)
+					)
+				);
+
+				// Set the miner's state to Free
+				MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
+			}
+
+			// Deposit an event to log the miner profile update
+			Self::deposit_event(Event::MinerProfilesUpdated {
+				miner_count: miner_pin_requests.len() as u32,
+			});
 
 			Ok(().into())
 		}
