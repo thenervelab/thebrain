@@ -176,14 +176,13 @@ impl NodeMetricsData {
 				}
 				(
 					availability_score
-						.saturating_mul(20) // Reduced from 35
-						.saturating_add(performance_score.saturating_mul(10)) // Increased from 5
-						.saturating_add(reliability_score.saturating_mul(10)) // Unchanged
-						.saturating_add(capacity_score.saturating_mul(25)) // Increased from 15
-						.saturating_add(storage_usage_score.saturating_mul(15)) // Reduced from 25
-						.saturating_add(network_score.saturating_mul(10)) // Increased from 5
-						.saturating_add(diversity_score.saturating_mul(10))
-					// Unchanged
+					.saturating_mul(15) // Reduced from 20
+					.saturating_add(performance_score.saturating_mul(10)) // Unchanged
+					.saturating_add(reliability_score.saturating_mul(10)) // Unchanged
+					.saturating_add(capacity_score.saturating_mul(35)) // Increased from 25
+					.saturating_add(storage_usage_score.saturating_mul(20)) // Increased from 15
+					.saturating_add(network_score.saturating_mul(5)) // Reduced from 10
+					.saturating_add(diversity_score.saturating_mul(5)) // Unchanged
 				) as u32
 			},
 			NodeType::StorageS3 => {
