@@ -216,7 +216,7 @@ pub mod pallet {
 						.build()
 				},
 				// Handler for `set_miner_state_locked` unsigned transaction
-				Call::set_miner_state_locked { miner_node_id, .. } => {
+				Call::set_miner_state_locked { miner_node_id, signature: _, block_number: _ } => {
 					let current_block = frame_system::Pallet::<T>::block_number();
 
 					// Create a unique hash combining all relevant data
@@ -243,6 +243,28 @@ pub mod pallet {
 					data.extend_from_slice(&current_block.encode());
 					data.extend_from_slice(&owner.encode());
 					data.extend_from_slice(&file_hash.encode());
+					
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					// Ensure unique transaction validity
+					ValidTransaction::with_tag_prefix("IpfsOffchain")
+						.priority(TransactionPriority::max_value())
+						.and_provides(unique_hash)
+						.longevity(3)
+						.propagate(true)
+						.build()
+				},
+				// Handler for `update_miner_profiles` unsigned transaction
+				Call::update_miner_profiles { miner_pin_requests, .. } => {
+					let current_block = frame_system::Pallet::<T>::block_number();
+
+					// Create a unique hash combining all relevant data
+					let mut data = Vec::new();
+					data.extend_from_slice(&current_block.encode());
+					for miner_profile in miner_pin_requests {
+						data.extend_from_slice(&miner_profile.miner_node_id.encode());
+						data.extend_from_slice(&miner_profile.cid.encode());
+					}
 					
 					let unique_hash = sp_io::hashing::blake2_256(&data);
 
@@ -568,7 +590,9 @@ pub mod pallet {
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn set_miner_state_locked(
 			origin: OriginFor<T>,
-			miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>
+			miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+			signature: <T as SigningTypes>::Signature,
+			block_number: BlockNumberFor<T>,
 		) -> DispatchResultWithPostInfo {
 			// Ensure this is an unsigned transaction
 			ensure_none(origin)?;
@@ -614,7 +638,7 @@ pub mod pallet {
 
 		/// Unsigned transaction to mark a storage request as assigned
 		#[pallet::call_index(7)]
-		#[pallet::weight(10_000)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn mark_storage_request_assigned(
 			origin: OriginFor<T>,
 			owner: T::AccountId,
@@ -734,7 +758,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		fn select_validator() -> Result<T::AccountId, Error<T>> {
+		pub fn select_validator() -> Result<T::AccountId, Error<T>> {
 			// Correct way to get active validators from staking pallet
 			let validators = pallet_staking::Validators::<T>::iter()
 				.map(|(validator, _prefs)| validator)
@@ -750,7 +774,7 @@ pub mod pallet {
 		}
 
 		/// Helper function to set a miner's state to Locked using unsigned transactions
-		pub fn call_set_miner_state_locked(miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) {
+		pub fn call_set_miner_state_locked(miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, block_number: BlockNumberFor<T>) {
 			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
 				b"IpfsPin::update_lock",
 				LOCK_BLOCK_EXPIRATION,
@@ -768,12 +792,15 @@ pub mod pallet {
 				let results = signer.send_unsigned_transaction(
 					|account| MinerLockPayload {
 						miner_node_id: miner_node_id.clone(),
+						block_number,
 						public: account.public.clone(),
 						_marker: PhantomData,
 					},
 					|payload, _signature| {
 						Call::set_miner_state_locked {
 							miner_node_id: payload.miner_node_id,
+							block_number: payload.block_number,
+							signature: _signature,
 						}
 					},
 				);
@@ -840,7 +867,6 @@ pub mod pallet {
 		}
 
 		pub fn fetch_ipfs_file_size(file_hash_vec: Vec<u8>) -> Result<u32, http::Error> {
-		
 			let file_hash = hex::decode(file_hash_vec).map_err(|_| {
 				log::error!("Failed to decode file hash");
 				http::Error::Unknown
@@ -900,7 +926,7 @@ pub mod pallet {
 			Err(http::Error::Unknown)
 		}
 
-		fn fetch_cid_pinned_nodes(cid: &Vec<u8>) -> Result<Vec<Vec<u8>>, http::Error> {
+		pub fn fetch_cid_pinned_nodes(cid: &Vec<u8>) -> Result<Vec<Vec<u8>>, http::Error> {
 			let file_hash = hex::decode(cid).map_err(|_| {
 				log::error!("Failed to decode file hash");
 				http::Error::Unknown
@@ -1077,7 +1103,7 @@ pub mod pallet {
 		
 		// Pin a JSON string to IPFS and return its CID
 		pub fn pin_file_to_ipfs(json_string: &str) -> Result<String, http::Error> {
-			let url = format!("{}/api/v0/add", T::IPFSBaseUrl::get());
+			let url = format!("{}/api/v0/add?cid-version=1", T::IPFSBaseUrl::get());
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
 		
 			// Convert JSON string to bytes
@@ -1456,8 +1482,7 @@ pub mod pallet {
 		pub fn pin_file_from_ipfs(cid: &str) -> Result<(), http::Error> {
 
 			let base_url = T::IPFSBaseUrl::get();
-			let url = format!("{}/api/v0/pin/add?arg={}", base_url, cid);
-			
+			let url = format!("{}/api/v0/pin/add?arg={}&cid-version=1", base_url, cid);
 
 			// Request Timeout
 			let deadline =
@@ -1784,5 +1809,35 @@ pub mod pallet {
 			}
 		}
 
+		/// Unsigned transaction function to update MinerProfiles
+		pub fn call_update_miner_profiles(miner_pin_requests: Vec<MinerProfileItem>) {
+			let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
+
+			if !signer.can_sign() {
+				log::warn!("No accounts available for signing in signer.");
+				return;
+			}
+
+			let results = signer.send_unsigned_transaction(
+				|account| UpdateMinerProfilePayload {
+					miner_pin_requests: miner_pin_requests.clone(),
+					public: account.public.clone(),
+					_marker: PhantomData,
+				},
+				|payload, signature| {
+					Call::update_miner_profiles {
+						miner_pin_requests: payload.miner_pin_requests,
+						signature,
+					}
+				},
+			);
+
+			for (acc, res) in &results {
+				match res {
+					Ok(()) => log::info!("[{:?}] Successfully updated MinerProfiles", acc.id),
+					Err(e) => log::error!("[{:?}] Failed to update MinerProfiles: {:?}", acc.id, e),
+				}
+			}
+		}
 	}
 }

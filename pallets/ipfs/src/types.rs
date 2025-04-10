@@ -133,6 +133,7 @@ impl<T: Config> SignedPayload<T> for UpdateUserProfilePayload<T> {
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
 pub struct MinerLockPayload<T: Config> {
     pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub block_number: BlockNumberFor<T>,
     pub public: T::Public,
     pub _marker: PhantomData<T>,
 }
@@ -154,6 +155,20 @@ pub struct MarkStorageRequestAssignedPayload<T: Config> {
 
 // Implement SignedPayload for MinerLockPayload
 impl<T: Config> SignedPayload<T> for MarkStorageRequestAssignedPayload<T> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
+}
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
+pub struct UpdateMinerProfilePayload<T: Config> {
+    pub miner_pin_requests: Vec<MinerProfileItem>,
+    pub public: T::Public,
+    pub _marker: PhantomData<T>,
+}
+
+// Implement SignedPayload for UpdateMinerProfilePayload
+impl<T: Config> SignedPayload<T> for UpdateMinerProfilePayload<T> {
     fn public(&self) -> T::Public {
         self.public.clone()
     }

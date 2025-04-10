@@ -170,19 +170,14 @@ impl NodeMetricsData {
 		// Adjust weight calculation based on node type
 		let base_weight = match _node_type {
 			NodeType::StorageMiner => {
-				// If capacity_score is 0 for StorageMiner, set base_weight to 0 and return early
-				if capacity_score == 0 {
-					return 0;
-				}
 				(
-					availability_score
-					.saturating_mul(15) // Reduced from 20
-					.saturating_add(performance_score.saturating_mul(10)) // Unchanged
-					.saturating_add(reliability_score.saturating_mul(10)) // Unchanged
-					.saturating_add(capacity_score.saturating_mul(35)) // Increased from 25
-					.saturating_add(storage_usage_score.saturating_mul(20)) // Increased from 15
-					.saturating_add(network_score.saturating_mul(5)) // Reduced from 10
-					.saturating_add(diversity_score.saturating_mul(5)) // Unchanged
+					availability_score.saturating_mul(10)
+					.saturating_add(performance_score.saturating_mul(15))
+					.saturating_add(reliability_score.saturating_mul(15))
+					.saturating_add(capacity_score.saturating_mul(45)) // Increased to 45%
+					.saturating_add(storage_usage_score.saturating_mul(5)) // Reduced to 5%
+					.saturating_add(network_score.saturating_mul(10))
+					.saturating_add(diversity_score.saturating_mul(5))
 				) as u32
 			},
 			NodeType::StorageS3 => {
@@ -267,64 +262,60 @@ impl NodeMetricsData {
 	}
 
 	fn calculate_availability_score(metrics: &NodeMetricsData) -> u32 {
-		if metrics.total_pin_checks == 0 || metrics.total_pin_checks < 10 {
-			return 0;
+		if metrics.total_pin_checks < 10 {
+			if metrics.total_minutes > 0 {
+				let uptime_base = (metrics.uptime_minutes as u64)
+					.saturating_mul(Self::INTERNAL_SCALING as u64)
+					.saturating_div(metrics.total_minutes as u64) as u32;
+				let time_factor = (metrics.total_minutes as u32)
+					.min(10_080) // Cap at 7 days
+					.saturating_mul(Self::INTERNAL_SCALING)
+					.saturating_div(10_080);
+				uptime_base
+					.saturating_mul(time_factor)
+					.saturating_div(Self::INTERNAL_SCALING)
+			} else {
+				0
+			}
+		} else {
+			// Original logic for when pin checks are available
+			let base_score = (metrics.successful_pin_checks as u64)
+				.saturating_mul(Self::INTERNAL_SCALING as u64)
+				.saturating_div(metrics.total_pin_checks as u64) as u32;
+			let check_frequency_score = if metrics.total_pin_checks < 100 {
+				base_score.saturating_mul(8).saturating_div(10)
+			} else {
+				base_score
+			};
+			if metrics.consecutive_reliable_days > 30 {
+				check_frequency_score.saturating_mul(12).saturating_div(10)
+			} else {
+				check_frequency_score
+			}
 		}
-
-		let base_score = (metrics.successful_pin_checks as u64)
-			.saturating_mul(Self::INTERNAL_SCALING as u64)
-			.saturating_div(metrics.total_pin_checks as u64) as u32;
-
-		// Apply minimum checks requirement
-		let check_frequency_score = if metrics.total_pin_checks < 100 {
-			base_score.saturating_mul(8).saturating_div(10) // 20% penalty
-		} else {
-			base_score
-		};
-
-		// Add long-term reliability bonus
-		let final_score = if metrics.consecutive_reliable_days > 30 {
-			check_frequency_score.saturating_mul(12).saturating_div(10) // 20% bonus
-		} else {
-			check_frequency_score
-		};
-
-		final_score
 	}
 
 	fn calculate_performance_score(metrics: &NodeMetricsData) -> u32 {
-		// Response time component
 		let response_score = Self::INTERNAL_SCALING
 			.saturating_mul(100)
 			.saturating_div(metrics.avg_response_time_ms.max(1).min(Self::MAX_RESPONSE_TIME_MS));
-
-		// Bandwidth scoring with uplink data consideration
-		let bandwidth_score = if let Some(network_interface) = &metrics.primary_network_interface {
-			// Convert uplink_mb to Mbps equivalent
-			let uplink_mbps = (network_interface.uplink_mb * 8 / (1024 * 1024)) as u64; // Convert MB to Mbps and cast to u64
-			(uplink_mbps.min(10000))
-				.saturating_mul(Self::INTERNAL_SCALING.into()) // Convert INTERNAL_SCALING to u64
-				.saturating_div(10000)
-		} else {
-			// Fallback to existing bandwidth_mbps if no primary network interface
-			(metrics.bandwidth_mbps.min(10000) as u64)
-				.saturating_mul(Self::INTERNAL_SCALING.into()) // Convert INTERNAL_SCALING to u64
-				.saturating_div(10000)
-		} as u32; // Cast back to u32 for final result
-
-		// Storage proof scoring
+	
+		let bandwidth_score = {
+			let capped_mbps = metrics.bandwidth_mbps.min(10_000); // Cap at 10 Gbps
+			(capped_mbps as u64)
+				.saturating_mul(Self::INTERNAL_SCALING as u64)
+				.saturating_div(10_000) as u32
+		};
+	
 		let storage_proof_score = Self::INTERNAL_SCALING
 			.saturating_mul(100)
 			.saturating_div(metrics.storage_proof_time_ms.max(1).min(1000));
-
-		// Weighted combination
-		let final_score = response_score
+	
+		response_score
 			.saturating_mul(40)
 			.saturating_add(bandwidth_score.saturating_mul(40))
 			.saturating_add(storage_proof_score.saturating_mul(20))
-			.saturating_div(100);
-
-		final_score
+			.saturating_div(100)
 	}
 
 	fn calculate_reliability_score(metrics: &NodeMetricsData) -> u32 {
@@ -412,109 +403,74 @@ impl NodeMetricsData {
 	}
 
 	fn calculate_capacity_score<T: ipfs_pallet::Config>(metrics: &NodeMetricsData) -> u32 {
-		// Add the condition to check for ipfs_storage_max against ipfs_zfs_pool_size
-		if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
-			return 0; // Set final score to 0
-		}
+        if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size {
+            return 0; // Enforce pool size check
+        }
 
-		// Minimum storage requirement
-		if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024) {
-			return 0;
-		}
+        let storage_tb = metrics.ipfs_storage_max / (1024 * 1024 * 1024 * 1024); // Convert to TB (u64)
+        if storage_tb < Self::MIN_STORAGE_GB as u64 {
+            return 0; // Below 2TB gets 0
+        }
 
-		// Use the new method to get total file size for the miner
-		let total_used_storage =
-			ipfs_pallet::Pallet::<T>::get_total_file_size_by_miner(metrics.miner_id.clone());
+        // Linear scaling with thresholds:
+        // - 2TB = 33% (333,333)
+        // - 10TB = 66% (666,666)
+        // - 100TB = 100% (1,000,000)
+        let internal_scaling = Self::INTERNAL_SCALING as u64; // Cast to u64 for consistency
+        let base_score = if storage_tb <= 2 {
+            internal_scaling / 3 // 33% for 2TB
+        } else if storage_tb <= 10 {
+            // Linear from 2TB (33%) to 10TB (66%)
+            let range = 10 - 2; // 8TB range
+            let progress = storage_tb - 2; // Progress beyond 2TB
+            (internal_scaling / 3) + (progress * (internal_scaling / 3)) / range
+        } else if storage_tb <= 100 {
+            // Linear from 10TB (66%) to 100TB (100%)
+            let range = 100 - 10; // 90TB range
+            let progress = storage_tb - 10; // Progress beyond 10TB
+            (internal_scaling * 2 / 3) + (progress * (internal_scaling / 3)) / range
+        } else {
+            internal_scaling // Cap at 100TB
+        };
 
-		// Usage scoring
-		let usage_score = if metrics.ipfs_storage_max > 0 {
-			let usage_percent = (total_used_storage * 100) / metrics.ipfs_storage_max as u128;
-			let base_score = (total_used_storage as u32)
-				.saturating_mul(Self::INTERNAL_SCALING)
-				.saturating_div(metrics.ipfs_storage_max as u32);
-
-			if usage_percent >= Self::OPTIMAL_STORAGE_USAGE_MIN.into()
-				&& usage_percent <= Self::OPTIMAL_STORAGE_USAGE_MAX.into()
-			{
-				base_score.saturating_add(Self::INTERNAL_SCALING / 5) // 20% bonus
-			} else {
-				base_score
-			}
-		} else {
-			0
-		};
-
-		// Growth rate scoring
-		let growth_score = (metrics.storage_growth_rate as u32)
-			.saturating_div(1024 * 1024 * 1024) // Convert to GB
-			.min(100)
-			.saturating_mul(Self::INTERNAL_SCALING)
-			.saturating_div(100);
-
-		// Free space scoring
-		let free_space_score = if metrics.ipfs_storage_max > 0 {
-			let free_percent = ((metrics.ipfs_storage_max - total_used_storage as u64) * 100)
-				/ metrics.ipfs_storage_max;
-
-			if free_percent < 10 {
-				0 // Critical low space
-			} else if free_percent > 50 {
-				Self::INTERNAL_SCALING / 2 // Underutilization
-			} else {
-				Self::INTERNAL_SCALING
-			}
-		} else {
-			0
-		};
-
-		let final_score = usage_score
-			.saturating_mul(40)
-			.saturating_add(growth_score.saturating_mul(30))
-			.saturating_add(free_space_score.saturating_mul(30))
-			.saturating_div(100);
-
-		final_score
-	}
+        // Bonus for exceeding 20TB
+        if storage_tb > 20 {
+            (base_score.saturating_add(internal_scaling / 10)) as u32 // 10% bonus, cast to u32
+        } else {
+            base_score as u32 // Cast to u32
+        }
+    }
 
 	fn calculate_network_score(metrics: &NodeMetricsData) -> u32 {
-		// Peer scoring with progressive rewards
-		let peer_score = if metrics.peer_count < Self::MIN_PEER_COUNT {
-			(metrics.peer_count as u32)
+		let peer_score = {
+			let capped_peers = metrics.peer_count.min(500); // Cap at 500 peers
+			let base = (capped_peers as u32)
 				.saturating_mul(Self::INTERNAL_SCALING)
-				.saturating_div(Self::MIN_PEER_COUNT)
-				.saturating_mul(5)
-				.saturating_div(10) // 50% penalty
-		} else {
-			let base_score = Self::INTERNAL_SCALING;
-			let bonus = (metrics.peer_count.saturating_sub(Self::MIN_PEER_COUNT) as u32)
-				.saturating_mul(Self::INTERNAL_SCALING)
-				.saturating_div(1000) // 0.1% bonus per extra peer
-				.min(Self::INTERNAL_SCALING / 2);
-
-			base_score.saturating_add(bonus)
+				.saturating_div(500);
+			if capped_peers >= Self::MIN_PEER_COUNT {
+				base.saturating_add((capped_peers.saturating_sub(Self::MIN_PEER_COUNT) as u32)
+					.saturating_mul(Self::INTERNAL_SCALING / 10) // Bigger bonus per extra peer
+					.saturating_div(500))
+			} else {
+				base
+			}
 		};
-
-		// Latency scoring
+	
 		let latency_score = Self::INTERNAL_SCALING
 			.saturating_mul(100)
 			.saturating_div(metrics.latency_ms.max(1).min(1000));
-
-		// Connection stability
-		let stability_score = if metrics.consecutive_reliable_days > 30
-			&& metrics.peer_count >= Self::MIN_PEER_COUNT
-		{
+	
+		let stability_score = if metrics.consecutive_reliable_days > 7 {
 			Self::INTERNAL_SCALING / 10
 		} else {
 			0
 		};
-
-		let final_score = peer_score
-			.saturating_mul(35)
-			.saturating_add(latency_score.saturating_mul(35))
-			.saturating_add(stability_score.saturating_mul(30))
-			.saturating_div(100);
-
-		final_score
+	
+		peer_score
+			.saturating_mul(40)
+			.saturating_add(latency_score.saturating_mul(40))
+			.saturating_add(stability_score.saturating_mul(20))
+			.saturating_div(100)
 	}
 
 	fn calculate_diversity_score(
@@ -565,31 +521,28 @@ impl NodeMetricsData {
 	}
 
 	fn calculate_bonuses(metrics: &NodeMetricsData) -> u32 {
-		// Longevity bonus - reward consistent uptime
-		let uptime_bonus = (metrics.consecutive_reliable_days as u32)
-			.saturating_mul(1000) // 0.1% per day
-			.min(200_000); // Cap at 20%
-
-		// Challenge success streak bonus
-		let challenge_bonus =
-			if metrics.successful_challenges > 1000 && metrics.failed_challenges_count == 0 {
-				50_000 // 5% bonus for perfect long-term performance
-			} else {
-				0
-			};
-
-		// Storage growth bonus
-		let growth_bonus = if metrics.storage_growth_rate > 0
-			&& metrics.current_storage_bytes > metrics.total_storage_bytes / 2
-		{
-			50_000 // 5% bonus for healthy growth
+		let uptime_bonus = (metrics.consecutive_reliable_days as u32).saturating_mul(10_000).min(200_000);
+		let challenge_bonus = if metrics.successful_challenges > 500 && metrics.failed_challenges_count == 0 {
+			50_000
 		} else {
 			0
 		};
-
-		let total_bonus = uptime_bonus.saturating_add(challenge_bonus).saturating_add(growth_bonus);
-
-		total_bonus
+		let hardware_bonus = match metrics.ipfs_storage_max / (1024 * 1024 * 1024 * 1024) {
+			tb if tb > 50 => 150_000, // 15% for >50TB
+			tb if tb > 20 => 100_000, // 10% for >20TB
+			tb if tb > 10 => 50_000,  // 5% for >10TB
+			_ => 0,
+		};
+		let bandwidth_bonus = if metrics.bandwidth_mbps > 5_000 {
+			50_000 // 5% for >5Gbps
+		} else {
+			0
+		};
+	
+		uptime_bonus
+			.saturating_add(challenge_bonus)
+			.saturating_add(hardware_bonus)
+			.saturating_add(bandwidth_bonus)
 	}
 
 	fn calculate_penalties(metrics: &NodeMetricsData) -> u32 {
@@ -708,55 +661,56 @@ impl NodeMetricsData {
 		final_position
 	}
 
-	fn _get_composite_score(metrics: &NodeMetricsData) -> u32 {
-		// Calculate individual components
-		let uptime_score = if metrics.total_minutes > 0 {
-			(metrics.uptime_minutes as u64)
-				.saturating_mul(Self::INTERNAL_SCALING as u64)
-				.saturating_div(metrics.total_minutes as u64) as u32
-		} else {
-			0
-		};
+ fn _get_composite_score(metrics: &NodeMetricsData) -> u32 {
+    // Uptime score
+    let uptime_score = if metrics.total_minutes > 0 {
+        (metrics.uptime_minutes as u64)
+            .saturating_mul(Self::INTERNAL_SCALING as u64)
+            .saturating_div(metrics.total_minutes as u64) as u32
+    } else {
+        0
+    };
 
-		let challenge_score = if metrics.total_challenges > 0 {
-			(metrics.successful_challenges as u64)
-				.saturating_mul(Self::INTERNAL_SCALING as u64)
-				.saturating_div(metrics.total_challenges as u64) as u32
-		} else {
-			0
-		};
+    // Challenge success score
+    let challenge_score = if metrics.total_challenges > 0 {
+        (metrics.successful_challenges as u64)
+            .saturating_mul(Self::INTERNAL_SCALING as u64)
+            .saturating_div(metrics.total_challenges as u64) as u32
+    } else {
+        0
+    };
 
-		let response_score =
-			Self::INTERNAL_SCALING.saturating_div(metrics.avg_response_time_ms.max(1).min(1000));
+    // Response time score
+    let response_score =
+        Self::INTERNAL_SCALING.saturating_div(metrics.avg_response_time_ms.max(1).min(1000));
 
-		let storage_score = if metrics.total_storage_bytes > 0 {
-			(metrics.current_storage_bytes as u32)
-				.saturating_mul(Self::INTERNAL_SCALING)
-				.saturating_div(metrics.total_storage_bytes as u32)
-		} else {
-			0
-		};
+    // Storage capacity score (new)
+    let max_storage_reference = 100 * 1024 * 1024 * 1024 * 1024; // 100TB in bytes
+    let storage_capacity_score = (metrics.ipfs_storage_max as u64)
+        .saturating_mul(Self::INTERNAL_SCALING as u64)
+        .saturating_div(max_storage_reference)
+        .min(Self::INTERNAL_SCALING as u64) as u32;
 
-		// Combine scores with weights
-		let weighted_score = uptime_score
-			.saturating_mul(30)
-			.saturating_add(challenge_score.saturating_mul(30))
-			.saturating_add(response_score.saturating_mul(20))
-			.saturating_add(storage_score.saturating_mul(20))
-			.saturating_div(100);
+    // Weighted sum: 20% each for uptime, challenge, response; 40% for capacity
+    let weighted_score = uptime_score
+        .saturating_mul(20)
+        .saturating_add(challenge_score.saturating_mul(20))
+        .saturating_add(response_score.saturating_mul(20))
+        .saturating_add(storage_capacity_score.saturating_mul(40))
+        .saturating_div(100);
 
-		// Apply penalties
-		let penalty_multiplier = Self::INTERNAL_SCALING.saturating_sub(
-			metrics
-				.failed_challenges_count
-				.saturating_mul(50_000) // 5% per failure
-				.min(500_000), // Max 50% penalty
-		);
+    // Apply penalties
+    let penalty_multiplier = Self::INTERNAL_SCALING.saturating_sub(
+        metrics
+            .failed_challenges_count
+            .saturating_mul(50_000) // 5% per failure
+            .min(500_000), // Max 50% penalty
+    );
 
-		let final_score = weighted_score
-			.saturating_mul(penalty_multiplier)
-			.saturating_div(Self::INTERNAL_SCALING);
+    let final_score = weighted_score
+        .saturating_mul(penalty_multiplier)
+        .saturating_div(Self::INTERNAL_SCALING);
 
-		final_score
-	}
+    final_score
+} 
 }
