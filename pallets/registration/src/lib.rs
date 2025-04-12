@@ -675,8 +675,21 @@ pub mod pallet {
 
 			NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
 
+			// Iterate through ColdkeyNodeRegistration to find the node_info for the given coldkey
+			let coldkeynode_info = ColdkeyNodeRegistration::<T>::iter()
+				.find_map(|(_, node_info_opt)| {
+					node_info_opt.as_ref().and_then(|node_info| {
+						if node_info.owner == coldkey {
+							Some(node_info.clone())
+						} else {
+							None
+						}
+					})
+				})
+				.ok_or(Error::<T>::NodeNotFound)?;
+
 			// Update the linked nodes count
-			LinkedNodes::<T>::try_mutate(&node_id, |linked_node_ids| {
+			LinkedNodes::<T>::try_mutate(&coldkeynode_info.node_id.clone(), |linked_node_ids| {
 				linked_node_ids.push(node_id.clone());
 				Ok::<(), DispatchError>(()) // Specify the type here
 			})?;
@@ -770,6 +783,7 @@ pub mod pallet {
 		pub fn force_register_node_with_hotkey(
 			origin: OriginFor<T>,
 			owner: T::AccountId,
+			coldkey: T::AccountId,
 			node_type: NodeType,
 			node_id: Vec<u8>,
 			ipfs_node_id: Option<Vec<u8>>,
@@ -789,8 +803,21 @@ pub mod pallet {
 			};
 			NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
 
+			// Iterate through ColdkeyNodeRegistration to find the node_info for the given coldkey
+			let node_info = ColdkeyNodeRegistration::<T>::iter()
+				.find_map(|(_, node_info_opt)| {
+					node_info_opt.as_ref().and_then(|node_info| {
+						if node_info.owner == coldkey {
+							Some(node_info.clone())
+						} else {
+							None
+						}
+					})
+				})
+				.ok_or(Error::<T>::NodeNotFound)?;
+
 			// Update the linked nodes count
-			LinkedNodes::<T>::try_mutate(&node_id, |linked_node_ids| {
+			LinkedNodes::<T>::try_mutate(&node_info.node_id.clone(), |linked_node_ids| {
 				linked_node_ids.push(node_id.clone());
 				Ok::<(), DispatchError>(()) // Specify the type here
 			})?;
