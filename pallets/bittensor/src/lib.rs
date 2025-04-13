@@ -255,8 +255,13 @@ pub mod pallet {
 							}
 						}
 					}
+					
 					// Normalize weight for the main node based on linked nodes
-					let normalized_weight = total_weight / linked_node_ids.len() as u32;
+					let normalized_weight = if !linked_node_ids.is_empty() {
+						total_weight / linked_node_ids.len() as u32
+					} else {
+						0 // or some default value if no linked nodes
+					};
 					storage_weights.push((normalized_weight + own_weight) as u16);
 				} else {
 					// Handle the case where there are no linked nodes

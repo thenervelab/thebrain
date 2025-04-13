@@ -341,7 +341,7 @@ pub mod pallet {
 				let _result = RequestsCount::<T>::clear(u32::MAX, None);
 			}
 
-			Self::handle_incorrect_registration(_n);
+			// Self::handle_incorrect_registration(_n);
 
 			// Only purge if the feature is enabled
 			if Self::purge_deregistered_nodes_enabled() {
