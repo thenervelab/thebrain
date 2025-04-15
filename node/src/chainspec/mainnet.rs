@@ -168,7 +168,7 @@ pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
         Vec::from_hex(code_substitute_68900_hex)
             .map_err(|e| e.to_string())?
             .as_slice(),
-        68899,
+        68900,
     );
 
     // Convert the modified JSON back to a ChainSpec

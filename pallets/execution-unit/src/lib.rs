@@ -383,7 +383,7 @@ pub mod pallet {
 									node_id.clone(),
 									node_info.clone(),
 								);
-								
+
     						    // Add this block to select a validator and update miner profiles
 								if let Ok(selected_validator) = IpfsPallet::<T>::select_validator() {
 									if node_info.owner == selected_validator {	
@@ -395,23 +395,23 @@ pub mod pallet {
 									}
 								}
 							}
+						}
 
-							let current_block = block_number.saturated_into::<u32>();
+						let current_block = block_number.saturated_into::<u32>();
 
-							// Use BABE randomness instead of block hash for determining execution
-							let should_run = Self::should_execute_offchain(current_block, random_seed);
-							if should_run {
-								// Update last run time
-								sp_io::offchain::local_storage_set(
-									sp_core::offchain::StorageKind::PERSISTENT,
-									STORAGE_KEY,
-									&current_block.to_be_bytes(),
-								);
-								// Execute tasks with BABE randomness
-								Self::save_hardware_info(node_id.clone(), node_type.clone());
-							} else {
-								log::info!("Skipping execution at block {}", current_block);
-							}
+						// Use BABE randomness instead of block hash for determining execution
+						let should_run = Self::should_execute_offchain(current_block, random_seed);
+						if should_run {
+							// Update last run time
+							sp_io::offchain::local_storage_set(
+								sp_core::offchain::StorageKind::PERSISTENT,
+								STORAGE_KEY,
+								&current_block.to_be_bytes(),
+							);
+							// Execute tasks with BABE randomness
+							Self::save_hardware_info(node_id.clone(), node_type.clone());
+						} else {
+							log::info!("Skipping execution at block {}", current_block);
 						}
 					}
 				},
@@ -2214,6 +2214,7 @@ pub mod pallet {
 		}
 
 		pub fn perform_pin_checks_to_miners() {
+			
 			// Iterate over all miners in MinerProfile
 			MinerProfile::<T>::iter().for_each(|(miner_node_id, cid)| {
 				// Fetch the CID content (JSON array of pin requests)
