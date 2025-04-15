@@ -86,6 +86,7 @@ pub mod pallet {
 	// use ipfs_pallet::FileHash;
 	// use ipfs_pallet::MinerProfileItem;
 	// use serde_json::to_string;
+	use sp_runtime::Saturating;
 	use ipfs_pallet::AssignmentEnabled;
 	use pallet_registration::NodeInfo;
 	use serde_json::Value;
@@ -148,6 +149,12 @@ pub mod pallet {
 
 	    #[pallet::constant]
 	    type RequestsClearInterval: Get<u32>;
+
+		#[pallet::constant]
+		type MaxOffchainHardwareSubmitRequestsPerPeriod: Get<u32>;
+
+	    #[pallet::constant]
+	    type HardwareSubmitRequestsClearInterval: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -242,6 +249,14 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn requests_count)]
 	pub type RequestsCount<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn hardware_requests_count)]
+	pub type HardwareRequestsCount<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn hardware_requests_last_block)]
+	pub type HardwareRequestsLastBlock<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, BlockNumberFor<T>, ValueQuery>;
 
 	#[pallet::validate_unsigned]
 	impl<T: Config> ValidateUnsigned for Pallet<T> {
@@ -343,6 +358,23 @@ pub mod pallet {
 			if _n % clear_interval.into() == 0u32.into() {
 				// Clear all entries; limit is u32::MAX to ensure we get them all
 				let _result = RequestsCount::<T>::clear(u32::MAX, None);
+			}
+
+			let hardware_clear_interval = <T as pallet::Config>::HardwareSubmitRequestsClearInterval::get();
+
+			// Clear entries every 150 blocks
+			if _n % hardware_clear_interval.into() == 0u32.into() {
+				// Iterate through all entries in HardwareRequestsCount
+				HardwareRequestsCount::<T>::iter().for_each(|(node_id, _count)| {
+					let last_request_block = HardwareRequestsLastBlock::<T>::get(&node_id);
+					
+					// Check if 150 blocks have passed since the last request
+					if _n.saturating_sub(last_request_block) >= hardware_clear_interval.into() {
+						// Reset the requests count and last block for this node
+						HardwareRequestsCount::<T>::remove(&node_id);
+						HardwareRequestsLastBlock::<T>::remove(&node_id);
+					}
+				});
 			}
 
 			// Self::handle_incorrect_registration(_n);
@@ -448,12 +480,15 @@ pub mod pallet {
 			let _signature = signature;
 
 			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&node_id);
+			let max_requests_per_block = <T as pallet::Config>::MaxOffchainHardwareSubmitRequestsPerPeriod::get();
+			let user_requests_count = HardwareRequestsCount::<T>::get(&node_id);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			HardwareRequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+
+			// Update last request block
+			HardwareRequestsLastBlock::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());
 
 			// Check if specs already exist and are the same
 			// if let Some(existing_specs) = NodeSpecs::<T>::get(&node_id) {
