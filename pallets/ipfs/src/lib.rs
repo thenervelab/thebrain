@@ -215,6 +215,28 @@ pub mod pallet {
 						.propagate(true)
 						.build()
 				},
+				// Handler for `update_miner_profiles` unsigned transaction
+				Call::update_miner_profiles { miner_pin_requests, .. } => {
+					let current_block = frame_system::Pallet::<T>::block_number();
+
+					// Create a unique hash combining all relevant data
+					let mut data = Vec::new();
+					data.extend_from_slice(&current_block.encode());
+					for miner_profile in miner_pin_requests {
+						data.extend_from_slice(&miner_profile.miner_node_id.encode());
+						data.extend_from_slice(&miner_profile.cid.encode());
+					}
+					
+					let unique_hash = sp_io::hashing::blake2_256(&data);
+
+					// Ensure unique transaction validity
+					ValidTransaction::with_tag_prefix("IpfsOffchain")
+						.priority(TransactionPriority::max_value())
+						.and_provides(unique_hash)
+						.longevity(3)
+						.propagate(true)
+						.build()
+				},				
 				// Handler for `set_miner_state_locked` unsigned transaction
 				Call::set_miner_state_locked { miner_node_id, .. } => {
 					let current_block = frame_system::Pallet::<T>::block_number();
@@ -315,6 +337,7 @@ pub mod pallet {
 		SomethingStored { something: u32, who: T::AccountId },
 		StorageRequestUpdated { owner: T::AccountId, file_hash: FileHash, file_size: u128 },
 		PinningEnabledChanged { enabled: bool },
+		MinerProfilesUpdated { miner_count: u32 },
 	}
 
 	#[pallet::error]
@@ -561,6 +584,41 @@ pub mod pallet {
 			Ok(().into())
 		}
 
+		/// Update MinerProfile for multiple miners with signature verification
+		#[pallet::call_index(8)]
+		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		pub fn update_miner_profiles(
+			origin: OriginFor<T>,
+			miner_pin_requests: Vec<MinerProfileItem>, 
+			signature: <T as SigningTypes>::Signature
+		) -> DispatchResultWithPostInfo {
+			ensure_none(origin)?;
+
+			let _signature = signature;
+
+			// Update MinerProfile storage for each miner pin request
+			for miner_profile in miner_pin_requests.iter() {
+				// Update MinerProfile storage with node ID and CID
+				<MinerProfile<T>>::insert(
+					miner_profile.miner_node_id.clone(), 
+					BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(
+						miner_profile.cid.clone().into_inner().to_vec()
+					).unwrap_or_else(|v: Vec<u8>| 
+						BoundedVec::truncate_from(v)
+					)
+				);
+
+				// Set the miner's state to Free
+				MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
+			}
+
+			// Deposit an event to log the miner profile update
+			Self::deposit_event(Event::MinerProfilesUpdated {
+				miner_count: miner_pin_requests.len() as u32,
+			});
+
+			Ok(().into())
+		}
 
 		/// Unsigned transaction to set a miner's state to Locked
 		#[pallet::call_index(5)]
@@ -698,7 +756,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		fn select_validator() -> Result<T::AccountId, Error<T>> {
+		pub fn select_validator() -> Result<T::AccountId, Error<T>> {
 			// Correct way to get active validators from staking pallet
 			let validators = pallet_staking::Validators::<T>::iter()
 				.map(|(validator, _prefs)| validator)
@@ -864,7 +922,7 @@ pub mod pallet {
 			Err(http::Error::Unknown)
 		}
 
-		fn fetch_cid_pinned_nodes(cid: &Vec<u8>) -> Result<Vec<Vec<u8>>, http::Error> {
+		pub fn fetch_cid_pinned_nodes(cid: &Vec<u8>) -> Result<Vec<Vec<u8>>, http::Error> {
 			let file_hash = hex::decode(cid).map_err(|_| {
 				log::error!("Failed to decode file hash");
 				http::Error::Unknown
@@ -1418,24 +1476,22 @@ pub mod pallet {
 
 		// pins the local ipfs node 
 		pub fn pin_file_from_ipfs(cid: &str) -> Result<(), http::Error> {
-
 			let base_url = T::IPFSBaseUrl::get();
 			let url = format!("{}/api/v0/pin/add?arg={}", base_url, cid);
-			
 
 			// Request Timeout
 			let deadline =
-				sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
+				sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
 				
 			let body = vec![DUMMY_REQUEST_BODY];
-			// getting the list of all pinned Files from node
+			// Pin the file
 			let request = sp_runtime::offchain::http::Request::post(&url, body);
 			let pending = request
 				.add_header("Content-Type", "application/json")
 				.deadline(deadline)
 				.send()
 				.map_err(|err| {
-					log::warn!("Error making Request: {:?}", err);
+					log::warn!("Error making Pin Request for CID {}: {:?}", cid, err);
 					sp_runtime::offchain::http::Error::IoError
 				})?;
 		
@@ -1443,13 +1499,30 @@ pub mod pallet {
 			let response = pending
 				.try_wait(deadline)
 				.map_err(|err| {
-					log::warn!("Error getting Response: {:?}", err);
+					log::warn!("Error getting Pin Response for CID {}: {:?}", cid, err);
 					sp_runtime::offchain::http::Error::DeadlineReached
 				})??;
 			
 			// Check the response status code
 			if response.code != 200 {
-				log::warn!("Unexpected status code: {}", response.code);
+				log::warn!("Unexpected status code for Pin Request: {}", response.code);
+				return Err(http::Error::Unknown);
+			}
+
+			// Read and parse the response body
+			let response_body = response.body().collect::<Vec<u8>>();
+			let response_str = sp_std::str::from_utf8(&response_body)
+				.map_err(|_| {
+					log::warn!("Failed to parse Pin Response body for CID {}", cid);
+					http::Error::Unknown
+				})?;
+
+			// Optional: Log the response for debugging
+			log::info!("Pin Response for CID {}: {}", cid, response_str);
+
+			// Verify pinning success (adjust based on actual IPFS API response)
+			if !response_str.contains(&cid) {
+				log::warn!("Pin operation may have failed for CID {}", cid);
 				return Err(http::Error::Unknown);
 			}
 			
@@ -1747,6 +1820,6 @@ pub mod pallet {
 				UserStorageRequests::<T>::remove(&owner, &file_hash);
 			}
 		}
-
+		
 	}
 }

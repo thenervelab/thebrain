@@ -22,6 +22,7 @@ use sp_consensus_babe::AuthorityId as BabeId;
 use sp_core::{crypto::Ss58Codec, ed25519, sr25519, H160, U256};
 use std::{collections::BTreeMap, str::FromStr};
 // use sc_network::config::MultiaddrWithPeerId;
+use hex::FromHex;
 
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
 pub type ChainSpec = sc_service::GenericChainSpec;
@@ -163,7 +164,7 @@ pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 	let authority = get_authority_keys();
 	let account_id = authority.0.clone();
 
-	Ok(ChainSpec::builder(WASM_BINARY.expect("WASM not available"), Default::default())
+	let chain_spec = ChainSpec::builder(WASM_BINARY.expect("WASM not available"), Default::default())
 		.with_name("Hippius Mainnet")
 		.with_id("hippius-mainnet")
 		.with_chain_type(ChainType::Live)
@@ -190,7 +191,22 @@ pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 			vec![], // Temporarily disabled vesting for initial setup
 			vec![], // endowed evm accounts
 		))
-		.build())
+		.build();
+
+	// Load and set the code substitute to avoid archive node sync panic
+	// Need to do it in this hacky way because the ChainSpec builder doesn't support setting it
+	let code_substitute_68900_hex = include_bytes!("code_substitute_68900.txt");
+	let chain_spec_json = chain_spec.as_json(false).map_err(|e| e.to_string())?;
+	let mut chain_spec_json: serde_json::Value = serde_json::from_str(&chain_spec_json).map_err(|e| e.to_string())?;
+	sc_chain_spec::set_code_substitute_in_json_chain_spec(
+		&mut chain_spec_json,
+		Vec::from_hex(code_substitute_68900_hex)
+			.map_err(|e| e.to_string())?
+			.as_slice(),
+			68899,
+	);
+	let chain_spec_bytes = chain_spec_json.to_string().into_bytes();
+	ChainSpec::from_json_bytes(chain_spec_bytes).map_err(|e| e.to_string())
 }
 
 /// Configure initial storage state for FRAME modules.

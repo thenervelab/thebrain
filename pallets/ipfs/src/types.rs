@@ -158,3 +158,17 @@ impl<T: Config> SignedPayload<T> for MarkStorageRequestAssignedPayload<T> {
         self.public.clone()
     }
 }
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
+pub struct UpdateMinerProfilePayload<T: Config> {
+    pub miner_pin_requests: Vec<MinerProfileItem>,
+    pub public: T::Public,
+    pub _marker: PhantomData<T>,
+}
+
+// Implement SignedPayload for UpdateMinerProfilePayload
+impl<T: Config> SignedPayload<T> for UpdateMinerProfilePayload<T> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
+}
