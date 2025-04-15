@@ -22,6 +22,7 @@ use sp_consensus_babe::AuthorityId as BabeId;
 use sp_core::{crypto::Ss58Codec, ed25519, sr25519, H160, U256};
 use std::{collections::BTreeMap, str::FromStr};
 // use sc_network::config::MultiaddrWithPeerId;
+use hex::FromHex;
 
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
 pub type ChainSpec = sc_service::GenericChainSpec;
@@ -155,42 +156,37 @@ pub fn local_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 }
 
 pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
-	let mut properties = sc_chain_spec::Properties::new();
-	properties.insert("tokenSymbol".into(), "hALPHA".into());
-	properties.insert("tokenDecimals".into(), 18u32.into());
-	properties.insert("ss58Format".into(), 42.into());
+    // Load the custom chainspec from JSON file
+    let custom_chainspec_bytes = include_bytes!("../../../chainspecs/mainnet/hippius_raw_bak.json");
+    let mut chain_spec_json: serde_json::Value = serde_json::from_slice(custom_chainspec_bytes)
+        .map_err(|e| e.to_string())?;
 
-	let authority = get_authority_keys();
-	let account_id = authority.0.clone();
+		println!(
+			"Switching runtime: Code, Block number = 68900"
+		);
 
-	Ok(ChainSpec::builder(WASM_BINARY.expect("WASM not available"), Default::default())
-		.with_name("Hippius Mainnet")
-		.with_id("hippius-mainnet")
-		.with_chain_type(ChainType::Live)
-		.with_properties(properties)
-		.with_genesis_config_patch(mainnet_genesis(
-			// Initial validators
-			vec![authority.clone()],
-			// Endowed accounts
-			vec![
-				(account_id.clone(), ENDOWMENT),
-				(
-					// Convert sudo account to AccountId32
-					sp_core::sr25519::Public::from_ss58check(SUDO_ACCOUNT)
-						.expect("Invalid SS58 address")
-						.into(),
-					// Add a substantial endowment, e.g., 1 million tokens
-					ENDOWMENT * 9,
-				),
-			],
-			// Sudo account
-			get_sudo_account(),
-			// EVM chain ID
-			chain_id,
-			vec![], // Temporarily disabled vesting for initial setup
-			vec![], // endowed evm accounts
-		))
-		.build())
+		let code_substitute_68900 = include_bytes!("hippius_mainnet_runtime.compact.compressed.wasm");
+		sc_chain_spec::set_code_substitute_in_json_chain_spec(
+			&mut chain_spec_json,
+			code_substitute_68900,
+			68899,
+		);
+
+    // // Load and set the code substitute
+    // let code_substitute_68900_hex = include_bytes!("code_substitute_68900.txt");
+
+
+    // sc_chain_spec::set_code_substitute_in_json_chain_spec(
+    //     &mut chain_spec_json,
+    //     Vec::from_hex(code_substitute_68900_hex)
+    //         .map_err(|e| e.to_string())?
+    //         .as_slice(),
+    //     68899,
+    // );
+
+    // Convert the modified JSON back to a ChainSpec
+    let chain_spec_bytes = chain_spec_json.to_string().into_bytes();
+    ChainSpec::from_json_bytes(chain_spec_bytes).map_err(|e| e.to_string())
 }
 
 /// Configure initial storage state for FRAME modules.
