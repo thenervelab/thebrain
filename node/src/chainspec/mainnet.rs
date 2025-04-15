@@ -161,15 +161,28 @@ pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
     let mut chain_spec_json: serde_json::Value = serde_json::from_slice(custom_chainspec_bytes)
         .map_err(|e| e.to_string())?;
 
-    // Load and set the code substitute
-    let code_substitute_68900_hex = include_bytes!("code_substitute_68900.txt");
-    sc_chain_spec::set_code_substitute_in_json_chain_spec(
-        &mut chain_spec_json,
-        Vec::from_hex(code_substitute_68900_hex)
-            .map_err(|e| e.to_string())?
-            .as_slice(),
-        68900,
-    );
+		println!(
+			"Switching runtime: Code, Block number = 68900"
+		);
+
+		let code_substitute_68900 = include_bytes!("hippius_mainnet_runtime.compact.compressed.wasm");
+		sc_chain_spec::set_code_substitute_in_json_chain_spec(
+			&mut chain_spec_json,
+			code_substitute_68900,
+			68899,
+		);
+
+    // // Load and set the code substitute
+    // let code_substitute_68900_hex = include_bytes!("code_substitute_68900.txt");
+
+
+    // sc_chain_spec::set_code_substitute_in_json_chain_spec(
+    //     &mut chain_spec_json,
+    //     Vec::from_hex(code_substitute_68900_hex)
+    //         .map_err(|e| e.to_string())?
+    //         .as_slice(),
+    //     68899,
+    // );
 
     // Convert the modified JSON back to a ChainSpec
     let chain_spec_bytes = chain_spec_json.to_string().into_bytes();
