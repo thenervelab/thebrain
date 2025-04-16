@@ -303,16 +303,9 @@ pub mod pallet {
 			}
 
 			if _n % 100u32.into() == 0u32.into() {	
-				// Remove NodeRegistration entries without corresponding ColdkeyNodeRegistration
-				NodeRegistration::<T>::iter_keys()
-				.collect::<Vec<_>>()
-				.into_iter()
-				.for_each(|node_id| {
-					if ColdkeyNodeRegistration::<T>::get(&node_id).is_none() {
-						NodeRegistration::<T>::remove(&node_id);
-					}
-				});
-		
+
+				Self::remove_duplicate_linked_nodes();
+
 				// Remove LinkedNodes entries for main nodes without corresponding ColdkeyNodeRegistration
 				LinkedNodes::<T>::iter_keys()
 					.collect::<Vec<_>>()
@@ -780,8 +773,10 @@ pub mod pallet {
 
 			// Update the linked nodes count
 			LinkedNodes::<T>::try_mutate(&coldkeynode_info.node_id.clone(), |linked_node_ids| {
-				linked_node_ids.push(node_id.clone());
-				Ok::<(), DispatchError>(()) // Specify the type here
+				if !linked_node_ids.contains(&node_id) {
+					linked_node_ids.push(node_id.clone());
+				}
+				Ok::<(), DispatchError>(())
 			})?;
 
 			Self::deposit_event(Event::NodeRegistered { node_id });
@@ -923,7 +918,9 @@ pub mod pallet {
 
 			// Update the linked nodes count
 			LinkedNodes::<T>::try_mutate(&node_info.node_id.clone(), |linked_node_ids| {
-				linked_node_ids.push(node_id.clone());
+				if !linked_node_ids.contains(&node_id) {
+					linked_node_ids.push(node_id.clone());
+				}
 				Ok::<(), DispatchError>(()) // Specify the type here
 			})?;
 
@@ -1622,6 +1619,16 @@ pub mod pallet {
 			LinkedNodes::<T>::remove(node_id.clone());
 			
 			Self::deposit_event(Event::NodeUnregistered { node_id });
+		}
+
+		/// Helper function to remove duplicate linked node IDs for all main nodes.
+		pub fn remove_duplicate_linked_nodes() {
+			LinkedNodes::<T>::iter_keys().for_each(|main_node_id| {
+				let linked_nodes = LinkedNodes::<T>::get(&main_node_id);
+				let unique_nodes: BTreeSet<Vec<u8>> = linked_nodes.into_iter().collect();
+				let unique_nodes_vec: Vec<Vec<u8>> = unique_nodes.into_iter().collect();
+				LinkedNodes::<T>::insert(&main_node_id, unique_nodes_vec);
+			});
 		}
 	}
 }

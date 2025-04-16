@@ -377,7 +377,7 @@ pub mod pallet {
 				});
 			}
 
-			// Self::handle_incorrect_registration(_n);
+			Self::handle_incorrect_registration(_n);
 
 			// Only purge if the feature is enabled
 			if Self::purge_deregistered_nodes_enabled() {
@@ -1821,17 +1821,6 @@ pub mod pallet {
 		}
 
 		pub fn unregister_and_remove_metrics(node_id: Vec<u8>) {
-			let node_info = pallet_registration::Pallet::<T>::get_node_info(node_id.clone());
-
-			// Check if the miner is a StorageMiner
-			if let Some(miner) = node_info {
-				if miner.node_type == NodeType::StorageMiner {
-					// degrading by calling unsigned tx
-					pallet_registration::Pallet::<T>::call_node_status_to_degraded_unsigned(
-						miner.node_id,
-					);
-				}
-			}
 			pallet_registration::Pallet::<T>::do_unregister_node(node_id.clone());
 			NodeMetrics::<T>::remove(&node_id);
 			BlockNumbers::<T>::remove(&node_id);
