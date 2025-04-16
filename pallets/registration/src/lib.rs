@@ -51,6 +51,8 @@ pub mod pallet {
 	use sp_runtime::AccountId32;
 	use sp_runtime::Saturating;
 	use sp_std::{prelude::*, vec::Vec};
+	use sp_std::collections::btree_set::BTreeSet;
+	use sp_std::collections::btree_map::BTreeMap;
 
 	const LOCK_BLOCK_EXPIRATION: u32 = 1;
 	const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -237,6 +239,7 @@ pub mod pallet {
 		AccountNotRegistered,
 		NodeNotInUids,
 		NodeCooldownPeriodNotExpired,
+		OwnerAlreadyRegistered,
 	}
 
 	#[pallet::validate_unsigned]
@@ -298,6 +301,79 @@ pub mod pallet {
 			if CurrentNodeTypeFee::<T>::iter().count() == 0 {
 				Self::initialize_node_type_fees();
 			}
+
+			if _n % 100u32.into() == 0u32.into() {	
+				// Remove NodeRegistration entries without corresponding ColdkeyNodeRegistration
+				NodeRegistration::<T>::iter_keys()
+				.collect::<Vec<_>>()
+				.into_iter()
+				.for_each(|node_id| {
+					if ColdkeyNodeRegistration::<T>::get(&node_id).is_none() {
+						NodeRegistration::<T>::remove(&node_id);
+					}
+				});
+		
+				// Remove LinkedNodes entries for main nodes without corresponding ColdkeyNodeRegistration
+				LinkedNodes::<T>::iter_keys()
+					.collect::<Vec<_>>()
+					.into_iter()
+					.for_each(|main_node_id| {
+						if ColdkeyNodeRegistration::<T>::get(&main_node_id).is_none() {
+							LinkedNodes::<T>::remove(&main_node_id);
+						}
+					});
+
+				// Remove duplicate owners node registrations 
+				let mut owner_node_counts: BTreeMap<T::AccountId, usize> = BTreeMap::new();
+				
+				// Collect all node registrations with their owners
+				let mut all_registrations: Vec<(Vec<u8>, T::AccountId, bool)> = Vec::new();
+				
+				// Collect from ColdkeyNodeRegistration
+				ColdkeyNodeRegistration::<T>::iter().for_each(|(node_id, node_info)| {
+					if let Some(info) = node_info {
+						all_registrations.push((node_id, info.owner.clone(), true));
+						*owner_node_counts.entry(info.owner).or_default() += 1;
+					}
+				});
+				
+				// Collect from NodeRegistration
+				NodeRegistration::<T>::iter().for_each(|(node_id, node_info)| {
+					if let Some(info) = node_info {
+						all_registrations.push((node_id, info.owner.clone(), false));
+						*owner_node_counts.entry(info.owner).or_default() += 1;
+					}
+				});
+				
+				// Group registrations by owner
+				let mut owner_registrations: BTreeMap<T::AccountId, Vec<(Vec<u8>, bool)>> = BTreeMap::new();
+				for (node_id, owner, is_coldkey) in all_registrations {
+					owner_registrations
+						.entry(owner)
+						.or_default()
+						.push((node_id, is_coldkey));
+				}
+				
+				// Remove registrations for owners with multiple registrations or across different storage types
+				for (owner, registrations) in owner_registrations {
+					// If an owner has more than one registration total
+					// Or has registrations in both ColdkeyNodeRegistration and NodeRegistration
+					if owner_node_counts.get(&owner).copied().unwrap_or(0) > 1 ||
+					   registrations.iter().any(|(_, is_coldkey)| *is_coldkey) && 
+					   registrations.iter().any(|(_, is_coldkey)| !*is_coldkey) {
+						// Remove all registrations for this owner
+						for (node_id, is_coldkey) in registrations {
+							if is_coldkey {
+								ColdkeyNodeRegistration::<T>::remove(&node_id);
+							} else {
+								NodeRegistration::<T>::remove(&node_id);
+							}
+						}
+					}
+				}
+
+			}
+
 			Weight::zero()
 		}
 	}
@@ -314,6 +390,20 @@ pub mod pallet {
 			ipfs_node_id: Option<Vec<u8>>,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
+
+			// Check if the owner already has a registered node
+			ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
+
+			// Check if the node is already registered
+			ensure!(
+				!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
+				Error::<T>::NodeAlreadyRegistered
+			);
+			// Check if the node is already registered
+			ensure!(
+				!NodeRegistration::<T>::contains_key(&node_id),
+				Error::<T>::NodeAlreadyRegistered
+			);
 
 			// Get the current block number
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
@@ -343,6 +433,9 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			// Check if the owner already has a registered node
+			ensure!(!Self::is_owner_node_registered(&who), Error::<T>::OwnerAlreadyRegistered);
+
 			// Check cooldown period
 			let current_block = <frame_system::Pallet<T>>::block_number();
 			let last_deregistered = NodeLastDeregisteredAt::<T>::get(&node_id);
@@ -363,26 +456,17 @@ pub mod pallet {
 				_ => {},
 			}
 
-			let node_id = node_id.clone();
 			// Check if the node is already registered
 			ensure!(
 				!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
 				Error::<T>::NodeAlreadyRegistered
 			);
-
-			// Check if the account ID already has a registered node
-			let existing_node = ColdkeyNodeRegistration::<T>::iter().find(
-				|(_registered_node_id, registered_node_info)| {
-					if let Some(info) = registered_node_info {
-						info.owner == who
-					} else {
-						false
-					}
-				},
+			// Check if the node is already registered
+			ensure!(
+				!NodeRegistration::<T>::contains_key(&node_id),
+				Error::<T>::NodeAlreadyRegistered
 			);
-
-			ensure!(existing_node.is_none(), Error::<T>::NodeAlreadyRegistered); // You can define a more specific error if needed
-
+			
 			// Check if the ipfs_node_id is already registered
 			if let Some(ref ipfs_id) = ipfs_node_id {
 				// Iterate through all registered nodes to check for the ipfs_node_id
@@ -488,7 +572,6 @@ pub mod pallet {
 				registered_at: current_block_number,
 				owner: who,
 			};
-
 			ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
 
 			Self::deposit_event(Event::MainNodeRegistered { node_id });
@@ -506,6 +589,9 @@ pub mod pallet {
 			ipfs_node_id: Option<Vec<u8>>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
+
+			// Check if the owner already has a registered node
+			ensure!(!Self::is_owner_node_registered(&who), Error::<T>::OwnerAlreadyRegistered);
 
 			// Check cooldown period
 			let current_block = <frame_system::Pallet<T>>::block_number();
@@ -550,7 +636,11 @@ pub mod pallet {
 				_ => {},
 			}
 
-			let node_id = node_id.clone();
+			// Check if the node is already registered
+			ensure!(
+				!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
+				Error::<T>::NodeAlreadyRegistered
+			);
 			// Check if the node is already registered
 			ensure!(
 				!NodeRegistration::<T>::contains_key(&node_id),
@@ -790,6 +880,21 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
 
+			// Check if the owner already has a registered node
+			ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
+
+			let node_id = node_id.clone();
+			// Check if the node is already registered
+			ensure!(
+				!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
+				Error::<T>::NodeAlreadyRegistered
+			);
+			// Check if the node is already registered
+			ensure!(
+				!NodeRegistration::<T>::contains_key(&node_id),
+				Error::<T>::NodeAlreadyRegistered
+			);
+
 			// Get the current block number
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
 
@@ -988,6 +1093,17 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+		/// Helper function to check if an owner already has a registered node
+		fn is_owner_node_registered(owner: &T::AccountId) -> bool {
+			// Check both ColdkeyNodeRegistration and NodeRegistration storage maps
+			ColdkeyNodeRegistration::<T>::iter().any(|(_, node_info)| 
+				node_info.map_or(false, |info| info.owner == *owner)
+			) || 
+			NodeRegistration::<T>::iter().any(|(_, node_info)| 
+				node_info.map_or(false, |info| info.owner == *owner)
+			)
+		}
+
 		/// Fetch all registered miners whose status is not degraded
 		pub fn get_all_active_storage_miners() -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
 			// Vector to store filtered node info
@@ -1486,14 +1602,25 @@ pub mod pallet {
 
 		pub fn do_unregister_node(node_id: Vec<u8>) {
 			if !NodeRegistration::<T>::contains_key(&node_id) {
-				ColdkeyNodeRegistration::<T>::remove(node_id.clone());
+				if ColdkeyNodeRegistration::<T>::contains_key(&node_id) {
+					Self::do_unregister_main_node(node_id.clone());
+				}
 			}
 			NodeRegistration::<T>::remove(node_id.clone());
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}
 
 		pub fn do_unregister_main_node(node_id: Vec<u8>) {
+			// Remove all node registrations linked to this coldkey node
+			let linked_node_ids = Self::linked_nodes(&node_id);
+			for linked_node_vec in linked_node_ids {
+				NodeRegistration::<T>::remove(linked_node_vec.clone());
+			}
+
+			// Remove the main node's registration and linked nodes
 			ColdkeyNodeRegistration::<T>::remove(node_id.clone());
+			LinkedNodes::<T>::remove(node_id.clone());
+			
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}
 	}

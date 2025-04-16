@@ -1653,7 +1653,7 @@ pub mod pallet {
                 // Process results of the transaction submission
                 for (acc, res) in &results {
                     match res {
-                        Ok(()) => log::info!("[{:?}] Successfully submitted signed hardware update", acc.id),
+                        Ok(()) => log::info!("[{:?}] Successfully submitted signed Approval update", acc.id),
                         Err(e) => log::error!("[{:?}] Error submitting hardware update: {:?}", acc.id, e),
                     }
                 }

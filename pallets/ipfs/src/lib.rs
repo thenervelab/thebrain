@@ -729,7 +729,6 @@ pub mod pallet {
 					Error::<T>::RequestAlreadyExists
 				);
 
-				
 				// Create the storage request
 				let request_info = StorageRequest {
 					total_replicas: 7u32,  
