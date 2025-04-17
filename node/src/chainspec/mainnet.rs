@@ -34,6 +34,12 @@ const VALIDATOR_SR25519: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6
 // Our validator's ed25519 key for GRANDPA
 const VALIDATOR_ED25519: &str = "5CnJrbg2PTeL3jkKc8ozaGpjKMerXx1M1Y4uc8ByNxBceauD";
 
+
+// Our validator's sr25519 key for BABE
+const TESTNET_VALIDATOR_SR25519: &str = "5CP9wzk9G3kMdJmNyAsWGWVWDQE7Goe1dUvKtMv51EoXs563";
+// Our validator's ed25519 key for GRANDPA
+const TESTNET_VALIDATOR_ED25519: &str = "5D7iUQJnrtiuuwj3bHebP8oNPAk4jR7V76EV9JKmsscwrD4N";
+
 /// Helper function to get account from SS58 string
 fn get_account_from_ss58(ss58: &str) -> AccountId {
 	AccountId::from_ss58check_with_version(ss58).expect("Invalid SS58 address").0
@@ -69,6 +75,24 @@ const SUDO_ACCOUNT: &str = "5Cf8Sx31MqeyJMwvF7VAE89woWavsDXNxZY1ci1wmCiyHjX3";
 fn get_sudo_account() -> AccountId {
 	get_account_from_ss58(SUDO_ACCOUNT)
 }
+
+/// Generate authority keys for our validator
+pub fn get_testnet_authority_keys() -> (AccountId, BabeId, GrandpaId, ImOnlineId) {
+	let account = get_account_from_ss58(TESTNET_VALIDATOR_SR25519);
+	let sr25519_key = get_sr25519_from_ss58(TESTNET_VALIDATOR_SR25519);
+	let ed25519_key = get_ed25519_from_ss58(TESTNET_VALIDATOR_ED25519);
+
+	(account, sr25519_key.into(), ed25519_key.into(), sr25519_key.into())
+}
+
+// Sudo account
+const TESTNET_SUDO_ACCOUNT: &str = "5CP9wzk9G3kMdJmNyAsWGWVWDQE7Goe1dUvKtMv51EoXs563";
+
+/// Get the sudo account
+fn get_testnet_sudo_account() -> AccountId {
+	get_account_from_ss58(TESTNET_SUDO_ACCOUNT)
+}
+
 
 /// Generate the session keys from individual elements.
 fn generate_session_keys(
@@ -113,6 +137,45 @@ pub fn local_benchmarking_config(chain_id: u64) -> Result<ChainSpec, String> {
 			chain_id,
 			vec![],
 			vec![],
+		))
+		.build())
+}
+
+pub fn hippius_testnet_config(chain_id: u64) -> Result<ChainSpec, String> {
+	let mut properties = sc_chain_spec::Properties::new();
+	properties.insert("tokenSymbol".into(), "thALPHA".into());
+	properties.insert("tokenDecimals".into(), 18u32.into());
+	properties.insert("ss58Format".into(), 42.into());
+
+	let authority = get_testnet_authority_keys();
+	let account_id = authority.0.clone();
+
+	Ok(ChainSpec::builder(WASM_BINARY.expect("WASM not available"), Default::default())
+		.with_name("Hippius Testnet")
+		.with_id("local_testnet")
+		.with_chain_type(ChainType::Live)
+		.with_properties(properties)
+		.with_genesis_config_patch(mainnet_genesis(
+			// Initial validators
+			vec![authority.clone()],
+			// Endowed accounts
+			vec![
+				// (account_id.clone(), ENDOWMENT),
+				(
+					// Convert sudo account to AccountId32
+					sp_core::sr25519::Public::from_ss58check(TESTNET_SUDO_ACCOUNT)
+						.expect("Invalid SS58 address")
+						.into(),
+					// Add a substantial endowment, e.g., 1 million tokens
+					ENDOWMENT * 9,
+				),
+			],
+			// Sudo account
+			get_testnet_sudo_account(),
+			// EVM chain ID
+			chain_id,
+			vec![], // Temporarily disabled vesting for initial setup
+			vec![], // endowed evm accounts
 		))
 		.build())
 }

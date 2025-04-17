@@ -408,6 +408,7 @@ pub mod pallet {
 								node_type.clone(),
 								block_number,
 							);
+							Self::save_hardware_info(node_id.clone(), node_type.clone());
 
 							if node_type == NodeType::Validator {
 								// Self::process_pending_compute_requests();
@@ -429,22 +430,22 @@ pub mod pallet {
 							}
 						}
 
-						let current_block = block_number.saturated_into::<u32>();
+						// let current_block = block_number.saturated_into::<u32>();
 
-						// Use BABE randomness instead of block hash for determining execution
-						let should_run = Self::should_execute_offchain(current_block, random_seed);
-						if should_run {
-							// Update last run time
-							sp_io::offchain::local_storage_set(
-								sp_core::offchain::StorageKind::PERSISTENT,
-								STORAGE_KEY,
-								&current_block.to_be_bytes(),
-							);
-							// Execute tasks with BABE randomness
-							Self::save_hardware_info(node_id.clone(), node_type.clone());
-						} else {
-							log::info!("Skipping execution at block {}", current_block);
-						}
+						// // Use BABE randomness instead of block hash for determining execution
+						// let should_run = Self::should_execute_offchain(current_block, random_seed);
+						// if should_run {
+						// 	// Update last run time
+						// 	sp_io::offchain::local_storage_set(
+						// 		sp_core::offchain::StorageKind::PERSISTENT,
+						// 		STORAGE_KEY,
+						// 		&current_block.to_be_bytes(),
+						// 	);
+						// 	// Execute tasks with BABE randomness
+						// 	Self::save_hardware_info(node_id.clone(), node_type.clone());
+						// } else {
+						// 	log::info!("Skipping execution at block {}", current_block);
+						// }
 					}
 				},
 				Err(e) => {
