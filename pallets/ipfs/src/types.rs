@@ -11,7 +11,7 @@ use frame_system::{pallet_prelude::BlockNumberFor, offchain::SignedPayload};
 pub const MAX_FILE_HASH_LENGTH: u32 = 350;
 pub const MAX_FILE_NAME_LENGTH: u32 = 350;
 pub const MAX_NODE_ID_LENGTH: u32 = 64;
-pub const MAX_MINER_IDS: u32 = 5;
+pub const MAX_MINER_IDS: u32 = 1;
 pub const MAX_BLACKLIST_ENTRIES: u32 = 350;
 pub const MAX_UNPIN_REQUESTS: u32 = 350;
 
@@ -132,8 +132,9 @@ impl<T: Config> SignedPayload<T> for UpdateUserProfilePayload<T> {
 /// Payload for updating UserProfile
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
 pub struct MinerLockPayload<T: Config> {
-    pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub miner_node_ids: Vec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>>,
     pub block_number: BlockNumberFor<T>,
+    pub node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
     pub public: T::Public,
     pub _marker: PhantomData<T>,
 }

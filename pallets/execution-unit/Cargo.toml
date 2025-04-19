@@ -24,7 +24,7 @@ pallet-metagraph = { workspace = true, default-features = false }
 num_cpus = { workspace = true, optional = true }
 hex = { workspace = true }
 sysinfo = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
+serde = { default-features = false, workspace = true }
 pallet-babe = { default-features = false, workspace = true }
 #pallet-compute = { workspace = true, default-features = false }
 pallet-credits = { default-features = false, workspace = true }

@@ -274,6 +274,7 @@ pub mod pallet {
 			tag: Option<Vec<u8>>,
 			digest: Vec<u8>,
 			cid: Vec<u8>,
+			selected_validator: T::AccountId
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
@@ -328,6 +329,7 @@ pub mod pallet {
 				&who.clone(),
 				&vec![file_input.clone()],
 				None,
+				selected_validator
 			);
 
 			// Emit both events
@@ -352,6 +354,7 @@ pub mod pallet {
 			digest: Vec<u8>,
 			digest_type: DigestType,
 			cid: Vec<u8>,
+			selected_validator: T::AccountId
 		) -> DispatchResult {
 			// Ensure the caller is signed
 			let who = ensure_signed(origin)?;
@@ -382,6 +385,7 @@ pub mod pallet {
 				&who.clone(),
 				&vec![file_input.clone()],
 				None,
+				selected_validator
 			);
 
 			// Emit an event for successful storage

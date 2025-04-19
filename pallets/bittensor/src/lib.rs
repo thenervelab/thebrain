@@ -169,8 +169,42 @@ pub mod pallet {
 				// Retrieve linked nodes for the main node
 				let mut linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
 				let mut total_weight = 0u32;
+				let mut own_weight = 0u32;
 
 				if !linked_node_ids.is_empty() {
+					log::info!("found Linked Nodes");
+					// Handle the case where there are no linked nodes
+					if let Some(metrics) =
+					ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
+					{
+						geo_distribution.insert(metrics.geolocation.clone(), 1);
+						let mut weight = WeightCalculation::calculate_weight::<T>(
+							NodeType::StorageMiner,
+							&metrics,
+							all_nodes_metrics,
+							&geo_distribution,
+						);
+						let current_block_number = <frame_system::Pallet<T>>::block_number();
+						let buffer = 300u32;
+						let blocks_online =
+							ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+
+						if let Some(blocks) = blocks_online {
+							if let Some(&last_block) = blocks.last() {
+								let difference = current_block_number - last_block;
+								if difference > buffer.into() {
+									// Ensure buffer is of the correct type
+									weight = 0; // Accumulate weight
+								}
+							}
+						}
+						
+						own_weight += weight as u32; // Accumulate weight
+
+					} else {
+						log::info!("Node metrics not found for storage miner: {:?}", miner.node_id);
+					}
+
 					// Check if there are linked nodes
 					// Remove linked nodes without metrics
 					linked_node_ids.retain(|linked_node_id| {
@@ -221,9 +255,14 @@ pub mod pallet {
 							}
 						}
 					}
+					
 					// Normalize weight for the main node based on linked nodes
-					let normalized_weight = total_weight / linked_node_ids.len() as u32;
-					storage_weights.push(normalized_weight as u16);
+					let normalized_weight = if !linked_node_ids.is_empty() {
+						total_weight / linked_node_ids.len() as u32
+					} else {
+						0 // or some default value if no linked nodes
+					};
+					storage_weights.push((normalized_weight + own_weight) as u16);
 				} else {
 					// Handle the case where there are no linked nodes
 					if let Some(metrics) =
