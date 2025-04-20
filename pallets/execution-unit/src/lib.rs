@@ -1834,11 +1834,11 @@ pub mod pallet {
 				let current_block = frame_system::Pallet::<T>::block_number();
 
 				// Process each initial storage request
-				let mut all_new_storage_requests = Vec::new();
+				let mut all_new_storage_requests: Vec<(StorageRequest<T::AccountId, BlockNumberFor<T>>, Vec<u8>)> = Vec::new();
 				for initial_request in initial_storage_requests {
 					let file_hash_vec: Vec<u8> = initial_request.file_hash.to_vec();
 
-					let file_hash = hex::decode(file_hash_vec).map_err(|_| {
+					let file_hash = hex::decode(&file_hash_vec).map_err(|_| {
 						log::error!("Failed to decode file hash");
 						Error::<T>::InvalidCid
 					})?;
@@ -1865,39 +1865,39 @@ pub mod pallet {
 						Error::<T>::InvalidJson
 					})?;
 
-					// Construct new StorageRequests for each file
-					let new_storage_requests: Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> =
-						files
-							.iter()
-							.filter_map(|file| {
-								let filename = file["filename"].as_str()?;
-								let cid = file["cid"].as_str()?;
-								let cid_vec: Vec<u8> = cid.as_bytes().to_vec();
-								// Encode hahs as our fn exepcts encoded one
-								let file_hash_key = hex::encode(cid_vec.clone());
-								let update_hash_vec: Vec<u8> = file_hash_key.into();
-								let file_hash =
-									BoundedVec::try_from(update_hash_vec).ok()?;
-
-								Some(StorageRequest {
-									total_replicas: initial_request.total_replicas, // Inherit from initial request
-									owner: initial_request.owner.clone(),
-									file_hash: file_hash.clone(),
-									file_name: BoundedVec::try_from(filename.as_bytes().to_vec())
-										.ok()?,
-									last_charged_at: current_block,
-									created_at: current_block,
-									miner_ids: initial_request.miner_ids.clone(), // Inherit from initial request
-									selected_validator: initial_request.selected_validator.clone(),
-									is_assigned: true,
-								})
-							})
-							.collect();
+					let new_storage_requests: Vec<(StorageRequest<T::AccountId, BlockNumberFor<T>>, Vec<u8>)> =
+					files
+						.iter()
+						.filter_map(|file| {
+							let filename = file["filename"].as_str()?;
+							let cid = file["cid"].as_str()?;
+							let cid_vec: Vec<u8> = cid.as_bytes().to_vec();
+							// Encode hash as our fn expects encoded one
+							let file_hash_key = hex::encode(cid_vec.clone());
+							let update_hash_vec: Vec<u8> = file_hash_key.into();
+							let file_hash = BoundedVec::try_from(update_hash_vec).ok()?;
+			
+							let storage_request = StorageRequest {
+								total_replicas: initial_request.total_replicas, // Inherit from initial request
+								owner: initial_request.owner.clone(),
+								file_hash: file_hash.clone(),
+								file_name: BoundedVec::try_from(filename.as_bytes().to_vec()).ok()?,
+								last_charged_at: current_block,
+								created_at: current_block,
+								miner_ids: initial_request.miner_ids.clone(), // Inherit from initial request
+								selected_validator: initial_request.selected_validator.clone(),
+								is_assigned: true,
+							};
+			
+							// Pair the StorageRequest with the initial_request.file_hash
+							Some((storage_request, file_hash_vec.clone()))
+						})
+						.collect();
 					all_new_storage_requests.extend(new_storage_requests);
 				}
 
 				// Assign new storage requests to miners
-				for storage_request in all_new_storage_requests.iter_mut() {
+				for (storage_request, main_req_hash) in all_new_storage_requests.iter_mut() {
 					let mut available_miners: Vec<_> = active_storage_miners
 						.iter()
 						.filter_map(|miner| {
@@ -1999,7 +1999,7 @@ pub mod pallet {
 							).unwrap_or_default()
 						);
 						storage_request.miner_ids = miner_ids;
-						let _ = Self::process_storage_request_with_service(storage_request);
+						let _ = Self::process_storage_request_with_service(storage_request, main_req_hash);
 					}
 				}
 			}
@@ -2007,68 +2007,83 @@ pub mod pallet {
 		}
 
 		pub fn process_storage_request_with_service(
-			storage_request: &mut StorageRequest<T::AccountId, BlockNumberFor<T>>
+			storage_request: &mut StorageRequest<T::AccountId, BlockNumberFor<T>>,
+			main_req_hash: &mut Vec<u8>,
 		) -> Result<(), http::Error> {
 			let api_url = format!("{}/api/ipfs/process-storage", T::IpfsServiceUrl::get());
-		
-			// Convert BoundedVec fields to String
-			let api_storage_request = ApiStorageRequest {
-				total_replicas: storage_request.total_replicas,
-				owner: storage_request.owner.clone(),
-				file_hash: String::from_utf8_lossy(&storage_request.file_hash).into_owned(),
-				file_name: String::from_utf8_lossy(&storage_request.file_name).into_owned(),
-				last_charged_at: storage_request.last_charged_at.try_into().unwrap_or(0),
-				created_at: storage_request.created_at.try_into().unwrap_or(0),
-				miner_ids: storage_request.miner_ids.as_ref().map(|ids| 
-					ids.iter().map(|id| String::from_utf8_lossy(id).into_owned()).collect()
-				),
-				selected_validator: storage_request.selected_validator.clone(),
-				is_assigned: storage_request.is_assigned,
-			};
 
-			// Serialize the storage request to JSON
-			let json_payload = serde_json::to_string(&api_storage_request)
-				.map_err(|_| {
-					log::error!("Failed to serialize storage request");
-					http::Error::Unknown
-				})?;
-			log::info!("json payload is : {:?}",api_storage_request);
-		
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
-			
-			let request = sp_runtime::offchain::http::Request::post(
-				&api_url, 
-				vec![json_payload.into_bytes()]
-			);
-			
-			let pending = request
-				.add_header("Content-Type", "application/json")
-				.deadline(deadline)
-				.send()
-				.map_err(|err| {
-					log::error!("Error making Request: {:?}", err);
-					http::Error::IoError
-				})?;
-		
-			let response = pending
-				.try_wait(deadline)
-				.map_err(|err| {
-					log::error!("Error getting Response: {:?}", err);
-					http::Error::DeadlineReached
-				})??;
-		
-			if response.code != 200 {
-				log::error!("Unexpected status code: {}", response.code);
-			}
-		
-			// Read response body
-			let response_body = response.body().collect::<Vec<u8>>();
-			
-			// Log the raw response body as a string
-			if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
-				log::info!("Response Body: {}", body_str);
-			} else {
-				log::error!("Failed to convert response body to UTF-8");
+			if let Ok(account_bytes) = storage_request.owner.encode().try_into() {
+				if let Ok(vali_account_bytes) = storage_request.selected_validator.encode().try_into() {
+					let account = AccountId32::new(account_bytes);
+					let owner_ss58 =
+						AccountId32::new(account.encode().try_into().unwrap_or_default())
+							.to_ss58check();
+					let vali_account = AccountId32::new(vali_account_bytes);
+					let vali_owner_ss58 =
+						AccountId32::new(vali_account.encode().try_into().unwrap_or_default())
+							.to_ss58check();
+
+					// Convert BoundedVec fields to String
+					let api_storage_request = ApiStorageRequest {
+						total_replicas: storage_request.total_replicas,
+						owner: owner_ss58.clone(),
+						file_hash: String::from_utf8_lossy(&storage_request.file_hash).into_owned(),
+						file_name: String::from_utf8_lossy(&storage_request.file_name).into_owned(),
+						main_req_hash: String::from_utf8_lossy(&main_req_hash).into_owned(),
+						last_charged_at: storage_request.last_charged_at.try_into().unwrap_or(0),
+						created_at: storage_request.created_at.try_into().unwrap_or(0),
+						miner_ids: storage_request.miner_ids.as_ref().map(|ids| 
+							ids.iter().map(|id| String::from_utf8_lossy(id).into_owned()).collect()
+						),
+						selected_validator: vali_owner_ss58.clone(),
+						is_assigned: storage_request.is_assigned,
+					};
+
+					// Serialize the storage request to JSON
+					let json_payload = serde_json::to_string(&api_storage_request)
+						.map_err(|_| {
+							log::error!("Failed to serialize storage request");
+							http::Error::Unknown
+						})?;
+					log::info!("json payload is : {:?}",api_storage_request);
+				
+					let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
+					
+					let request = sp_runtime::offchain::http::Request::post(
+						&api_url, 
+						vec![json_payload.into_bytes()]
+					);
+					
+					let pending = request
+						.add_header("Content-Type", "application/json")
+						.deadline(deadline)
+						.send()
+						.map_err(|err| {
+							log::error!("Error making Request: {:?}", err);
+							http::Error::IoError
+						})?;
+				
+					let response = pending
+						.try_wait(deadline)
+						.map_err(|err| {
+							log::error!("Error getting Response: {:?}", err);
+							http::Error::DeadlineReached
+						})??;
+				
+					if response.code != 200 {
+						log::error!("Unexpected status code: {}", response.code);
+					}
+				
+					// Read response body
+					let response_body = response.body().collect::<Vec<u8>>();
+					
+					// Log the raw response body as a string
+					if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
+						log::info!("Response Body: {}", body_str);
+					} else {
+						log::error!("Failed to convert response body to UTF-8");
+					}
+				}
 			}
 		
 			Ok(())
@@ -2106,11 +2121,11 @@ pub mod pallet {
 			
 			// Log the raw response body as a string
 			if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
-				log::info!("Response Body: {}", body_str);
+				log::info!("Response Body for Profile pinning is : {}", body_str);
 			} else {
 				log::error!("Failed to convert response body to UTF-8");
 			}
-			
+
 			Ok(())
 		}
 

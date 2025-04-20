@@ -299,6 +299,7 @@ pub struct ApiStorageRequest<AccountId> {
 	pub owner: AccountId,
 	pub file_hash: String,
 	pub file_name: String,
+	pub main_req_hash: String,
 	pub last_charged_at: u64,
 	pub created_at: u64,
 	pub miner_ids: Option<Vec<String>>,
