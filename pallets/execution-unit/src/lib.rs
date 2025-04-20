@@ -98,6 +98,7 @@ pub mod pallet {
 	use ipfs_pallet::StorageRequest;
 	use ipfs_pallet::UserProfile;
 	use sp_std::collections::btree_map::BTreeMap;
+	use ipfs_pallet::StorageUnpinRequest;
 
 	const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
 
@@ -421,13 +422,16 @@ pub mod pallet {
 								);
 								// unpinning
 
-								if let Ok(selected_validator) = IpfsPallet::<T>::select_validator() {
-									if selected_validator == node_info.owner {
-										// perform pin checks 
-										// profile pinning
-										Self::pin_profiles_via_service();
-									}
+								if block_number % (check_intetrval * 2u32).into() == Zero::zero() {
+									// if let Ok(selected_validator) = IpfsPallet::<T>::select_validator() {
+										// if selected_validator == node_info.owner {
+											// perform pin checks 
+											// profile pinning
+											let _ = Self::pin_profiles_via_service();
+										// }
+									// }
 								}
+
 							}
 						}
 
@@ -1812,6 +1816,27 @@ pub mod pallet {
 			BlockNumbers::<T>::remove(&node_id);
 		}
 
+		pub fn handle_unpin_request_assignment(
+			node_info: NodeInfo<BlockNumberFor<T>, T::AccountId>,
+			block_number: BlockNumberFor<T>,
+		) -> Result<(), DispatchError> {
+			let initial_unpin_requests =
+				IpfsPallet::<T>::get_unassigned_unpin_requests_for_validator(
+					node_info.owner.clone(),
+				);	
+
+				// Call the API if there are unpin requests
+				if !initial_unpin_requests.is_empty() {
+					Self::process_unpin_request_with_service(initial_unpin_requests)
+						.map_err(|e| {
+							log::error!("Failed to process unpin requests: {:?}", e);
+							DispatchError::Other("Failed to process unpin requests")
+						})?;
+				}
+
+			Ok(())
+		}
+
 		pub fn handle_request_assignment(
 			node_id: Vec<u8>,
 			node_info: NodeInfo<BlockNumberFor<T>, T::AccountId>,
@@ -2003,6 +2028,88 @@ pub mod pallet {
 					}
 				}
 			}
+			Ok(())
+		}
+
+		pub fn process_unpin_request_with_service(
+			unpin_requests: Vec<StorageUnpinRequest<T::AccountId>>,
+		) -> Result<(), http::Error> {
+			let api_url = format!("{}/api/ipfs/unpin", T::IpfsServiceUrl::get());
+		
+			// Convert unpin requests to API format
+			let mut api_unpin_items = Vec::new();
+
+			for request in unpin_requests {
+				if let Ok(owner_bytes) = request.owner.encode().try_into() {
+					let owner_account = AccountId32::new(owner_bytes);
+					let owner_ss58 = owner_account.to_ss58check();
+					
+					// Convert file hash to a consistent format for storage lookup
+					let file_hash_key = hex::decode(request.file_hash.clone()).unwrap_or_else(|e| {
+						log::error!("Failed to decode file_hash {:?}: {:?}", request.file_hash, e);
+						Vec::new()
+					});
+					
+					let update_hash_vec: Vec<u8> = file_hash_key.into();
+					let file_hash = String::from_utf8_lossy(&update_hash_vec).into_owned();
+					
+					api_unpin_items.push(ApiUnpinItem {
+						cid: file_hash,
+						owner: owner_ss58,
+					});
+				}
+			}
+		
+			let api_unpin_request = ApiUnpinRequest {
+				items: api_unpin_items,
+			};
+		
+			// Serialize the unpin request to JSON
+			let json_payload = serde_json::to_string(&api_unpin_request)
+				.map_err(|_| {
+					log::error!("Failed to serialize unpin request");
+					http::Error::Unknown
+				})?;
+			
+			log::info!("Unpin request payload: {:?}", json_payload);
+		
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
+
+			let request = sp_runtime::offchain::http::Request::post(
+				&api_url,
+				vec![json_payload.into_bytes()]
+			);
+		
+			let pending = request
+				.add_header("Content-Type", "application/json")
+				.deadline(deadline)
+				.send()
+				.map_err(|err| {
+					log::error!("Error making unpin request: {:?}", err);
+					http::Error::IoError
+				})?;
+		
+			let response = pending
+				.try_wait(deadline)
+				.map_err(|err| {
+					log::error!("Error getting unpin response: {:?}", err);
+					http::Error::DeadlineReached
+				})??;
+		
+			if response.code != 200 {
+				log::error!("Unexpected status code for unpin request: {}", response.code);
+			}
+		
+			// Read response body
+			let response_body = response.body().collect::<Vec<u8>>();
+			
+			// Log the raw response body
+			if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
+				log::info!("Unpin Response Body: {}", body_str);
+			} else {
+				log::error!("Failed to convert unpin response body to UTF-8");
+			}
+		
 			Ok(())
 		}
 

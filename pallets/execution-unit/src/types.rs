@@ -306,3 +306,16 @@ pub struct ApiStorageRequest<AccountId> {
 	pub selected_validator: AccountId,
 	pub is_assigned: bool,
 }
+
+
+// Structs to match the API's expected JSON format
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ApiUnpinItem {
+    pub cid: String,
+    pub owner: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ApiUnpinRequest {
+    pub items: Vec<ApiUnpinItem>,
+}

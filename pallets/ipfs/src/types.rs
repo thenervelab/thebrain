@@ -20,6 +20,13 @@ pub type FileHash = BoundedVec<u8, ConstU32<MAX_FILE_HASH_LENGTH>>;
 /// Unique identifier for a file name
 pub type FileName = BoundedVec<u8, ConstU32<MAX_FILE_NAME_LENGTH>>;
 
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
+pub struct StorageUnpinRequest<AccountId> {
+    pub owner: AccountId,
+    pub file_hash: FileHash,
+    pub selected_validator: AccountId,
+}
+
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
 pub struct StorageRequest<AccountId, BlockNumberFor> {
@@ -33,6 +40,7 @@ pub struct StorageRequest<AccountId, BlockNumberFor> {
     pub selected_validator: AccountId,
     pub is_assigned: bool,
 }
+
 
 // This will store info relasinceted storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]

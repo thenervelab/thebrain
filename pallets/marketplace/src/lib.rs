@@ -655,6 +655,7 @@ pub mod pallet {
         pub fn storage_unpin_request(
             origin: OriginFor<T>,
             file_hash: FileHash,
+            select_validator: T::AccountId
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
@@ -683,7 +684,7 @@ pub mod pallet {
             // let requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_by_hash(owner.clone(), encoded_file_hash.clone());
             // ensure!(requested_storage.is_some(), Error::<T>::StorageRequestNotFound);
 
-            let _ = ipfs_pallet::Pallet::<T>::process_unpin_request(file_hash.to_vec())?;
+            let _ = ipfs_pallet::Pallet::<T>::process_unpin_request(file_hash.clone(), select_validator, owner.clone())?;
 
             // Emit the event for unpin request
             Self::deposit_event(Event::UnpinRequestAdded {
