@@ -273,7 +273,8 @@ pub mod pallet {
 			image_name: Vec<u8>,
 			tag: Option<Vec<u8>>,
 			digest: Vec<u8>,
-			cid: Vec<u8>
+			cid: Vec<u8>,
+			selected_validator: T::AccountId,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
@@ -327,7 +328,8 @@ pub mod pallet {
 			let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
 				&who.clone(),
 				&vec![file_input.clone()],
-				None
+				None,
+				selected_validator
 			);
 
 			// Emit both events
@@ -351,7 +353,8 @@ pub mod pallet {
 			repo_name: Vec<u8>,
 			digest: Vec<u8>,
 			digest_type: DigestType,
-			cid: Vec<u8>
+			cid: Vec<u8>,
+			selected_validator: T::AccountId,
 		) -> DispatchResult {
 			// Ensure the caller is signed
 			let who = ensure_signed(origin)?;
@@ -381,7 +384,8 @@ pub mod pallet {
 			let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
 				&who.clone(),
 				&vec![file_input.clone()],
-				None
+				None,
+				selected_validator			
 			);
 
 			// Emit an event for successful storage

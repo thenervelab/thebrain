@@ -237,29 +237,6 @@ pub mod pallet {
 						.propagate(true)
 						.build()
 				},				
-				// Handler for `set_miner_state_locked` unsigned transaction
-				Call::set_miner_state_locked { miner_node_ids, signature: _, block_number, node_identity } => {
-					let current_block = frame_system::Pallet::<T>::block_number();
-
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(&block_number.encode());
-					for miner_node_id in miner_node_ids {
-						data.extend_from_slice(&miner_node_id.encode());
-					}
-					data.extend_from_slice(&node_identity.encode());
-					
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-
-					// Ensure unique transaction validity
-					ValidTransaction::with_tag_prefix("IpfsOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(unique_hash)
-						.longevity(3)
-						.propagate(true)
-						.build()
-				},
 				// Handler for `mark_storage_request_assigned` unsigned transaction
 				Call::mark_storage_request_assigned { owner, file_hash } => {
 					let current_block = frame_system::Pallet::<T>::block_number();
@@ -364,7 +341,8 @@ pub mod pallet {
 		IpfsError,
 		MaxUnpinRequestsExceeded,
 		InvalidNodeType,
-		MinerNotLocked
+		MinerNotLocked,
+		AssignmentNotEnabled,
 	}
 
 	// the file size where the key is encoded file hash
@@ -646,36 +624,6 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		/// Unsigned transaction to set a miner's state to Locked
-		#[pallet::call_index(5)]
-		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
-		pub fn set_miner_state_locked(
-			origin: OriginFor<T>,
-			miner_node_ids: Vec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>>,
-			signature: <T as SigningTypes>::Signature,
-			block_number: BlockNumberFor<T>,
-			node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
-		) -> DispatchResultWithPostInfo {
-			// Ensure this is an unsigned transaction
-			ensure_none(origin)?;
-
-			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&node_identity);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_identity, user_requests_count + 1);
-
-			// Process each miner node ID
-			for miner_node_id in miner_node_ids {
-				// Set the miner's state to Locked
-				MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
-			}
-
-			Ok(().into())
-		}
-
 		/// Unsigned call to update UserProfile
 		#[pallet::call_index(6)]  // Replace X with the next available call index
 		#[pallet::weight(10_000)]
@@ -775,6 +723,12 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			// Check if assignment is enabled
+			ensure!(
+				Self::assignment_enabled(), 
+				Error::<T>::AssignmentNotEnabled
+			);
+
 			// Check if the node is registered
 			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
@@ -784,6 +738,22 @@ pub mod pallet {
 
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check that all miners are registered as storage miners
+			for miner_profile in miner_pin_requests.iter() {
+				let miner_node_id_vec = miner_profile.miner_node_id.to_vec();
+				let miner_node_info = RegistrationPallet::<T>::get_node_registration_info(miner_node_id_vec);
+				ensure!(
+					miner_node_info.is_some(), 
+					Error::<T>::NodeNotRegistered
+				);
+
+				let miner_node_info = miner_node_info.unwrap();
+				ensure!(
+					miner_node_info.node_type == NodeType::StorageMiner, 
+					Error::<T>::InvalidNodeType
+				);
+			}
 
 			// Check that all miners are in a locked state before processing
 			for miner_profile in miner_pin_requests.iter() {
@@ -833,31 +803,10 @@ pub mod pallet {
 				});
 			}
 
-			// Mark the storage request as assigned
-			<UserStorageRequests<T>>::mutate(
+			// Remove the storage request
+			<UserStorageRequests<T>>::remove(
 				storage_request_owner.clone(), 
-				storage_request_file_hash.clone(), 
-				|request| {
-					if let Some(ref mut req) = request {
-						let mut updated_req = req.clone();
-						updated_req.is_assigned = true;
-
-						// Collect miner node IDs from miner_pin_requests
-						let miner_ids: Option<BoundedVec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, ConstU32<5>>> = Some(
-							BoundedVec::try_from(
-								miner_pin_requests
-									.iter()
-									.map(|miner_profile| miner_profile.miner_node_id.clone())
-									.collect::<Vec<_>>()
-							).unwrap_or_default()
-						);
-
-						// Set miner IDs in the storage request
-						updated_req.miner_ids = miner_ids;
-
-						*request = Some(updated_req);
-					}
-				}
+				storage_request_file_hash.clone()
 			);
 
 			// Update UserProfile storage
@@ -961,6 +910,42 @@ pub mod pallet {
 
 			Ok(().into())
 		}
+
+
+		/// Unsigned transaction to set a miner's state to Free
+		#[pallet::call_index(12)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn set_miner_state_free(
+			origin: OriginFor<T>,
+			miner_node_ids: Vec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>>
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
+
+			// Set the miner's state to Free
+			for miner_node_id in miner_node_ids {
+				MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
+			}
+
+			Ok(().into())
+		}
 		
 	}
 
@@ -969,15 +954,16 @@ pub mod pallet {
 		pub fn process_storage_request(
 			owner: T::AccountId,
 			file_inputs: Vec<FileInput>,
-			miner_ids: Option<Vec<Vec<u8>>>
+			miner_ids: Option<Vec<Vec<u8>>>,
+			selected_validator: T::AccountId,
 		) -> Result<(), Error<T>> {
 			let current_block = frame_system::Pallet::<T>::block_number();
 
 			// Validate input
 			ensure!(!file_inputs.is_empty(), Error::<T>::InvalidInput);
 
-			// Select a validator from current BABE validators
-			let selected_validator = Self::select_validator()?;
+			// // Select a validator from current BABE validators
+			// let selected_validator = Self::select_validator()?;
 
 			// Process each file input
 			for file_input in file_inputs {
@@ -999,7 +985,7 @@ pub mod pallet {
 
 				// Create the storage request
 				let request_info = StorageRequest {
-					total_replicas: 5u32,  
+					total_replicas: 1u32,  
 					owner: owner.clone(),
 					file_hash: update_hash.clone(),
 					file_name: bounded_file_name,
@@ -1075,51 +1061,6 @@ pub mod pallet {
 			Ok(validators[validator_index].clone())
 		}
 
-		/// Helper function to set a miner's state to Locked using unsigned transactions
-		pub fn call_set_miner_state_locked(miner_node_ids: Vec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>>,
-			node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, block_number: BlockNumberFor<T>) {
-			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-				b"IpfsPin::update_lock",
-				LOCK_BLOCK_EXPIRATION,
-				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-			);
-
-			if let Ok(_guard) = lock.try_lock() {
-				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-
-				if !signer.can_sign() {
-					log::warn!("No accounts available for signing in signer.");
-					return;
-				}
-
-				let results = signer.send_unsigned_transaction(
-					|account| MinerLockPayload {
-						miner_node_ids: miner_node_ids.clone(),
-						node_identity: node_identity.clone(),
-						block_number: block_number,
-						public: account.public.clone(),
-						_marker: PhantomData,
-					},
-					|payload, signature| {
-						Call::set_miner_state_locked {
-							miner_node_ids: payload.miner_node_ids,
-							node_identity: payload.node_identity,
-							block_number: payload.block_number,
-							signature: signature,
-						}
-					},
-				);
-
-				for (acc, res) in &results {
-					match res {
-						Ok(()) => log::info!("[{:?}] Successfully set miner state to Locked", acc.id),
-						Err(e) => log::error!("[{:?}] Failed to set miner state to Locked: {:?}", acc.id, e),
-					}
-				}
-			} else {
-				log::error!("❌ Could not acquire lock for setting miner state");
-			};
-		}
 
 		/// Helper function to mark a storage request as assigned
 		pub fn call_mark_storage_request_assigned(
