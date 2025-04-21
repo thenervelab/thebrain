@@ -415,12 +415,6 @@ pub mod pallet {
 
 							if node_type == NodeType::Validator {
 								// Self::process_pending_compute_requests();
-								// let _ = Self::handle_request_assignment(
-								// 	node_id.clone(),
-								// 	node_info.clone(),
-								// 	block_number
-								// );
-
 								let _ = Self::handle_unpin_request_assignment(
 									node_info.clone(),
 									block_number
@@ -435,7 +429,6 @@ pub mod pallet {
 										}
 									}
 								}
-
 							}
 						}
 
