@@ -586,7 +586,6 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			files_input: Vec<FileInput>,
             miner_ids: Option<Vec<Vec<u8>>>,
-            select_validator: T::AccountId
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
 
@@ -638,7 +637,7 @@ pub mod pallet {
                 Err(_) => caller.clone(), // If not a sub-account, use the original account
             };
 
-            Self::process_storage_requests(&owner.clone(), &files_input.clone(), miner_ids, select_validator)?;
+            Self::process_storage_requests(&owner.clone(), &files_input.clone(), miner_ids)?;
 
             // Emit an event for the storage request
             Self::deposit_event(Event::StorageRequestAdded {
@@ -654,8 +653,7 @@ pub mod pallet {
         #[pallet::weight((0, Pays::No))]
         pub fn storage_unpin_request(
             origin: OriginFor<T>,
-            file_hash: FileHash,
-            select_validator: T::AccountId
+            file_hash: FileHash
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
@@ -684,7 +682,7 @@ pub mod pallet {
             // let requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_by_hash(owner.clone(), encoded_file_hash.clone());
             // ensure!(requested_storage.is_some(), Error::<T>::StorageRequestNotFound);
 
-            let _ = ipfs_pallet::Pallet::<T>::process_unpin_request(file_hash.clone(), select_validator, owner.clone())?;
+            let _ = ipfs_pallet::Pallet::<T>::process_unpin_request(file_hash.clone(), owner.clone())?;
 
             // Emit the event for unpin request
             Self::deposit_event(Event::UnpinRequestAdded {
@@ -1436,15 +1434,13 @@ pub mod pallet {
         pub fn process_storage_requests(
             owner: &T::AccountId, 
             file_inputs: &[FileInput],
-            miner_ids: Option<Vec<Vec<u8>>>,
-            select_validator: T::AccountId
+            miner_ids: Option<Vec<Vec<u8>>>
         ) -> DispatchResult {
             
             ipfs_pallet::Pallet::<T>::process_storage_request(
                 owner.clone(), 
                 file_inputs.to_vec(),
-                miner_ids.clone(),
-                select_validator
+                miner_ids.clone()
             )?;
 
             // Add file hashes to user's file hashes

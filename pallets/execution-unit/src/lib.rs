@@ -420,16 +420,20 @@ pub mod pallet {
 									node_info.clone(),
 									block_number
 								);
-								// unpinning
+
+								let _ = Self::handle_unpin_request_assignment(
+									node_info.clone(),
+									block_number
+								);
 
 								if block_number % (check_intetrval * 2u32).into() == Zero::zero() {
-									// if let Ok(selected_validator) = IpfsPallet::<T>::select_validator() {
-										// if selected_validator == node_info.owner {
+									if let Ok(selected_validator) = IpfsPallet::<T>::select_validator() {
+										if selected_validator == node_info.owner {
 											// perform pin checks 
 											// profile pinning
 											let _ = Self::pin_profiles_via_service();
-										// }
-									// }
+										}
+									}
 								}
 
 							}
@@ -1827,6 +1831,7 @@ pub mod pallet {
 
 				// Call the API if there are unpin requests
 				if !initial_unpin_requests.is_empty() {
+					log::info!("Processing unpin requests for node: {:?}", node_info.owner);
 					Self::process_unpin_request_with_service(initial_unpin_requests)
 						.map_err(|e| {
 							log::error!("Failed to process unpin requests: {:?}", e);
@@ -2015,7 +2020,7 @@ pub mod pallet {
 						);
 
 						// Convert selected_miners to the correct type
-						let miner_ids: Option<BoundedVec<BoundedVec<u8, ConstU32<64>>, ConstU32<1>>> = Some(
+						let miner_ids: Option<BoundedVec<BoundedVec<u8, ConstU32<64>>, ConstU32<5>>> = Some(
 							BoundedVec::try_from(
 								selected_miners
 									.iter()

@@ -174,7 +174,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9012,
+	spec_version: 9013,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1320,9 +1320,10 @@ parameter_types! {
 	pub const ExecutionUnitSystemInfoRpcMethod: &'static str = "sys_getSystemInfo";
 	pub const BlockTimeSecs :u32 =  SECONDS_PER_BLOCK as u32;
 	/// number of blocks at which uptime will be checked
-	pub const BlockCheckInterval : u32 = 30;
+	pub const BlockCheckInterval : u32 = 150;
 	pub const GetReadProofRpcMethod: &'static str = "state_getReadProof";
 	pub const SystemHealthRpcMethod: &'static str = "system_health";
+	pub const IPFSBaseUrl: &'static str = "http://localhost:5001";
 	pub const UnregistrationBuffer : u32 = 60;
 	pub const MaxOffchainRequestsPerPeriod: u32 = 20;
 	pub const RequestsClearInterval: u32 = 10;
@@ -1344,9 +1345,9 @@ impl pallet_execution_unit::Config for Runtime {
 	type UnregistrationBuffer = UnregistrationBuffer;
 	type MaxOffchainRequestsPerPeriod = MaxOffchainRequestsPerPeriod;
 	type RequestsClearInterval = RequestsClearInterval;
+	type IpfsServiceUrl = IpfsServiceUrl;
 	type MaxOffchainHardwareSubmitRequestsPerPeriod = MaxOffchainHardwareSubmitRequestsPerPeriod;
 	type HardwareSubmitRequestsClearInterval = HardwareSubmitRequestsClearInterval;
-	type IpfsServiceUrl = IpfsServiceUrl;
 }
 
 impl pallet_offences::Config for Runtime {

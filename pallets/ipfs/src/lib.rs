@@ -363,7 +363,8 @@ pub mod pallet {
 		InvalidJson,
 		IpfsError,
 		MaxUnpinRequestsExceeded,
-		InvalidNodeType
+		InvalidNodeType,
+		MinerNotLocked
 	}
 
 	// the file size where the key is encoded file hash
@@ -486,6 +487,15 @@ pub mod pallet {
 				matches!(node_info.unwrap().node_type, NodeType::Validator),
 				Error::<T>::NodeNotValidator
 			);
+
+			// Check that all miners are in a locked state before processing
+			for miner_profile in miner_pin_requests.iter() {
+				let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
+				ensure!(
+					miner_state == MinerState::Locked, 
+					Error::<T>::MinerNotLocked
+				);
+			}
 
 			// Update MinerProfile storage for each miner pin request
 			for miner_profile in miner_pin_requests.iter() {
@@ -722,7 +732,7 @@ pub mod pallet {
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn set_miner_state_lock(
 			origin: OriginFor<T>,
-			miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>
+			miner_node_ids: Vec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>>
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
@@ -745,7 +755,9 @@ pub mod pallet {
 			RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
 
 			// Set the miner's state to Locked
-			MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
+			for miner_node_id in miner_node_ids {
+				MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
+			}
 
 			Ok(().into())
 		}
@@ -772,6 +784,15 @@ pub mod pallet {
 
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check that all miners are in a locked state before processing
+			for miner_profile in miner_pin_requests.iter() {
+				let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
+				ensure!(
+					miner_state == MinerState::Locked, 
+					Error::<T>::MinerNotLocked
+				);
+			}
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
@@ -822,7 +843,7 @@ pub mod pallet {
 						updated_req.is_assigned = true;
 
 						// Collect miner node IDs from miner_pin_requests
-						let miner_ids: Option<BoundedVec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, ConstU32<1>>> = Some(
+						let miner_ids: Option<BoundedVec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, ConstU32<5>>> = Some(
 							BoundedVec::try_from(
 								miner_pin_requests
 									.iter()
@@ -856,10 +877,10 @@ pub mod pallet {
 		#[pallet::call_index(11)]
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
 		pub fn update_unpin_and_storage_requests(
-			origin: OriginFor<T>,
-			miner_pin_requests: Vec<MinerProfileItem>, 
+			origin: OriginFor<T>, 
+			miner_pin_requests: Vec<MinerProfileItem>,  //
 			storage_request_owner: T::AccountId,
-			storage_request_file_hash: FileHash,
+			storage_request_file_hash: FileHash, //correct
 			file_size: u128,
 			user_profile_cid: FileHash
 		) -> DispatchResultWithPostInfo {
@@ -874,6 +895,15 @@ pub mod pallet {
 
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check that all miners are in a locked state before processing
+			for miner_profile in miner_pin_requests.iter() {
+				let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
+				ensure!(
+					miner_state == MinerState::Locked, 
+					Error::<T>::MinerNotLocked
+				);
+			}			
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
@@ -939,8 +969,7 @@ pub mod pallet {
 		pub fn process_storage_request(
 			owner: T::AccountId,
 			file_inputs: Vec<FileInput>,
-			miner_ids: Option<Vec<Vec<u8>>>,
-			selected_validator: T::AccountId
+			miner_ids: Option<Vec<Vec<u8>>>
 		) -> Result<(), Error<T>> {
 			let current_block = frame_system::Pallet::<T>::block_number();
 
@@ -948,7 +977,7 @@ pub mod pallet {
 			ensure!(!file_inputs.is_empty(), Error::<T>::InvalidInput);
 
 			// Select a validator from current BABE validators
-			// let selected_validator = Self::select_validator()?;
+			let selected_validator = Self::select_validator()?;
 
 			// Process each file input
 			for file_input in file_inputs {
@@ -970,7 +999,7 @@ pub mod pallet {
 
 				// Create the storage request
 				let request_info = StorageRequest {
-					total_replicas: 1u32,  
+					total_replicas: 5u32,  
 					owner: owner.clone(),
 					file_hash: update_hash.clone(),
 					file_name: bounded_file_name,
@@ -994,7 +1023,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		pub fn process_unpin_request(file_hash: FileHash, _select_validator: T::AccountId, owner: T::AccountId)->Result<(), Error<T>> {
+		pub fn process_unpin_request(file_hash: FileHash, owner: T::AccountId)->Result<(), Error<T>> {
 			// Select a validator from current BABE validators
 			let selected_validator = Self::select_validator()?;
 
