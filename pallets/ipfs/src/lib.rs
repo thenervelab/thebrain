@@ -355,31 +355,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Unsigned call to update UserProfile
-		#[pallet::call_index(6)]  // Replace X with the next available call index
-		#[pallet::weight(10_000)]
-		pub fn update_user_profile(
-			origin: OriginFor<T>,
-			owner: T::AccountId,
-			node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
-			cid: FileHash,
-		) -> DispatchResultWithPostInfo {
-			ensure_none(origin)?;
-
-			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&node_identity);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_identity, user_requests_count + 1);
-
-			// Update UserProfile storage
-			UserProfile::<T>::insert(&owner, cid);
-
-			Ok(().into())
-		}
-
 		/// Unsigned transaction to set a miner's state to Locked
 		#[pallet::call_index(9)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
