@@ -183,6 +183,23 @@ pub mod pallet {
 			// Remove storage requests older than 500 blocks
 			Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(500u32));
 
+			// Get all active storage miners from the registration pallet
+			let active_miners = RegistrationPallet::<T>::get_all_active_storage_miners();
+
+			// Iterate through active miners and set their state to free
+			for miner in active_miners {
+				let miner_id = BoundedVec::try_from(miner.node_id.clone())
+					.unwrap_or_else(|_| BoundedVec::default());
+
+				// Only set to free if not already set or currently locked
+				match MinerStates::<T>::get(&miner_id) {
+					MinerState::Locked => {}, // Do nothing if locked
+					_ => {
+						MinerStates::<T>::insert(&miner_id, MinerState::Free);
+					}
+				}
+			}
+
 			Weight::zero()
 		}
 	}
@@ -642,8 +659,7 @@ pub mod pallet {
 		pub fn process_storage_request(
 			owner: T::AccountId,
 			file_inputs: Vec<FileInput>,
-			miner_ids: Option<Vec<Vec<u8>>>,
-			selected_validator: T::AccountId,
+			miner_ids: Option<Vec<Vec<u8>>>
 		) -> Result<(), Error<T>> {
 			let current_block = frame_system::Pallet::<T>::block_number();
 
@@ -651,7 +667,7 @@ pub mod pallet {
 			ensure!(!file_inputs.is_empty(), Error::<T>::InvalidInput);
 
 			// // Select a validator from current BABE validators
-			// let selected_validator = Self::select_validator()?;
+			let selected_validator = Self::select_validator()?;
 
 			// Process each file input
 			for file_input in file_inputs {
@@ -673,7 +689,7 @@ pub mod pallet {
 
 				// Create the storage request
 				let request_info = StorageRequest {
-					total_replicas: 1u32,  
+					total_replicas: 5u32,  
 					owner: owner.clone(),
 					file_hash: update_hash.clone(),
 					file_name: bounded_file_name,
@@ -698,7 +714,7 @@ pub mod pallet {
 		}
 
 		pub fn process_unpin_request(file_hash: FileHash, owner: T::AccountId)->Result<(), Error<T>> {
-			// Select a validator from current BABE validators
+			// // Select a validator from current BABE validators
 			let selected_validator = Self::select_validator()?;
 
 			// Convert file hash to a consistent format for storage lookup

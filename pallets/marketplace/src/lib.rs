@@ -586,7 +586,6 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			files_input: Vec<FileInput>,
             miner_ids: Option<Vec<Vec<u8>>>,
-            selected_validator: T::AccountId,
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
 
@@ -638,7 +637,7 @@ pub mod pallet {
                 Err(_) => caller.clone(), // If not a sub-account, use the original account
             };
 
-            Self::process_storage_requests(&owner.clone(), &files_input.clone(), miner_ids, selected_validator)?;
+            Self::process_storage_requests(&owner.clone(), &files_input.clone(), miner_ids)?;
 
             // Emit an event for the storage request
             Self::deposit_event(Event::StorageRequestAdded {
@@ -654,7 +653,7 @@ pub mod pallet {
         #[pallet::weight((0, Pays::No))]
         pub fn storage_unpin_request(
             origin: OriginFor<T>,
-            file_hash: FileHash
+            file_hash: FileHash,
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
@@ -1435,15 +1434,13 @@ pub mod pallet {
         pub fn process_storage_requests(
             owner: &T::AccountId, 
             file_inputs: &[FileInput],
-            miner_ids: Option<Vec<Vec<u8>>>,
-            selected_validator: T::AccountId,
+            miner_ids: Option<Vec<Vec<u8>>>
         ) -> DispatchResult {
             
             ipfs_pallet::Pallet::<T>::process_storage_request(
                 owner.clone(), 
                 file_inputs.to_vec(),
-                miner_ids.clone(),
-                selected_validator
+                miner_ids.clone()
             )?;
 
             // Add file hashes to user's file hashes

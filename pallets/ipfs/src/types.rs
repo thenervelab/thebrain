@@ -11,7 +11,7 @@ use frame_system::{pallet_prelude::BlockNumberFor, offchain::SignedPayload};
 pub const MAX_FILE_HASH_LENGTH: u32 = 350;
 pub const MAX_FILE_NAME_LENGTH: u32 = 350;
 pub const MAX_NODE_ID_LENGTH: u32 = 64;
-pub const MAX_MINER_IDS: u32 = 1;
+pub const MAX_MINER_IDS: u32 = 5;
 pub const MAX_BLACKLIST_ENTRIES: u32 = 350;
 pub const MAX_UNPIN_REQUESTS: u32 = 350;
 
