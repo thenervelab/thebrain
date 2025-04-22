@@ -232,30 +232,6 @@ pub mod pallet {
 		},
 	}
 
-	/// Validate unsigned call to this module.
-	///
-	/// By default unsigned transactions are disallowed, but implementing the validator
-	/// here we make sure that some particular calls (the ones produced by offchain worker)
-	/// are being whitelisted and marked as valid.
-	#[pallet::validate_unsigned]
-	impl<T: Config> ValidateUnsigned for Pallet<T> {
-		type Call = Call<T>;
-
-		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-			match call {
-				Call::decrease_user_credits_balance { account: _, amount } => {
-					ValidTransaction::with_tag_prefix("CreditsOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(("decrease_user_credits_balance", *amount as u64))
-						.longevity(5)
-						.propagate(true)
-						.build()
-				},
-				_ => InvalidTransaction::Call.into(),
-			}
-		}
-	}
-
 	#[pallet::error]
 	pub enum Error<T> {
 		NoneValue,
@@ -491,24 +467,6 @@ pub mod pallet {
 
 		//     Ok(())
 		// }
-
-		/// Convert native tokens to credits
-		#[pallet::call_index(7)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn decrease_user_credits_balance(
-			origin: OriginFor<T>,
-			account: T::AccountId,
-			amount: u128,
-		) -> DispatchResult {
-			// Check that the extrinsic was signed or is unsigned
-			ensure_none(origin)?;
-
-			// Decrease user credits
-			Self::decrease_user_credits(&account, amount);
-
-			// Return a successful `DispatchResult`
-			Ok(())
-		}
 
 		// creates refferal for a user
 		#[pallet::call_index(8)]
@@ -754,47 +712,6 @@ pub mod pallet {
 				.find(|&a| a == authority)
 				.ok_or(Error::<T>::NotAuthorized)?;
 			Ok(())
-		}
-
-		/// Helper function to send unsigned transaction for decreasing user credits
-		pub fn send_decrease_credits(account: T::AccountId, amount: u128) {
-			let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-
-			// Check if there are any accounts and log them
-			if signer.can_sign() {
-				log::info!("Signer has accounts available for signing.");
-			} else {
-				log::warn!("No accounts available for signing in signer.");
-			}
-
-			let results = signer.send_unsigned_transaction(
-				|_account| {
-					// Create a payload with necessary data for the decrease credits call
-					DecreaseCreditsPayload {
-						public: _account.public.clone(),
-						account: account.clone(),
-						amount,
-						_marker: PhantomData,
-					}
-				},
-				|payload, _signature| {
-					// Construct the call with the payload
-					Call::decrease_user_credits_balance {
-						account: payload.account,
-						amount: payload.amount,
-					}
-				},
-			);
-
-			// Process and log results
-			for (acc, res) in &results {
-				match res {
-					Ok(_) => {
-						log::info!("[{:?}] Successfully decreased credits for account", acc.id)
-					},
-					Err(e) => log::error!("[{:?}] Failed to decrease credits: {:?}", acc.id, e),
-				}
-			}
 		}
 
 		// gives referral rewards to owners
