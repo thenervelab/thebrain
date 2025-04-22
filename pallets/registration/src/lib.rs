@@ -242,58 +242,6 @@ pub mod pallet {
 		OwnerAlreadyRegistered,
 	}
 
-	#[pallet::validate_unsigned]
-	impl<T: Config> ValidateUnsigned for Pallet<T> {
-		type Call = Call<T>;
-
-		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-			match call {
-				// Handler for `set_node_status_to_degraded_unsigned` unsigned transaction
-				Call::set_node_status_to_degraded_unsigned { node_id, signature } => {
-					// Get the validator key from BABE authorities
-					let authorities = <pallet_babe::Pallet<T>>::authorities();
-					if authorities.is_empty() {
-						log::error!("❌ No BABE authorities found");
-						return InvalidTransaction::Custom(1).into();
-					}
-
-					let key = &authorities[0].0;
-
-					// Verify signature
-					if let Ok(expected_signature) = UtilsPallet::<T>::sign_payload(
-						&UtilsPallet::<T>::babe_public_to_array(key),
-						&node_id,
-					) {
-						if *signature != expected_signature {
-							return InvalidTransaction::Custom(1).into();
-						}
-					} else {
-						return InvalidTransaction::Custom(2).into();
-					}
-
-					let current_block = frame_system::Pallet::<T>::block_number();
-
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(node_id);
-
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-
-					// Ensure unique transaction validity
-					ValidTransaction::with_tag_prefix("RegistrationOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(unique_hash)
-						.longevity(3)
-						.propagate(true)
-						.build()
-				},
-				// Default case for invalid calls
-				_ => InvalidTransaction::Call.into(),
-			}
-		}
-	}
-
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
@@ -813,54 +761,6 @@ pub mod pallet {
 
 				Ok(())
 			})
-		}
-
-		#[pallet::call_index(4)]
-		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
-		pub fn set_node_status_to_degraded_unsigned(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-			signature: Vec<u8>,
-		) -> DispatchResult {
-			ensure_none(origin)?;
-			let _signature = signature;
-
-			// Try to mutate the node information if it exists in NodeRegistration
-			NodeRegistration::<T>::try_mutate(&node_id, |node_info_opt| -> DispatchResult {
-				// Check if the node exists in the storage map
-				let node_info = node_info_opt.as_mut().ok_or(Error::<T>::NodeNotFound)?;
-
-				// Update the status to Degraded in NodeRegistration
-				node_info.status = Status::Degraded;
-
-				// Emit an event for the status update
-				Self::deposit_event(Event::NodeStatusUpdated {
-					node_id: node_id.clone(),
-					status: Status::Degraded,
-				});
-
-				Ok(())
-			})?;
-
-			// Check if the node exists in ColdkeyNodeRegistration and update status
-			ColdkeyNodeRegistration::<T>::try_mutate(
-				&node_id,
-				|node_info_opt| -> DispatchResult {
-					if let Some(node_info) = node_info_opt {
-						// Update the status to Degraded in ColdkeyNodeRegistration
-						node_info.status = Status::Degraded;
-
-						// Emit an event for the status update
-						Self::deposit_event(Event::NodeStatusUpdated {
-							node_id: node_id.clone(),
-							status: Status::Degraded,
-						});
-					}
-					Ok(())
-				},
-			)?;
-
-			Ok(())
 		}
 
 		#[pallet::call_index(5)]
@@ -1463,42 +1363,6 @@ pub mod pallet {
 			NodeRegistration::<T>::get(&node_id)
 		}
 
-		// update user storage request handler
-		pub fn call_node_status_to_degraded_unsigned(node_id: Vec<u8>) {
-			// Storing fetched hardware specs
-			let mut lock =
-				StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-					b"Registration::lock",
-					LOCK_BLOCK_EXPIRATION,
-					Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-				);
-
-			if let Ok(_guard) = lock.try_lock() {
-				// // Get the validator key from BABE authorities
-				let authorities = <pallet_babe::Pallet<T>>::authorities();
-				if authorities.is_empty() {
-					log::error!("❌ No BABE authorities found");
-					return;
-				}
-
-				let key = &authorities[0].0;
-
-				if let Ok(signature) = UtilsPallet::<T>::sign_payload(
-					&UtilsPallet::<T>::babe_public_to_array(key),
-					&node_id,
-				) {
-					let call = Call::set_node_status_to_degraded_unsigned { node_id, signature };
-
-					match SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
-					{
-						Ok(_) => log::info!("✅ Successfully submitted signed degrade "),
-						Err(e) => log::error!("❌ Error degrading miner: {:?}", e),
-					}
-				} else {
-					log::error!("❌ Error signing hardware info");
-				}
-			};
-		}
 
 		/// Initialize fees for node types
 		fn initialize_node_type_fees() {
