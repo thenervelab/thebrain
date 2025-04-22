@@ -585,7 +585,7 @@ pub mod pallet {
 		pub fn storage_request(
 			origin: OriginFor<T>,
 			files_input: Vec<FileInput>,
-            miner_ids: Option<Vec<Vec<u8>>>
+            miner_ids: Option<Vec<Vec<u8>>>,
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
 
@@ -649,51 +649,50 @@ pub mod pallet {
 			Ok(())
 		}
 
-        // #[pallet::call_index(5)]
-        // #[pallet::weight((0, Pays::No))]
-        // pub fn storage_unpin_request(
-        //     origin: OriginFor<T>,
-        //     file_hash: FileHash,
-        // ) -> DispatchResult {
-        //     let caller = ensure_signed(origin)?;
+        #[pallet::call_index(5)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn storage_unpin_request(
+            origin: OriginFor<T>,
+            file_hash: FileHash,
+        ) -> DispatchResult {
+            let caller = ensure_signed(origin)?;
 
-        //     // Rate limit: maximum storage requests per block per user
-		// 	let max_requests_per_block = T::MaxRequestsPerBlock::get();
-		// 	let user_requests_count = UserRequestsCount::<T>::get(&caller);
-		// 	ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+            // Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&caller);
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
-        //     // Check if storage operations are enabled
-        //     ensure!(
-        //         Self::is_storage_operations_enabled(),
-        //         Error::<T>::StorageOperationsDisabled
-        //     );
+            // Check if storage operations are enabled
+            ensure!(
+                Self::is_storage_operations_enabled(),
+                Error::<T>::StorageOperationsDisabled
+            );
 
-        //     // Check if the account is a sub-account, and if so, use the main account
-        //     let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
-        //         Ok(main) => main,
-        //         Err(_) => caller.clone(), // If not a sub-account, use the original account
-        //     };
+            // Check if the account is a sub-account, and if so, use the main account
+            let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
+                Ok(main) => main,
+                Err(_) => caller.clone(), // If not a sub-account, use the original account
+            };
 
-        //     // Convert file hash to a hex-encoded string
-        //     let file_hash_encoded = hex::encode(file_hash.clone());
-        //     let encoded_file_hash: Vec<u8> = file_hash_encoded.clone().into();
+            // Convert file hash to a hex-encoded string
+            let file_hash_encoded = hex::encode(file_hash.clone());
+            let encoded_file_hash: Vec<u8> = file_hash_encoded.clone().into();
 
+            // Get storage request by file hash
+            // let requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_by_hash(owner.clone(), encoded_file_hash.clone());
+            // ensure!(requested_storage.is_some(), Error::<T>::StorageRequestNotFound);
 
-        //     // Get storage request by file hash
-        //     let requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_by_hash(owner.clone(), encoded_file_hash.clone());
-        //     ensure!(requested_storage.is_some(), Error::<T>::StorageRequestNotFound);
+            let _ = ipfs_pallet::Pallet::<T>::process_unpin_request(file_hash.clone(), owner.clone())?;
 
-        //     let processed_hash = ipfs_pallet::Pallet::<T>::process_unpin_request(owner.clone(), file_hash.to_vec())?;
+            // Emit the event for unpin request
+            Self::deposit_event(Event::UnpinRequestAdded {
+                caller,
+                owner,
+                file_hash,
+            });
 
-        //     // Emit the event for unpin request
-        //     Self::deposit_event(Event::UnpinRequestAdded {
-        //         caller,
-        //         owner,
-        //         file_hash: processed_hash,
-        //     });
-
-        //     Ok(())
-        // }
+            Ok(())
+        }
 
         /// Sudo function to add a new plan.
         #[pallet::call_index(6)]

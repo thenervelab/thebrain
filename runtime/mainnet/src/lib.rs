@@ -174,7 +174,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9012,
+	spec_version: 9013,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1329,6 +1329,7 @@ parameter_types! {
 	pub const RequestsClearInterval: u32 = 10;
 	pub const MaxOffchainHardwareSubmitRequestsPerPeriod: u32 = 1;
 	pub const HardwareSubmitRequestsClearInterval: u32 = 150;
+	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
 }
 
 impl pallet_execution_unit::Config for Runtime {
@@ -1344,9 +1345,8 @@ impl pallet_execution_unit::Config for Runtime {
 	type UnregistrationBuffer = UnregistrationBuffer;
 	type MaxOffchainRequestsPerPeriod = MaxOffchainRequestsPerPeriod;
 	type RequestsClearInterval = RequestsClearInterval;
-
+	type IpfsServiceUrl = IpfsServiceUrl;
 	type MaxOffchainHardwareSubmitRequestsPerPeriod = MaxOffchainHardwareSubmitRequestsPerPeriod;
-
 	type HardwareSubmitRequestsClearInterval = HardwareSubmitRequestsClearInterval;
 }
 

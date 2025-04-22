@@ -98,6 +98,7 @@ pub mod pallet {
 	use ipfs_pallet::StorageRequest;
 	use ipfs_pallet::UserProfile;
 	use sp_std::collections::btree_map::BTreeMap;
+	use ipfs_pallet::StorageUnpinRequest;
 
 	const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
 
@@ -155,7 +156,11 @@ pub mod pallet {
 
 	    #[pallet::constant]
 	    type HardwareSubmitRequestsClearInterval: Get<u32>;
+
+		#[pallet::constant]
+		type IpfsServiceUrl: Get<&'static str>;
 	}
+
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -393,8 +398,6 @@ pub mod pallet {
 					let node_info =
 						RegistrationPallet::<T>::get_node_registration_info(node_id.clone());
 					if node_info.is_some() {
-						// Get BABE randomness
-						let random_seed = Self::get_babe_randomness();
 						let node_info = node_info.unwrap();
 						let node_type = node_info.node_type.clone();
 
@@ -409,43 +412,8 @@ pub mod pallet {
 								block_number,
 							);
 							Self::save_hardware_info(node_id.clone(), node_type.clone());
-
-							if node_type == NodeType::Validator {
-								// Self::process_pending_compute_requests();
-								let _ = Self::handle_request_assignment(
-									node_id.clone(),
-									node_info.clone(),
-								);
-
-    						    // // Add this block to select a validator and update miner profiles
-								// if let Ok(selected_validator) = IpfsPallet::<T>::select_validator() {
-								// 	if node_info.owner == selected_validator {	
-								// 		let _ = Self::update_all_miners_with_profiles(
-								// 			selected_validator.clone()
-								// 		);
-
-								// 		let _ = Self::perform_pin_checks_to_miners();
-								// 	}
-								// }
-							}
 						}
 
-						// let current_block = block_number.saturated_into::<u32>();
-
-						// // Use BABE randomness instead of block hash for determining execution
-						// let should_run = Self::should_execute_offchain(current_block, random_seed);
-						// if should_run {
-						// 	// Update last run time
-						// 	sp_io::offchain::local_storage_set(
-						// 		sp_core::offchain::StorageKind::PERSISTENT,
-						// 		STORAGE_KEY,
-						// 		&current_block.to_be_bytes(),
-						// 	);
-						// 	// Execute tasks with BABE randomness
-						// 	Self::save_hardware_info(node_id.clone(), node_type.clone());
-						// } else {
-						// 	log::info!("Skipping execution at block {}", current_block);
-						// }
 					}
 				},
 				Err(e) => {
@@ -1772,7 +1740,7 @@ pub mod pallet {
 							if let Some(&last_block) = blocks.last() {
 								let difference = current_block_number - last_block;
 								// Check if the difference exceeds 500 for deregistration
-								if difference > 500u32.into() {
+								if difference > 1500u32.into() {
 									// Call your deregistration logic here
 									Self::unregister_and_remove_metrics(miner.node_id.clone());
 								}
@@ -1827,375 +1795,230 @@ pub mod pallet {
 			BlockNumbers::<T>::remove(&node_id);
 		}
 
-		pub fn handle_request_assignment(
-			node_id: Vec<u8>,
-			node_info: NodeInfo<BlockNumberFor<T>, T::AccountId>,
-		) -> Result<(), DispatchError> {
-			if AssignmentEnabled::<T>::get() {
-				let initial_storage_requests =
-					IpfsPallet::<T>::get_unassigned_storage_requests_for_validator(
-						node_info.owner.clone(),
+		// pub fn handle_unpin_request_assignment(
+		// 	node_info: NodeInfo<BlockNumberFor<T>, T::AccountId>,
+		// 	block_number: BlockNumberFor<T>,
+		// ) -> Result<(), DispatchError> {
+		// 	let initial_unpin_requests =
+		// 		IpfsPallet::<T>::get_unassigned_unpin_requests_for_validator(
+		// 			node_info.owner.clone(),
+		// 		);	
+
+		// 		// Call the API if there are unpin requests
+		// 		if !initial_unpin_requests.is_empty() {
+		// 			log::info!("Processing unpin requests for node: {:?}", node_info.owner);
+		// 			Self::process_unpin_request_with_service(initial_unpin_requests)
+		// 				.map_err(|e| {
+		// 					log::error!("Failed to process unpin requests: {:?}", e);
+		// 					DispatchError::Other("Failed to process unpin requests")
+		// 				})?;
+		// 		}
+
+		// 	Ok(())
+		// }
+
+		// pub fn process_unpin_request_with_service(
+		// 	unpin_requests: Vec<StorageUnpinRequest<T::AccountId>>,
+		// ) -> Result<(), http::Error> {
+		// 	let api_url = format!("{}/api/ipfs/unpin", T::IpfsServiceUrl::get());
+		
+		// 	// Convert unpin requests to API format
+		// 	let mut api_unpin_items = Vec::new();
+
+		// 	for request in unpin_requests {
+		// 		if let Ok(owner_bytes) = request.owner.encode().try_into() {
+		// 			let owner_account = AccountId32::new(owner_bytes);
+		// 			let owner_ss58 = owner_account.to_ss58check();
+					
+		// 			// Convert file hash to a consistent format for storage lookup
+		// 			let file_hash_key = hex::decode(request.file_hash.clone()).unwrap_or_else(|e| {
+		// 				log::error!("Failed to decode file_hash {:?}: {:?}", request.file_hash, e);
+		// 				Vec::new()
+		// 			});
+					
+		// 			let update_hash_vec: Vec<u8> = file_hash_key.into();
+		// 			let file_hash = String::from_utf8_lossy(&update_hash_vec).into_owned();
+					
+		// 			api_unpin_items.push(ApiUnpinItem {
+		// 				cid: file_hash,
+		// 				owner: owner_ss58,
+		// 			});
+		// 		}
+		// 	}
+		
+		// 	let api_unpin_request = ApiUnpinRequest {
+		// 		items: api_unpin_items,
+		// 	};
+		
+		// 	// Serialize the unpin request to JSON
+		// 	let json_payload = serde_json::to_string(&api_unpin_request)
+		// 		.map_err(|_| {
+		// 			log::error!("Failed to serialize unpin request");
+		// 			http::Error::Unknown
+		// 		})?;
+			
+		// 	log::info!("Unpin request payload: {:?}", json_payload);
+		
+		// 	let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
+
+		// 	let request = sp_runtime::offchain::http::Request::post(
+		// 		&api_url,
+		// 		vec![json_payload.into_bytes()]
+		// 	);
+		
+		// 	let pending = request
+		// 		.add_header("Content-Type", "application/json")
+		// 		.deadline(deadline)
+		// 		.send()
+		// 		.map_err(|err| {
+		// 			log::error!("Error making unpin request: {:?}", err);
+		// 			http::Error::IoError
+		// 		})?;
+		
+		// 	let response = pending
+		// 		.try_wait(deadline)
+		// 		.map_err(|err| {
+		// 			log::error!("Error getting unpin response: {:?}", err);
+		// 			http::Error::DeadlineReached
+		// 		})??;
+		
+		// 	if response.code != 200 {
+		// 		log::error!("Unexpected status code for unpin request: {}", response.code);
+		// 	}
+		
+		// 	// Read response body
+		// 	let response_body = response.body().collect::<Vec<u8>>();
+			
+		// 	// Log the raw response body
+		// 	if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
+		// 		log::info!("Unpin Response Body: {}", body_str);
+		// 	} else {
+		// 		log::error!("Failed to convert unpin response body to UTF-8");
+		// 	}
+		
+		// 	Ok(())
+		// }
+
+		pub fn process_storage_request_with_service(
+			storage_request: &mut StorageRequest<T::AccountId, BlockNumberFor<T>>,
+			main_req_hash: &mut Vec<u8>,
+		) -> Result<(), http::Error> {
+			let api_url = format!("{}/api/ipfs/process-storage", T::IpfsServiceUrl::get());
+
+			if let Ok(account_bytes) = storage_request.owner.encode().try_into() {
+				if let Ok(vali_account_bytes) = storage_request.selected_validator.encode().try_into() {
+					let account = AccountId32::new(account_bytes);
+					let owner_ss58 =
+						AccountId32::new(account.encode().try_into().unwrap_or_default())
+							.to_ss58check();
+					let vali_account = AccountId32::new(vali_account_bytes);
+					let vali_owner_ss58 =
+						AccountId32::new(vali_account.encode().try_into().unwrap_or_default())
+							.to_ss58check();
+
+					// Convert BoundedVec fields to String
+					let api_storage_request = ApiStorageRequest {
+						total_replicas: storage_request.total_replicas,
+						owner: owner_ss58.clone(),
+						file_hash: String::from_utf8_lossy(&storage_request.file_hash).into_owned(),
+						file_name: String::from_utf8_lossy(&storage_request.file_name).into_owned(),
+						main_req_hash: String::from_utf8_lossy(&main_req_hash).into_owned(),
+						last_charged_at: storage_request.last_charged_at.try_into().unwrap_or(0),
+						created_at: storage_request.created_at.try_into().unwrap_or(0),
+						miner_ids: storage_request.miner_ids.as_ref().map(|ids| 
+							ids.iter().map(|id| String::from_utf8_lossy(id).into_owned()).collect()
+						),
+						selected_validator: vali_owner_ss58.clone(),
+						is_assigned: storage_request.is_assigned,
+					};
+
+					// Serialize the storage request to JSON
+					let json_payload = serde_json::to_string(&api_storage_request)
+						.map_err(|_| {
+							log::error!("Failed to serialize storage request");
+							http::Error::Unknown
+						})?;
+					log::info!("json payload is : {:?}",api_storage_request);
+				
+					let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
+					
+					let request = sp_runtime::offchain::http::Request::post(
+						&api_url, 
+						vec![json_payload.into_bytes()]
 					);
-				let active_storage_miners =
-					pallet_registration::Pallet::<T>::get_all_storage_miners_with_min_staked();
-				let ranked_list = RankingsPallet::<T>::get_ranked_list();
-
-				let mut rank_map: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
-				for ranking in ranked_list.iter() {
-					rank_map.insert(ranking.node_id.clone(), ranking.rank);
-				}
-
-				let current_block = frame_system::Pallet::<T>::block_number();
-
-				// Process each initial storage request
-				let mut all_new_storage_requests = Vec::new();
-				for initial_request in initial_storage_requests {
-					let file_hash_vec: Vec<u8> = initial_request.file_hash.to_vec();
-
-					let file_hash = hex::decode(file_hash_vec).map_err(|_| {
-						log::error!("Failed to decode file hash");
-						Error::<T>::InvalidCid
-					})?;
-
-					let cid_str = sp_std::str::from_utf8(&file_hash).map_err(|_| {
-						log::error!("Failed to convert hash to string");
-						Error::<T>::InvalidCid
-					})?;
-
-					log::info!("Fetching CID content for request {:?}", cid_str);
-					// Fetch the content from IPFS
-					let content = IpfsPallet::<T>::fetch_ipfs_content(cid_str).map_err(|e| {
-						log::error!(
-							"Failed to fetch CID content for request {:?}: {:?}",
-							initial_request.file_hash,
-							e
-						);
-						Error::<T>::IpfsError
-					})?;
-
-					// Parse the JSON array
-					let files: Vec<Value> = serde_json::from_slice(&content).map_err(|e| {
-						log::error!("Failed to parse JSON content: {:?}", e);
-						Error::<T>::InvalidJson
-					})?;
-
-					// Construct new StorageRequests for each file
-					let new_storage_requests: Vec<StorageRequest<T::AccountId, BlockNumberFor<T>>> =
-						files
-							.iter()
-							.filter_map(|file| {
-								let filename = file["filename"].as_str()?;
-								let cid = file["cid"].as_str()?;
-								let cid_vec: Vec<u8> = cid.as_bytes().to_vec();
-								// Encode hahs as our fn exepcts encoded one
-								let file_hash_key = hex::encode(cid_vec.clone());
-								let update_hash_vec: Vec<u8> = file_hash_key.into();
-								let file_hash =
-									BoundedVec::try_from(update_hash_vec).ok()?;
-
-								Some(StorageRequest {
-									total_replicas: initial_request.total_replicas, // Inherit from initial request
-									owner: initial_request.owner.clone(),
-									file_hash: file_hash.clone(),
-									file_name: BoundedVec::try_from(filename.as_bytes().to_vec())
-										.ok()?,
-									last_charged_at: current_block,
-									created_at: current_block,
-									miner_ids: initial_request.miner_ids.clone(), // Inherit from initial request
-									selected_validator: initial_request.selected_validator.clone(),
-									is_assigned: true,
-								})
-							})
-							.collect();
-
-					IpfsPallet::<T>::call_mark_storage_request_assigned(
-						initial_request.owner.clone(), 
-						initial_request.file_hash.clone()
-					);
-					all_new_storage_requests.extend(new_storage_requests);
-				}
-
-				// Assign new storage requests to miners
-				for storage_request in all_new_storage_requests.iter_mut() {
-					let mut available_miners: Vec<_> = active_storage_miners
-						.iter()
-						.filter_map(|miner| {
-							let miner_node_id = BoundedVec::try_from(miner.node_id.clone()).ok()?;
-							let is_miner_free = IpfsPallet::<T>::is_miner_free(&miner_node_id);
-
-							if is_miner_free {
-								if let Some(node_metrics) =
-									Self::get_node_metrics(miner.node_id.clone())
-								{
-									let ipfs_storage_max = node_metrics.ipfs_storage_max;
-									let available_storage = ipfs_storage_max
-										.saturating_sub(node_metrics.ipfs_repo_size);
-									let storage_threshold =
-										ipfs_storage_max.saturating_mul(10) / 100;
-
-									if available_storage >= storage_threshold {
-										if let Some(rank) = rank_map.get(&miner.node_id) {
-											Some((miner.clone(), *rank, available_storage))
-										} else {
-											None
-										}
-									} else {
-										None
-									}
-								} else {
-									None
-								}
-							} else {
-								None
-							}
-						})
-						.collect();
-
-					available_miners.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
-
-					let mut selected_miners = Vec::new();
-					let num_replicas =
-						storage_request.total_replicas.min(available_miners.len() as u32);
-
-					if let Some(requested_miners) = &storage_request.miner_ids {
-						for requested_miner_id in requested_miners.iter() {
-							if selected_miners.len() >= num_replicas as usize {
-								break;
-							}
-							if let Some((miner, rank, available_storage)) = available_miners
-								.iter()
-								.find(|m| m.0.node_id == requested_miner_id.clone().to_vec())
-							{
-								selected_miners.push((miner.clone(), *rank, *available_storage));
-							}
-						}
+					
+					let pending = request
+						.add_header("Content-Type", "application/json")
+						.deadline(deadline)
+						.send()
+						.map_err(|err| {
+							log::error!("Error making Request: {:?}", err);
+							http::Error::IoError
+						})?;
+				
+					let response = pending
+						.try_wait(deadline)
+						.map_err(|err| {
+							log::error!("Error getting Response: {:?}", err);
+							http::Error::DeadlineReached
+						})??;
+				
+					if response.code != 200 {
+						log::error!("Unexpected status code: {}", response.code);
 					}
-
-					if selected_miners.len() < num_replicas as usize {
-						let remaining_needed = num_replicas as usize - selected_miners.len();
-						let mut top_miners: Vec<_> = available_miners
-							.into_iter()
-							.filter(|m| {
-								!selected_miners.iter().any(|sm| sm.0.node_id == m.0.node_id)
-							})
-							.take(remaining_needed)
-							.collect();
-
-						let seed =
-							frame_system::Pallet::<T>::block_number().saturated_into::<u64>();
-						for i in (1..top_miners.len()).rev() {
-							let j = seed.wrapping_mul(i as u64) % (i + 1) as u64;
-							top_miners.swap(i, j as usize);
-						}
-						selected_miners.extend(top_miners);
-					}
-
-					if selected_miners.len() == storage_request.total_replicas as usize {
-						// Convert selected_miners to the correct type
-						let miner_ids: Option<BoundedVec<BoundedVec<u8, ConstU32<64>>, ConstU32<5>>> = Some(
-							BoundedVec::try_from(
-								selected_miners
-									.iter()
-									.map(|(miner, _, _)| BoundedVec::try_from(miner.node_id.clone()).unwrap())
-									.collect::<Vec<_>>()
-							).unwrap_or_default()
-						);
-						
-						storage_request.miner_ids = miner_ids;
-
-						match IpfsPallet::<T>::fetch_ipfs_file_size(storage_request.file_hash.to_vec().clone()) {
-							Ok(file_size) => {
-								// lock miner profile
-								for (miner, _, _) in &selected_miners {
-									let miner_node_id = BoundedVec::try_from(miner.node_id.clone())
-										.map_err(|_| Error::<T>::StorageOverflow)?;
-									IpfsPallet::<T>::call_set_miner_state_locked(miner_node_id);
-								}
-
-								let miner_pin_requests: Vec<MinerPinRequest<BlockNumberFor<T>>> =
-									selected_miners
-										.iter()
-										.map(|(miner, _, _)| MinerPinRequest {
-											miner_node_id: BoundedVec::try_from(
-												miner.node_id.clone(),
-											)
-											.unwrap(),
-											file_hash: BoundedVec::try_from(
-												storage_request.file_hash.clone(),
-											)
-											.unwrap(),
-											created_at: current_block,
-											file_size_in_bytes: file_size,
-										})
-										.collect();
-
-								for pin_request in miner_pin_requests.iter() {
-									let miner_node_id = pin_request.miner_node_id.clone();
-									let existing_cid = MinerProfile::<T>::get(&miner_node_id);
-
-									let json_content = if !existing_cid.is_empty() {
-										let cid_str = sp_std::str::from_utf8(&existing_cid)
-											.map_err(|_| Error::<T>::InvalidCid)?;
-										match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
-											Ok(content) => {
-												let existing_data: Value =
-													serde_json::from_slice(&content)
-														.map_err(|_| Error::<T>::InvalidJson)?;
-												let mut requests_array = if existing_data.is_array()
-												{
-													existing_data.as_array().unwrap().clone()
-												} else {
-													vec![existing_data]
-												};
-
-												// Create custom pin request object with string conversions and selected_validator
-												let mut new_request_obj = serde_json::to_value(pin_request)
-												.map_err(|_| Error::<T>::InvalidJson)?;
-												if let Some(obj) = new_request_obj.as_object_mut() {
-													// Convert selected_validator (AccountId) to hex string
-													let validator_str = hex::encode(storage_request.selected_validator.encode());
-													obj.insert("selected_validator".to_string(), serde_json::Value::String(validator_str));
-												}
-
-												requests_array.push(new_request_obj);
-												serde_json::to_string(&requests_array).unwrap()
-											},
-											Err(e) => {
-												log::error!(
-													"Failed to fetch existing CID content: {:?}",
-													e
-												);
-												let mut pin_request_obj = serde_json::to_value(pin_request)
-													.map_err(|_| Error::<T>::InvalidJson)?;
-												
-												if let Some(obj) = pin_request_obj.as_object_mut() {
-													// Convert selected_validator (AccountId) to hex string
-													let validator_str = hex::encode(storage_request.selected_validator.encode());
-													obj.insert("selected_validator".to_string(), serde_json::Value::String(validator_str));
-												}
-												
-												serde_json::to_string(&vec![pin_request_obj]).unwrap()
-											},
-										}
-									} else {
-										serde_json::to_string(&vec![{
-											let mut pin_request_obj = serde_json::to_value(pin_request)
-												.map_err(|_| Error::<T>::InvalidJson)?;
-											
-											if let Some(obj) = pin_request_obj.as_object_mut() {
-												// Convert selected_validator (AccountId) to hex string
-												let validator_str = hex::encode(storage_request.selected_validator.encode());
-												obj.insert("selected_validator".to_string(), serde_json::Value::String(validator_str));
-											}
-											
-											pin_request_obj
-										}]).unwrap()
-									};
-
-									match IpfsPallet::<T>::pin_file_to_ipfs(&json_content) {
-										Ok(new_cid) => {
-											let update_hash =
-												BoundedVec::try_from(new_cid.clone().into_bytes())
-													.map_err(|_| Error::<T>::StorageOverflow)?;
-
-											let miner_profile_items: Vec<MinerProfileItem> =
-												miner_pin_requests
-													.iter()
-													.map(|pin_request| MinerProfileItem {
-														miner_node_id: pin_request
-															.miner_node_id
-															.clone(),
-														cid: update_hash.clone(),
-													})
-													.collect();
-											IpfsPallet::<T>::update_ipfs_request_storage(
-												node_id.clone(),
-												miner_profile_items,
-												storage_request.clone(),
-												file_size as u128,
-											);
-											log::info!(
-												"Successfully pinned file with CID: {}",
-												new_cid
-											);
-										},
-										Err(e) => log::error!("Failed to pin file: {:?}", e),
-									}
-								}
-							},
-							Err(e) => log::error!("Failed to fetch file size: {:?}", e),
-						}
-
-						let existing_user_cid = UserProfile::<T>::get(storage_request.owner.clone());
-						let updated_user_json =
-							if !existing_user_cid.is_empty() {
-								let cid_str = sp_std::str::from_utf8(&existing_user_cid)
-									.map_err(|_| Error::<T>::InvalidCid)?;
-								match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
-									Ok(content) => {
-										let existing_data: Value = serde_json::from_slice(&content)
-											.map_err(|_| Error::<T>::InvalidJson)?;
-										let mut requests_array = if existing_data.is_array() {
-											existing_data.as_array().unwrap().clone()
-										} else {
-											vec![existing_data]
-										};
-	
-										let new_request_value =
-											serde_json::to_value(&*storage_request)
-												.map_err(|_| Error::<T>::InvalidJson)?;
-										requests_array.push(new_request_value);
-										
-										serde_json::to_string(&requests_array).map_err(|e| {
-											log::error!(
-												"Failed to serialize updated user requests: {:?}",
-												e
-											);
-											Error::<T>::InvalidJson
-										})?
-									},
-									Err(e) => {
-										log::error!("Failed to fetch existing UserProfile CID content: {:?}", e);
-										serde_json::to_string(&*storage_request).map_err(|e| {
-											log::error!(
-												"Failed to serialize new user requests: {:?}",
-												e
-											);
-											Error::<T>::InvalidJson
-										})?
-									},
-								}
-							} else {
-								serde_json::to_string(&*storage_request).map_err(|e| {
-									log::error!("Failed to serialize new user requests: {:?}", e);
-									Error::<T>::InvalidJson
-								})?
-							};
-	
-						match IpfsPallet::<T>::pin_file_to_ipfs(&updated_user_json) {
-							Ok(new_user_cid) => {
-								let new_user_cid_bounded =
-									BoundedVec::try_from(new_user_cid.clone().into_bytes())
-										.map_err(|_| Error::<T>::StorageOverflow)?;
-								let bounded_node_id: BoundedVec<u8, ConstU32<64>> =
-									BoundedVec::try_from(node_id.clone())
-										.map_err(|_| Error::<T>::StorageOverflow)?;
-								IpfsPallet::<T>::call_update_user_profile(
-									storage_request.owner.clone(),
-									bounded_node_id,
-									new_user_cid_bounded,
-								);
-								log::info!(
-									"Updated UserProfile for owner {:?} with CID: {}",
-									storage_request.owner,
-									new_user_cid
-								);
-							},
-							Err(e) => log::error!("Failed to update UserProfile CID: {:?}", e),
-						}
+				
+					// Read response body
+					let response_body = response.body().collect::<Vec<u8>>();
+					
+					// Log the raw response body as a string
+					if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
+						log::info!("Response Body: {}", body_str);
+					} else {
+						log::error!("Failed to convert response body to UTF-8");
 					}
 				}
 			}
+		
+			Ok(())
+		}
+
+		pub fn pin_profiles_via_service() -> Result<(), http::Error> {
+			let api_url = format!("{}/api/ipfs/pin-profiles", T::IpfsServiceUrl::get());
+			
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
+			
+			let request = sp_runtime::offchain::http::Request::get(&api_url);
+			
+			let pending = request
+				.deadline(deadline)
+				.send()
+				.map_err(|err| {
+					log::error!("Error making Request: {:?}", err);
+					http::Error::IoError
+				})?;
+			
+			let response = pending
+				.try_wait(deadline)
+				.map_err(|err| {
+					log::error!("Error getting Response: {:?}", err);
+					http::Error::DeadlineReached
+				})??;
+			
+			if response.code != 200 {
+				log::error!("Unexpected status code: {}", response.code);
+				return Err(http::Error::Unknown);
+			}
+			
+			// Read response body
+			let response_body = response.body().collect::<Vec<u8>>();
+			
+			// Log the raw response body as a string
+			if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
+				log::info!("Response Body for Profile pinning is : {}", body_str);
+			} else {
+				log::error!("Failed to convert response body to UTF-8");
+			}
+
 			Ok(())
 		}
 
@@ -2239,7 +2062,6 @@ pub mod pallet {
 		}
 
 		pub fn perform_pin_checks_to_miners() {
-			
 			// Iterate over all miners in MinerProfile
 			MinerProfile::<T>::iter().for_each(|(miner_node_id, cid)| {
 				// Fetch the CID content (JSON array of pin requests)
@@ -2250,7 +2072,7 @@ pub mod pallet {
 								// Process each pin request in the miner's profile
 								for pin_request in pin_requests {
 									if let Some(file_hash_str) = pin_request.get("file_hash").and_then(|v| v.as_str()) {
-										// Since file_hash in JSON is hex-encoded (from handle_request_assignment)
+										// Since file_hash in JSON is hex-encoded 
 										let file_hash_vec = hex::decode(file_hash_str).unwrap_or_else(|e| {
 											log::error!("Failed to decode file_hash {}: {:?}", file_hash_str, e);
 											Vec::new()

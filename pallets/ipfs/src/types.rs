@@ -20,6 +20,13 @@ pub type FileHash = BoundedVec<u8, ConstU32<MAX_FILE_HASH_LENGTH>>;
 /// Unique identifier for a file name
 pub type FileName = BoundedVec<u8, ConstU32<MAX_FILE_NAME_LENGTH>>;
 
+#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
+pub struct StorageUnpinRequest<AccountId> {
+    pub owner: AccountId,
+    pub file_hash: FileHash,
+    pub selected_validator: AccountId,
+}
+
 // This will store info related storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
 pub struct StorageRequest<AccountId, BlockNumberFor> {
@@ -33,6 +40,7 @@ pub struct StorageRequest<AccountId, BlockNumberFor> {
     pub selected_validator: AccountId,
     pub is_assigned: bool,
 }
+
 
 // This will store info relasinceted storage request
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
@@ -132,7 +140,9 @@ impl<T: Config> SignedPayload<T> for UpdateUserProfilePayload<T> {
 /// Payload for updating UserProfile
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
 pub struct MinerLockPayload<T: Config> {
-    pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub miner_node_ids: Vec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>>,
+    pub block_number: BlockNumberFor<T>,
+    pub node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
     pub public: T::Public,
     pub _marker: PhantomData<T>,
 }

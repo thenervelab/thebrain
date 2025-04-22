@@ -1617,7 +1617,6 @@ pub mod pallet {
 			// Remove the main node's registration and linked nodes
 			ColdkeyNodeRegistration::<T>::remove(node_id.clone());
 			LinkedNodes::<T>::remove(node_id.clone());
-			
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}
 
@@ -1630,5 +1629,31 @@ pub mod pallet {
 				LinkedNodes::<T>::insert(&main_node_id, unique_nodes_vec);
 			});
 		}
+
+		/// Helper function to get the registered node for a specific owner
+		pub fn get_registered_node_for_owner(
+			owner: &T::AccountId,
+		) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+			// First, check ColdkeyNodeRegistration
+			let coldkey_node = ColdkeyNodeRegistration::<T>::iter()
+				.find_map(|(_, node_info)| {
+					node_info
+						.filter(|info| info.owner == *owner)
+				});
+
+			if coldkey_node.is_some() {
+				return coldkey_node;
+			}
+
+			// If not found, check NodeRegistration
+			let node_reg_node = NodeRegistration::<T>::iter()
+				.find_map(|(_, node_info)| {
+					node_info
+						.filter(|info| info.owner == *owner)
+				});
+
+			node_reg_node
+		}
+
 	}
 }

@@ -6,6 +6,8 @@ use scale_codec::{Decode, Encode};
 use scale_info::prelude::vec::Vec;
 use scale_info::TypeInfo;
 use sp_std::{marker::PhantomData, prelude::*};
+use serde::{Deserialize, Serialize};
+use scale_info::prelude::string::String;
 
 #[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, PartialEq, Default)]
 pub struct BenchmarkMetrics {
@@ -288,4 +290,32 @@ impl<T: Config> SignedPayload<T> for StoreOfflineStatusPayload<T> {
 	fn public(&self) -> T::Public {
 		self.public.clone()
 	}
+}
+
+// ApiStorageRequest struct for API
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ApiStorageRequest<AccountId> {
+	pub total_replicas: u32,
+	pub owner: AccountId,
+	pub file_hash: String,
+	pub file_name: String,
+	pub main_req_hash: String,
+	pub last_charged_at: u64,
+	pub created_at: u64,
+	pub miner_ids: Option<Vec<String>>,
+	pub selected_validator: AccountId,
+	pub is_assigned: bool,
+}
+
+
+// Structs to match the API's expected JSON format
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ApiUnpinItem {
+    pub cid: String,
+    pub owner: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ApiUnpinRequest {
+    pub items: Vec<ApiUnpinItem>,
 }

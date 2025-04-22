@@ -327,7 +327,7 @@ pub mod pallet {
 			let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
 				&who.clone(),
 				&vec![file_input.clone()],
-				None,
+				None
 			);
 
 			// Emit both events
