@@ -455,33 +455,6 @@ pub mod pallet {
     #[pallet::getter(fn sudo_key)]
     pub type SudoKey<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
     
-    #[pallet::validate_unsigned]
-    impl<T: Config> ValidateUnsigned for Pallet<T> {
-        type Call = Call<T>;
-        fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-            match call {
-                Call::process_storage_request_approval { owner, storage_cost, signature: _} => {
-					let current_block = frame_system::Pallet::<T>::block_number();
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(&owner.encode());
-                    data.extend_from_slice(&storage_cost.encode());
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-	
-					ValidTransaction::with_tag_prefix("MarketPlaceOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(("process_storage_request_approval", unique_hash))
-						.longevity(5)
-						.propagate(true)
-						.build()
-                },
-                _ => InvalidTransaction::Call.into(),
-            }
-        }
-    }
-
-
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
         /// Enable backup for a user's subscription from marketplace pallet
@@ -879,56 +852,6 @@ pub mod pallet {
                 os_name, 
                 url: os_details.url 
             });
-
-            Ok(().into())
-        }
-
-        // Sudo function to increase the price of an existing plan
-        #[pallet::call_index(10)]
-        #[pallet::weight((10_000, Pays::No))]
-        pub fn increase_plan_price(
-            origin: OriginFor<T>,
-            plan_id: T::Hash,
-            new_price: u128,
-        ) -> DispatchResult {
-            ensure_none(origin)?;
-            
-            // Retrieve the existing plan
-            let mut plan = <Plans<T>>::get(plan_id)
-                .ok_or(Error::<T>::NoneValue)?;
-
-            // Update the plan's price
-            plan.price = new_price;
-
-            // Store the updated plan
-            <Plans<T>>::insert(plan_id, plan);
-
-            // Emit an event (optional, you might want to add this to the Events enum)
-            Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
-
-            Ok(())
-        }
-
-		#[pallet::call_index(11)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-        pub fn process_storage_request_approval(
-            origin: OriginFor<T>,
-            owner: T::AccountId,
-            storage_cost: u128,
-            _signature: <T as SigningTypes>::Signature,
-		) -> DispatchResultWithPostInfo {
-            ensure_none(origin)?;
-
-            let _ = Self::consume_credits(owner.clone(), storage_cost,
-            Self::account_id().clone(), RankingsPallet::<T>::account_id().clone());
-
-            let _ = Self::update_storage_last_charged_at(&owner);
-
-			// Emit event for marketplace account reward
-			RankingsPallet::<T>::deposit_event(pallet_rankings::Event::RewardDistributed {
-				account: Self::account_id(),
-				amount: storage_cost.try_into().unwrap_or_default()
-			});
 
             Ok(().into())
         }
@@ -1613,55 +1536,6 @@ pub mod pallet {
 
             Ok(())
         }
-
-        pub fn call_storage_request_approval_charging(account_id: T::AccountId, storage_cost: u128) {
-			// Create a unique lock for the save hardware info operation
-			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-				b"Marketplace::storage_request_approval_lock",
-				LOCK_BLOCK_EXPIRATION,
-				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-			);
-		
-            if let Ok(_guard) = lock.try_lock() {
-                // Fetch signer accounts using AuthorityId
-                let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-                if !signer.can_sign() {
-                    log::warn!("No accounts available for signing in signer.");
-                    return;
-                }
-            
-                // Prepare and sign the payload
-                let results = signer.send_unsigned_transaction(
-                    |account| {
-                        StorageApprovalPayload {
-                            account_id: account_id.clone(),
-                            storage_cost: storage_cost.clone(),
-                            public: account.public.clone(),
-                            _marker: PhantomData,
-                        }
-                    },
-                    |payload, signature| {
-                        Call::process_storage_request_approval {
-                            owner: payload.account_id,
-                            storage_cost: payload.storage_cost,
-                            signature,
-                        }
-                    },
-                );
-            
-                // Process results of the transaction submission
-                for (acc, res) in &results {
-                    match res {
-                        Ok(()) => log::info!("[{:?}] Successfully submitted signed Approval update", acc.id),
-                        Err(e) => log::error!("[{:?}] Error submitting hardware update: {:?}", acc.id, e),
-                    }
-                }
-
-            } else {
-				log::error!("❌ Could not acquire lock for updating metrics data");
-			};
-		}
-
 
         /// Deposit credits and alpha into a new batch
         fn do_deposit(
