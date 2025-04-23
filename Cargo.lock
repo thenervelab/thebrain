@@ -9613,10 +9613,13 @@ dependencies = [
  "fc-rpc-core",
  "futures 0.3.31",
  "jsonrpsee",
+ "parity-scale-codec",
  "rpc-core-types",
+ "scale-info",
  "serde",
  "serde_json",
  "sp-core",
+ "sp-runtime",
 ]
 
 [[package]]

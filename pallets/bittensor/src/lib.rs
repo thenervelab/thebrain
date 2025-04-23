@@ -1179,7 +1179,7 @@ pub mod pallet {
 
 			// Check if submission is enabled before proceeding
 			if UtilsPallet::<T>::weight_submission_enabled() {
-				// Now use the hex_result in the submit_to_chain function
+				// Now use the hex_result in the function
 				match Self::submit_to_chain(&rpc_url, &hex_result) {
 					Ok(_) => {
 						log::info!("✅ Successfully submitted the signed extrinsic for weights");

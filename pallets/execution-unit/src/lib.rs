@@ -83,17 +83,12 @@ pub mod pallet {
 		AccountId32,
 	};
 	use sp_std::prelude::*;
-	// use ipfs_pallet::FileHash;
-	// use ipfs_pallet::MinerProfileItem;
-	// use serde_json::to_string;
 	use sp_runtime::Saturating;
 	use ipfs_pallet::AssignmentEnabled;
 	use pallet_registration::NodeInfo;
 	use serde_json::Value;
-	// use pallet_credits::Pallet as CreditsPallet;
 	use ipfs_pallet::MinerProfile;
 	use pallet_rankings::Pallet as RankingsPallet;
-	// use ipfs_pallet::MAX_FILE_HASH_LENGTH;
 	use ipfs_pallet::MinerPinRequest;
 	use ipfs_pallet::StorageRequest;
 	use ipfs_pallet::UserProfile;
@@ -112,7 +107,6 @@ pub mod pallet {
 					  frame_system::offchain::SigningTypes +
 					  pallet_credits::Config + 
 					  ipfs_pallet::Config + 
-					//   pallet_compute::Config +
 					  pallet_balances::Config +
 					  pallet_rankings::Config 
 		{
@@ -159,6 +153,12 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type IpfsServiceUrl: Get<&'static str>;
+
+		#[pallet::constant]
+        type LocalDefaultSpecVersion: Get<u32>;
+    
+        #[pallet::constant]
+        type LocalDefaultGenesisHash: Get<&'static str>;
 	}
 
 
@@ -249,6 +249,7 @@ pub mod pallet {
 		StorageOverflow,
 		IpfsError,
 		TooManyRequests,
+		NodeNotRegistered
 	}
 
 	#[pallet::storage]
@@ -262,97 +263,6 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn hardware_requests_last_block)]
 	pub type HardwareRequestsLastBlock<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, BlockNumberFor<T>, ValueQuery>;
-
-	#[pallet::validate_unsigned]
-	impl<T: Config> ValidateUnsigned for Pallet<T> {
-		type Call = Call<T>;
-		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-			match call {
-				Call::put_node_specs { node_id, system_info: _, signature: _, node_type: _ } => {
-					let current_block = frame_system::Pallet::<T>::block_number();
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(node_id);
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-
-					ValidTransaction::with_tag_prefix("ExecutionUnitOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(("put_node_specs", unique_hash))
-						.longevity(5)
-						.propagate(true)
-						.build()
-				},
-				Call::update_pin_check_metrics {
-					node_id,
-					signature: _,
-					total_pin_checks: _,
-					successful_pin_checks: _,
-				} => {
-					let current_block = frame_system::Pallet::<T>::block_number();
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(node_id);
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-
-					ValidTransaction::with_tag_prefix("ExecutionUnitOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(("update_pin_check_metrics", unique_hash))
-						.longevity(5)
-						.propagate(true)
-						.build()
-				},
-				Call::update_metrics_data {
-					node_id,
-					signature: _,
-					storage_proof_time_ms: _,
-					latency_ms: _,
-					peer_count: _,
-					failed_challenges_count: _,
-					successful_challenges: _,
-					total_challenges: _,
-					uptime_minutes: _,
-					total_minutes: _,
-					consecutive_reliable_days: _,
-					recent_downtime_hours: _,
-					node_type: _,
-					block_number: _,
-				} => {
-					let current_block = frame_system::Pallet::<T>::block_number();
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(node_id);
-
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-
-					ValidTransaction::with_tag_prefix("ExecutionUnitOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(("update_metrics_data", unique_hash))
-						.longevity(5)
-						.propagate(true)
-						.build()
-				},
-				Call::update_block_time { node_id, signature: _, block_number: _ } => {
-					let current_block = frame_system::Pallet::<T>::block_number();
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(node_id);
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-
-					ValidTransaction::with_tag_prefix("ExecutionUnitOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(("update_block_time", unique_hash))
-						.longevity(5)
-						.propagate(true)
-						.build()
-				},
-				_ => InvalidTransaction::Call.into(),
-			}
-		}
-	}
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -368,7 +278,7 @@ pub mod pallet {
 			let hardware_clear_interval = <T as pallet::Config>::HardwareSubmitRequestsClearInterval::get();
 
 			// Clear entries every 150 blocks
-			if _n % hardware_clear_interval.into() == 0u32.into() {
+			if _n % hardware_clear_interval.into() == 150u32.into() {
 				// Iterate through all entries in HardwareRequestsCount
 				HardwareRequestsCount::<T>::iter().for_each(|(node_id, _count)| {
 					let last_request_block = HardwareRequestsLastBlock::<T>::get(&node_id);
@@ -405,7 +315,6 @@ pub mod pallet {
 						let check_intetrval = <T as pallet::Config>::BlockCheckInterval::get();
 						// last metrics updated at
 						if block_number % check_intetrval.into() == Zero::zero() {
-							Self::call_update_block_time(node_id.clone(), block_number);
 							Self::do_update_metrics_data(
 								node_id.clone(),
 								node_type.clone(),
@@ -425,28 +334,24 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		// #[pallet::call_index(0)]
-		// #[pallet::weight(<T as pallet::Config>::WeightInfo::trigger_benchmark())]
-		// pub fn trigger_benchmark(origin: OriginFor<T>, node_id: Vec<u8>) -> DispatchResult {
-		// 	ensure_signed(origin)?;
-
-		// 	Self::execute_benchmark(node_id)
-		// 		.map_err(|_| DispatchError::Other("Benchmark execution failed"))?;
-
-		// 	Ok(())
-		// }
-
-		#[pallet::call_index(1)]
+		#[pallet::call_index(0)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn put_node_specs(
+		pub fn add_hardware_info(
 			origin: OriginFor<T>,
 			node_id: Vec<u8>,
 			system_info: SystemInfo,
-			signature: <T as SigningTypes>::Signature,
-			_node_type: NodeType,
 		) -> DispatchResultWithPostInfo {
-			ensure_none(origin)?;
-			let _signature = signature;
+			let who = ensure_signed(origin)?;
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_id == node_id, Error::<T>::NodeNotRegistered);
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = <T as pallet::Config>::MaxOffchainHardwareSubmitRequestsPerPeriod::get();
@@ -564,45 +469,11 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		// #[pallet::call_index(2)]
-		// #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		// pub fn update_pin_check_metrics(
-		// 	origin: OriginFor<T>,
-		// 	node_id: Vec<u8>,
-		// 	_signature: <T as SigningTypes>::Signature,
-		// 	total_pin_checks: u32,
-		// 	successful_pin_checks: u32,
-		// ) -> DispatchResultWithPostInfo {
-		// 	ensure_none(origin)?; // Ensure the call is unsigned
-
-		// 	// Rate limit: maximum storage requests per block per user
-		// 	let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
-		// 	let user_requests_count = RequestsCount::<T>::get(&node_id);
-		// 	ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-		// 	// Update user's storage requests count
-		// 	RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
-
-		// 	// Fetch existing metrics
-		// 	let mut metrics = NodeMetrics::<T>::get(&node_id).ok_or(Error::<T>::MetricsNotFound)?;
-
-		// 	// Update the metrics
-		// 	metrics.total_pin_checks += total_pin_checks;
-		// 	metrics.successful_pin_checks += successful_pin_checks;
-
-		// 	// Insert the updated metrics back into storage
-		// 	NodeMetrics::<T>::insert(node_id.clone(), metrics);
-
-		// 	Self::deposit_event(Event::PinCheckMetricsUpdated { node_id });
-		// 	Ok(().into())
-		// }
-
-		#[pallet::call_index(3)]
+		#[pallet::call_index(1)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn update_metrics_data(
+		pub fn metrics_data_update(
 			origin: OriginFor<T>,
 			node_id: Vec<u8>,
-			_signature: <T as SigningTypes>::Signature,
 			storage_proof_time_ms: u32,
 			latency_ms: u32,
 			peer_count: u32,
@@ -613,10 +484,19 @@ pub mod pallet {
 			total_minutes: u32,
 			consecutive_reliable_days: u32,
 			recent_downtime_hours: u32,
-			_node_type: NodeType,
-			_block_number: u32,
+			block_number: u32,
 		) -> DispatchResultWithPostInfo {
-			ensure_none(origin)?; // Ensure the call is unsigned
+			let who = ensure_signed(origin)?;
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_id == node_id, Error::<T>::NodeNotRegistered);
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
@@ -662,26 +542,6 @@ pub mod pallet {
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
 
-			Ok(().into())
-		}
-
-		#[pallet::call_index(4)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn update_block_time(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-			_signature: <T as SigningTypes>::Signature,
-			block_number: BlockNumberFor<T>,
-		) -> DispatchResultWithPostInfo {
-			ensure_none(origin)?; // Ensure the call is unsigned
-
-			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&node_id);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
 
 			// Fetch the existing vector of block numbers or initialize a new one
 			let blocks_vec = BlockNumbers::<T>::get(node_id.clone()).unwrap_or_else(|| Vec::new());
@@ -689,14 +549,14 @@ pub mod pallet {
 			// Convert the existing blocks into a BTreeMap to remove duplicates
 			let mut blocks: BTreeMap<BlockNumberFor<T>, ()> =
 				blocks_vec.into_iter().map(|block| (block, ())).collect();
-
+					
 			let check_interval = <T as pallet::Config>::BlockCheckInterval::get();
 			// Push the current block number and the preceding ones
 			for i in (0..check_interval).rev() {
-				let block_to_push = block_number - i.into();
+				let block_to_push = block_number - i;
 				// Check if the block is already present in the storage
-				if !blocks.contains_key(&block_to_push) {
-					blocks.insert(block_to_push, ()); // Only add if it's not already present
+				if !blocks.contains_key(&block_to_push.into()) {
+					blocks.insert(block_to_push.into(), ()); // Only add if it's not already present
 				}
 			}
 
@@ -962,7 +822,7 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			node_type: NodeType,
 			block_number: BlockNumberFor<T>,
-		) {
+		)  -> Result<(), &'static str> {
 			// Initialize counters
 			let mut failed_challenges_count = 0;
 			let mut successful_challenges = 0;
@@ -1046,8 +906,6 @@ pub mod pallet {
 				}
 			}
 
-			let block: u32 = block_number.saturated_into::<u32>();
-
 			// Call update metrics with adjusted values
 			Self::call_update_metrics_data(
 				node_id,
@@ -1061,9 +919,8 @@ pub mod pallet {
 				total_uptime_minutes,
 				consecutive_reliable_days,
 				downtime_hours,
-				node_type,
-				block,
-			);
+				block_number,
+			)
 		}
 
 		pub fn call_update_metrics_data(
@@ -1078,248 +935,111 @@ pub mod pallet {
 			total_minutes: u32,
 			consecutive_reliable_days: u32,
 			recent_downtime_hours: u32,
-			node_type: NodeType,
-			block_number: u32,
-		) {
-			// Create a unique lock for the update metrics data operation
-			let mut lock =
-				StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-					b"executionunit::update_metrics_data_lock",
-					LOCK_BLOCK_EXPIRATION,
-					Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-				);
+			block_number: BlockNumberFor<T>,
+		)  -> Result<(), &'static str> {
 
-			if let Ok(_guard) = lock.try_lock() {
-				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
+			// Call fn to get Signed Hex
+			let hex_result = Self::get_hex_for_submit_metrics(node_id, storage_proof_time_ms, latency_ms, peer_count, failed_challenges_count, successful_challenges, total_challenges, uptime_minutes, total_minutes, consecutive_reliable_days, recent_downtime_hours, block_number).map_err(|e| {
+				log::error!("❌ Failed to get signed metrics hex: {:?}", e);
+				"Failed to get signed metrics hex"
+			})?;
 
-				if !signer.can_sign() {
-					log::warn!("No accounts available for signing in signer.");
-					return;
-				}
-
-				// Prepare and sign the payload
-				let results = signer.send_unsigned_transaction(
-					|account| UpdateMetricsDataPayload {
-						node_id: node_id.clone(),
-						storage_proof_time_ms,
-						latency_ms,
-						peer_count,
-						failed_challenges_count,
-						successful_challenges,
-						total_challenges,
-						uptime_minutes,
-						total_minutes,
-						consecutive_reliable_days,
-						recent_downtime_hours,
-						node_type: node_type.clone(),
-						block_number: block_number.clone(),
-						public: account.public.clone(),
-						_marker: PhantomData,
-					},
-					|payload, signature| Call::update_metrics_data {
-						node_id: payload.node_id,
-						signature,
-						storage_proof_time_ms: payload.storage_proof_time_ms,
-						latency_ms: payload.latency_ms,
-						peer_count: payload.peer_count,
-						failed_challenges_count: payload.failed_challenges_count,
-						successful_challenges: payload.successful_challenges,
-						total_challenges: payload.total_challenges,
-						uptime_minutes: payload.uptime_minutes,
-						total_minutes: payload.total_minutes,
-						consecutive_reliable_days: payload.consecutive_reliable_days,
-						recent_downtime_hours: payload.recent_downtime_hours,
-						node_type: payload.node_type,
-						block_number: payload.block_number,
-					},
-				);
-
-				// Process results of the transaction submission
-				for (acc, res) in &results {
-					match res {
-						Ok(()) => {
-							log::info!("[{:?}] Successfully submitted metrics data update", acc.id)
-						},
-						Err(e) => log::error!(
-							"[{:?}] Error submitting metrics data update: {:?}",
-							acc.id,
-							e
-						),
-					}
-				}
-			} else {
-				log::error!("❌ Could not acquire lock for updating metrics data");
-			};
+			log::info!("✅ Successfully fetched metrics info hex {:?}", hex_result);
+			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
+			// Now use the hex_result in the function
+			UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)
+				.map_err(|e| {
+					log::error!("❌ Failed to submit the extrinsic for hardware info: {:?}", e);
+					"Failed to submit the extrinsic for hardware info"
+				})?;
+				
+			log::info!("✅ Successfully submitted the signed extrinsic for hardware info");
+			Ok(())
 		}
 
-		pub fn call_update_block_time(node_id: Vec<u8>, block_number: BlockNumberFor<T>) {
-			// Create a unique lock for the update block time operation
-			let mut lock =
-				StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-					b"executionunit::update_block_time_lock",
-					LOCK_BLOCK_EXPIRATION,
-					Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-				);
+		// pub fn call_update_pin_check_metrics(
+		// 	node_id: Vec<u8>,
+		// 	total_pin_checks: u32,
+		// 	successful_pin_checks: u32,
+		// ) {
+		// 	// Create a unique lock for the update pin check metrics operation
+		// 	let mut lock =
+		// 		StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
+		// 			b"executionunit::update_pin_check_metrics_lock",
+		// 			LOCK_BLOCK_EXPIRATION,
+		// 			Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
+		// 		);
 
-			if let Ok(_guard) = lock.try_lock() {
-				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
+		// 	if let Ok(_guard) = lock.try_lock() {
+		// 		// Fetch signer accounts using AuthorityId
+		// 		let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
 
-				if !signer.can_sign() {
-					log::warn!("No accounts available for signing in signer.");
-					return;
+		// 		if !signer.can_sign() {
+		// 			log::warn!("No accounts available for signing in signer.");
+		// 			return;
+		// 		}
+
+		// 		// Prepare and sign the payload
+		// 		let results = signer.send_unsigned_transaction(
+		// 			|account| UpdatePinCheckMetricsPayload {
+		// 				node_id: node_id.clone(),
+		// 				total_pin_checks,
+		// 				successful_pin_checks,
+		// 				public: account.public.clone(),
+		// 				_marker: PhantomData,
+		// 			},
+		// 			|payload, signature| Call::update_pin_check_metrics {
+		// 				node_id: payload.node_id,
+		// 				signature,
+		// 				total_pin_checks: payload.total_pin_checks,
+		// 				successful_pin_checks: payload.successful_pin_checks,
+		// 			},
+		// 		);
+
+		// 		// Process results of the transaction submission
+		// 		for (acc, res) in &results {
+		// 			match res {
+		// 				Ok(()) => log::info!(
+		// 					"[{:?}] Successfully submitted pin check metrics update",
+		// 					acc.id
+		// 				),
+		// 				Err(e) => {
+		// 					log::error!("[{:?}] Error submitting metrics update: {:?}", acc.id, e)
+		// 				},
+		// 			}
+		// 		}
+		// 	} else {
+		// 		log::error!("❌ Could not acquire lock for updating metrics");
+		// 	};
+		// }
+		
+		// update_block_time_update
+		pub fn save_hardware_info(node_id: Vec<u8>, node_type: NodeType) -> Result<(), &'static str> {
+			match Self::fetch_hardware_info(node_type.clone()) {
+				Ok(hardware_info) => {
+					// Call fn to get Signed Hex
+					let hex_result = Self::get_hex_for_submit_hardware(node_id, hardware_info).map_err(|e| {
+						log::error!("❌ Failed to get signed weight hex: {:?}", e);
+						"Failed to get signed weight hex"
+					})?;
+		
+					log::info!("✅ Successfully fetched hardware info hex {:?}", hex_result);
+					let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
+					// Now use the hex_result in the function
+					UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)
+						.map_err(|e| {
+							log::error!("❌ Failed to submit the extrinsic for hardware info: {:?}", e);
+							"Failed to submit the extrinsic for hardware info"
+						})?;
+						
+					log::info!("✅ Successfully submitted the signed extrinsic for hardware info");
+					Ok(())
 				}
-
-				// Prepare and sign the payload
-				let results = signer.send_unsigned_transaction(
-					|account| UpdateBlockTimePayload {
-						node_id: node_id.clone(),
-						block_number,
-						public: account.public.clone(),
-						_marker: PhantomData,
-					},
-					|payload, signature| Call::update_block_time {
-						node_id: payload.node_id,
-						signature,
-						block_number: payload.block_number,
-					},
-				);
-
-				// Process results of the transaction submission
-				for (acc, res) in &results {
-					match res {
-						Ok(()) => {
-							log::info!("[{:?}] Successfully submitted block time update", acc.id)
-						},
-						Err(e) => log::error!(
-							"[{:?}] Error submitting block time update: {:?}",
-							acc.id,
-							e
-						),
-					}
+				Err(e) => {
+					log::error!("❌ Error fetching hardware info: {:?}", e);
+					Err("Error fetching hardware info")
 				}
-			} else {
-				log::error!("❌ Could not acquire lock for updating block time");
-			};
-		}
-
-		pub fn call_update_pin_check_metrics(
-			node_id: Vec<u8>,
-			total_pin_checks: u32,
-			successful_pin_checks: u32,
-		) {
-			// Create a unique lock for the update pin check metrics operation
-			let mut lock =
-				StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-					b"executionunit::update_pin_check_metrics_lock",
-					LOCK_BLOCK_EXPIRATION,
-					Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-				);
-
-			if let Ok(_guard) = lock.try_lock() {
-				// Fetch signer accounts using AuthorityId
-				let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-
-				if !signer.can_sign() {
-					log::warn!("No accounts available for signing in signer.");
-					return;
-				}
-
-				// Prepare and sign the payload
-				let results = signer.send_unsigned_transaction(
-					|account| UpdatePinCheckMetricsPayload {
-						node_id: node_id.clone(),
-						total_pin_checks,
-						successful_pin_checks,
-						public: account.public.clone(),
-						_marker: PhantomData,
-					},
-					|payload, signature| Call::update_pin_check_metrics {
-						node_id: payload.node_id,
-						signature,
-						total_pin_checks: payload.total_pin_checks,
-						successful_pin_checks: payload.successful_pin_checks,
-					},
-				);
-
-				// Process results of the transaction submission
-				for (acc, res) in &results {
-					match res {
-						Ok(()) => log::info!(
-							"[{:?}] Successfully submitted pin check metrics update",
-							acc.id
-						),
-						Err(e) => {
-							log::error!("[{:?}] Error submitting metrics update: {:?}", acc.id, e)
-						},
-					}
-				}
-			} else {
-				log::error!("❌ Could not acquire lock for updating metrics");
-			};
-		}
-
-		pub fn save_hardware_info(node_id: Vec<u8>, node_type: NodeType) {
-			// Create a unique lock for the save hardware info operation
-			let mut lock =
-				StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-					b"executionunit::save_hardware_info_lock",
-					LOCK_BLOCK_EXPIRATION,
-					Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-				);
-
-			if let Ok(_guard) = lock.try_lock() {
-				match Self::fetch_hardware_info(node_type.clone()) {
-					Ok(hardware_info) => {
-						// Fetch signer accounts using AuthorityId
-						let signer =
-							Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-
-						if !signer.can_sign() {
-							log::warn!("No accounts available for signing in signer.");
-							return;
-						}
-
-						// Prepare and sign the payload
-						let results = signer.send_unsigned_transaction(
-							|account| SaveHardwareInfoPayload {
-								node_id: node_id.clone(),
-								system_info: hardware_info.clone(),
-								public: account.public.clone(),
-								node_type: node_type.clone(),
-								_marker: PhantomData,
-							},
-							|payload, signature| Call::put_node_specs {
-								node_id: payload.node_id,
-								system_info: payload.system_info,
-								signature,
-								node_type: payload.node_type,
-							},
-						);
-
-						// Process results of the transaction submission
-						for (acc, res) in &results {
-							match res {
-								Ok(()) => log::info!(
-									"[{:?}] Successfully submitted signed hardware update",
-									acc.id
-								),
-								Err(e) => log::error!(
-									"[{:?}] Error submitting hardware update: {:?}",
-									acc.id,
-									e
-								),
-							}
-						}
-					},
-					Err(e) => {
-						log::error!("❌ Error fetching hardware info: {:?}", e);
-					},
-				}
-			} else {
-				log::error!("❌ Could not acquire lock for saving hardware info");
-			};
+			}
 		}
 
 		// pub fn process_pending_compute_requests() {
@@ -1795,385 +1515,322 @@ pub mod pallet {
 			BlockNumbers::<T>::remove(&node_id);
 		}
 
-		// pub fn handle_unpin_request_assignment(
-		// 	node_info: NodeInfo<BlockNumberFor<T>, T::AccountId>,
-		// 	block_number: BlockNumberFor<T>,
-		// ) -> Result<(), DispatchError> {
-		// 	let initial_unpin_requests =
-		// 		IpfsPallet::<T>::get_unassigned_unpin_requests_for_validator(
-		// 			node_info.owner.clone(),
-		// 		);	
-
-		// 		// Call the API if there are unpin requests
-		// 		if !initial_unpin_requests.is_empty() {
-		// 			log::info!("Processing unpin requests for node: {:?}", node_info.owner);
-		// 			Self::process_unpin_request_with_service(initial_unpin_requests)
-		// 				.map_err(|e| {
-		// 					log::error!("Failed to process unpin requests: {:?}", e);
-		// 					DispatchError::Other("Failed to process unpin requests")
-		// 				})?;
-		// 		}
-
-		// 	Ok(())
-		// }
-
-		// pub fn process_unpin_request_with_service(
-		// 	unpin_requests: Vec<StorageUnpinRequest<T::AccountId>>,
-		// ) -> Result<(), http::Error> {
-		// 	let api_url = format!("{}/api/ipfs/unpin", T::IpfsServiceUrl::get());
-		
-		// 	// Convert unpin requests to API format
-		// 	let mut api_unpin_items = Vec::new();
-
-		// 	for request in unpin_requests {
-		// 		if let Ok(owner_bytes) = request.owner.encode().try_into() {
-		// 			let owner_account = AccountId32::new(owner_bytes);
-		// 			let owner_ss58 = owner_account.to_ss58check();
-					
-		// 			// Convert file hash to a consistent format for storage lookup
-		// 			let file_hash_key = hex::decode(request.file_hash.clone()).unwrap_or_else(|e| {
-		// 				log::error!("Failed to decode file_hash {:?}: {:?}", request.file_hash, e);
-		// 				Vec::new()
-		// 			});
-					
-		// 			let update_hash_vec: Vec<u8> = file_hash_key.into();
-		// 			let file_hash = String::from_utf8_lossy(&update_hash_vec).into_owned();
-					
-		// 			api_unpin_items.push(ApiUnpinItem {
-		// 				cid: file_hash,
-		// 				owner: owner_ss58,
-		// 			});
-		// 		}
-		// 	}
-		
-		// 	let api_unpin_request = ApiUnpinRequest {
-		// 		items: api_unpin_items,
-		// 	};
-		
-		// 	// Serialize the unpin request to JSON
-		// 	let json_payload = serde_json::to_string(&api_unpin_request)
-		// 		.map_err(|_| {
-		// 			log::error!("Failed to serialize unpin request");
-		// 			http::Error::Unknown
-		// 		})?;
-			
-		// 	log::info!("Unpin request payload: {:?}", json_payload);
-		
-		// 	let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
-
-		// 	let request = sp_runtime::offchain::http::Request::post(
-		// 		&api_url,
-		// 		vec![json_payload.into_bytes()]
-		// 	);
-		
-		// 	let pending = request
-		// 		.add_header("Content-Type", "application/json")
-		// 		.deadline(deadline)
-		// 		.send()
-		// 		.map_err(|err| {
-		// 			log::error!("Error making unpin request: {:?}", err);
-		// 			http::Error::IoError
-		// 		})?;
-		
-		// 	let response = pending
-		// 		.try_wait(deadline)
-		// 		.map_err(|err| {
-		// 			log::error!("Error getting unpin response: {:?}", err);
-		// 			http::Error::DeadlineReached
-		// 		})??;
-		
-		// 	if response.code != 200 {
-		// 		log::error!("Unexpected status code for unpin request: {}", response.code);
-		// 	}
-		
-		// 	// Read response body
-		// 	let response_body = response.body().collect::<Vec<u8>>();
-			
-		// 	// Log the raw response body
-		// 	if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
-		// 		log::info!("Unpin Response Body: {}", body_str);
-		// 	} else {
-		// 		log::error!("Failed to convert unpin response body to UTF-8");
-		// 	}
-		
-		// 	Ok(())
-		// }
-
-		pub fn process_storage_request_with_service(
-			storage_request: &mut StorageRequest<T::AccountId, BlockNumberFor<T>>,
-			main_req_hash: &mut Vec<u8>,
-		) -> Result<(), http::Error> {
-			let api_url = format!("{}/api/ipfs/process-storage", T::IpfsServiceUrl::get());
-
-			if let Ok(account_bytes) = storage_request.owner.encode().try_into() {
-				if let Ok(vali_account_bytes) = storage_request.selected_validator.encode().try_into() {
-					let account = AccountId32::new(account_bytes);
-					let owner_ss58 =
-						AccountId32::new(account.encode().try_into().unwrap_or_default())
-							.to_ss58check();
-					let vali_account = AccountId32::new(vali_account_bytes);
-					let vali_owner_ss58 =
-						AccountId32::new(vali_account.encode().try_into().unwrap_or_default())
-							.to_ss58check();
-
-					// Convert BoundedVec fields to String
-					let api_storage_request = ApiStorageRequest {
-						total_replicas: storage_request.total_replicas,
-						owner: owner_ss58.clone(),
-						file_hash: String::from_utf8_lossy(&storage_request.file_hash).into_owned(),
-						file_name: String::from_utf8_lossy(&storage_request.file_name).into_owned(),
-						main_req_hash: String::from_utf8_lossy(&main_req_hash).into_owned(),
-						last_charged_at: storage_request.last_charged_at.try_into().unwrap_or(0),
-						created_at: storage_request.created_at.try_into().unwrap_or(0),
-						miner_ids: storage_request.miner_ids.as_ref().map(|ids| 
-							ids.iter().map(|id| String::from_utf8_lossy(id).into_owned()).collect()
+		fn system_info_to_json_string(system_info: &SystemInfo) -> String {
+			format!(
+				r#"{{
+					"memory_mb": {},
+					"free_memory_mb": {},
+					"storage_total_mb": {},
+					"storage_free_mb": {},
+					"network_bandwidth_mb_s": {},
+					"primary_network_interface": {},
+					"disks": [{}],
+					"ipfs_repo_size": {},
+					"ipfs_storage_max": {},
+					"cpu_model": [{}],
+					"cpu_cores": {},
+					"is_sev_enabled": {},
+					"zfs_info": [{}],
+					"ipfs_zfs_pool_size": {},
+					"ipfs_zfs_pool_alloc": {},
+					"ipfs_zfs_pool_free": {},
+					"raid_info": [{}],
+					"vm_count": {},
+					"gpu_name": {},
+					"gpu_memory_mb": {},
+					"hypervisor_disk_type": {},
+					"vm_pool_disk_type": {},
+					"disk_info": [{}]
+				}}"#,
+				system_info.memory_mb,
+				system_info.free_memory_mb,
+				system_info.storage_total_mb,
+				system_info.storage_free_mb,
+				system_info.network_bandwidth_mb_s,
+				// Primary network interface
+				system_info.primary_network_interface.as_ref().map_or("null".to_string(), |nif| 
+					format!("{{\"name\": [{}], \"mac_address\": {}, \"uplink_mb\": {}, \"downlink_mb\": {}, \"network_details\": {}}}",
+						nif.name.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "),
+						nif.mac_address.as_ref().map_or("null".to_string(), |mac| 
+							format!("[{}]", mac.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "))
 						),
-						selected_validator: vali_owner_ss58.clone(),
-						is_assigned: storage_request.is_assigned,
-					};
-
-					// Serialize the storage request to JSON
-					let json_payload = serde_json::to_string(&api_storage_request)
-						.map_err(|_| {
-							log::error!("Failed to serialize storage request");
-							http::Error::Unknown
-						})?;
-					log::info!("json payload is : {:?}",api_storage_request);
-				
-					let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
-					
-					let request = sp_runtime::offchain::http::Request::post(
-						&api_url, 
-						vec![json_payload.into_bytes()]
-					);
-					
-					let pending = request
-						.add_header("Content-Type", "application/json")
-						.deadline(deadline)
-						.send()
-						.map_err(|err| {
-							log::error!("Error making Request: {:?}", err);
-							http::Error::IoError
-						})?;
-				
-					let response = pending
-						.try_wait(deadline)
-						.map_err(|err| {
-							log::error!("Error getting Response: {:?}", err);
-							http::Error::DeadlineReached
-						})??;
-				
-					if response.code != 200 {
-						log::error!("Unexpected status code: {}", response.code);
-					}
-				
-					// Read response body
-					let response_body = response.body().collect::<Vec<u8>>();
-					
-					// Log the raw response body as a string
-					if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
-						log::info!("Response Body: {}", body_str);
-					} else {
-						log::error!("Failed to convert response body to UTF-8");
-					}
-				}
-			}
-		
-			Ok(())
+						nif.uplink_mb,
+						nif.downlink_mb,
+						nif.network_details.as_ref().map_or("null".to_string(), |nd| 
+							format!("{{\"network_type\": \"{}\", \"city\": {}, \"region\": {}, \"country\": {}, \"loc\": {}}}",
+								match nd.network_type {
+									NetworkType::Private => "Private",
+									NetworkType::Public => "Public"
+								},
+								nd.city.as_ref().map_or("null".to_string(), |c| 
+									format!("[{}]", c.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "))
+								),
+								nd.region.as_ref().map_or("null".to_string(), |r| 
+									format!("[{}]", r.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "))
+								),
+								nd.country.as_ref().map_or("null".to_string(), |c| 
+									format!("[{}]", c.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "))
+								),
+								nd.loc.as_ref().map_or("null".to_string(), |l| 
+									format!("[{}]", l.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "))
+								)
+							)
+						)
+					)
+				),
+				// Disks
+				system_info.disks.iter()
+					.map(|disk| format!("{{\"name\": [{}], \"disk_type\": [{}], \"total_space_mb\": {}, \"free_space_mb\": {}}}",
+						disk.name.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "),
+						disk.disk_type.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "),
+						disk.total_space_mb,
+						disk.free_space_mb
+					))
+					.collect::<Vec<_>>().join(", "),
+				system_info.ipfs_repo_size,
+				system_info.ipfs_storage_max,
+				system_info.cpu_model.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "), 
+				system_info.cpu_cores,
+				system_info.is_sev_enabled,
+				system_info.zfs_info.iter()
+					.map(|info| format!("[{}]", info.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")))
+					.collect::<Vec<_>>().join(", "),
+				system_info.ipfs_zfs_pool_size,
+				system_info.ipfs_zfs_pool_alloc,
+				system_info.ipfs_zfs_pool_free,
+				system_info.raid_info.iter()
+					.map(|info| format!("[{}]", info.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")))
+					.collect::<Vec<_>>().join(", "),
+				system_info.vm_count,
+				system_info.gpu_name.as_ref().map_or("null".to_string(), |gpu| 
+					format!("[{}]", gpu.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "))
+				),
+				system_info.gpu_memory_mb.unwrap_or(0),
+				system_info.hypervisor_disk_type.as_ref().map_or("null".to_string(), |hdt| 
+					format!("[{}]", hdt.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "))
+				),
+				system_info.vm_pool_disk_type.as_ref().map_or("null".to_string(), |vpdt| 
+					format!("[{}]", vpdt.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "))
+				),
+				// Disk info
+				system_info.disk_info.iter()
+					.map(|disk| format!("{{\"name\": [{}], \"serial\": [{}], \"model\": [{}], \"size\": [{}], \"is_rotational\": {}, \"disk_type\": [{}]}}",
+						disk.name.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "),
+						disk.serial.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "),
+						disk.model.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "),
+						disk.size.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", "),
+						disk.is_rotational,
+						disk.disk_type.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")
+					))
+					.collect::<Vec<_>>().join(", ")
+			)
 		}
+		
+		pub fn get_hex_for_submit_metrics(
+			node_id: Vec<u8>,
+			storage_proof_time_ms: u32,
+			latency_ms: u32,
+			peer_count: u32,
+			failed_challenges_count: u32,
+			successful_challenges: u32,
+			total_challenges: u32,
+			uptime_minutes: u32,
+			total_minutes: u32,
+			consecutive_reliable_days: u32,
+			recent_downtime_hours: u32,
+			block_number: BlockNumberFor<T>,
+		) -> Result<String, http::Error> {
+			let local_default_spec_version = T::LocalDefaultSpecVersion::get();
+			let local_default_genesis_hash = T::LocalDefaultGenesisHash::get();
+			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
+		
+			// Convert node_id to a comma-separated string of numbers
+			let node_id_string = node_id
+				.iter()
+				.map(|&b| b.to_string())
+				.collect::<Vec<_>>()
+				.join(", ");
+			let block_number_updated: u32 = block_number.try_into().unwrap_or(0);
+		
+			let rpc_payload = format!(
+				r#"{{
+					"jsonrpc": "2.0",
+					"method": "submit_metrics",
+					"params": [{{
+						"node_id": [{}],
+						"storage_proof_time_ms": {},
+						"latency_ms": {},
+						"peer_count": {},
+						"failed_challenges_count": {},
+						"successful_challenges": {},
+						"total_challenges": {},
+						"uptime_minutes": {},
+						"total_minutes": {},
+						"consecutive_reliable_days": {},
+						"recent_downtime_hours": {},
+						"block_number": {},
+						"default_spec_version": {},
+						"default_genesis_hash": "{}",
+						"local_rpc_url": "{}"
+					}}],
+					"id": 1
+				}}"#,
+				node_id_string,
+				storage_proof_time_ms,
+				latency_ms,
+				peer_count,
+				failed_challenges_count,
+				successful_challenges,
+				total_challenges,
+				uptime_minutes,
+				total_minutes,
+				consecutive_reliable_days,
+				recent_downtime_hours,
+				block_number_updated,
+				local_default_spec_version,
+				local_default_genesis_hash,
+				local_rpc_url
+			);
+		
+			// Convert the JSON value to a string
+			let rpc_payload_string = rpc_payload.to_string();
+			log::info!("rpc_payload_string: {}", rpc_payload_string);
+		
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 
-		pub fn pin_profiles_via_service() -> Result<(), http::Error> {
-			let api_url = format!("{}/api/ipfs/pin-profiles", T::IpfsServiceUrl::get());
-			
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
-			
-			let request = sp_runtime::offchain::http::Request::get(&api_url);
-			
+			let body = vec![rpc_payload_string];
+			let request = sp_runtime::offchain::http::Request::post(local_rpc_url, body);
+
 			let pending = request
+				.add_header("Content-Type", "application/json")
 				.deadline(deadline)
 				.send()
 				.map_err(|err| {
-					log::error!("Error making Request: {:?}", err);
-					http::Error::IoError
+					log::error!("❌ Error making Request: {:?}", err);
+					sp_runtime::offchain::http::Error::IoError
 				})?;
-			
-			let response = pending
-				.try_wait(deadline)
-				.map_err(|err| {
-					log::error!("Error getting Response: {:?}", err);
-					http::Error::DeadlineReached
-				})??;
-			
+
+			let response = pending.try_wait(deadline).map_err(|err| {
+				log::error!("❌ Error getting Response: {:?}", err);
+				sp_runtime::offchain::http::Error::DeadlineReached
+			})??;
+
 			if response.code != 200 {
-				log::error!("Unexpected status code: {}", response.code);
+				log::error!("❌ RPC call failed with status code: {}", response.code);
 				return Err(http::Error::Unknown);
 			}
-			
-			// Read response body
-			let response_body = response.body().collect::<Vec<u8>>();
-			
-			// Log the raw response body as a string
-			if let Ok(body_str) = sp_std::str::from_utf8(&response_body) {
-				log::info!("Response Body for Profile pinning is : {}", body_str);
-			} else {
-				log::error!("Failed to convert response body to UTF-8");
+
+			let body = response.body().collect::<Vec<u8>>();
+			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+				log::error!("❌ Response body is not valid UTF-8");
+				http::Error::Unknown
+			})?;
+
+			// Parse the JSON response
+			let json_response: Value = serde_json::from_str(body_str).map_err(|_| {
+				log::error!("❌ Failed to parse JSON response");
+				http::Error::Unknown
+			})?;
+			log::info!("✅ JSON response: {:?}", json_response);
+			// Extract the hex string from the result field
+			let hex_result = json_response
+				.get("result")
+				.and_then(Value::as_str) // Get the result as a string
+				.ok_or_else(|| {
+					log::error!("❌ 'result' field not found in response");
+					http::Error::Unknown
+				})?;
+
+			// Return the hex string
+			Ok(hex_result.to_string())		
+		}
+		
+		pub fn get_hex_for_submit_hardware(
+			node_id: Vec<u8>,
+			system_info: SystemInfo
+		) -> Result<String, http::Error> {
+			let local_default_spec_version = T::LocalDefaultSpecVersion::get();
+			let local_default_genesis_hash = T::LocalDefaultGenesisHash::get();
+			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
+		
+			// Convert node_id to a comma-separated string of numbers
+			let node_id_string = node_id
+				.iter()
+				.map(|&b| b.to_string())
+				.collect::<Vec<_>>()
+				.join(", ");
+		
+			let rpc_payload = format!(
+				r#"{{
+					"jsonrpc": "2.0",
+					"method": "submit_hardware",
+					"params": [{{
+						"node_id": [{}],
+						"system_info": {},
+						"default_spec_version": {},
+						"default_genesis_hash": "{}",
+						"local_rpc_url": "{}"
+					}}],
+					"id": 1
+				}}"#,
+				node_id_string,
+				Self::system_info_to_json_string(&system_info),
+				local_default_spec_version,
+				local_default_genesis_hash,
+				local_rpc_url
+			);
+		
+			// Convert the JSON value to a string
+			let rpc_payload_string = rpc_payload.to_string();
+			log::info!("rpc_payload_string: {}", rpc_payload_string);
+		
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
+
+			let body = vec![rpc_payload_string];
+			let request = sp_runtime::offchain::http::Request::post(local_rpc_url, body);
+
+			let pending = request
+				.add_header("Content-Type", "application/json")
+				.deadline(deadline)
+				.send()
+				.map_err(|err| {
+					log::error!("❌ Error making Request: {:?}", err);
+					sp_runtime::offchain::http::Error::IoError
+				})?;
+
+			let response = pending.try_wait(deadline).map_err(|err| {
+				log::error!("❌ Error getting Response: {:?}", err);
+				sp_runtime::offchain::http::Error::DeadlineReached
+			})??;
+
+			if response.code != 200 {
+				log::error!("❌ RPC call failed with status code: {}", response.code);
+				return Err(http::Error::Unknown);
 			}
 
-			Ok(())
-		}
+			let body = response.body().collect::<Vec<u8>>();
+			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+				log::error!("❌ Response body is not valid UTF-8");
+				http::Error::Unknown
+			})?;
 
-		pub fn update_all_miners_with_profiles(
-			_selected_validator: T::AccountId, // Kept for signature compatibility, but unused
-		) -> Result<(), DispatchError> {
-			// Collect all CIDs from MinerProfile
-			let mut all_cids: Vec<FileHash> = Vec::new();
-			MinerProfile::<T>::iter().for_each(|(_miner_id, cid)| {
-				let file_hash = BoundedVec::try_from(cid.to_vec())
-					.unwrap_or_else(|_| {
-						BoundedVec::try_from(vec![0; MAX_NODE_ID_LENGTH as usize]).unwrap()
-					});
-				all_cids.push(file_hash);
-			});
-		
-			// Collect all CIDs from UserProfile
-			UserProfile::<T>::iter().for_each(|(_user_id, cid)| {
-				all_cids.push(cid);
-			});
-		
-			// Pin each CID locally
-			for cid in all_cids {
-				// Convert CID to string for IPFS pinning
-				let cid_vec = cid.to_vec();
-				let cid_str = sp_std::str::from_utf8(&cid_vec)
-					.map_err(|_| Error::<T>::InvalidCid)?;
-		
-				// Pin the CID using the existing IPFS pallet function
-				match IpfsPallet::<T>::pin_file_to_ipfs(cid_str) {
-					Ok(_) => {
-						log::info!("Successfully pinned profile CID: {}", cid_str);
-					},
-					Err(e) => {
-						log::warn!("Failed to pin profile CID {}: {:?}", cid_str, e);
-						// Continue with the next CID instead of failing the entire function
-					},
-				}
-			}
-			Ok(())
-		}
+			// Parse the JSON response
+			let json_response: Value = serde_json::from_str(body_str).map_err(|_| {
+				log::error!("❌ Failed to parse JSON response");
+				http::Error::Unknown
+			})?;
+			log::info!("✅ JSON response: {:?}", json_response);
+			// Extract the hex string from the result field
+			let hex_result = json_response
+				.get("result")
+				.and_then(Value::as_str) // Get the result as a string
+				.ok_or_else(|| {
+					log::error!("❌ 'result' field not found in response");
+					http::Error::Unknown
+				})?;
 
-		// pub fn perform_pin_checks_to_miners() {
-		// 	// Iterate over all miners in MinerProfile
-		// 	MinerProfile::<T>::iter().for_each(|(miner_node_id, cid)| {
-		// 		// Fetch the CID content (JSON array of pin requests)
-		// 		if let Ok(cid_str) = sp_std::str::from_utf8(&cid) {
-		// 			match IpfsPallet::<T>::fetch_ipfs_content(cid_str) {
-		// 				Ok(content) => {
-		// 					if let Ok(pin_requests) = serde_json::from_slice::<Vec<serde_json::Value>>(&content) {
-		// 						// Process each pin request in the miner's profile
-		// 						for pin_request in pin_requests {
-		// 							if let Some(file_hash_str) = pin_request.get("file_hash").and_then(|v| v.as_str()) {
-		// 								// Since file_hash in JSON is hex-encoded 
-		// 								let file_hash_vec = hex::decode(file_hash_str).unwrap_or_else(|e| {
-		// 									log::error!("Failed to decode file_hash {}: {:?}", file_hash_str, e);
-		// 									Vec::new()
-		// 								});
-										
-		// 								if file_hash_vec.is_empty() {
-		// 									continue;
-		// 								}
-		
-		// 								// Fetch all IPFS nodes that have pinned this file hash
-		// 								let ipfs_nodes_who_pinned: Vec<Vec<u8>> = IpfsPallet::<T>::fetch_cid_pinned_nodes(&file_hash_vec)
-		// 									.unwrap_or_else(|e| {
-		// 										log::error!("Failed to fetch pinned nodes for file_hash {:?}: {:?}", file_hash_str, e);
-		// 										Vec::new()
-		// 									});
-		
-		// 								// Get miner registration info
-		// 								match pallet_registration::Pallet::<T>::get_registered_node(miner_node_id.clone().into()) {
-		// 									Ok(node_info) => {
-		// 										let mut total_pin_checks = 0;
-		// 										let mut successful_pin_checks = 0;
-		
-		// 										// Check if the miner's IPFS node has pinned the file
-		// 										if let Some(ipfs_node_id) = node_info.ipfs_node_id {
-		// 											total_pin_checks += 1;
-		// 											if ipfs_nodes_who_pinned.contains(&ipfs_node_id) {
-		// 												successful_pin_checks += 1;
-		// 											} else {
-		// 												// Miner failed to pin the file
-		// 												// We need to update MinerProfile by removing this pin request
-		// 												let bounded_miner_node_id = miner_node_id.clone();
-		// 												let existing_cid = MinerProfile::<T>::get(&bounded_miner_node_id);
-														
-		// 												if !existing_cid.is_empty() {
-		// 													if let Ok(existing_cid_str) = sp_std::str::from_utf8(&existing_cid) {
-		// 														if let Ok(existing_content) = IpfsPallet::<T>::fetch_ipfs_content(existing_cid_str) {
-		// 															if let Ok(mut existing_requests) = serde_json::from_slice::<Vec<serde_json::Value>>(&existing_content) {
-		// 																// Remove the failed pin request
-		// 																existing_requests.retain(|req| {
-		// 																	req.get("file_hash").and_then(|v| v.as_str()) != Some(file_hash_str)
-		// 																});
-		
-		// 																// Update MinerProfile if there are still requests
-		// 																if !existing_requests.is_empty() {
-		// 																	let updated_json = serde_json::to_string(&existing_requests)
-		// 																		.unwrap_or_else(|e| {
-		// 																			log::error!("Failed to serialize updated requests: {:?}", e);
-		// 																			String::new()
-		// 																		});
-																			
-		// 																	if let Ok(new_cid) = IpfsPallet::<T>::pin_file_to_ipfs(&updated_json) {
-		// 																		let new_cid_bounded = BoundedVec::try_from(new_cid.into_bytes())
-		// 																			.unwrap_or_default();
-		// 																		MinerProfile::<T>::insert(&bounded_miner_node_id, new_cid_bounded);
-		// 																	}
-		// 																} else {
-		// 																	// Remove the entry if no requests remain
-		// 																	MinerProfile::<T>::remove(&bounded_miner_node_id);
-		// 																}
-		// 															}
-		// 														}
-		// 													}
-		// 												}
-		
-		// 												log::info!(
-		// 													"Miner {:?} failed to pin file_hash {:?}, removed from profile",
-		// 													sp_std::str::from_utf8(&miner_node_id).unwrap_or("<Invalid UTF-8>"),
-		// 													file_hash_str
-		// 												);
-		// 											}
-		// 										} else {
-		// 											log::info!(
-		// 												"Node ID {:?} does not have an associated IPFS node ID",
-		// 												sp_std::str::from_utf8(&node_info.node_id).unwrap_or("<Invalid UTF-8>")
-		// 											);
-		// 										}
-		
-		// 										// Update node metrics
-		// 										Self::call_update_pin_check_metrics(
-		// 											miner_node_id.clone().into(),
-		// 											total_pin_checks,
-		// 											successful_pin_checks,
-		// 										);
-		// 										log::info!("Successfully performed min checks to miners using profile");
-		// 									},
-		// 									Err(err) => log::info!("Failed to get node info for miner {:?}: {}", miner_node_id, err),
-		// 								}
-		// 							} else {
-		// 								log::error!("Pin request missing file_hash for miner {:?}", miner_node_id);
-		// 							}
-		// 						}
-		// 					} else {
-		// 						log::error!("Failed to parse miner profile JSON for miner {:?}", miner_node_id);
-		// 					}
-		// 				},
-		// 				Err(e) => log::error!("Failed to fetch CID content for miner {:?}: {:?}", miner_node_id, e),
-		// 			}
-		// 		} else {
-		// 			log::error!("Invalid CID in MinerProfile for miner {:?}", miner_node_id);
-		// 		}
-		// 	});
-		// }
+			// Return the hex string
+			Ok(hex_result.to_string())		
+		}
 	}
 }
