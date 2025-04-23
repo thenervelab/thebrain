@@ -1336,7 +1336,7 @@ parameter_types! {
 	pub const MaxOffchainHardwareSubmitRequestsPerPeriod: u32 = 1;
 	pub const HardwareSubmitRequestsClearInterval: u32 = 150;
 	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
-	pub const LocalDefaultGenesisHash: &'static str = "0x30bdb27331fd68c7059585c015dd390a1b5e5fad0e7af99fb61d89fc5474f4e0";
+	pub const LocalDefaultGenesisHash: &'static str = "0x28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9";
 }
 
 impl pallet_execution_unit::Config for Runtime {
