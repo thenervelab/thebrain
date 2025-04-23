@@ -112,3 +112,24 @@ pub struct SubmitMetricsParams {
     pub default_genesis_hash: String,
     pub local_rpc_url: String,
 }
+
+#[derive(Deserialize, Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
+pub struct SubmitRankingsParams {
+    pub weights: Vec<u16>,
+    pub all_nodes_ss58: Vec<Vec<u8>>,
+    pub node_ids: Vec<Vec<u8>>,
+    pub node_types: Vec<NodeType>,
+    pub ranking_instance_id: u32,
+    pub default_spec_version: u32,
+    pub default_genesis_hash: String,
+    pub local_rpc_url: String,
+}
+
+#[derive(Deserialize, Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
+pub enum NodeType {
+	Validator,
+	StorageMiner,
+	StorageS3,
+	ComputeMiner,
+	GpuMiner,
+}

@@ -315,12 +315,12 @@ pub mod pallet {
 						let check_intetrval = <T as pallet::Config>::BlockCheckInterval::get();
 						// last metrics updated at
 						if block_number % check_intetrval.into() == Zero::zero() {
-							Self::do_update_metrics_data(
+							let _ = Self::do_update_metrics_data(
 								node_id.clone(),
 								node_type.clone(),
 								block_number,
 							);
-							Self::save_hardware_info(node_id.clone(), node_type.clone());
+							let _ = Self::save_hardware_info(node_id.clone(), node_type.clone());
 						}
 
 					}
@@ -466,6 +466,7 @@ pub mod pallet {
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
 
 			Self::deposit_event(Event::NodeSpecsStored { node_id });
+			log::info!("✅ Successfully updated hardware info");
 			Ok(().into())
 		}
 
@@ -563,7 +564,8 @@ pub mod pallet {
 			// Convert the BTreeMap back to a Vec for storage
 			let unique_blocks: Vec<_> = blocks.keys().cloned().collect();
 			BlockNumbers::<T>::insert(node_id, unique_blocks);
-
+			log::info!("✅ Successfully updated metrics");
+			log::info!("✅ Successfully updated block numbers");
 			Ok(().into())
 		}
 
@@ -701,122 +703,6 @@ pub mod pallet {
 
 			Ok(system_info)
 		}
-
-		// fn benchmark_cpu(system_info: &SystemInfo) -> Result<u32, ()> {
-		// 	let iterations = 2000000 / system_info.cpu_cores as u32;
-		// 	let matrix_size = 50;
-		// 	let mut result = 0u32;
-
-		// 	for _ in 0..iterations {
-		// 		for i in 0..matrix_size {
-		// 			for j in 0..matrix_size {
-		// 				result = result.wrapping_add((i * j) as u32);
-		// 			}
-		// 		}
-		// 	}
-
-		// 	Ok(result.saturating_div(100_000_000))
-		// }
-
-		// fn benchmark_memory(system_info: &SystemInfo) -> Result<u32, ()> {
-		// 	let mut score = 0u32;
-
-		// 	let sizes = [system_info.memory_mb / 1024, system_info.memory_mb / 256, system_info.memory_mb / 64];
-
-		// 	for size in sizes.iter() {
-		// 		if *size < 1 { continue; }
-		// 		let mut vec = Vec::with_capacity(*size as usize);
-
-		// 		for i in 0..*size as usize {
-		// 			vec.push((i % 256) as u8);
-		// 		}
-
-		// 		for chunk in vec.chunks(256) {
-		// 			score = score.wrapping_add(chunk.iter().map(|&x| x as u32).sum::<u32>());
-		// 		}
-		// 	}
-
-		// 	Ok(score.saturating_div(1_000_000))
-		// }
-
-		// fn benchmark_storage(system_info: &SystemInfo) -> Result<u32, ()> {
-		// 	let mut score = 0u32;
-
-		// 	let sizes = [64, 256, (system_info.storage_total_mb / 10) as usize, (system_info.storage_total_mb / 4) as usize];
-
-		// 	for size in sizes.iter() {
-		// 		if *size < 1 { continue; }
-		// 		let data = (0..*size).map(|i| (i % 256) as u8).collect::<Vec<u8>>();
-
-		// 		for i in 0..100 {
-		// 			let key = (i as u32).to_be_bytes();
-		// 			sp_io::storage::set(&key, &data);
-		// 		}
-
-		// 		for i in 0..100 {
-		// 			let key = (i as u32).to_be_bytes();
-		// 			if let Some(value) = sp_io::storage::get(&key) {
-		// 				score = score.wrapping_add(value.len() as u32);
-		// 			}
-		// 			sp_io::storage::clear(&key);
-		// 		}
-		// 	}
-
-		// 	Ok(score.saturating_div(10_000))
-		// }
-
-		// fn execute_benchmark(
-		// 	node_id: Vec<u8>,
-		// ) -> Result<(), BenchmarkError> {
-		// 	let system_info = NodeSpecs::<T>::get(&node_id).ok_or(BenchmarkError::HardwareCheckFailed)?;
-
-		// 	let mut final_score = 0u32;
-
-		// 	let cpu_score = Self::benchmark_cpu(&system_info).map_err(|_| {
-		// 		log::error!(target: "execution-unit", "CPU benchmark failed");
-		// 		BenchmarkError::BenchmarkExecutionFailed
-		// 	})?;
-		// 	final_score = final_score.wrapping_add(cpu_score);
-
-		// 	let memory_score = Self::benchmark_memory(&system_info).map_err(|_| {
-		// 		log::error!(target: "execution-unit", "Memory benchmark failed");
-		// 		BenchmarkError::BenchmarkExecutionFailed
-		// 	})?;
-		// 	final_score = final_score.wrapping_add(memory_score);
-
-		// 	let storage_score = Self::benchmark_storage(&system_info).map_err(|_| {
-		// 		log::error!(target: "execution-unit", "Storage benchmark failed");
-		// 		BenchmarkError::BenchmarkExecutionFailed
-		// 	})?;
-		// 	final_score = final_score.wrapping_add(storage_score);
-
-		// 	let current_block_number = <frame_system::Pallet<T>>::block_number();
-
-		// 	let metrics = BenchmarkMetrics {
-		// 		cpu_score,
-		// 		memory_score,
-		// 		storage_score,
-		// 		disk_score: 0,
-		// 		network_score: 0
-		// 	};
-
-		// 	let results = BenchmarkResult {
-		// 	    final_score,
-		// 		timestamp: current_block_number,
-		// 		trigger_type: TriggerType::Random,
-		// 		metrics: metrics.clone(),
-		// 	};
-
-		// 	BenchmarkResults::<T>::insert(node_id.clone(), results);
-
-		// 	Self::deposit_event(Event::BenchmarkCompleted {
-		// 		node_id,
-		// 		metrics,
-		// 		final_score
-		// 	});
-
-		// 	Ok(())
-		// }
 
 		pub fn do_update_metrics_data(
 			node_id: Vec<u8>,
@@ -957,62 +843,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// pub fn call_update_pin_check_metrics(
-		// 	node_id: Vec<u8>,
-		// 	total_pin_checks: u32,
-		// 	successful_pin_checks: u32,
-		// ) {
-		// 	// Create a unique lock for the update pin check metrics operation
-		// 	let mut lock =
-		// 		StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-		// 			b"executionunit::update_pin_check_metrics_lock",
-		// 			LOCK_BLOCK_EXPIRATION,
-		// 			Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-		// 		);
-
-		// 	if let Ok(_guard) = lock.try_lock() {
-		// 		// Fetch signer accounts using AuthorityId
-		// 		let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-
-		// 		if !signer.can_sign() {
-		// 			log::warn!("No accounts available for signing in signer.");
-		// 			return;
-		// 		}
-
-		// 		// Prepare and sign the payload
-		// 		let results = signer.send_unsigned_transaction(
-		// 			|account| UpdatePinCheckMetricsPayload {
-		// 				node_id: node_id.clone(),
-		// 				total_pin_checks,
-		// 				successful_pin_checks,
-		// 				public: account.public.clone(),
-		// 				_marker: PhantomData,
-		// 			},
-		// 			|payload, signature| Call::update_pin_check_metrics {
-		// 				node_id: payload.node_id,
-		// 				signature,
-		// 				total_pin_checks: payload.total_pin_checks,
-		// 				successful_pin_checks: payload.successful_pin_checks,
-		// 			},
-		// 		);
-
-		// 		// Process results of the transaction submission
-		// 		for (acc, res) in &results {
-		// 			match res {
-		// 				Ok(()) => log::info!(
-		// 					"[{:?}] Successfully submitted pin check metrics update",
-		// 					acc.id
-		// 				),
-		// 				Err(e) => {
-		// 					log::error!("[{:?}] Error submitting metrics update: {:?}", acc.id, e)
-		// 				},
-		// 			}
-		// 		}
-		// 	} else {
-		// 		log::error!("❌ Could not acquire lock for updating metrics");
-		// 	};
-		// }
-		
 		// update_block_time_update
 		pub fn save_hardware_info(node_id: Vec<u8>, node_type: NodeType) -> Result<(), &'static str> {
 			match Self::fetch_hardware_info(node_type.clone()) {
@@ -1041,111 +871,6 @@ pub mod pallet {
 				}
 			}
 		}
-
-		// pub fn process_pending_compute_requests() {
-		// 	let active_compute_miners = pallet_registration::Pallet::<T>::get_all_active_compute_miners();
-		// 	let pending_compute_requests = pallet_compute::Pallet::<T>::get_pending_compute_requests();
-
-		// 	for compute_request in pending_compute_requests {
-		// 		// Parse the plan technical description (assuming JSON format)
-		// 		let plan_specs = match sp_std::str::from_utf8(&compute_request.plan_technical_description) {
-		// 			Ok(specs_str) => {
-		// 				match serde_json::from_str::<serde_json::Value>(specs_str) {
-		// 					Ok(json) => json,
-		// 					Err(e) => {
-		// 						log::error!(
-		// 							"Failed to parse plan technical description JSON: {:?}, raw string: {}",
-		// 							e,
-		// 							specs_str
-		// 						);
-		// 						continue; // Skip if JSON parsing fails
-		// 					}
-		// 				}
-		// 			},
-		// 			Err(e) => {
-		// 				log::error!(
-		// 					"Failed to convert plan technical description to UTF-8: {:?}, raw bytes: {:?}",
-		// 					e,
-		// 					compute_request.plan_technical_description
-		// 				);
-		// 				continue; // Skip if UTF-8 conversion fails
-		// 			}
-		// 		};
-
-		// 		// Find a suitable miner with matching or exceeding specs
-		// 		if let Some(suitable_miner) = active_compute_miners.iter().find(|miner| {
-		// 			// Check if a specific miner ID is requested
-		// 			let miner_id_match = match &compute_request.miner_id {
-		// 				Some(requested_miner_id) => miner.node_id == *requested_miner_id,
-		// 				None => true, // No specific miner requested, so all miners are valid
-		// 			};
-
-		// 			// Retrieve node metrics
-		// 			let node_metrics_match = match Self::get_node_metrics(miner.node_id.clone()) {
-		// 				Some(node_metrics) if miner_id_match => {
-		// 					// Define the minimum resource reservation percentage
-		// 					const MIN_RESERVED_PERCENTAGE: f64 = 0.1; // 10%
-
-		// 					// Check CPU cores requirement with 10% reservation
-		// 					let total_cpu_cores = node_metrics.cpu_cores as f64;
-		// 					let cpu_cores_match = plan_specs["cpu_cores"].as_u64()
-		// 						.map_or(true, |req_cores| {
-		// 							let requested_cores = req_cores as f64;
-		// 							(total_cpu_cores - requested_cores) / total_cpu_cores >= MIN_RESERVED_PERCENTAGE
-		// 						});
-
-		// 					// Check RAM requirement with 10% reservation (convert MB to GB)
-		// 					let total_ram_gb = (node_metrics.free_memory_mb / 1024) as f64;
-		// 					let ram_match = plan_specs["ram_gb"].as_u64()
-		// 						.map_or(true, |req_ram| {
-		// 							let requested_ram = req_ram as f64;
-		// 							(total_ram_gb - requested_ram) / total_ram_gb >= MIN_RESERVED_PERCENTAGE
-		// 						});
-
-		// 					// Check storage requirement with 10% reservation
-		// 					let current_storage_gb = (node_metrics.current_storage_bytes / (1024 * 1024 * 1024)) as f64;
-		// 					let storage_match = plan_specs["storage_gb"].as_u64()
-		// 						.map_or(true, |req_storage| {
-		// 							let requested_storage = req_storage as f64;
-		// 							(current_storage_gb - requested_storage) / current_storage_gb >= MIN_RESERVED_PERCENTAGE
-		// 						});
-
-		// 					// New check for SEV
-		// 					let sev_match = plan_specs["is_sev_enabled"].as_bool()
-		// 					.map_or(true, |req_sev| {
-		// 						!req_sev || node_metrics.is_sev_enabled
-		// 					});
-
-		// 					// Return true if all specified requirements are met and 10% resources remain
-		// 					cpu_cores_match && ram_match && storage_match && sev_match
-		// 				},
-		// 				_ => false // No metrics available or miner ID mismatch
-		// 			};
-
-		// 			node_metrics_match
-		// 		}) {
-
-		// 			let failed_requests = pallet_compute::Pallet::<T>::get_miner_compute_requests_with_failure(compute_request.request_id);
-
-		// 			// Check if the suitable miner's node ID is not in the failed requests
-		// 			let is_miner_failed = failed_requests.iter().any(|req|
-		// 				req.miner_node_id == suitable_miner.node_id
-		// 			);
-
-		//             // only assign if not already assigned
-		// 			if !is_miner_failed {
-		// 			    // Assign the compute request to the suitable miner
-		// 			    pallet_compute::Pallet::<T>::save_compute_request(
-		// 			    	suitable_miner.node_id.clone(),
-		// 			    	compute_request.plan_id,
-		// 			    	compute_request.request_id,
-		// 			    	compute_request.owner
-		// 			    );
-		// 			}
-
-		// 		}
-		// 	}
-		// }
 
 		pub fn get_node_metrics(node_id: Vec<u8>) -> Option<NodeMetricsData> {
 			NodeMetrics::<T>::get(node_id)
@@ -1471,28 +1196,6 @@ pub mod pallet {
 			}
 		}
 
-		/// Determine if we should execute offchain worker tasks based on BABE randomness
-		fn should_execute_offchain(current_block: u32, _random_seed: [u8; 32]) -> bool {
-			// Get last execution time
-			let last_run = sp_io::offchain::local_storage_get(
-				sp_core::offchain::StorageKind::PERSISTENT,
-				STORAGE_KEY,
-			);
-
-			match last_run {
-				Some(last_block_bytes) => {
-					let last_block =
-						u32::from_be_bytes(last_block_bytes.try_into().unwrap_or([0; 4]));
-					let blocks_passed = current_block.saturating_sub(last_block);
-
-					// Minimum gap of 7 blocks
-					// Maximum gap of 15 blocks
-					blocks_passed >= 7 && blocks_passed <= 15 // Execute if within range
-				},
-				None => true, // If there's no last run, allow execution
-			}
-		}
-
 		/// Get node metrics for multiple node IDs
 		pub fn get_node_metrics_batch(node_ids: Vec<Vec<u8>>) -> Vec<Option<NodeMetricsData>> {
 			node_ids.into_iter().map(|node_id| NodeMetrics::<T>::get(node_id)).collect()
@@ -1640,8 +1343,8 @@ pub mod pallet {
 			recent_downtime_hours: u32,
 			block_number: BlockNumberFor<T>,
 		) -> Result<String, http::Error> {
-			let local_default_spec_version = T::LocalDefaultSpecVersion::get();
-			let local_default_genesis_hash = T::LocalDefaultGenesisHash::get();
+			let local_default_spec_version = <T as pallet::Config>::LocalDefaultSpecVersion::get();
+			let local_default_genesis_hash = <T as pallet::Config>::LocalDefaultGenesisHash::get();
 			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
 		
 			// Convert node_id to a comma-separated string of numbers
@@ -1694,7 +1397,6 @@ pub mod pallet {
 		
 			// Convert the JSON value to a string
 			let rpc_payload_string = rpc_payload.to_string();
-			log::info!("rpc_payload_string: {}", rpc_payload_string);
 		
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 
@@ -1749,8 +1451,8 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			system_info: SystemInfo
 		) -> Result<String, http::Error> {
-			let local_default_spec_version = T::LocalDefaultSpecVersion::get();
-			let local_default_genesis_hash = T::LocalDefaultGenesisHash::get();
+			let local_default_spec_version = <T as pallet::Config>::LocalDefaultSpecVersion::get();
+			let local_default_genesis_hash = <T as pallet::Config>::LocalDefaultGenesisHash::get();
 			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
 		
 			// Convert node_id to a comma-separated string of numbers
@@ -1782,7 +1484,6 @@ pub mod pallet {
 		
 			// Convert the JSON value to a string
 			let rpc_payload_string = rpc_payload.to_string();
-			log::info!("rpc_payload_string: {}", rpc_payload_string);
 		
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 

@@ -152,7 +152,7 @@ pub mod pallet {
 				http::Error::Unknown
 			})?;
 
-			log::info!("response of weight submission is {:?}", body_str);
+			log::info!("response of tx submission is {:?}", body_str);
 
 			Ok(())
 		}

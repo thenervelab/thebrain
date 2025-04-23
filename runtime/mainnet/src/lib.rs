@@ -174,7 +174,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9022,
+	spec_version: 9025,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1143,7 +1143,7 @@ impl pallet_ip::Config for Runtime {
 
 parameter_types! {
 	pub const VersionKeyStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555d8cb0c0627a5cd77797c62415dbef9624b00";
-	pub const BittensorCallSubmission : u32 = 100;
+	pub const BittensorCallSubmission : u32 = 30;
 	pub const DefaultGenesisHash: &'static str = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03";
 }
 
@@ -1245,6 +1245,9 @@ impl pallet_rankings::Config for Runtime {
 	type InstanceID = RankingsInstanceId1;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
+	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
+	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
+	type LocalRpcUrl = LocalRpcUrl;
 }
 
 // // Add a second ranking pallet implementation
@@ -1267,6 +1270,9 @@ impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 	type InstanceID = RankingsInstanceId3;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
+	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
+	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
+	type LocalRpcUrl = LocalRpcUrl;
 }
 
 // // Add a Fourth ranking pallet implementation
@@ -1330,7 +1336,7 @@ parameter_types! {
 	pub const MaxOffchainHardwareSubmitRequestsPerPeriod: u32 = 1;
 	pub const HardwareSubmitRequestsClearInterval: u32 = 150;
 	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
-	pub const LocalDefaultGenesisHash: &'static str = "0xba0f091402a478aa854e2766c9961ada1e00ea9af042300a3781b65664248cbf";
+	pub const LocalDefaultGenesisHash: &'static str = "0x30bdb27331fd68c7059585c015dd390a1b5e5fad0e7af99fb61d89fc5474f4e0";
 }
 
 impl pallet_execution_unit::Config for Runtime {
