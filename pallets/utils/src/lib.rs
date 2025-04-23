@@ -159,13 +159,15 @@ pub mod pallet {
 	}
 }
 
-
 pub trait MetagraphInfoProvider<T: frame_system::Config> {
     fn get_all_uids() -> Vec<UID>;
 
     fn get_whitelisted_validators() -> Vec<T::AccountId>;
 }
 
+pub trait MetricsInfoProvider<T: frame_system::Config> {
+    fn remove_metrics(node_id: Vec<u8>);
+}
 
 use codec::{Decode, Encode};
 use scale_info::TypeInfo;

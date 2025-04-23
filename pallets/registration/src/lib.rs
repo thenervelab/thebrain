@@ -40,7 +40,7 @@ pub mod pallet {
 	};
 	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_proxy::Pallet as ProxyPallet;
-	use pallet_utils::{MetagraphInfoProvider, Pallet as UtilsPallet};
+	use pallet_utils::{MetagraphInfoProvider,MetricsInfoProvider, Pallet as UtilsPallet};
 	use scale_info::prelude::*;
 	use sp_core::crypto::Ss58Codec;
 	use sp_core::offchain::Duration;
@@ -53,6 +53,7 @@ pub mod pallet {
 	use sp_std::{prelude::*, vec::Vec};
 	use sp_std::collections::btree_set::BTreeSet;
 	use sp_std::collections::btree_map::BTreeMap;
+	use pallet_proxy::Proxies;
 
 	const LOCK_BLOCK_EXPIRATION: u32 = 1;
 	const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
@@ -76,6 +77,7 @@ pub mod pallet {
 	{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 		type MetagraphInfo: MetagraphInfoProvider<Self>;
+		type MetricsInfo: MetricsInfoProvider<Self>;
 		/// The minimum amount that must be staked by a miner
 		#[pallet::constant]
 		type MinerStakeThreshold: Get<u32>;
@@ -1466,9 +1468,42 @@ pub mod pallet {
 				if ColdkeyNodeRegistration::<T>::contains_key(&node_id) {
 					Self::do_unregister_main_node(node_id.clone());
 				}
+				return;
 			}
-			NodeRegistration::<T>::remove(node_id.clone());
-			Self::deposit_event(Event::NodeUnregistered { node_id });
+			
+			if let Some(node_info) = NodeRegistration::<T>::get(&node_id) {
+				// Find the main node by searching LinkedNodes
+				let main_node_id = LinkedNodes::<T>::iter()
+					.find_map(|(main_node, linked_nodes)| 
+						if linked_nodes.contains(&node_id) {
+							Some(main_node)
+						} else {
+							None
+						}
+					)
+					.unwrap_or(node_id.clone());
+
+				// Remove the node registration
+				NodeRegistration::<T>::remove(&node_id);
+				
+				// Remove metrics for the main node
+				T::MetricsInfo::remove_metrics(main_node_id.clone());
+				
+				// Remove the node from LinkedNodes if it exists
+				let main_node_linked_nodes = LinkedNodes::<T>::get(&main_node_id);
+				let updated_linked_nodes: Vec<Vec<u8>> = main_node_linked_nodes
+					.into_iter()
+					.filter(|n| n != &node_id)
+					.collect();
+					
+				if !updated_linked_nodes.is_empty() {
+					LinkedNodes::<T>::insert(&main_node_id, updated_linked_nodes);
+				} else {
+					LinkedNodes::<T>::remove(&main_node_id);
+				}
+				
+				Self::deposit_event(Event::NodeUnregistered { node_id });
+			}
 		}
 
 		pub fn do_unregister_main_node(node_id: Vec<u8>) {
@@ -1481,6 +1516,7 @@ pub mod pallet {
 			// Remove the main node's registration and linked nodes
 			ColdkeyNodeRegistration::<T>::remove(node_id.clone());
 			LinkedNodes::<T>::remove(node_id.clone());
+			T::MetricsInfo::remove_metrics(node_id.clone());
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}
 

@@ -8,6 +8,7 @@ pub mod types;
 use sp_runtime::SaturatedConversion;
 pub mod weight_calculation;
 use sp_core::offchain::KeyTypeId;
+use pallet_utils::MetricsInfoProvider;
 
 /// Defines application identifier for crypto keys of this module.
 ///
@@ -466,7 +467,7 @@ pub mod pallet {
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
 
 			Self::deposit_event(Event::NodeSpecsStored { node_id });
-			log::info!("✅ Successfully updated hardware info");
+			log::info!("✅ Successfully updated hardware info ");
 			Ok(().into())
 		}
 
@@ -837,8 +838,6 @@ pub mod pallet {
 					log::error!("❌ Failed to submit the extrinsic for hardware info: {:?}", e);
 					"Failed to submit the extrinsic for hardware info"
 				})?;
-				
-			log::info!("✅ Successfully submitted the signed extrinsic for hardware info");
 			Ok(())
 		}
 
@@ -1124,9 +1123,19 @@ pub mod pallet {
 				// update storage request and remove files
 				if !is_registered {
 					// unRegister and check if storage miner than unpin and update storage
-					let _ = ipfs_pallet::Pallet::<T>::clear_miner_profile(miner.node_id);
+					let _ = ipfs_pallet::Pallet::<T>::clear_miner_profile(miner.node_id.clone());
+
+					// unregister node , Hotkey nodes and LinkedNodes
+					pallet_registration::Pallet::<T>::do_unregister_main_node(miner.node_id.clone());
+					// Remove node metrics and block numbers
+					Self::do_remove_metrics(miner.node_id.clone());
 				}
 			}
+		}
+
+		pub fn do_remove_metrics(node_id: Vec<u8>) {
+			NodeMetrics::<T>::remove(&node_id.clone());
+			BlockNumbers::<T>::remove(&node_id.clone());
 		}
 
 		pub fn is_owner_in_uids(owner: &T::AccountId) -> bool {
@@ -1212,8 +1221,7 @@ pub mod pallet {
 
 		pub fn unregister_and_remove_metrics(node_id: Vec<u8>) {
 			pallet_registration::Pallet::<T>::do_unregister_node(node_id.clone());
-			NodeMetrics::<T>::remove(&node_id);
-			BlockNumbers::<T>::remove(&node_id);
+			Self::do_remove_metrics(node_id);
 		}
 
 		fn system_info_to_json_string(system_info: &SystemInfo) -> String {
@@ -1531,5 +1539,12 @@ pub mod pallet {
 			// Return the hex string
 			Ok(hex_result.to_string())		
 		}
+	}
+}
+
+
+impl<T: Config> MetricsInfoProvider<T> for Pallet<T> {
+	fn remove_metrics(node_id: Vec<u8>) {
+		Self::do_remove_metrics(node_id);
 	}
 }
