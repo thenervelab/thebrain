@@ -242,8 +242,8 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(0)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn update_rankings_rpc(
+		#[pallet::weight((0, Pays::No))]
+		pub fn update_rankings(
 			origin: OriginFor<T>,
 			weights: Vec<u16>,
 			all_nodes_ss58: Vec<Vec<u8>>,
@@ -263,6 +263,7 @@ pub mod pallet {
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T, I>::InvalidNodeType);
 
 			let _ = Self::do_update_rankings(weights, all_nodes_ss58, node_ids, node_types);
+			log::info!("✅ Successfully updated rankings");
 			// Return a successful `DispatchResult`
 			Ok(())
 		}

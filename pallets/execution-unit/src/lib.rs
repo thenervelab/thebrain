@@ -335,7 +335,7 @@ pub mod pallet {
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		#[pallet::call_index(0)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		#[pallet::weight((0, Pays::No))]
 		pub fn add_hardware_info(
 			origin: OriginFor<T>,
 			node_id: Vec<u8>,
@@ -471,7 +471,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(1)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		#[pallet::weight((0, Pays::No))]
 		pub fn metrics_data_update(
 			origin: OriginFor<T>,
 			node_id: Vec<u8>,
