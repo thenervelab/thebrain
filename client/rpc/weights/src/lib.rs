@@ -897,10 +897,6 @@ fn fetch_nonce(account: &[u8; 32], remote_url: &str) -> Result<u64, &'static str
 
 	// Parse JSON response to get nonce
 	let val = lite_json::parse_json(&body);
-	match &val {
-		Ok(_json) => log::info!("Parsed JSON successfully"),
-		Err(_) => log::error!("Failed to parse JSON"),
-	}
 
 	let nonce = match val {
 		Ok(JsonValue::Object(obj)) => {

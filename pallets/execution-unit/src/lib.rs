@@ -830,7 +830,6 @@ pub mod pallet {
 				"Failed to get signed metrics hex"
 			})?;
 
-			log::info!("✅ Successfully fetched metrics info hex {:?}", hex_result);
 			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
 			// Now use the hex_result in the function
 			UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)
@@ -853,7 +852,6 @@ pub mod pallet {
 						"Failed to get signed weight hex"
 					})?;
 		
-					log::info!("✅ Successfully fetched hardware info hex {:?}", hex_result);
 					let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
 					// Now use the hex_result in the function
 					UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)
@@ -1433,7 +1431,7 @@ pub mod pallet {
 				log::error!("❌ Failed to parse JSON response");
 				http::Error::Unknown
 			})?;
-			log::info!("✅ JSON response: {:?}", json_response);
+
 			// Extract the hex string from the result field
 			let hex_result = json_response
 				.get("result")
@@ -1520,7 +1518,7 @@ pub mod pallet {
 				log::error!("❌ Failed to parse JSON response");
 				http::Error::Unknown
 			})?;
-			log::info!("✅ JSON response: {:?}", json_response);
+
 			// Extract the hex string from the result field
 			let hex_result = json_response
 				.get("result")

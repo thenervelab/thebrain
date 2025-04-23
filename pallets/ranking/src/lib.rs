@@ -285,7 +285,6 @@ pub mod pallet {
 				"Failed to get signed rankings hex"
 			})?;
 
-			log::info!("✅ Successfully fetched rankings info hex {:?}", hex_result);
 			let local_rpc_url = <T as pallet::Config<I>>::LocalRpcUrl::get();
 			// Now use the hex_result in the function
 			UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)

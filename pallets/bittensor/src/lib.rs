@@ -172,7 +172,6 @@ pub mod pallet {
 				let mut own_weight = 0u32;
 
 				if !linked_node_ids.is_empty() {
-					log::info!("found Linked Nodes");
 					// Handle the case where there are no linked nodes
 					if let Some(metrics) =
 					ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
