@@ -99,6 +99,10 @@ pub mod pallet {
 	use serde_json::{Value, to_string};
 	use sp_runtime::Saturating;
 
+	use sp_runtime::AccountId32;
+	use sp_std::convert::TryInto;
+	use sp_core::crypto::Ss58Codec;
+
 	const DUMMY_REQUEST_BODY: &[u8; 78] = b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
 
 	#[pallet::pallet]
@@ -212,6 +216,7 @@ pub mod pallet {
 		UnpinRequestCompleted { owner: T::AccountId, file_hash: FileHash, file_size: u128 },
 		PinningEnabledChanged { enabled: bool },
 		MinerProfilesUpdated { miner_count: u32 },
+		StorageRequestsCleared
 	}
 
 	#[pallet::error]
@@ -235,6 +240,8 @@ pub mod pallet {
 		InvalidNodeType,
 		MinerNotLocked,
 		AssignmentNotEnabled,
+		StorageRequestsCleared,
+		FileHashBlacklisted
 	}
 
 	// the file size where the key is encoded file hash
@@ -246,7 +253,6 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn miner_files_size)]
 	pub type MinerTotalFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, u128>;
-
 
 	// Saves the owners request to store the file, with AccountId and FileHash as keys
 	#[pallet::storage]
@@ -322,7 +328,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		/// Sudo function to enable or disable file assignments
 		#[pallet::call_index(1)]
-		#[pallet::weight(10_000)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn set_pinning_enabled(
 			origin: OriginFor<T>,
 			enabled: bool
@@ -341,7 +347,7 @@ pub mod pallet {
 
 		/// Sudo function to enable or disable file assignments
 		#[pallet::call_index(2)]
-		#[pallet::weight(10_000)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn set_assignment_enabled(
 			origin: OriginFor<T>,
 			enabled: bool
@@ -353,6 +359,58 @@ pub mod pallet {
 			AssignmentEnabled::<T>::put(enabled);
 
 			Ok(())
+		}
+
+		/// Unsigned transaction to set a miner's state to Locked
+		#[pallet::call_index(3)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn remove_bad_storage_request(
+			origin: OriginFor<T>,
+			file_hash: FileHash,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
+
+			// Convert file hash to a consistent format for storage lookup
+			let file_hash_key = hex::encode(file_hash.clone());
+			let update_hash_vec: Vec<u8> = file_hash_key.into();
+
+			let update_hash: FileHash = BoundedVec::try_from(update_hash_vec)
+			.map_err(|_| Error::<T>::StorageOverflow)?;
+
+			// Remove the storage request
+			<UserStorageRequests<T>>::remove(
+				who.clone(), 
+				update_hash.clone()
+			);
+
+			// Add the file hash to the blacklist
+			<Blacklist<T>>::mutate(|blacklist| {
+				if !blacklist.contains(&update_hash) {
+					blacklist.try_push(update_hash.clone())
+						.map_err(|_| Error::<T>::StorageOverflow)
+						.ok();
+				}
+			});
+			
+			Ok(().into())
 		}
 
 		/// Unsigned transaction to set a miner's state to Locked
@@ -652,6 +710,13 @@ pub mod pallet {
 				let update_hash: FileHash = BoundedVec::try_from(update_hash_vec)
 					.map_err(|_| Error::<T>::StorageOverflow)?;
 
+				
+				// Check if the file hash is blacklisted
+				ensure!(
+					!<Blacklist<T>>::get().contains(&update_hash),
+					Error::<T>::FileHashBlacklisted
+				);
+
 				// Convert file_name to BoundedVec
 				let bounded_file_name: FileName = BoundedVec::try_from(file_input.file_name.clone())
 					.map_err(|_| Error::<T>::StorageOverflow)?;
@@ -711,7 +776,7 @@ pub mod pallet {
 					.map_err(|_| Error::<T>::TooManyUnpinRequests)
 			})?;
 			
-			Ok(())	 
+			Ok(())
 		}
 
 		/// Retrieve all unassigned unpin requests for a specific validator
@@ -724,21 +789,59 @@ pub mod pallet {
 			.collect();
 			filtered
 		}
+
+
+		pub fn select_validator(
+		) -> Result<T::AccountId, Error<T>>
+		{
+			// Define the addresses to keep
+			const KEEP_ADDRESS: &str = "5FH2vToACmzqqD2WXJsUZ5dDaXEfejYg4EMc4yJThCFBwhZK";
+			const KEEP_ADDRESS2: &str = "5FLcxzsKzaynqMvXcX4pwCD4GV8Cndx5WCqzTfL7LLuwoyWq";
+			const KEEP_ADDRESS3: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
 		
-		pub fn select_validator() -> Result<T::AccountId, Error<T>> {
-			// Correct way to get active validators from staking pallet
-			let validators = pallet_staking::Validators::<T>::iter()
+			// Get all active validators from staking pallet
+			let mut validators: Vec<T::AccountId> = pallet_staking::Validators::<T>::iter()
 				.map(|(validator, _prefs)| validator)
 				.collect::<Vec<_>>();
-			
+		
+			// Filter validators to only include the keep addresses
+			validators.retain(|validator| {
+				let validator_ss58 = AccountId32::new(
+					validator
+						.encode()
+						.try_into()
+						.unwrap_or_default(),
+				)
+				.to_ss58check();
+				validator_ss58 == KEEP_ADDRESS
+					|| validator_ss58 == KEEP_ADDRESS2
+					|| validator_ss58 == KEEP_ADDRESS3
+			});
+		
+			// Ensure there are validators left after filtering
 			ensure!(!validators.is_empty(), Error::<T>::NoValidatorsAvailable);
 		
 			// Use current block number for pseudo-random selection
 			let block_number = frame_system::Pallet::<T>::block_number();
 			let validator_index = block_number.saturated_into::<usize>() % validators.len();
-			
+		
 			Ok(validators[validator_index].clone())
 		}
+		
+		// pub fn select_validator() -> Result<T::AccountId, Error<T>> {
+		// 	// Correct way to get active validators from staking pallet
+		// 	let validators = pallet_staking::Validators::<T>::iter()
+		// 		.map(|(validator, _prefs)| validator)
+		// 		.collect::<Vec<_>>();
+			
+		// 	ensure!(!validators.is_empty(), Error::<T>::NoValidatorsAvailable);
+		
+		// 	// Use current block number for pseudo-random selection
+		// 	let block_number = frame_system::Pallet::<T>::block_number();
+		// 	let validator_index = block_number.saturated_into::<usize>() % validators.len();
+			
+		// 	Ok(validators[validator_index].clone())
+		// }
 
 		pub fn fetch_ipfs_file_size(file_hash_vec: Vec<u8>) -> Result<u32, http::Error> {
 		
