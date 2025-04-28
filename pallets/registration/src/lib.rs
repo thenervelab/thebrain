@@ -43,8 +43,8 @@ pub mod pallet {
 	use pallet_utils::{MetagraphInfoProvider,MetricsInfoProvider, Pallet as UtilsPallet};
 	use scale_info::prelude::*;
 	use sp_core::crypto::Ss58Codec;
-	use sp_core::offchain::Duration;
-	use sp_runtime::offchain::storage_lock::{BlockAndTime, StorageLock};
+	// use sp_core::offchain::Duration;
+	// use sp_runtime::offchain::storage_lock::{BlockAndTime, StorageLock};
 	use sp_runtime::traits::AccountIdConversion;
 	use sp_runtime::traits::CheckedDiv;
 	use sp_runtime::traits::Zero;
@@ -55,8 +55,8 @@ pub mod pallet {
 	use sp_std::collections::btree_map::BTreeMap;
 	use pallet_proxy::Proxies;
 
-	const LOCK_BLOCK_EXPIRATION: u32 = 1;
-	const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
+	// const LOCK_BLOCK_EXPIRATION: u32 = 1;
+	// const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
 
 	// Define a constant for token decimals (typically at the top of the file)
 	pub const DECIMALS: u32 = 18;

@@ -22,7 +22,7 @@ use sp_consensus_babe::AuthorityId as BabeId;
 use sp_core::{crypto::Ss58Codec, ed25519, sr25519, H160, U256};
 use std::{collections::BTreeMap, str::FromStr};
 // use sc_network::config::MultiaddrWithPeerId;
-use hex::FromHex;
+// use hex::FromHex;
 
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
 pub type ChainSpec = sc_service::GenericChainSpec;

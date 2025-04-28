@@ -182,3 +182,11 @@ impl<T: Config> SignedPayload<T> for UpdateMinerProfilePayload<T> {
         self.public.clone()
     }
 }
+
+/// Storage map to track miner lock information.
+#[derive(Clone, Encode, Decode, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub struct MinersLockInfo<AccountId,BlockNumber> {
+	pub miners_locked: bool,
+	pub locker: AccountId, // Validator address
+	pub locked_at: BlockNumber, // Block number when locked
+}

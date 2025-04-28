@@ -177,33 +177,40 @@ pub mod pallet {
 		}
 
 		fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
-
 			// Clear entries every 10 blocks
 			if current_block % T::RequestsClearInterval::get().into() == 0u32.into() {
 				// Clear all entries; limit is u32::MAX to ensure we get them all
 				let _result = RequestsCount::<T>::clear(u32::MAX, None);
 			}
-						
+							
 			// Remove storage requests older than 500 blocks
 			Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(500u32));
-
+		
 			// Get all active storage miners from the registration pallet
 			let active_miners = RegistrationPallet::<T>::get_all_active_storage_miners();
-
-			// Iterate through active miners and set their state to free
-			for miner in active_miners {
-				let miner_id = BoundedVec::try_from(miner.node_id.clone())
-					.unwrap_or_else(|_| BoundedVec::default());
-
-				// Only set to free if not already set or currently locked
-				match MinerStates::<T>::get(&miner_id) {
-					MinerState::Locked => {}, // Do nothing if locked
-					_ => {
-						MinerStates::<T>::insert(&miner_id, MinerState::Free);
+		
+			// Collect all active miner node IDs into a HashSet for fast lookup
+			let active_miner_ids: sp_std::collections::btree_set::BTreeSet<_> = active_miners
+				.into_iter()
+				.map(|miner| miner.node_id)
+				.collect();
+		
+			// Now iterate through all MinerStates
+			for (miner_node_id, _) in MinerStates::<T>::iter() {
+				if active_miner_ids.contains(&miner_node_id.to_vec()) {
+					// If miner is still active and not locked, set to Free
+					match MinerStates::<T>::get(&miner_node_id) {
+						MinerState::Locked => {}, // Do nothing if locked
+						_ => {
+							MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
+						}
 					}
+				} else {
+					// Miner no longer registered => remove their MinerState
+					MinerStates::<T>::remove(&miner_node_id);
 				}
 			}
-
+		
 			Weight::zero()
 		}
 	}
@@ -241,7 +248,9 @@ pub mod pallet {
 		MinerNotLocked,
 		AssignmentNotEnabled,
 		StorageRequestsCleared,
-		FileHashBlacklisted
+		FileHashBlacklisted,
+		MinersNotLocked,
+		UnauthorizedLocker
 	}
 
 	// the file size where the key is encoded file hash
@@ -323,6 +332,10 @@ pub mod pallet {
 		MinerState,  // Miner's current state
 		ValueQuery   // Default to Free if not set
 	>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn miner_lock_info)]
+	pub type MinerLockInfos<T: Config> = StorageValue<_, MinersLockInfo<T::AccountId, BlockNumberFor<T>>, OptionQuery>;	
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -440,11 +453,26 @@ pub mod pallet {
 			// Update user's storage requests count
 			RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
 
-			// Set the miner's state to Locked
-			for miner_node_id in miner_node_ids {
-				MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
-			}
+			// // Set the miner's state to Locked
+			// for miner_node_id in miner_node_ids {
+			// 	MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
+			// }
 
+			// // Iterate over all miners and set them to Locked
+			// for (miner_node_id, _) in MinerStates::<T>::iter() {
+			// 	MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
+			// }
+
+			// Create MinersLockInfo object
+			let lock_info = MinersLockInfo {
+				miners_locked: true,
+				locker: who.clone(),
+				locked_at: <frame_system::Pallet<T>>::block_number(),
+			};
+
+			// Insert into storage
+			MinerLockInfos::<T>::put(lock_info);
+			
 			Ok(().into())
 		}
 
@@ -477,6 +505,11 @@ pub mod pallet {
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
 
+			// Check that miners are globally locked and locked by the caller
+			let lock_info = MinerLockInfos::<T>::get().ok_or(Error::<T>::MinersNotLocked)?;
+			ensure!(lock_info.miners_locked, Error::<T>::MinersNotLocked);
+			ensure!(lock_info.locker == who, Error::<T>::UnauthorizedLocker);
+
 			// Check that all miners are registered as storage miners
 			for miner_profile in miner_pin_requests.iter() {
 				let miner_node_id_vec = miner_profile.miner_node_id.to_vec();
@@ -493,14 +526,14 @@ pub mod pallet {
 				);
 			}
 
-			// Check that all miners are in a locked state before processing
-			for miner_profile in miner_pin_requests.iter() {
-				let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
-				ensure!(
-					miner_state == MinerState::Locked, 
-					Error::<T>::MinerNotLocked
-				);
-			}
+			// // Check that all miners are in a locked state before processing
+			// for miner_profile in miner_pin_requests.iter() {
+			// 	let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
+			// 	ensure!(
+			// 		miner_state == MinerState::Locked, 
+			// 		Error::<T>::MinerNotLocked
+			// 	);
+			// }
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
@@ -528,12 +561,23 @@ pub mod pallet {
 				*total_size = Some(total_size.unwrap_or(0) + file_size);
 			});
 
-			// Set all miners free after processing the pin request
-			for miner_profile in miner_pin_requests.iter() {
-				// Set the miner's state to Free
-				MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
-			}
-			
+			// // Set all miners free after processing the pin request
+			// for miner_profile in miner_pin_requests.iter() {
+			// 	// Set the miner's state to Free
+			// 	MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
+			// }
+
+			// // Iterate over all miners and set them to Locked
+			// for (miner_node_id, _) in MinerStates::<T>::iter() {
+			// 	MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
+			// }
+
+			MinerLockInfos::<T>::put(MinersLockInfo {
+				miners_locked: false,
+				locker: who,
+				locked_at: <frame_system::Pallet<T>>::block_number(),
+			});			
+						
 			// Update MinerTotalFilesSize for each miner
 			for miner_profile in miner_pin_requests.iter() {
 				<MinerTotalFilesSize<T>>::mutate(&miner_profile.miner_node_id, |total_size| {
@@ -583,14 +627,19 @@ pub mod pallet {
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
 
-			// Check that all miners are in a locked state before processing
-			for miner_profile in miner_pin_requests.iter() {
-				let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
-				ensure!(
-					miner_state == MinerState::Locked, 
-					Error::<T>::MinerNotLocked
-				);
-			}			
+			// Check that miners are globally locked and locked by the caller
+			let lock_info = MinerLockInfos::<T>::get().ok_or(Error::<T>::MinersNotLocked)?;
+			ensure!(lock_info.miners_locked, Error::<T>::MinersNotLocked);
+			ensure!(lock_info.locker == who, Error::<T>::UnauthorizedLocker);
+
+			// // Check that all miners are in a locked state before processing
+			// for miner_profile in miner_pin_requests.iter() {
+			// 	let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
+			// 	ensure!(
+			// 		miner_state == MinerState::Locked, 
+			// 		Error::<T>::MinerNotLocked
+			// 	);
+			// }			
 
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
@@ -618,12 +667,23 @@ pub mod pallet {
 				*total_size = Some(total_size.unwrap_or(0) - file_size);
 			});
 
-			// Set all miners free after processing the pin request
-			for miner_profile in miner_pin_requests.iter() {
-				// Set the miner's state to Free
-				MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
-			}
+			// // Set all miners free after processing the pin request
+			// for miner_profile in miner_pin_requests.iter() {
+			// 	// Set the miner's state to Free
+			// 	MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
+			// }
 			
+			// // Iterate over all miners and set them to Locked
+			// for (miner_node_id, _) in MinerStates::<T>::iter() {
+			// 	MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
+			// }
+
+			MinerLockInfos::<T>::put(MinersLockInfo {
+				miners_locked: false,
+				locker: who,
+				locked_at: <frame_system::Pallet<T>>::block_number(),
+			});			
+						
 			// Update MinerTotalFilesSize for each miner
 			for miner_profile in miner_pin_requests.iter() {
 				<MinerTotalFilesSize<T>>::mutate(&miner_profile.miner_node_id, |total_size| {
@@ -649,38 +709,23 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-
-		/// Unsigned transaction to set a miner's state to Free
+		/// Root call to set all miners' states to Free
 		#[pallet::call_index(12)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
-		pub fn set_miner_state_free(
-			origin: OriginFor<T>,
-			miner_node_ids: Vec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>>
-		) -> DispatchResultWithPostInfo {
-			let who = ensure_signed(origin)?;
+		pub fn set_all_miners_state_free(origin: OriginFor<T>, validator: T::AccountId) -> DispatchResultWithPostInfo {
+			ensure_root(origin)?;
 
-			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
-			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
-
-			// Unwrap safely after checking it's Some
-			let node_info = node_info.unwrap();
-
-			// Check if the node type is Validator
-			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
-
-			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-			// Update user's storage requests count
-			RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
-
-			// Set the miner's state to Free
-			for miner_node_id in miner_node_ids {
+			// Iterate over all miners and set them to Free
+			for (miner_node_id, _) in MinerStates::<T>::iter() {
 				MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
 			}
+
+			// Also set the global MinersLock storage to unlocked
+			MinerLockInfos::<T>::put(MinersLockInfo {
+				miners_locked: false,
+				locker: validator, // no one owns it now
+				locked_at: <frame_system::Pallet<T>>::block_number(),
+			});
 
 			Ok(().into())
 		}
