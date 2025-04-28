@@ -250,7 +250,8 @@ pub mod pallet {
 		StorageRequestsCleared,
 		FileHashBlacklisted,
 		MinersNotLocked,
-		UnauthorizedLocker
+		UnauthorizedLocker,
+		MinersAlreadyLocked
 	}
 
 	// the file size where the key is encoded file hash
@@ -463,6 +464,10 @@ pub mod pallet {
 			// 	MinerStates::<T>::insert(&miner_node_id, MinerState::Locked);
 			// }
 
+			// Check if miners are already locked
+			let lock_info = MinerLockInfos::<T>::get();
+			ensure!(!lock_info.unwrap().miners_locked, Error::<T>::MinersAlreadyLocked);
+ 
 			// Create MinersLockInfo object
 			let lock_info = MinersLockInfo {
 				miners_locked: true,
