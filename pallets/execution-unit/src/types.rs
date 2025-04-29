@@ -319,3 +319,11 @@ pub struct ApiUnpinItem {
 pub struct ApiUnpinRequest {
     pub items: Vec<ApiUnpinItem>,
 }
+
+// Define the struct for miner metrics
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct MinerPinMetrics {
+    pub node_id: Vec<u8>,
+    pub total_pin_checks: u32,
+    pub successful_pin_checks: u32,
+}

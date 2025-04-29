@@ -573,41 +573,50 @@ pub mod pallet {
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
 		pub fn update_pin_check_metrics(
 			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-			total_pin_checks: u32,
-			successful_pin_checks: u32,
+			miners_metrics: Vec<MinerPinMetrics>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
-
+		
 			// Check if the node is registered
 			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
-
+		
 			// Unwrap safely after checking it's Some
 			let node_info = node_info.unwrap();
-
+		
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
-
+		
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(node_info.node_id.clone());
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
+			ensure!(
+				user_requests_count + miners_metrics.len() as u32 <= max_requests_per_block,
+				Error::<T>::TooManyRequests
+			);
+		
 			// Update user's storage requests count
-			RequestsCount::<T>::insert(node_info.node_id.clone(), user_requests_count + 1);
-
-			// Fetch existing metrics
-			let mut metrics = NodeMetrics::<T>::get(&node_id).ok_or(Error::<T>::MetricsNotFound)?;
-
-			// Update the metrics
-			metrics.total_pin_checks += total_pin_checks;
-			metrics.successful_pin_checks += successful_pin_checks;
-
-			// Insert the updated metrics back into storage
-			NodeMetrics::<T>::insert(node_id.clone(), metrics);
-
-			Self::deposit_event(Event::PinCheckMetricsUpdated { node_id });
+			RequestsCount::<T>::insert(node_info.node_id.clone(), user_requests_count + miners_metrics.len() as u32);
+		
+			// Process each miner's metrics
+			for miner in miners_metrics {
+				// Fetch existing metrics
+				let mut metrics = NodeMetrics::<T>::get(&miner.node_id)
+					.ok_or(Error::<T>::MetricsNotFound)?;
+		
+				// Update the metrics
+				metrics.total_pin_checks += miner.total_pin_checks;
+				metrics.successful_pin_checks += miner.successful_pin_checks;
+		
+				// Insert the updated metrics back into storage
+				NodeMetrics::<T>::insert(miner.node_id.clone(), metrics);
+		
+				// Emit event for each miner
+				Self::deposit_event(Event::PinCheckMetricsUpdated { 
+					node_id: miner.node_id 
+				});
+			}
+		
 			Ok(().into())
 		}
 

@@ -171,10 +171,10 @@ impl NodeMetricsData {
 		let base_weight = match _node_type {
 			NodeType::StorageMiner => {
 				(
-					availability_score.saturating_mul(10)
+					availability_score.saturating_mul(40)
 					.saturating_add(performance_score.saturating_mul(15))
 					.saturating_add(reliability_score.saturating_mul(15))
-					.saturating_add(capacity_score.saturating_mul(45)) // Increased to 45%
+					.saturating_add(capacity_score.saturating_mul(15)) // Increased to 45%
 					.saturating_add(storage_usage_score.saturating_mul(5)) // Reduced to 5%
 					.saturating_add(network_score.saturating_mul(10))
 					.saturating_add(diversity_score.saturating_mul(5))
