@@ -35,6 +35,7 @@ pub mod pallet {
 		traits::Zero,
 		AccountId32,
 	};
+	// use sp_std::cmp::min;
 	use sp_std::{collections::btree_map::BTreeMap, prelude::*};
 
 	#[pallet::config]
@@ -130,7 +131,6 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
-		// New method to calculate weights specifically for storage miners
 		fn calculate_storage_miner_weights(
 			all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
 			all_nodes_metrics: &Vec<NodeMetricsData>,
@@ -153,31 +153,79 @@ pub mod pallet {
 			let mut storage_miners_node_types: Vec<NodeType> = Vec::new();
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
 			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
-
+		
 			let mut linked_storage_miners_weights: Vec<u16> = Vec::new();
 			let mut linked_storage_miners_ss58: Vec<Vec<u8>> = Vec::new();
 			let mut linked_storage_miners_node_id: Vec<Vec<u8>> = Vec::new();
 			let mut linked_storage_miners_node_types: Vec<NodeType> = Vec::new();
-
+		
 			let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
-
+		
 			for miner in all_miners {
 				if miner.node_type != NodeType::StorageMiner {
 					continue;
 				}
-
+		
 				// Retrieve linked nodes for the main node
 				let mut linked_node_ids = LinkedNodes::<T>::get(&miner.node_id);
 				let mut total_weight = 0u32;
 				let mut own_weight = 0u32;
-
-				if !linked_node_ids.is_empty() {
-					// Handle the case where there are no linked nodes
-					if let Some(metrics) =
-					ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
-					{
+				let mut valid_linked_nodes = 0u32;
+		
+				// Calculate weight for the main node
+				if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone()) {
+					geo_distribution.insert(metrics.geolocation.clone(), 1);
+					let weight = WeightCalculation::calculate_weight::<T>(
+						NodeType::StorageMiner,
+						&metrics,
+						all_nodes_metrics,
+						&geo_distribution,
+					);
+					let current_block_number = <frame_system::Pallet<T>>::block_number();
+					let buffer = 300u32; // Configurable offline threshold
+					let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+		
+					// Minimum quality check (example: storage capacity and weight threshold)
+					let min_weight_threshold = 100u32; // Configurable
+					let min_storage_capacity = 1_000_000u64; // Example: 1GB in bytes
+		
+					if metrics.ipfs_storage_max >= min_storage_capacity && weight >= min_weight_threshold {
+						if let Some(blocks) = blocks_online {
+							if let Some(&last_block) = blocks.last() {
+								let difference = current_block_number - last_block;
+								if difference <= buffer.into() {
+									own_weight = weight as u32; // Include only if online and meets quality
+									log::info!(
+										"Main node {:?}: weight={}, storage_capacity={}",
+										miner.node_id,
+										weight,
+										metrics.ipfs_storage_max
+									);
+								}
+							}
+						}
+					} else {
+						log::warn!(
+							"Main node {:?} rejected: weight={}, storage_capacity={}",
+							miner.node_id,
+							weight,
+							metrics.ipfs_storage_max
+						);
+					}
+				} else {
+					log::info!("Node metrics not found for storage miner: {:?}", miner.node_id);
+				}
+		
+				// Filter out linked nodes without metrics
+				linked_node_ids.retain(|linked_node_id| {
+					ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()).is_some()
+				});
+		
+				// Calculate weights for linked nodes
+				for linked_node_id in &linked_node_ids {
+					if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()) {
 						geo_distribution.insert(metrics.geolocation.clone(), 1);
-						let mut weight = WeightCalculation::calculate_weight::<T>(
+						let weight = WeightCalculation::calculate_weight::<T>(
 							NodeType::StorageMiner,
 							&metrics,
 							all_nodes_metrics,
@@ -185,133 +233,103 @@ pub mod pallet {
 						);
 						let current_block_number = <frame_system::Pallet<T>>::block_number();
 						let buffer = 300u32;
-						let blocks_online =
-							ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-
-						if let Some(blocks) = blocks_online {
-							if let Some(&last_block) = blocks.last() {
-								let difference = current_block_number - last_block;
-								if difference > buffer.into() {
-									// Ensure buffer is of the correct type
-									weight = 0; // Accumulate weight
-								}
-							}
-						}
-						
-						own_weight += weight as u32; // Accumulate weight
-
-					} else {
-						log::info!("Node metrics not found for storage miner: {:?}", miner.node_id);
-					}
-
-					// Check if there are linked nodes
-					// Remove linked nodes without metrics
-					linked_node_ids.retain(|linked_node_id| {
-						ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone()).is_some()
-					});
-
-					// Calculate weights for linked nodes
-					for linked_node_id in &linked_node_ids {
-						if let Some(metrics) =
-							ExecutionPallet::<T>::get_node_metrics(linked_node_id.clone())
-						{
-							geo_distribution.insert(metrics.geolocation.clone(), 1);
-							let weight = WeightCalculation::calculate_weight::<T>(
-								NodeType::StorageMiner,
-								&metrics,
-								all_nodes_metrics,
-								&geo_distribution,
-							);
-							total_weight += weight as u32; // Accumulate weight
-
-							let current_block_number = <frame_system::Pallet<T>>::block_number();
-							let buffer = 300u32;
-							let blocks_online =
-								ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-
+						let blocks_online = ExecutionPallet::<T>::block_numbers(linked_node_id.clone());
+		
+						// Quality check for linked nodes
+						let min_weight_threshold = 100u32; // Configurable
+						let min_storage_capacity = 1_000_000u64; // Example: 1GB
+		
+						if metrics.ipfs_storage_max >= min_storage_capacity && weight >= min_weight_threshold {
 							if let Some(blocks) = blocks_online {
 								if let Some(&last_block) = blocks.last() {
 									let difference = current_block_number - last_block;
-									if difference > buffer.into() {
-										// Ensure buffer is of the correct type
-										total_weight -= weight as u32; // Accumulate weight
+									if difference <= buffer.into() {
+										total_weight += weight as u32; // Add individual weight
+										linked_storage_miners_weights.push(weight as u16); // Track individual weight
+										valid_linked_nodes += 1;
+										log::info!(
+											"Linked node {:?}: weight={}, ipfs_storage_max={}",
+											linked_node_id,
+											weight,
+											metrics.ipfs_storage_max
+										);
+									} else {
+										log::warn!(
+											"Linked node {:?} offline",
+											linked_node_id
+										);
+										continue; // Skip offline nodes
 									}
 								}
 							}
-							// Retrieve node info using the linked node ID
-							if let Some(linked_node_info) =
-								RegistrationPallet::<T>::get_node_registration_info(
-									linked_node_id.clone().to_vec(),
-								) {
-								let linked_miner_ss58 = AccountId32::new(
-									linked_node_info.owner.encode().try_into().unwrap_or_default(),
-								)
-								.to_ss58check();
-								linked_storage_miners_ss58.push(linked_miner_ss58.into());
-								linked_storage_miners_node_id.push(linked_node_id.clone());
-								linked_storage_miners_node_types.push(NodeType::StorageMiner);
-								linked_storage_miners_weights.push(weight as u16);
-							}
+						} else {
+							log::warn!(
+								"Linked node {:?} rejected: weight={}, storage_capacity={}",
+								linked_node_id,
+								weight,
+								metrics.ipfs_storage_max
+							);
+							continue; // Skip low-quality nodes
 						}
-					}
-					
-					// Normalize weight for the main node based on linked nodes
-					let normalized_weight = if !linked_node_ids.is_empty() {
-						total_weight / linked_node_ids.len() as u32
-					} else {
-						0 // or some default value if no linked nodes
-					};
-					storage_weights.push((normalized_weight + own_weight) as u16);
-				} else {
-					// Handle the case where there are no linked nodes
-					if let Some(metrics) =
-						ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
-					{
-						geo_distribution.insert(metrics.geolocation.clone(), 1);
-						let mut weight = WeightCalculation::calculate_weight::<T>(
-							NodeType::StorageMiner,
-							&metrics,
-							all_nodes_metrics,
-							&geo_distribution,
-						);
-						let current_block_number = <frame_system::Pallet<T>>::block_number();
-						let buffer = 300u32;
-						let blocks_online =
-							ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-
-						if let Some(blocks) = blocks_online {
-							if let Some(&last_block) = blocks.last() {
-								let difference = current_block_number - last_block;
-								if difference > buffer.into() {
-									// Ensure buffer is of the correct type
-									weight = 0; // Accumulate weight
-								}
-							}
+		
+						// Retrieve node info for linked node
+						if let Some(linked_node_info) = RegistrationPallet::<T>::get_node_registration_info(
+							linked_node_id.clone().to_vec(),
+						) {
+							let linked_miner_ss58 = AccountId32::new(
+								linked_node_info.owner.encode().try_into().unwrap_or_default(),
+							)
+							.to_ss58check();
+							linked_storage_miners_ss58.push(linked_miner_ss58.into());
+							linked_storage_miners_node_id.push(linked_node_id.clone());
+							linked_storage_miners_node_types.push(NodeType::StorageMiner);
 						}
-						storage_weights.push(weight as u16);
-					} else {
-						log::info!("Node metrics not found for storage miner: {:?}", miner.node_id);
 					}
 				}
-
-				// Other logic remains the same...
-				let miner_ss58 =
-					AccountId32::new(miner.owner.encode().try_into().unwrap_or_default())
-						.to_ss58check();
+		
+				// Calculate final weight with bonus for valid linked nodes
+				let combined_weight = own_weight + total_weight; // Sum of main and linked node weights
+				let bonus_factor = if valid_linked_nodes > 0 {
+					let nodes = valid_linked_nodes as f32;
+					// Diminishing returns: 0.02 * nodes / (1 + 0.1 * nodes), capped at 0.5
+					let bonus = (0.02 * nodes / (1.0 + 0.1 * nodes)).min(0.5);
+					1.0 + bonus
+				} else {
+					1.0 // No bonus if no valid linked nodes
+				};
+				let final_weight = (combined_weight as f32 * bonus_factor) as u32;
+		
+				// Cap the final weight to prevent abuse
+				let capped_weight = final_weight.min(10_000); // Configurable cap
+				storage_weights.push(capped_weight as u16);
+		
+				// Log for transparency and debugging
+				log::info!(
+					"Storage Miner {:?}: own_weight={}, linked_weight={}, valid_linked_nodes={}, bonus_factor={:.2}, final_weight={}",
+					miner.node_id,
+					own_weight,
+					total_weight,
+					valid_linked_nodes,
+					bonus_factor,
+					capped_weight
+				);
+		
+				// Other logic for SS58 and Bittensor UIDs
+				let miner_ss58 = AccountId32::new(miner.owner.encode().try_into().unwrap_or_default())
+					.to_ss58check();
 				storage_miners_node_id.push(miner.node_id.clone());
 				storage_miners_node_types.push(miner.node_type.clone());
 				storage_nodes_ss58.push(miner_ss58.clone().into());
-
+		
 				// Update Bittensor UIDs
 				for uid in uids.iter() {
 					if uid.substrate_address.to_ss58check() == miner_ss58 {
 						all_uids_on_bittensor.push(uid.id);
-						all_weights_on_bitensor.push(*storage_weights.last().unwrap_or(&0) as u16);
-						// Use the last calculated weight
+						all_weights_on_bitensor.push(capped_weight as u16);
 					}
 				}
 			}
-
+		
 			(
 				storage_weights,
 				storage_nodes_ss58,
@@ -325,7 +343,7 @@ pub mod pallet {
 				linked_storage_miners_node_types,
 			)
 		}
-
+		
 		// New method to calculate weights specifically for storage S3 miners
 		fn calculate_storage_s3_weights(
 			all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
@@ -1279,44 +1297,44 @@ pub mod pallet {
 				storage_nodes_ss58,
 				storage_miners_node_id,
 				storage_miners_node_types,
-				compute_weights,
-				compute_all_nodes_ss58,
-				compute_all_miners_node_id,
-				compute_all_miners_node_types,
-				gpu_weights,
-				gpu_all_nodes_ss58,
-				gpu_all_miners_node_id,
-				gpu_all_miners_node_types,
+				_compute_weights,
+				_compute_all_nodes_ss58,
+				_compute_all_miners_node_id,
+				_compute_all_miners_node_types,
+				_gpu_weights,
+				_gpu_all_nodes_ss58,
+				_gpu_all_miners_node_id,
+				_gpu_all_miners_node_types,
 				validator_weights,
 				validator_all_nodes_ss58,
 				validator_all_miners_node_id,
 				validator_all_miners_node_types,
-				storage_s3_weights,
-				storage_s3_all_nodes_ss58,
-				storage_s3_all_miners_node_id,
-				storage_s3_all_miners_node_types,
+				_storage_s3_weights,
+				_storage_s3_all_nodes_ss58,
+				_storage_s3_all_miners_node_id,
+				_storage_s3_all_miners_node_types,
 				all_dests_on_bittensor,
 				all_weights_on_bitensor,
 				linked_storage_miners_weights,
 				linked_storage_miners_ss58,
 				linked_storage_miners_node_id,
 				linked_storage_miners_node_types,
-				linked_compute_miners_weights,
-				linked_compute_miners_ss58,
-				linked_compute_miners_node_id,
-				linked_compute_miners_node_types,
-				linked_gpu_miners_weights,
-				linked_gpu_miners_ss58,
-				linked_gpu_miners_node_id,
-				linked_gpu_miners_node_types,
+				_linked_compute_miners_weights,
+				_linked_compute_miners_ss58,
+				_linked_compute_miners_node_id,
+				_linked_compute_miners_node_types,
+				_linked_gpu_miners_weights,
+				_linked_gpu_miners_ss58,
+				_linked_gpu_miners_node_id,
+				_linked_gpu_miners_node_types,
 				linked_validator_miners_weights,
 				linked_validator_miners_ss58,
 				linked_validator_miners_node_id,
 				linked_validator_miners_node_types,
-				linked_storage_s3_miners_weights,
-				linked_storage_s3_miners_ss58,
-				linked_storage_s3_miners_node_id,
-				linked_storage_s3_miners_node_types,
+				_linked_storage_s3_miners_weights,
+				_linked_storage_s3_miners_ss58,
+				_linked_storage_s3_miners_node_id,
+				_linked_storage_s3_miners_node_types,
 			): (
 				Vec<u16>,
 				Vec<Vec<u8>>,

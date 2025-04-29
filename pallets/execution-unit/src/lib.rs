@@ -94,7 +94,7 @@ pub mod pallet {
 	use sp_std::collections::btree_map::BTreeMap;
 	use ipfs_pallet::StorageUnpinRequest;
 
-	const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
+	// const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + 
@@ -218,18 +218,6 @@ pub mod pallet {
 	#[pallet::storage]
 	pub(super) type DowntimeStatus<T: Config> =
 		StorageValue<_, Vec<OfflineStatus<BlockNumberFor<T>>>, ValueQuery>;
-
-	// #[pallet::storage]
-	// pub type NodeSpecs<T: Config> = StorageMap<
-	// 	_,
-	// 	Blake2_128Concat,
-	// 	Vec<u8>,
-	// 	SystemInfo,
-	// 	OptionQuery  // Changed from ValueQuery to OptionQuery
-	// >;
-
-	const LOCK_BLOCK_EXPIRATION: u32 = 3;
-	const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
 
 	#[pallet::storage]
 	#[pallet::getter(fn benchmark_results)]

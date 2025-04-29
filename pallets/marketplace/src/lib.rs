@@ -189,8 +189,8 @@ pub mod pallet {
         type MaxRequestsPerBlock: Get<u32>;
     }
 
-	const LOCK_BLOCK_EXPIRATION: u32 = 3;
-    const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
+	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
+    // const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
 
     #[pallet::storage]
     #[pallet::getter(fn plans)]
@@ -1345,7 +1345,7 @@ pub mod pallet {
         }
 
         /// Retrieve active compute subscriptions specifically
-        fn get_active_compute_subscriptions() -> Vec<(T::AccountId, UserPlanSubscription<T>)> {
+        fn _get_active_compute_subscriptions() -> Vec<(T::AccountId, UserPlanSubscription<T>)> {
             UserPlanSubscriptions::<T>::iter()
                 .filter(|(_, subscription)| {
                     subscription.active 

@@ -35,12 +35,12 @@ pub mod pallet {
 		},
 	};
 	use frame_system::{
-		offchain::{SendTransactionTypes, SubmitTransaction},
+		offchain::SendTransactionTypes,
 		pallet_prelude::*,
 	};
 	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_proxy::Pallet as ProxyPallet;
-	use pallet_utils::{MetagraphInfoProvider,MetricsInfoProvider, Pallet as UtilsPallet};
+	use pallet_utils::{MetagraphInfoProvider,MetricsInfoProvider};
 	use scale_info::prelude::*;
 	use sp_core::crypto::Ss58Codec;
 	// use sp_core::offchain::Duration;

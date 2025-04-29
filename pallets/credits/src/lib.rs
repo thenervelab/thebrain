@@ -64,7 +64,7 @@ pub mod pallet {
 	use super::*;
 	use frame_support::pallet_prelude::*;
 	use frame_system::offchain::SendTransactionTypes;
-	use frame_system::offchain::{SendUnsignedTransaction, SignedPayload, Signer};
+	use frame_system::offchain::SignedPayload;
 	use frame_system::pallet_prelude::*;
 	use pallet_ip::Pallet as IpPallet;
 	use scale_info::prelude::vec;

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use scale_info::TypeInfo;
 use codec::{Encode, Decode};
 use sp_runtime::RuntimeDebug;
