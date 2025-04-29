@@ -286,22 +286,33 @@ pub mod pallet {
 						}
 					}
 				}
-		
-				// Calculate final weight with bonus for valid linked nodes
-				let combined_weight = own_weight + total_weight; // Sum of main and linked node weights
-				let bonus_factor = if valid_linked_nodes > 0 {
-					let nodes = valid_linked_nodes as f32;
-					// Diminishing returns: 0.02 * nodes / (1 + 0.1 * nodes), capped at 0.5
-					let bonus = (0.02 * nodes / (1.0 + 0.1 * nodes)).min(0.5);
-					1.0 + bonus
+				let scale: u32 = 100;
+				let combined_weight = own_weight.checked_add(total_weight).unwrap_or_else(|| {
+					log::error!("Overflow calculating combined_weight for miner {:?}", miner.node_id);
+					0
+				});				
+
+				let bonus_multiplier = if valid_linked_nodes > 0 {
+					let nodes = valid_linked_nodes as u32;
+
+					// Bonus = (0.02 * nodes / (1 + 0.1 * nodes)) capped at 0.5
+					// To avoid floats: bonus = (20 * nodes) / (1000 + 100 * nodes), scaled by 1000
+					let numerator = 20 * nodes;
+					let denominator = 1000 + 100 * nodes;
+					let bonus = (numerator * scale) / denominator;
+
+					// Cap bonus at 500 (i.e., 0.5 in fixed point)
+					let bonus = bonus.min(500);
+					scale + bonus // 1000 + bonus
 				} else {
-					1.0 // No bonus if no valid linked nodes
+					scale // No bonus
 				};
-				let final_weight = (combined_weight as f32 * bonus_factor) as u32;
-		
-				// Cap the final weight to prevent abuse
-				let capped_weight = final_weight.min(10_000); // Configurable cap
-				storage_weights.push(capped_weight as u16);
+
+				// Multiply combined_weight by bonus_multiplier and scale back
+				let weighted = (combined_weight as u64 * bonus_multiplier as u64) / scale as u64;
+				let capped_weight = weighted.min(10_000) as u16;
+
+				storage_weights.push(capped_weight);
 		
 				// Log for transparency and debugging
 				log::info!(
@@ -310,7 +321,7 @@ pub mod pallet {
 					own_weight,
 					total_weight,
 					valid_linked_nodes,
-					bonus_factor,
+					bonus_multiplier,
 					capped_weight
 				);
 		
