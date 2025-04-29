@@ -266,7 +266,7 @@ pub mod pallet {
 			let hardware_clear_interval = <T as pallet::Config>::HardwareSubmitRequestsClearInterval::get();
 
 			// Clear entries every 150 blocks
-			if _n % hardware_clear_interval.into() == 150u32.into() {
+			if _n % hardware_clear_interval.into() == 0u32.into() {
 				// Iterate through all entries in HardwareRequestsCount
 				HardwareRequestsCount::<T>::iter().for_each(|(node_id, _count)| {
 					let last_request_block = HardwareRequestsLastBlock::<T>::get(&node_id);
