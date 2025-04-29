@@ -616,7 +616,7 @@ pub mod pallet {
 			origin: OriginFor<T>, 
 			miner_pin_requests: Vec<MinerProfileItem>,  //
 			storage_request_owner: T::AccountId,
-			storage_request_file_hash: FileHash, //correct
+			storage_request_file_hash: FileHash, 
 			file_size: u128,
 			user_profile_cid: FileHash
 		) -> DispatchResultWithPostInfo {

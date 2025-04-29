@@ -171,12 +171,12 @@ impl NodeMetricsData {
 		let base_weight = match _node_type {
 			NodeType::StorageMiner => {
 				(
-					availability_score.saturating_mul(40)
-					.saturating_add(performance_score.saturating_mul(15))
-					.saturating_add(reliability_score.saturating_mul(15))
-					.saturating_add(capacity_score.saturating_mul(15)) // Increased to 45%
-					.saturating_add(storage_usage_score.saturating_mul(5)) // Reduced to 5%
-					.saturating_add(network_score.saturating_mul(10))
+					availability_score.saturating_mul(80)
+					.saturating_add(performance_score.saturating_mul(2))
+					.saturating_add(reliability_score.saturating_mul(2))
+					.saturating_add(capacity_score.saturating_mul(4)) 
+					.saturating_add(storage_usage_score.saturating_mul(5))
+					.saturating_add(network_score.saturating_mul(2))
 					.saturating_add(diversity_score.saturating_mul(5))
 				) as u32
 			},
@@ -223,60 +223,61 @@ impl NodeMetricsData {
 			return 0;
 		}
 
-		// Calculate modifiers
-		let bonuses = (Self::calculate_bonuses(metrics) as u64).saturating_div(100);
-		let penalties = (Self::calculate_penalties(metrics) as u64).saturating_div(100);
+		// // Calculate modifiers
+		// let bonuses = (Self::calculate_bonuses(metrics) as u64).saturating_div(100);
+		// let penalties = (Self::calculate_penalties(metrics) as u64).saturating_div(100);
 
-		let modifier = (Self::INTERNAL_SCALING as u64)
-			.saturating_div(100)
-			.saturating_add(bonuses)
-			.saturating_sub(penalties) as u32;
+		// let modifier = (Self::INTERNAL_SCALING as u64)
+		// 	.saturating_div(100)
+		// 	.saturating_add(bonuses)
+		// 	.saturating_sub(penalties) as u32;
 
-		// Calculate scaling factors
-		let network_scaling =
-			Self::_get_network_scaling_factor(all_nodes_metrics).saturating_div(100);
-		let relative_position =
-			Self::_calculate_relative_position(metrics, all_nodes_metrics).saturating_div(100);
+		// // Calculate scaling factors
+		// let network_scaling =
+		// 	Self::_get_network_scaling_factor(all_nodes_metrics).saturating_div(100);
+		// let relative_position =
+		// 	Self::_calculate_relative_position(metrics, all_nodes_metrics).saturating_div(100);
 
-		// Calculate final weight with careful scaling
-		let intermediate = (base_weight as u64)
-			.saturating_mul(network_scaling as u64)
-			.saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
+		// // Calculate final weight with careful scaling
+		// let intermediate = (base_weight as u64)
+		// 	.saturating_mul(network_scaling as u64)
+		// 	.saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
 
-		let with_modifier = (intermediate as u64)
-			.saturating_mul(modifier as u64)
-			.saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
+		// let with_modifier = (intermediate as u64)
+		// 	.saturating_mul(modifier as u64)
+		// 	.saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
 
-		let positioned = (with_modifier as u64)
-			.saturating_mul(relative_position as u64)
-			.saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
+		// let positioned = (with_modifier as u64)
+		// 	.saturating_mul(relative_position as u64)
+		// 	.saturating_div((Self::INTERNAL_SCALING / 100) as u64) as u32;
 
-		// Scale to 16-bit range with minimum value of 1
-		let weight = (positioned as u64)
-			.saturating_mul(Self::MAX_SCORE as u64)
-			.saturating_div(Self::INTERNAL_SCALING as u64)
-			.max(1)
-			.min(Self::MAX_SCORE as u64) as u32;
+		// // Scale to 16-bit range with minimum value of 1
+		// let weight = (positioned as u64)
+		// 	.saturating_mul(Self::MAX_SCORE as u64)
+		// 	.saturating_div(Self::INTERNAL_SCALING as u64)
+		// 	.max(1)
+		// 	.min(Self::MAX_SCORE as u64) as u32;
 
-		weight
+		// weight
+		base_weight
 	}
 
 	fn calculate_availability_score(metrics: &NodeMetricsData) -> u32 {
 		if metrics.total_pin_checks < 10 {
-			if metrics.total_minutes > 0 {
-				let uptime_base = (metrics.uptime_minutes as u64)
-					.saturating_mul(Self::INTERNAL_SCALING as u64)
-					.saturating_div(metrics.total_minutes as u64) as u32;
-				let time_factor = (metrics.total_minutes as u32)
-					.min(10_080) // Cap at 7 days
-					.saturating_mul(Self::INTERNAL_SCALING)
-					.saturating_div(10_080);
-				uptime_base
-					.saturating_mul(time_factor)
-					.saturating_div(Self::INTERNAL_SCALING)
-			} else {
+			// if metrics.total_minutes > 0 {
+			// 	let uptime_base = (metrics.uptime_minutes as u64)
+			// 		.saturating_mul(Self::INTERNAL_SCALING as u64)
+			// 		.saturating_div(metrics.total_minutes as u64) as u32;
+			// 	let time_factor = (metrics.total_minutes as u32)
+			// 		.min(10_080) // Cap at 7 days
+			// 		.saturating_mul(Self::INTERNAL_SCALING)
+			// 		.saturating_div(10_080);
+			// 	uptime_base
+			// 		.saturating_mul(time_factor)
+			// 		.saturating_div(Self::INTERNAL_SCALING)
+			// } else {
 				0
-			}
+			// }
 		} else {
 			// Original logic for when pin checks are available
 			let base_score = (metrics.successful_pin_checks as u64)
