@@ -481,16 +481,12 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		// miners request to store a file given file hash 
+		// miners request to store a file given file hash
 		#[pallet::call_index(10)]
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
 		pub fn update_pin_and_storage_requests(
 			origin: OriginFor<T>,
-			miner_pin_requests: Vec<MinerProfileItem>, 
-			storage_request_owner: T::AccountId,
-			storage_request_file_hash: FileHash,
-			file_size: u128,
-			user_profile_cid: FileHash
+			requests: Vec<StorageRequestUpdate<T::AccountId>>
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
@@ -515,96 +511,98 @@ pub mod pallet {
 			ensure!(lock_info.miners_locked, Error::<T>::MinersNotLocked);
 			ensure!(lock_info.locker == who, Error::<T>::UnauthorizedLocker);
 
-			// Check that all miners are registered as storage miners
-			for miner_profile in miner_pin_requests.iter() {
-				let miner_node_id_vec = miner_profile.miner_node_id.to_vec();
-				let miner_node_info = RegistrationPallet::<T>::get_node_registration_info(miner_node_id_vec);
-				ensure!(
-					miner_node_info.is_some(), 
-					Error::<T>::NodeNotRegistered
-				);
+			for request in requests {
+			    // Check that all miners are registered as storage miners
+			    for miner_profile in request.miner_pin_requests.iter() {
+			    	let miner_node_id_vec = miner_profile.miner_node_id.to_vec();
+			    	let miner_node_info = RegistrationPallet::<T>::get_node_registration_info(miner_node_id_vec);
+			    	ensure!(
+			    		miner_node_info.is_some(), 
+			    		Error::<T>::NodeNotRegistered
+			    	);
 
-				let miner_node_info = miner_node_info.unwrap();
-				ensure!(
-					miner_node_info.node_type == NodeType::StorageMiner, 
-					Error::<T>::InvalidNodeType
-				);
-			}
+			    	let miner_node_info = miner_node_info.unwrap();
+			    	ensure!(
+			    		miner_node_info.node_type == NodeType::StorageMiner, 
+			    		Error::<T>::InvalidNodeType
+			    	);
+			    }
 
-			// // Check that all miners are in a locked state before processing
-			// for miner_profile in miner_pin_requests.iter() {
-			// 	let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
-			// 	ensure!(
-			// 		miner_state == MinerState::Locked, 
-			// 		Error::<T>::MinerNotLocked
-			// 	);
-			// }
+			    // // Check that all miners are in a locked state before processing
+			    // for miner_profile in miner_pin_requests.iter() {
+			    // 	let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
+			    // 	ensure!(
+			    // 		miner_state == MinerState::Locked, 
+			    // 		Error::<T>::MinerNotLocked
+			    // 	);
+			    // }
 
-			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+			    // Rate limit: maximum storage requests per block per user
+			    let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			    let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
+			    ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
-			// Update user's storage requests count
-			RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
+			    // Update user's storage requests count
+			    RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
 
-			// Update MinerProfile storage for each miner pin request
-			for miner_profile in miner_pin_requests.iter() {
-				// Update MinerProfile storage with node ID and CID
-				<MinerProfile<T>>::insert(
-					miner_profile.miner_node_id.clone(), 
-					BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(
-						miner_profile.cid.clone().into_inner().to_vec()
-					).unwrap_or_else(|v: Vec<u8>| 
-						BoundedVec::truncate_from(v)
-					)
-				);
-			}
+			    // Update MinerProfile storage for each miner pin request
+			    for miner_profile in request.miner_pin_requests.iter() {
+			    	// Update MinerProfile storage with node ID and CID
+			    	<MinerProfile<T>>::insert(
+			    		miner_profile.miner_node_id.clone(), 
+			    		BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(
+			    			miner_profile.cid.clone().into_inner().to_vec()
+			    		).unwrap_or_else(|v: Vec<u8>| 
+			    			BoundedVec::truncate_from(v)
+			    		)
+			    	);
+			    }
 
-			// Update or insert UserTotalFilesSize
-			<UserTotalFilesSize<T>>::mutate(storage_request_owner.clone(), |total_size| {
-				*total_size = Some(total_size.unwrap_or(0) + file_size);
-			});
+			    // Update or insert UserTotalFilesSize
+			    <UserTotalFilesSize<T>>::mutate(request.storage_request_owner.clone(), |total_size| {
+			    	*total_size = Some(total_size.unwrap_or(0) + request.file_size);
+			    });
 
-			// // Set all miners free after processing the pin request
-			// for miner_profile in miner_pin_requests.iter() {
-			// 	// Set the miner's state to Free
-			// 	MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
-			// }
+			    // // Set all miners free after processing the pin request
+			    // for miner_profile in miner_pin_requests.iter() {
+			    // 	// Set the miner's state to Free
+			    // 	MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
+			    // }
 
-			// // Iterate over all miners and set them to Locked
-			// for (miner_node_id, _) in MinerStates::<T>::iter() {
-			// 	MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
-			// }
+			    // // Iterate over all miners and set them to Locked
+			    // for (miner_node_id, _) in MinerStates::<T>::iter() {
+			    // 	MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
+			    // }
 
-			MinerLockInfos::<T>::put(MinersLockInfo {
-				miners_locked: false,
-				locker: who,
-				locked_at: <frame_system::Pallet<T>>::block_number(),
-			});			
+			    MinerLockInfos::<T>::put(MinersLockInfo {
+			    	miners_locked: false,
+			    	locker: who.clone(),
+			    	locked_at: <frame_system::Pallet<T>>::block_number(),
+			    });			
 						
-			// Update MinerTotalFilesSize for each miner
-			for miner_profile in miner_pin_requests.iter() {
-				<MinerTotalFilesSize<T>>::mutate(&miner_profile.miner_node_id, |total_size| {
-					*total_size = Some(total_size.unwrap_or(0) + file_size);
-				});
+			    // Update MinerTotalFilesSize for each miner
+			    for miner_profile in request.miner_pin_requests.iter() {
+			    	<MinerTotalFilesSize<T>>::mutate(&miner_profile.miner_node_id, |total_size| {
+			    		*total_size = Some(total_size.unwrap_or(0) + request.file_size);
+			    	});
+			    }
+
+			    // Remove the storage request
+			    <UserStorageRequests<T>>::remove(
+			    	request.storage_request_owner.clone(), 
+			    	request.storage_request_file_hash.clone()
+			    );
+
+			    // Update UserProfile storage
+			    UserProfile::<T>::insert(&request.storage_request_owner, request.user_profile_cid);
+
+				// Deposit an event to log the pin request update
+			    Self::deposit_event(Event::StorageRequestUpdated {
+			    	owner: request.storage_request_owner,
+			    	file_hash: request.storage_request_file_hash,
+			    	file_size: request.file_size,
+			    });
 			}
-
-			// Remove the storage request
-			<UserStorageRequests<T>>::remove(
-				storage_request_owner.clone(), 
-				storage_request_file_hash.clone()
-			);
-
-			// Update UserProfile storage
-			UserProfile::<T>::insert(&storage_request_owner, user_profile_cid);
-
-			// Deposit an event to log the pin request update
-			Self::deposit_event(Event::StorageRequestUpdated {
-				owner: storage_request_owner,
-				file_hash: storage_request_file_hash,
-				file_size: file_size,
-			});
 
 			Ok(().into())
 		}
@@ -614,7 +612,7 @@ pub mod pallet {
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
 		pub fn update_unpin_and_storage_requests(
 			origin: OriginFor<T>, 
-			miner_pin_requests: Vec<MinerProfileItem>,  //
+			miner_pin_requests: Vec<MinerProfileItem>,  
 			storage_request_owner: T::AccountId,
 			storage_request_file_hash: FileHash, 
 			file_size: u128,

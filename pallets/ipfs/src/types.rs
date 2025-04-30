@@ -75,6 +75,16 @@ pub struct FileInput {
     pub file_name: Vec<u8>,
 }
 
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct StorageRequestUpdate<AccountId> {
+	pub miner_pin_requests: Vec<MinerProfileItem>,
+	pub storage_request_owner: AccountId,
+	pub storage_request_file_hash: FileHash,
+	pub file_size: u128,
+	pub user_profile_cid: FileHash,
+}
+
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
 pub struct UpdateIpfsRequestPayload<T: Config> {
     pub node_id: Vec<u8>,
