@@ -71,7 +71,6 @@ pub mod pallet {
     use pallet_registration::Pallet as RegistrationPallet;
     use pallet_registration::NodeType;
     use pallet_credits::Pallet as CreditsPallet;
-    // use pallet_storage_s3::Pallet as StorageS3Pallet;
     use pallet_utils::SubscriptionId;
     use sp_core::H256;
     use sp_std::{vec, vec::Vec};
@@ -79,17 +78,12 @@ pub mod pallet {
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_subaccount::traits::SubAccounts;
     use frame_system::offchain::Signer;
-    use sp_runtime::offchain::storage_lock::StorageLock;
     use pallet_credits::TotalLockedAlpha;
     use pallet_credits::TotalCreditsPurchased;
-    use sp_runtime::offchain::Duration;
-    use sp_runtime::offchain::storage_lock::BlockAndTime;
     use frame_system::offchain::SendTransactionTypes;
     use frame_system::offchain::AppCrypto;
-    use frame_system::offchain::SigningTypes;
     use frame_system::offchain::SendUnsignedTransaction;
     use frame_support::traits::ExistenceRequirement;
-    // use pallet_compute::ComputeRequestStatus;
     use sp_runtime::traits::Zero;
     use ipfs_pallet::FileInput;
     use sp_core::U256;

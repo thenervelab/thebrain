@@ -72,12 +72,7 @@ pub mod pallet {
 	use sp_std::vec;
 	use pallet_utils::Pallet as UtilsPallet;
 	use pallet_registration::Pallet as RegistrationPallet;
-	use pallet_rankings::Pallet as RankingsPallet;
 	use pallet_registration::NodeType;
-	use pallet_registration::NodeInfo;
-	use sp_runtime::offchain::storage_lock::StorageLock;
-	use sp_runtime::offchain::storage_lock::BlockAndTime;
-	use frame_system::offchain::Signer;
 	use crate::types::{
 		FileHash, 
 		StorageRequest, 
@@ -88,15 +83,12 @@ pub mod pallet {
 		FileName,
 	};
 	use frame_support::BoundedVec;
-	use sp_std::collections::btree_map::BTreeMap;
 	use codec::alloc::string::ToString;
 	use scale_info::prelude::string::String;
-	use frame_system::offchain::SigningTypes;
 	use frame_system::offchain::AppCrypto;
-	use frame_system::offchain::SendUnsignedTransaction;
 	use frame_system::offchain::SendTransactionTypes;
 	use scale_info::prelude::collections;
-	use serde_json::{Value, to_string};
+	use serde_json::Value;
 	use sp_runtime::Saturating;
 
 	use sp_runtime::AccountId32;
@@ -731,6 +723,28 @@ pub mod pallet {
 			});
 
 			Ok(().into())
+		}
+
+		/// Removes all unpin requests by the specified owner.
+		#[pallet::call_index(13)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn sudo_remove_unpin_requests(
+			origin: OriginFor<T>,
+			owner: T::AccountId,
+		) -> DispatchResult {
+			// Ensure origin is Root (i.e. sudo)
+			ensure_root(origin)?;
+	
+			// Get existing requests
+			let mut requests = <UserUnpinRequests<T>>::get();
+	
+			// Filter out requests that belong to the given owner
+			requests.retain(|r| r.owner != owner);
+	
+			// Update storage
+			<UserUnpinRequests<T>>::set(requests);
+	
+			Ok(())
 		}
 		
 	}
@@ -1702,7 +1716,6 @@ pub mod pallet {
 			for (owner, file_hash) in requests_to_remove {
 				UserStorageRequests::<T>::remove(&owner, &file_hash);
 			}
-		}
-		
+		}	
 	}
 }
