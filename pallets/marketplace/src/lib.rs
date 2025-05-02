@@ -432,7 +432,8 @@ pub mod pallet {
         /// No subscription found for the given user
         NoSubscriptionFound,
         StorageOperationsDisabled,
-        TooManyRequests
+        TooManyRequests,
+        OperationNotAllowed
 	}
     
 	#[pallet::storage]
@@ -573,6 +574,15 @@ pub mod pallet {
                 Error::<T>::NodeTypeDisabled
             );
 
+            // Check if the account is a sub-account, and if so, use the main account
+            let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
+                Ok(main) => {
+                    ensure!(<pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::can_upload(caller.clone()), Error::<T>::OperationNotAllowed);
+                    main
+                },
+                Err(_) => caller.clone(), // If not a sub-account, use the original account
+            };
+            
             // Check if a specific miner is requested and charge an additional fee
             if miner_ids.is_some() {
                 // Define a fixed fee for requesting a specific miner
@@ -585,24 +595,18 @@ pub mod pallet {
 
                 // Ensure the payer has sufficient balance
                 ensure!(
-                    <pallet_balances::Pallet<T>>::free_balance(&caller) >= total_fee,
+                    <pallet_balances::Pallet<T>>::free_balance(&owner) >= total_fee,
                     Error::<T>::InsufficientBalance
                 );
 
                 // Charge the specific miner request fee
                 <pallet_balances::Pallet<T>>::transfer(
-                    &caller.clone(), 
+                    &owner.clone(), 
                     &Self::account_id(), 
                     total_fee, 
                     ExistenceRequirement::AllowDeath
                 )?;
             }
-
-            // Check if the account is a sub-account, and if so, use the main account
-            let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
-                Ok(main) => main,
-                Err(_) => caller.clone(), // If not a sub-account, use the original account
-            };
 
             Self::process_storage_requests(&owner.clone(), &files_input.clone(), miner_ids)?;
 
@@ -637,7 +641,10 @@ pub mod pallet {
 
             // Check if the account is a sub-account, and if so, use the main account
             let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
-                Ok(main) => main,
+                Ok(main) => {
+                    ensure!(<pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::can_delete(caller.clone()), Error::<T>::OperationNotAllowed);
+                    main
+                },
                 Err(_) => caller.clone(), // If not a sub-account, use the original account
             };
 

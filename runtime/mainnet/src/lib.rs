@@ -174,7 +174,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9033,
+	spec_version: 9034,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1486,12 +1486,14 @@ impl pallet_child_bounties::Config for Runtime {
 
 parameter_types! {
 	pub const SubAccountStringLimit: u32 = 300;
+	pub const MaxSubAccountsLimit: u32 = 50;	
 }
 
 impl pallet_subaccount::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
 	type StringLimit = SubAccountStringLimit;
+	type MaxSubAccountsLimit = MaxSubAccountsLimit;
 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
 }
 
