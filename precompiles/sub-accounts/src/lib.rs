@@ -45,7 +45,7 @@ where
 
 		// Convert addresses to AccountIds
 		let main_address: H160 = main.into();
-		let main_account = Runtime::AddressMapping::into_account_id(main_address);
+		// let main_account = Runtime::AddressMapping::into_account_id(main_address);
 
 		let sub_address: H160 = new_sub_account.into();
 		let sub_account = Runtime::AddressMapping::into_account_id(sub_address);

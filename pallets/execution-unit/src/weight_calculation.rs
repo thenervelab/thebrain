@@ -124,6 +124,10 @@ impl NodeMetricsData {
 			return 0;
 		}
 
+		if metrics.latency_ms == 0 || metrics.avg_response_time_ms == 0 || metrics.primary_network_interface.is_none() || metrics.disks.is_empty() {
+			return 0;
+		}
+		
 		// Calculate base scores with u64 casting for safety
 		let availability_score =
 			(Self::calculate_availability_score(metrics) as u64).saturating_div(100);
@@ -171,7 +175,7 @@ impl NodeMetricsData {
 		let base_weight = match _node_type {
 			NodeType::StorageMiner => {
 				(
-					availability_score.saturating_mul(80)
+					availability_score.saturating_mul(80) // pin , ping 
 					.saturating_add(performance_score.saturating_mul(2))
 					.saturating_add(reliability_score.saturating_mul(2))
 					.saturating_add(capacity_score.saturating_mul(4)) 

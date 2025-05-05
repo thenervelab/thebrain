@@ -55,8 +55,8 @@ pub mod pallet {
 	use crate::weights::WeightInfo;
 	use scale_codec::alloc::string::ToString;
 	use scale_info::prelude::string::String;
-	use ipfs_pallet::{FileHash, MAX_NODE_ID_LENGTH};
-	use ipfs_pallet::MinerProfileItem;
+	// use ipfs_pallet::{FileHash, MAX_NODE_ID_LENGTH};
+	// use ipfs_pallet::MinerProfileItem;
 	use frame_support::{pallet_prelude::*, traits::Randomness};
 	use frame_system::{
 		offchain::{
@@ -64,7 +64,7 @@ pub mod pallet {
 		},
 		pallet_prelude::*,
 	};
-	use ipfs_pallet::Pallet as IpfsPallet;
+	// use ipfs_pallet::Pallet as IpfsPallet;
 	use num_traits::float::FloatCore;
 	use pallet_babe::RandomnessFromOneEpochAgo;
 	use pallet_metagraph::UIDs;
@@ -77,7 +77,7 @@ pub mod pallet {
 		format,
 		offchain::{
 			http,
-			storage_lock::{BlockAndTime, StorageLock},
+			// storage_lock::{BlockAndTime, StorageLock},
 			Duration,
 		},
 		traits::Zero,
@@ -85,14 +85,14 @@ pub mod pallet {
 	};
 	use sp_std::prelude::*;
 	use sp_runtime::Saturating;
-	use pallet_registration::NodeInfo;
+	// use pallet_registration::NodeInfo;
 	use serde_json::Value;
-	use pallet_rankings::Pallet as RankingsPallet;
-	use ipfs_pallet::MinerPinRequest;
-	use ipfs_pallet::StorageRequest;
-	use ipfs_pallet::UserProfile;
+	// use pallet_rankings::Pallet as RankingsPallet;
+	// use ipfs_pallet::MinerPinRequest;
+	// use ipfs_pallet::StorageRequest;
+	// use ipfs_pallet::UserProfile;
 	use sp_std::collections::btree_map::BTreeMap;
-	use ipfs_pallet::StorageUnpinRequest;
+	// use ipfs_pallet::StorageUnpinRequest;
 
 	// const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
 
@@ -195,6 +195,13 @@ pub mod pallet {
 		PurgeDeregisteredNodesStatusChanged {
 			enabled: bool,
 		},
+		/// Emitted when storage size is below 2TB.
+		StorageBelowTwoTB { node_id: Vec<u8> },
+		/// Emitted when primary network interface is not provided.
+		NoPrimaryNetworkInterface { node_id: Vec<u8> },
+		/// Emitted when disks array is empty.
+		EmptyDisksArray { node_id: Vec<u8> },
+		MemoryExceedsFiveTB { node_id: Vec<u8> },
 	}
 
 	#[derive(Debug, Encode, Decode, Clone, PartialEq, Eq, TypeInfo)]
@@ -203,6 +210,7 @@ pub mod pallet {
 		HardwareCheckFailed,
 		BenchmarkExecutionFailed,
 		MetricsNotFound,
+		
 	}
 
 	#[pallet::storage]
@@ -237,7 +245,13 @@ pub mod pallet {
 		IpfsError,
 		TooManyRequests,
 		NodeNotRegistered,
-		InvalidNodeType
+		InvalidNodeType,
+		StorageBelowTwoTB,
+		/// Primary network interface is not provided.
+		NoPrimaryNetworkInterface,
+		/// Disks array is empty.
+		EmptyDisksArray,
+		MemoryExceedsFiveTB
 	}
 
 	#[pallet::storage]
@@ -360,6 +374,40 @@ pub mod pallet {
 			// 	}
 			// }
 
+			// Define 2TB in bytes (2TB = 2 * 1024 * 1024 * 1024 * 1024 bytes)
+			const TWO_TB_IN_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
+
+			// Define 5TB in megabytes (5TB = 5 * 1024 * 1024 MB)
+			const FIVE_TB_IN_MB: u64 = 5 * 1024 * 1024;
+
+			// Calculate storage values
+			let current_storage_bytes = (system_info.storage_total_mb * 1024 * 1024)
+			- (system_info.storage_free_mb * 1024 * 1024);
+			let total_storage_bytes = system_info.storage_total_mb * 1024 * 1024;
+		
+			if current_storage_bytes < TWO_TB_IN_BYTES || total_storage_bytes < TWO_TB_IN_BYTES {
+				Self::deposit_event(Event::StorageBelowTwoTB { node_id: node_id.clone() });
+				return Err(Error::<T>::StorageBelowTwoTB.into());
+			}
+
+			// Check if primary_network_interface is None
+			if system_info.primary_network_interface.is_none() {
+				Self::deposit_event(Event::NoPrimaryNetworkInterface { node_id: node_id.clone() });
+				return Err(Error::<T>::NoPrimaryNetworkInterface.into());
+			}
+		
+			// Check if disks array is empty
+			if system_info.disks.is_empty() {
+				Self::deposit_event(Event::EmptyDisksArray { node_id: node_id.clone() });
+				return Err(Error::<T>::EmptyDisksArray.into());
+			}
+
+			// Check if memory or free memory exceeds 5TB
+			if system_info.memory_mb > FIVE_TB_IN_MB || system_info.free_memory_mb > FIVE_TB_IN_MB {
+				Self::deposit_event(Event::MemoryExceedsFiveTB { node_id: node_id.clone() });
+				return Err(Error::<T>::MemoryExceedsFiveTB.into());
+			}
+
 			// Function to create default metrics data
 			let create_default_metrics = || {
 				let geolocation = system_info
@@ -372,9 +420,8 @@ pub mod pallet {
 					miner_id: node_id.clone(),
 					bandwidth_mbps: system_info.network_bandwidth_mb_s,
 					// converting mbs into bytes
-					current_storage_bytes: (system_info.storage_total_mb * 1024 * 1024)
-						- (system_info.storage_free_mb * 1024 * 1024),
-					total_storage_bytes: system_info.storage_total_mb * 1024 * 1024,
+					current_storage_bytes,
+					total_storage_bytes,
 					geolocation: geolocation.unwrap_or_default(),
 					primary_network_interface: system_info.primary_network_interface.clone(),
 					disks: system_info.disks.clone(),

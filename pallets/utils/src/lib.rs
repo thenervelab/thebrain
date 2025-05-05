@@ -21,8 +21,8 @@ pub mod pallet {
 	use sp_runtime::{
 		format,
 		offchain::{http, Duration},
-		traits::Zero,
-		AccountId32,
+		// traits::Zero,
+		// AccountId32,
 	};
 	use sp_std::vec;
     

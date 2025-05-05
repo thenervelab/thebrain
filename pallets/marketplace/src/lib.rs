@@ -77,7 +77,7 @@ pub mod pallet {
     use num_traits::float::FloatCore;
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_subaccount::traits::SubAccounts;
-    use frame_system::offchain::Signer;
+    // use frame_system::offchain::Signer;
     use pallet_credits::TotalLockedAlpha;
     use pallet_credits::TotalCreditsPurchased;
     use frame_system::offchain::SendTransactionTypes;
@@ -95,8 +95,7 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {    
-
+        fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
             // Clear all entries; limit is u32::MAX to ensure we get them all
             let result = UserRequestsCount::<T>::clear(u32::MAX, None);
 
@@ -105,7 +104,6 @@ pub mod pallet {
                 Self::handle_storage_subscription_charging(current_block);
                 // Self::handle_storage_s3_subscription_charging(current_block);
                 // Self::handle_compute_subscription_charging(current_block);
-
             }
 
             // Return some weight (adjust based on actual implementation)

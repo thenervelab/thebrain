@@ -90,7 +90,6 @@ pub mod pallet {
 	use scale_info::prelude::collections;
 	use serde_json::Value;
 	use sp_runtime::Saturating;
-
 	use sp_runtime::AccountId32;
 	use sp_std::convert::TryInto;
 	use sp_core::crypto::Ss58Codec;
@@ -419,8 +418,52 @@ pub mod pallet {
 			Ok(().into())
 		}
 
+		/// Unsigned transaction to remove a bad unpin request
+		#[pallet::call_index(4)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn remove_bad_unpin_request(
+			origin: OriginFor<T>,
+			file_hash: FileHash,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+			let node_info = node_info.unwrap();
+
+			// Check if node type is Validator
+			ensure!(
+				node_info.node_type == NodeType::Validator,
+				Error::<T>::InvalidNodeType
+			);
+
+			// Rate limit
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count =
+				RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
+			ensure!(
+				user_requests_count + 1 <= max_requests_per_block,
+				Error::<T>::TooManyRequests
+			);
+
+			RequestsCount::<T>::insert(
+				&BoundedVec::truncate_from(node_info.node_id.clone()),
+				user_requests_count + 1,
+			);
+
+			// Remove the specific file hash from UserUnpinRequests
+			UserUnpinRequests::<T>::mutate(|requests| {
+				if let Some(pos) = requests.iter().position(|req| req.file_hash == file_hash) {
+					requests.remove(pos);
+				}
+			});
+
+			Ok(().into())
+		}
+
 		/// Unsigned transaction to set a miner's state to Locked
-		#[pallet::call_index(9)]
+		#[pallet::call_index(5)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn set_miner_state_lock(
 			origin: OriginFor<T>,
@@ -474,7 +517,7 @@ pub mod pallet {
 		}
 
 		// miners request to store a file given file hash
-		#[pallet::call_index(10)]
+		#[pallet::call_index(6)]
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
 		pub fn update_pin_and_storage_requests(
 			origin: OriginFor<T>,
@@ -600,7 +643,7 @@ pub mod pallet {
 		}
 
 		// miners request to store a file given file hash 
-		#[pallet::call_index(11)]
+		#[pallet::call_index(7)]
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
 		pub fn update_unpin_and_storage_requests(
 			origin: OriginFor<T>, 
@@ -703,7 +746,7 @@ pub mod pallet {
 		}
 
 		/// Root call to set all miners' states to Free
-		#[pallet::call_index(12)]
+		#[pallet::call_index(8)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn set_all_miners_state_free(origin: OriginFor<T>, validator: T::AccountId) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
@@ -724,7 +767,7 @@ pub mod pallet {
 		}
 
 		/// Removes all unpin requests by the specified owner.
-		#[pallet::call_index(13)]
+		#[pallet::call_index(9)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn sudo_remove_unpin_requests(
 			origin: OriginFor<T>,

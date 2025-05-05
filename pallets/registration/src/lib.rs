@@ -53,7 +53,7 @@ pub mod pallet {
 	use sp_std::{prelude::*, vec::Vec};
 	use sp_std::collections::btree_set::BTreeSet;
 	use sp_std::collections::btree_map::BTreeMap;
-	use pallet_proxy::Proxies;
+	// use pallet_proxy::Proxies;
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 1;
 	// const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
