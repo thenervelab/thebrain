@@ -1282,11 +1282,11 @@ pub mod pallet {
 			let mut active_nodes = Vec::new();
 			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the NodeRegistration storage map
-			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
+			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node's status is not Degraded
-					if !matches!(node_info.status, Status::Degraded) {
+					if !matches!(node_info.status, Status::Degraded) && matches!(node_info.node_type, NodeType::StorageMiner) {
 						// Check for uniqueness
 						if !seen_node_ids.contains(&node_info.node_id) {
 							seen_node_ids.push(node_info.node_id.clone());
