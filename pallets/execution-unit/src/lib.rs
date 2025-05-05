@@ -279,13 +279,13 @@ pub mod pallet {
 
 			let hardware_clear_interval = <T as pallet::Config>::HardwareSubmitRequestsClearInterval::get();
 
-			// Clear entries every 150 blocks
+			// Clear entries every 1500 blocks
 			if _n % hardware_clear_interval.into() == 0u32.into() {
 				// Iterate through all entries in HardwareRequestsCount
 				HardwareRequestsCount::<T>::iter().for_each(|(node_id, _count)| {
 					let last_request_block = HardwareRequestsLastBlock::<T>::get(&node_id);
 					
-					// Check if 150 blocks have passed since the last request
+					// Check if 1500 blocks have passed since the last request
 					if _n.saturating_sub(last_request_block) >= hardware_clear_interval.into() {
 						// Reset the requests count and last block for this node
 						HardwareRequestsCount::<T>::remove(&node_id);
@@ -374,39 +374,39 @@ pub mod pallet {
 			// 	}
 			// }
 
-			// Define 2TB in bytes (2TB = 2 * 1024 * 1024 * 1024 * 1024 bytes)
-			const TWO_TB_IN_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
+			// // Define 2TB in bytes (2TB = 2 * 1024 * 1024 * 1024 * 1024 bytes)
+			// const TWO_TB_IN_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
 
-			// Define 5TB in megabytes (5TB = 5 * 1024 * 1024 MB)
-			const FIVE_TB_IN_MB: u64 = 5 * 1024 * 1024;
+			// // Define 5TB in megabytes (5TB = 5 * 1024 * 1024 MB)
+			// const FIVE_TB_IN_MB: u64 = 5 * 1024 * 1024;
 
-			// Calculate storage values
-			let current_storage_bytes = (system_info.storage_total_mb * 1024 * 1024)
-			- (system_info.storage_free_mb * 1024 * 1024);
-			let total_storage_bytes = system_info.storage_total_mb * 1024 * 1024;
+			// // Calculate storage values
+			// let current_storage_bytes = (system_info.storage_total_mb * 1024 * 1024)
+			// - (system_info.storage_free_mb * 1024 * 1024);
+			// let total_storage_bytes = system_info.storage_total_mb * 1024 * 1024;
 		
-			if current_storage_bytes < TWO_TB_IN_BYTES || total_storage_bytes < TWO_TB_IN_BYTES {
-				Self::deposit_event(Event::StorageBelowTwoTB { node_id: node_id.clone() });
-				return Err(Error::<T>::StorageBelowTwoTB.into());
-			}
+			// if current_storage_bytes < TWO_TB_IN_BYTES || total_storage_bytes < TWO_TB_IN_BYTES {
+			// 	Self::deposit_event(Event::StorageBelowTwoTB { node_id: node_id.clone() });
+			// 	return Err(Error::<T>::StorageBelowTwoTB.into());
+			// }
 
-			// Check if primary_network_interface is None
-			if system_info.primary_network_interface.is_none() {
-				Self::deposit_event(Event::NoPrimaryNetworkInterface { node_id: node_id.clone() });
-				return Err(Error::<T>::NoPrimaryNetworkInterface.into());
-			}
+			// // Check if primary_network_interface is None
+			// if system_info.primary_network_interface.is_none() {
+			// 	Self::deposit_event(Event::NoPrimaryNetworkInterface { node_id: node_id.clone() });
+			// 	return Err(Error::<T>::NoPrimaryNetworkInterface.into());
+			// }
 		
-			// Check if disks array is empty
-			if system_info.disks.is_empty() {
-				Self::deposit_event(Event::EmptyDisksArray { node_id: node_id.clone() });
-				return Err(Error::<T>::EmptyDisksArray.into());
-			}
+			// // Check if disks array is empty
+			// if system_info.disks.is_empty() {
+			// 	Self::deposit_event(Event::EmptyDisksArray { node_id: node_id.clone() });
+			// 	return Err(Error::<T>::EmptyDisksArray.into());
+			// }
 
-			// Check if memory or free memory exceeds 5TB
-			if system_info.memory_mb > FIVE_TB_IN_MB || system_info.free_memory_mb > FIVE_TB_IN_MB {
-				Self::deposit_event(Event::MemoryExceedsFiveTB { node_id: node_id.clone() });
-				return Err(Error::<T>::MemoryExceedsFiveTB.into());
-			}
+			// // Check if memory or free memory exceeds 5TB
+			// if system_info.memory_mb > FIVE_TB_IN_MB || system_info.free_memory_mb > FIVE_TB_IN_MB {
+			// 	Self::deposit_event(Event::MemoryExceedsFiveTB { node_id: node_id.clone() });
+			// 	return Err(Error::<T>::MemoryExceedsFiveTB.into());
+			// }
 
 			// Function to create default metrics data
 			let create_default_metrics = || {
@@ -420,8 +420,9 @@ pub mod pallet {
 					miner_id: node_id.clone(),
 					bandwidth_mbps: system_info.network_bandwidth_mb_s,
 					// converting mbs into bytes
-					current_storage_bytes,
-					total_storage_bytes,
+					current_storage_bytes: (system_info.storage_total_mb * 1024 * 1024)
+					- (system_info.storage_free_mb * 1024 * 1024),
+					total_storage_bytes: system_info.storage_total_mb * 1024 * 1024,
 					geolocation: geolocation.unwrap_or_default(),
 					primary_network_interface: system_info.primary_network_interface.clone(),
 					disks: system_info.disks.clone(),
