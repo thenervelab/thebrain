@@ -2,6 +2,7 @@ use codec::{Decode, Encode};
 use pallet_utils::Role;
 use scale_info::TypeInfo;
 use sp_std::prelude::*;
+
 // This will store info related storage request
 #[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
 pub struct NodeInfo<BlockNumber, AccountId> {
@@ -40,3 +41,5 @@ pub enum Status {
 	Degraded,
 	Offline,
 }
+
+

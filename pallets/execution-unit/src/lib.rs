@@ -579,27 +579,30 @@ pub mod pallet {
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
 
+			// // Fetch the existing vector of block numbers or initialize a new one
+			// let blocks_vec = BlockNumbers::<T>::get(node_id.clone()).unwrap_or_else(|| Vec::new());
 
-			// Fetch the existing vector of block numbers or initialize a new one
-			let blocks_vec = BlockNumbers::<T>::get(node_id.clone()).unwrap_or_else(|| Vec::new());
-
-			// Convert the existing blocks into a BTreeMap to remove duplicates
-			let mut blocks: BTreeMap<BlockNumberFor<T>, ()> =
-				blocks_vec.into_iter().map(|block| (block, ())).collect();
+			// // Convert the existing blocks into a BTreeMap to remove duplicates
+			// let mut blocks: BTreeMap<BlockNumberFor<T>, ()> =
+			// 	blocks_vec.into_iter().map(|block| (block, ())).collect();
 					
-			let check_interval = <T as pallet::Config>::BlockCheckInterval::get();
-			// Push the current block number and the preceding ones
-			for i in (0..check_interval).rev() {
-				let block_to_push = block_number - i;
-				// Check if the block is already present in the storage
-				if !blocks.contains_key(&block_to_push.into()) {
-					blocks.insert(block_to_push.into(), ()); // Only add if it's not already present
-				}
-			}
+			// let check_interval = <T as pallet::Config>::BlockCheckInterval::get();
+			// // Push the current block number and the preceding ones
+			// for i in (0..check_interval).rev() {
+			// 	let block_to_push = block_number - i;
+			// 	// Check if the block is already present in the storage
+			// 	if !blocks.contains_key(&block_to_push.into()) {
+			// 		blocks.insert(block_to_push.into(), ()); // Only add if it's not already present
+			// 	}
+			// }
 
-			// Convert the BTreeMap back to a Vec for storage
-			let unique_blocks: Vec<_> = blocks.keys().cloned().collect();
-			BlockNumbers::<T>::insert(node_id, unique_blocks);
+			// // Convert the BTreeMap back to a Vec for storage
+			// let unique_blocks: Vec<_> = blocks.keys().cloned().collect();
+			// BlockNumbers::<T>::insert(node_id, unique_blocks);
+
+			// Store only the latest block number as a single-element vector
+			let block_vec : Vec<BlockNumberFor<T>> = vec![block_number.into()];
+			BlockNumbers::<T>::insert(node_id, block_vec);
 			log::info!("✅ Successfully updated metrics");
 			log::info!("✅ Successfully updated block numbers");
 			Ok(().into())
@@ -1131,58 +1134,50 @@ pub mod pallet {
 				return None; // No blocks recorded
 			}
 
+			// Since we only store the last block number, take the last element and clone to get owned value
+			let last_block = block_numbers.last()?.clone().try_into().ok()?; // Convert BlockNumberFor<T> to u32
+			
+			// Get the current block number
+			let current_block = <frame_system::Pallet<T>>::block_number().saturated_into::<u32>();
+
 			// Fetch the block time
 			let block_time: u32 = Self::block_time();
 
 			let mut uptime_seconds = 0u32;
 			let mut total_uptime_seconds = 0u32;
 			let mut recent_downtime_seconds = 0u32;
-
 			let mut consecutive_reliable_days = 0u32;
-			let mut current_day_uptime = 0u32;
 
-			// Calculate metrics
-			for mut i in 1..block_numbers.len() {
-				let previous_block = block_numbers[i - 1].saturated_into::<u32>();
-				let mut current_block = block_numbers[i].saturated_into::<u32>();
+			// Calculate the block difference
+			let block_diff = current_block.saturating_sub(last_block);
+			let check_intetrval = <T as pallet::Config>::BlockCheckInterval::get();
+			// If the last block is within 300 blocks (since updates happen every 300 blocks)
+			if block_diff <= check_intetrval {
+				// Assume the node was up for the entire period since the last recorded block
+				uptime_seconds = block_diff * block_time;
+				total_uptime_seconds = uptime_seconds;
 
-				// Skip until we find a current block that is greater than previous block
-				while previous_block >= current_block && i < block_numbers.len() - 1 {
-					i += 1; // Move to the next block
-					current_block = block_numbers[i].saturated_into::<u32>();
-				}
+				// Calculate consecutive reliable days
+				let total_uptime_days = uptime_seconds / 86400; // 86400 seconds = 1 day
+				consecutive_reliable_days = total_uptime_days;
+			} else {
+				// If the difference is more than 300 blocks, assume the node was only up at the last recorded block
+				// and has been down since the next expected update (last_block + 300)
+				uptime_seconds = block_time; // Uptime only for the recorded block
+				total_uptime_seconds = uptime_seconds;
 
-				// If we exit the loop and the current block is still not greater, skip this iteration
-				if previous_block >= current_block {
-					continue;
-				}
+				// Calculate downtime from (last_block + 300) to current_block
+				let downtime_blocks = block_diff.saturating_sub(300);
+				recent_downtime_seconds = downtime_blocks * block_time;
 
-				// Difference in blocks
-				let block_diff = current_block.saturating_sub(previous_block);
-
-				// Calculate uptime
-				if block_diff == 1 {
-					// Uptime is continuous
-					uptime_seconds += block_time;
-					total_uptime_seconds += block_time; // Only add to total uptime when there is actual uptime
-					current_day_uptime += block_time;
-
-					// Check if a full day of uptime is reached
-					if current_day_uptime >= 86400 {
-						// 86400 seconds = 1 day
-						consecutive_reliable_days += 1;
-						current_day_uptime = 0; // Reset for next day
-					}
-				} else {
-					// Calculate recent downtime for gaps
-					recent_downtime_seconds += (block_diff - 1) * block_time;
-					current_day_uptime = 0; // Reset for gaps
-				}
+				// No consecutive reliable days since the node missed an update
+				consecutive_reliable_days = 0;
 			}
 
 			// Convert recent downtime seconds to hours
 			let recent_downtime_hours = recent_downtime_seconds / 3600;
 
+			// Convert uptime to minutes
 			let uptime_minutes = uptime_seconds / 60;
 			let total_uptime_minutes = total_uptime_seconds / 60;
 

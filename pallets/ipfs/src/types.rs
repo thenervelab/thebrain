@@ -14,6 +14,7 @@ pub const MAX_NODE_ID_LENGTH: u32 = 64;
 pub const MAX_MINER_IDS: u32 = 5;
 pub const MAX_BLACKLIST_ENTRIES: u32 = 350;
 pub const MAX_UNPIN_REQUESTS: u32 = 350;
+pub const MAX_REBALANCE_REQUESTS: u32 = 100000; 
 
 /// Unique identifier for a node
 pub type FileHash = BoundedVec<u8, ConstU32<MAX_FILE_HASH_LENGTH>>;
@@ -67,6 +68,7 @@ impl Default for MinerState {
 pub struct MinerProfileItem {
     pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
     pub cid: FileHash,
+    pub files_count: u32
 }
 
 #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
@@ -96,21 +98,18 @@ pub struct StorageUnpinUpdateRequest<AccountId> {
 }
 
 
-#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
-pub struct UpdateIpfsRequestPayload<T: Config> {
-    pub node_id: Vec<u8>,
-    pub miner_pin_requests: Vec<MinerProfileItem>,
-    pub storage_requests: StorageRequest<T::AccountId, BlockNumberFor<T>>,
-    pub file_size: u128,
-    pub public: T::Public,
-    pub _marker: PhantomData<T>,
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct UpdatedMinerProfileItem {
+    pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub added_files_count: u32,
+    pub added_file_size : u128
 }
 
-// Implement SignedPayload for UpdateRankingsPayload
-impl<T: Config> SignedPayload<T> for UpdateIpfsRequestPayload<T> {
-    fn public(&self) -> T::Public {
-        self.public.clone()
-    }
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct UpdatedUserProfileItem<AccountId> {
+    pub user: AccountId,
+    pub cid: FileHash,
 }
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
@@ -140,74 +139,16 @@ pub struct UserFile {
     pub created_at: u32,
 }
 
-/// Payload for updating UserProfile
-#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
-pub struct UpdateUserProfilePayload<T: Config> {
-    pub owner: T::AccountId,
-    pub cid: FileHash,
-    pub node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
-    pub public: T::Public,
-    pub _marker: PhantomData<T>,
-}
-
-// Implement SignedPayload for UpdateUserProfilePayload
-impl<T: Config> SignedPayload<T> for UpdateUserProfilePayload<T> {
-    fn public(&self) -> T::Public {
-        self.public.clone()
-    }
-}
-
-
-/// Payload for updating UserProfile
-#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
-pub struct MinerLockPayload<T: Config> {
-    pub miner_node_ids: Vec<BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>>,
-    pub block_number: BlockNumberFor<T>,
-    pub node_identity: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
-    pub public: T::Public,
-    pub _marker: PhantomData<T>,
-}
-
-// Implement SignedPayload for MinerLockPayload
-impl<T: Config> SignedPayload<T> for MinerLockPayload<T> {
-    fn public(&self) -> T::Public {
-        self.public.clone()
-    }
-}
-
-#[derive(Encode, Decode, TypeInfo)]
-pub struct MarkStorageRequestAssignedPayload<T: Config> {
-    pub owner: T::AccountId,
-    pub file_hash: FileHash,
-    pub public: T::Public,
-    pub _marker: PhantomData<T>,
-}
-
-// Implement SignedPayload for MinerLockPayload
-impl<T: Config> SignedPayload<T> for MarkStorageRequestAssignedPayload<T> {
-    fn public(&self) -> T::Public {
-        self.public.clone()
-    }
-}
-
-#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
-pub struct UpdateMinerProfilePayload<T: Config> {
-    pub miner_pin_requests: Vec<MinerProfileItem>,
-    pub public: T::Public,
-    pub _marker: PhantomData<T>,
-}
-
-// Implement SignedPayload for UpdateMinerProfilePayload
-impl<T: Config> SignedPayload<T> for UpdateMinerProfilePayload<T> {
-    fn public(&self) -> T::Public {
-        self.public.clone()
-    }
-}
-
 /// Storage map to track miner lock information.
 #[derive(Clone, Encode, Decode, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 pub struct MinersLockInfo<AccountId,BlockNumber> {
 	pub miners_locked: bool,
 	pub locker: AccountId, // Validator address
 	pub locked_at: BlockNumber, // Block number when locked
+}
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub struct RebalanceRequestItem {
+    pub node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+    pub miner_profile_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
 }

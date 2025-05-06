@@ -93,6 +93,7 @@ pub mod pallet {
 	use sp_runtime::AccountId32;
 	use sp_std::convert::TryInto;
 	use sp_core::crypto::Ss58Codec;
+	use sp_std::collections::btree_set::BTreeSet;
 
 	const DUMMY_REQUEST_BODY: &[u8; 78] = b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
 
@@ -176,32 +177,17 @@ pub mod pallet {
 							
 			// Remove storage requests older than 500 blocks
 			Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(500u32));
-		
-			// Get all active storage miners from the registration pallet
-			let active_miners = RegistrationPallet::<T>::get_all_active_storage_miners();
-		
-			// Collect all active miner node IDs into a HashSet for fast lookup
-			let active_miner_ids: sp_std::collections::btree_set::BTreeSet<_> = active_miners
-				.into_iter()
-				.map(|miner| miner.node_id)
-				.collect();
-		
-			// Now iterate through all MinerStates
-			for (miner_node_id, _) in MinerStates::<T>::iter() {
-				if active_miner_ids.contains(&miner_node_id.to_vec()) {
-					// If miner is still active and not locked, set to Free
-					match MinerStates::<T>::get(&miner_node_id) {
-						MinerState::Locked => {}, // Do nothing if locked
-						_ => {
-							MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
-						}
-					}
-				} else {
-					// Miner no longer registered => remove their MinerState
-					MinerStates::<T>::remove(&miner_node_id);
-				}
+
+			// Sync miner states
+			Self::sync_miner_states();
+
+			// get all degraded miners and add rebalance Request and then delete them
+			let degraded_miners = RegistrationPallet::<T>::get_all_degraded_storage_miners();
+			for miner in degraded_miners {
+				// let _ = Self::add_rebalance_request_from_node(miner);
+				RegistrationPallet::<T>::try_unregister_storage_miner(miner);
 			}
-		
+			
 			Weight::zero()
 		}
 	}
@@ -242,7 +228,9 @@ pub mod pallet {
 		FileHashBlacklisted,
 		MinersNotLocked,
 		UnauthorizedLocker,
-		MinersAlreadyLocked
+		MinersAlreadyLocked,
+		NodeIdTooLong,
+		RequestNotFound
 	}
 
 	// the file size where the key is encoded file hash
@@ -254,6 +242,10 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn miner_files_size)]
 	pub type MinerTotalFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, u128>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn miner_total_files_pinned)]
+	pub type MinerTotalFilesPinned<T: Config> = StorageMap<_, Blake2_128Concat, BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, u32>;
 
 	// Saves the owners request to store the file, with AccountId and FileHash as keys
 	#[pallet::storage]
@@ -276,6 +268,11 @@ pub mod pallet {
 		BoundedVec<StorageUnpinRequest<T::AccountId>, ConstU32<MAX_UNPIN_REQUESTS>>, 
 		ValueQuery
 	>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn rebalance_request)]
+	pub type RebalanceRequest<T: Config> =
+		StorageValue<_, BoundedVec<RebalanceRequestItem, ConstU32<MAX_REBALANCE_REQUESTS>>, ValueQuery>;
 	
 	//  Blacklist storage item containing the blacklisted Files Hashes
 	#[pallet::storage]
@@ -620,6 +617,8 @@ pub mod pallet {
 			    	<MinerTotalFilesSize<T>>::mutate(&miner_profile.miner_node_id, |total_size| {
 			    		*total_size = Some(total_size.unwrap_or(0) + request.file_size);
 			    	});
+
+					<MinerTotalFilesPinned<T>>::insert(&miner_profile.miner_node_id, miner_profile.files_count);				
 			    }
 
 			    // Remove the storage request
@@ -724,6 +723,7 @@ pub mod pallet {
 					<MinerTotalFilesSize<T>>::mutate(&miner_profile.miner_node_id, |total_size| {
 						*total_size = Some(total_size.unwrap_or(0) - request.file_size);
 					});
+					<MinerTotalFilesPinned<T>>::insert(&miner_profile.miner_node_id, miner_profile.files_count);
 				}
 
 				// Remove the unpin request for this file hash
@@ -787,7 +787,77 @@ pub mod pallet {
 	
 			Ok(())
 		}
+
+		#[pallet::call_index(10)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn remove_rebalance_request(
+			origin: OriginFor<T>,
+			node_rebalanace_request_to_remove: Option<Vec<Vec<u8>>>,
+			updated_miner_profiles: Vec<UpdatedMinerProfileItem>,
+			updated_user_profiles: Vec<UpdatedUserProfileItem<T::AccountId>>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
 		
+			// Check if assignment is enabled
+			ensure!(Self::assignment_enabled(), Error::<T>::AssignmentNotEnabled);
+		
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+		
+			let node_info = node_info.unwrap();
+		
+			// Ensure the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+		
+			// Handle rebalance request removal
+			if let Some(node_ids) = node_rebalanace_request_to_remove {
+				// Convert each node_id into BoundedVec
+				let mut bounded_node_ids = BTreeSet::new();
+				for id in node_ids {
+					let bounded_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>> =
+						id.try_into().map_err(|_| Error::<T>::NodeIdTooLong)?;
+					bounded_node_ids.insert(bounded_id);
+				}
+		
+				let mut requests = <RebalanceRequest<T>>::get();
+				let original_len = requests.len();
+		
+				// Retain only the requests that are NOT in the removal set
+				requests.retain(|req| !bounded_node_ids.contains(&req.node_id));
+		
+				ensure!(requests.len() < original_len, Error::<T>::RequestNotFound);
+		
+				<RebalanceRequest<T>>::put(requests);
+			}
+		
+			// Update miner profiles
+			for miner_update in updated_miner_profiles {
+				// Update miner profile CID
+				<MinerProfile<T>>::insert(&miner_update.miner_node_id, &miner_update.cid);
+		
+				// Update total files pinned
+				let current_count = <MinerTotalFilesPinned<T>>::get(&miner_update.miner_node_id).unwrap_or(0);
+				<MinerTotalFilesPinned<T>>::insert(
+					&miner_update.miner_node_id,
+					current_count.saturating_add(miner_update.added_files_count)
+				);
+		
+				// Update total files size
+				let current_size = <MinerTotalFilesSize<T>>::get(&miner_update.miner_node_id).unwrap_or(0);
+				<MinerTotalFilesSize<T>>::insert(
+					&miner_update.miner_node_id,
+					current_size.saturating_add(miner_update.added_file_size)
+				);
+			}
+		
+			// Update user profiles
+			for user_update in updated_user_profiles {
+				<UserProfile<T>>::insert(&user_update.user, &user_update.cid);
+			}
+		
+			Ok(())
+		}		
 	}
 
 	impl<T: Config> Pallet<T>{
@@ -1519,115 +1589,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// // Process unpin requests and update MinerProfile accordingly
-		// pub fn hanlde_unpin_requests() -> Result<(), DispatchError> {
-		// 	let unpin_requests = UnpinRequests::<T>::get();
-		// 	let blacklist_entries = Blacklist::<T>::get();
-
-		// 	// Combine unpin requests and blacklist entries
-		// 	let all_file_hashes = unpin_requests.iter().chain(blacklist_entries.iter());
-
-		// 	if unpin_requests.is_empty() {
-		// 		log::info!("No unpin requests to process.");
-		// 		return Ok(());
-		// 	}
-
-		// 	// Iterate over each file hash in UnpinRequests
-		// 	for file_hash in all_file_hashes {
-		// 		// Find the owner for this file hash from UserStorageRequests
-		// 		let owner = UserStorageRequests::<T>::iter_keys()
-		// 		.find(|(_, hash)| hash == file_hash)
-		// 		.map(|(account, _)| account)
-		// 		.ok_or(Error::<T>::OwnerNotFound)?;
-
-		// 		// Get the miners storing this file hash
-		// 		let miners = FileStorageMiners::<T>::get(&owner, file_hash);
-		// 		if miners.is_empty() {
-		// 			log::info!("No miners found for file hash: {:?}", file_hash);
-		// 			continue;
-		// 		}
-
-		// 		// Lock all selected miners after they are chosen
-		// 		for (miner, _, _) in &miners {
-		// 			let miner_node_id = BoundedVec::try_from(miner.node_id.clone())
-		// 				.map_err(|_| Error::<T>::StorageOverflow)?;
-					
-		// 			// Call the set_miner_state_locked function from the IPFS pallet
-		// 			Self::call_set_miner_state_locked(miner_node_id);	
-		// 		}
-
-		// 		// Process each miner
-		// 		for miner_node_id in miners.iter() {
-		// 			// Get the CID from MinerProfile
-		// 			let cid = MinerProfile::<T>::get(miner_node_id);
-		// 			if cid.is_empty() {
-		// 				log::info!("No CID found for miner_node_id: {:?}", miner_node_id);
-		// 				continue;
-		// 			}
-
-		// 			let cid_str = sp_std::str::from_utf8(&cid).map_err(|_| Error::<T>::InvalidCid)?;
-
-		// 			// Fetch content from IPFS
-		// 			let content = Self::fetch_ipfs_content(cid_str).map_err(|e| {
-		// 				log::error!("Failed to fetch content for CID {}: {:?}", cid_str, e);
-		// 				Error::<T>::IpfsError
-		// 			})?;
-
-		// 			// Parse the JSON array
-		// 			let mut requests: Vec<Value> = serde_json::from_slice(&content).map_err(|e| {
-		// 				log::error!("Failed to parse JSON content: {:?}", e);
-		// 				Error::<T>::InvalidJson
-		// 			})?;
-
-		// 			// Convert file_hash to Vec<u8> for comparison
-		// 			let file_hash_vec = file_hash.clone().into_inner();
-
-		// 			// Filter out the object with the matching file_hash
-		// 			let original_len = requests.len();
-		// 			requests.retain(|request| {
-		// 				let req_file_hash = request["file_hash"].as_array()
-		// 					.map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect::<Vec<u8>>())
-		// 					.unwrap_or_default();
-		// 				req_file_hash != file_hash_vec
-		// 			});
-
-		// 			if requests.len() == original_len {
-		// 				log::info!("No matching file_hash found in CID {} for removal.", cid_str);
-		// 				continue;
-		// 			}
-
-		// 			// Serialize the updated array back to JSON
-		// 			let updated_json = serde_json::to_string(&requests).map_err(|e| {
-		// 				log::error!("Failed to serialize updated JSON: {:?}", e);
-		// 				Error::<T>::InvalidJson
-		// 			})?;
-
-		// 			// Pin the updated content to IPFS
-		// 			match Self::pin_file_to_ipfs(&updated_json) {
-		// 				Ok(new_cid) => {
-		// 					log::info!("Successfully pinned updated content with new CID: {}", new_cid);
-
-		// 					// Update MinerProfile with the new CID
-		// 					let new_cid_vec = new_cid.into_bytes();
-		// 					let new_cid_bounded = BoundedVec::try_from(new_cid_vec)
-		// 						.map_err(|_| Error::<T>::StorageOverflow)?;
-
-		// 					Self::call_process_miners_to_remove(owner.clone(), file_hash.clone(), miner_node_id.clone(), new_cid_bounded);
-
-		// 					// Unpin the old CID from the local node (if desired)
-		// 					if let Err(e) = Self::unpin_file_from_ipfs(cid_str) {
-		// 						log::error!("Failed to unpin old CID {}: {:?}", cid_str, e);
-		// 					}
-		// 				}
-		// 				Err(e) => {
-		// 					log::error!("Failed to pin updated content: {:?}", e);
-		// 				}
-		// 			}
-		// 		}
-		// 	}
-
-		// 	Ok(())
-		// }
 
 		/// Retrieves all files for a given account with their pinning information
 		///
@@ -1758,5 +1719,58 @@ pub mod pallet {
 				UserStorageRequests::<T>::remove(&owner, &file_hash);
 			}
 		}	
+
+		pub fn sync_miner_states() {	
+			// Get all active storage miners
+			let active_miners = RegistrationPallet::<T>::get_all_active_storage_miners();
+	
+			// Collect active miner IDs into a BTreeSet
+			let active_miner_ids: BTreeSet<Vec<u8>> = active_miners
+				.into_iter()
+				.map(|miner| miner.node_id)
+				.collect();
+	
+			// Iterate through all MinerStates
+			for (miner_node_id, _) in MinerStates::<T>::iter() {
+				let miner_node_id_vec = miner_node_id.to_vec();
+	
+				if active_miner_ids.contains(&miner_node_id_vec) {
+					// If miner is still active and not locked, set to Free
+					match MinerStates::<T>::get(&miner_node_id) {
+						MinerState::Locked => {
+							// Do nothing
+						},
+						_ => {
+							MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
+						}
+					}
+				} else {
+					// Miner no longer registered => remove their MinerState
+					MinerStates::<T>::remove(&miner_node_id);
+				}
+			}
+		}
+
+		pub fn add_rebalance_request_from_node(node_id: Vec<u8>) -> DispatchResult {
+			// Convert node_id to BoundedVec
+			let bounded_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>> =
+				node_id.clone().try_into().map_err(|_| Error::<T>::NodeIdTooLong)?;
+	
+			// Fetch miner_profile_id (CID) from MinerProfile storage
+			let miner_profile_id = MinerProfile::<T>::get(&bounded_node_id);
+	
+			// Create a new request
+			let request = RebalanceRequestItem {
+				node_id: bounded_node_id,
+				miner_profile_id: miner_profile_id,
+			};
+	
+			// Append to RebalanceRequest storage
+			let mut requests = <RebalanceRequest<T>>::get();
+			requests.try_push(request);
+			<RebalanceRequest<T>>::put(requests);
+
+			Ok(())
+		}
 	}
 }

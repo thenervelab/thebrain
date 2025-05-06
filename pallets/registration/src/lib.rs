@@ -242,6 +242,8 @@ pub mod pallet {
 		NodeNotInUids,
 		NodeCooldownPeriodNotExpired,
 		OwnerAlreadyRegistered,
+		InvalidNodeType,
+		NodeNotDegradedStorageMiner,
 	}
 
 	#[pallet::hooks]
@@ -894,7 +896,7 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
 
-			Self::do_unregister_node(node_id);
+			Self::do_set_node_status_degraded_or_unregister(node_id);
 
 			Ok(().into())
 		}
@@ -907,7 +909,7 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
 
-			Self::do_unregister_main_node(node_id);
+			Self::do_set_node_status_degraded_or_unregister(node_id);
 
 			Ok(().into())
 		}
@@ -931,7 +933,7 @@ pub mod pallet {
 			ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
 
 			// Call the existing unregister logic
-			Self::do_unregister_node(node_id);
+			Self::do_set_node_status_degraded_or_unregister(node_id);
 
 			Ok(().into())
 		}
@@ -958,7 +960,7 @@ pub mod pallet {
 			ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
 
 			// Call the existing unregister logic
-			Self::do_unregister_main_node(node_id);
+			Self::do_set_node_status_degraded_or_unregister(node_id);
 
 			Ok(().into())
 		}
@@ -992,6 +994,48 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+		pub fn get_all_degraded_storage_miners() -> Vec<Vec<u8>> {
+			let mut degraded_nodes = Vec::new();
+	
+			// Iterate over NodeRegistration storage
+			for (_, maybe_node_info) in <NodeRegistration<T>>::iter() {
+				if let Some(node_info) = maybe_node_info {
+					if node_info.node_type == NodeType::StorageMiner
+						&& matches!(node_info.status, Status::Degraded)
+					{
+						degraded_nodes.push(node_info.node_id.clone());
+					}
+				}
+			}
+	
+			// Iterate over ColdkeyNodeRegistration storage
+			for (_, maybe_node_info) in <ColdkeyNodeRegistration<T>>::iter() {
+				if let Some(node_info) = maybe_node_info {
+					if node_info.node_type == NodeType::StorageMiner
+						&& matches!(node_info.status, Status::Degraded)
+					{
+						degraded_nodes.push(node_info.node_id.clone());
+					}
+				}
+			}
+	
+			degraded_nodes
+		}
+
+		pub fn try_unregister_storage_miner(
+			node_to_deregister: Vec<u8>,
+		) -> Result<(), Error<T>> {
+			// Check if the node to deregister is a degraded StorageMiner
+			ensure!(
+				Self::is_storage_miner_degraded(node_to_deregister.clone()),
+				Error::<T>::NodeNotDegradedStorageMiner
+			);
+	
+			// Perform deregistration
+			Self::do_unregister_node(node_to_deregister);
+			Ok(())
+		}
+		
 		/// Helper function to check if an owner already has a registered node
 		fn is_owner_node_registered(owner: &T::AccountId) -> bool {
 			// Check both ColdkeyNodeRegistration and NodeRegistration storage maps
@@ -1360,11 +1404,28 @@ pub mod pallet {
 			node_id: Vec<u8>,
 		) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
 			if let Some(coldkey_info) = ColdkeyNodeRegistration::<T>::get(&node_id) {
-				return Some(coldkey_info);
+				if coldkey_info.status != Status::Degraded {
+					return Some(coldkey_info);
+				}
+			} else if let Some(node_info) = NodeRegistration::<T>::get(&node_id) {
+				if node_info.status != Status::Degraded {
+					return Some(node_info);
+				}
 			}
-			NodeRegistration::<T>::get(&node_id)
+			None
 		}
 
+		pub fn is_storage_miner_degraded(
+			node_id: Vec<u8>,
+		) -> bool {
+			if let Some(coldkey_info) = ColdkeyNodeRegistration::<T>::get(&node_id) {
+				return coldkey_info.node_type == NodeType::StorageMiner && coldkey_info.status == Status::Degraded;
+			}
+			if let Some(node_info) = NodeRegistration::<T>::get(&node_id) {
+				return node_info.node_type == NodeType::StorageMiner && node_info.status == Status::Degraded;
+			}
+			false
+		}
 
 		/// Initialize fees for node types
 		fn initialize_node_type_fees() {
@@ -1538,7 +1599,7 @@ pub mod pallet {
 			let coldkey_node = ColdkeyNodeRegistration::<T>::iter()
 				.find_map(|(_, node_info)| {
 					node_info
-						.filter(|info| info.owner == *owner)
+						.filter(|info| info.owner == *owner && info.status != Status::Degraded)
 				});
 
 			if coldkey_node.is_some() {
@@ -1549,11 +1610,50 @@ pub mod pallet {
 			let node_reg_node = NodeRegistration::<T>::iter()
 				.find_map(|(_, node_info)| {
 					node_info
-						.filter(|info| info.owner == *owner)
+						.filter(|info| info.owner == *owner && info.status != Status::Degraded)
 				});
 
 			node_reg_node
 		}
 
+		pub fn do_set_node_status_degraded_or_unregister(node_id: Vec<u8>) {
+			// Check if the node exists in NodeRegistration
+			if NodeRegistration::<T>::contains_key(&node_id) {
+				if let Some(mut node_info) = NodeRegistration::<T>::get(&node_id) {
+					if node_info.node_type == NodeType::StorageMiner {
+						// Update status to Degraded for StorageMiner
+						node_info.status = Status::Degraded;
+						NodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
+						
+						// Emit event for status update
+						Self::deposit_event(Event::NodeStatusUpdated {
+							node_id,
+							status: Status::Degraded,
+						});
+					} else {
+						// Deregister non-StorageMiner nodes
+						Self::do_unregister_node(node_id.clone());
+					}
+				}
+			} else if ColdkeyNodeRegistration::<T>::contains_key(&node_id) {
+				// Handle main node (ColdkeyNodeRegistration)
+				if let Some(mut node_info) = ColdkeyNodeRegistration::<T>::get(&node_id) {
+					if node_info.node_type == NodeType::StorageMiner {
+						// Update status to Degraded for StorageMiner
+						node_info.status = Status::Degraded;
+						ColdkeyNodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
+						
+						// Emit event for status update
+						Self::deposit_event(Event::NodeStatusUpdated {
+							node_id,
+							status: Status::Degraded,
+						});
+					} else {
+						// Deregister non-StorageMiner main nodes
+						Self::do_unregister_main_node(node_id.clone());
+					}
+				}
+			}
+		}
 	}
 }
