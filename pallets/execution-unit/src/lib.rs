@@ -168,7 +168,6 @@ pub mod pallet {
 		type ConsensusSimilarityThreshold: Get<u32>; // Percentage (e.g., 85 for 85%)
 	}
 
-
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
@@ -1626,66 +1625,89 @@ pub mod pallet {
 			Ok(hex_result.to_string())		
 		}
 
-        fn apply_consensus() {
-            let all_miners: Vec<Vec<u8>> = TemporaryPinReports::<T>::iter_keys()
-                .map(|(miner_id, _)| miner_id)
-                .collect::<Vec<_>>();
-            for miner_id in all_miners {
-                let reports: Vec<MinerPinMetrics> = TemporaryPinReports::<T>::iter_prefix(&miner_id)
-                    .map(|(_, report)| report)
-                    .collect();
-                if reports.is_empty() {
-                    continue;
-                }
-
-                let total_reports = reports.len() as u32;
-                let threshold = T::ConsensusThreshold::get();
-                let similarity_threshold = T::ConsensusSimilarityThreshold::get() as f32 / 100.0; // e.g., 0.85 for 85%
-
-                // Calculate sums for averaging
-                let mut total_pin_checks_sum = 0u64;
-                let mut successful_pin_checks_sum = 0u64;
-                for report in &reports {
-                    total_pin_checks_sum += report.total_pin_checks as u64;
-                    successful_pin_checks_sum += report.successful_pin_checks as u64;
-                }
-
-                // Calculate averages
-                let avg_total_pin_checks = (total_pin_checks_sum / total_reports as u64) as u32;
-                let avg_successful_pin_checks = (successful_pin_checks_sum / total_reports as u64) as u32;
-
-                // Define acceptable ranges based on similarity threshold
-                let total_pin_checks_min = (avg_total_pin_checks as f32 * similarity_threshold).floor() as u32;
-                let total_pin_checks_max = (avg_total_pin_checks as f32 / similarity_threshold).ceil() as u32;
-                let successful_pin_checks_min = (avg_successful_pin_checks as f32 * similarity_threshold).floor() as u32;
-                let successful_pin_checks_max = (avg_successful_pin_checks as f32 / similarity_threshold).ceil() as u32;
-
-                // Count validators with reports within acceptable ranges
-                let agreeing_validators = reports.iter().filter(|report| {
-                    report.total_pin_checks >= total_pin_checks_min &&
-                    report.total_pin_checks <= total_pin_checks_max &&
-                    report.successful_pin_checks >= successful_pin_checks_min &&
-                    report.successful_pin_checks <= successful_pin_checks_max
-                }).count() as u32;
-
-                if agreeing_validators >= threshold {
-                    let mut metrics = NodeMetrics::<T>::get(&miner_id).unwrap_or_default();
-                    metrics.total_pin_checks += avg_total_pin_checks;
-                    metrics.successful_pin_checks += avg_successful_pin_checks;
-                    NodeMetrics::<T>::insert(&miner_id, metrics);
-                    Self::deposit_event(Event::ConsensusReached {
-                        miner_id: miner_id.clone(),
-                        total_pin_checks: avg_total_pin_checks,
-                        successful_pin_checks: avg_successful_pin_checks,
-                    });
-                } else {
-                    Self::deposit_event(Event::ConsensusFailed { miner_id: miner_id.clone() });
-                }
-
-                // Clear temporary reports for this miner
-                TemporaryPinReports::<T>::remove_prefix(&miner_id, None);
-            }
-        }
+		fn apply_consensus() {
+			let all_miners: Vec<Vec<u8>> = TemporaryPinReports::<T>::iter_keys()
+				.map(|(miner_id, _)| miner_id)
+				.collect::<Vec<_>>();
+		
+			for miner_id in all_miners {
+				let reports: Vec<MinerPinMetrics> = TemporaryPinReports::<T>::iter_prefix(&miner_id)
+					.map(|(_, report)| report)
+					.collect();
+		
+				if reports.is_empty() {
+					continue;
+				}
+		
+				let total_reports = reports.len() as u32;
+				let threshold = T::ConsensusThreshold::get();
+				let similarity_percentage = T::ConsensusSimilarityThreshold::get(); // e.g., 85 for 85%
+		
+				// Calculate sums for averaging
+				let mut total_pin_checks_sum = 0u64;
+				let mut successful_pin_checks_sum = 0u64;
+				for report in &reports {
+					total_pin_checks_sum += report.total_pin_checks as u64;
+					successful_pin_checks_sum += report.successful_pin_checks as u64;
+				}
+		
+				// Calculate averages (as u128 for precise arithmetic)
+				let avg_total_pin_checks = (total_pin_checks_sum as u128 / total_reports as u128) as u32;
+				let avg_successful_pin_checks = (successful_pin_checks_sum as u128 / total_reports as u128) as u32;
+		
+				// Define acceptable ranges using safe integer arithmetic (rounding up)
+				let total_pin_checks_min = (avg_total_pin_checks as u128 * similarity_percentage as u128 + 99) / 100;
+				let total_pin_checks_max = (avg_total_pin_checks as u128 * 115 + 99) / 100;
+				let successful_pin_checks_min = (avg_successful_pin_checks as u128 * similarity_percentage as u128 + 99) / 100;
+				let successful_pin_checks_max = (avg_successful_pin_checks as u128 * 115 + 99) / 100;
+		
+				// Count validators with reports within acceptable ranges
+				let agreeing_validators = reports.iter().filter(|report| {
+					let total_pin = report.total_pin_checks as u128;
+					let successful_pin = report.successful_pin_checks as u128;
+		
+					total_pin >= total_pin_checks_min &&
+					total_pin <= total_pin_checks_max &&
+					successful_pin >= successful_pin_checks_min &&
+					successful_pin <= successful_pin_checks_max
+				}).count() as u32;
+		
+				// Debug logging
+				log::debug!(
+					"Miner: {:?}, Reports: {}, Avg Total: {}, Avg Success: {}, Total Range: [{}, {}], Success Range: [{}, {}], Agreeing: {}, Threshold: {}, Similarity: {}",
+					miner_id,
+					total_reports,
+					avg_total_pin_checks,
+					avg_successful_pin_checks,
+					total_pin_checks_min,
+					total_pin_checks_max,
+					successful_pin_checks_min,
+					successful_pin_checks_max,
+					agreeing_validators,
+					threshold,
+					similarity_percentage
+				);
+		
+				if agreeing_validators >= threshold {
+					let mut metrics = NodeMetrics::<T>::get(&miner_id).unwrap_or_default();
+					metrics.total_pin_checks += avg_total_pin_checks;
+					metrics.successful_pin_checks += avg_successful_pin_checks;
+					NodeMetrics::<T>::insert(&miner_id, metrics);
+		
+					Self::deposit_event(Event::ConsensusReached {
+						miner_id: miner_id.clone(),
+						total_pin_checks: avg_total_pin_checks,
+						successful_pin_checks: avg_successful_pin_checks,
+					});
+				} else {
+					Self::deposit_event(Event::ConsensusFailed { miner_id: miner_id.clone() });
+				}
+		
+				// Clear temporary reports for this miner
+				TemporaryPinReports::<T>::remove_prefix(&miner_id, None);
+			}
+		}
+		
 	}
 }
 

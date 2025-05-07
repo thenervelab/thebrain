@@ -135,9 +135,10 @@ impl NodeMetricsData {
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
 
         // Base weight: storage proof (80%), diversity (20%)
-        let base_weight = (storage_proof_score.saturating_mul(80)
-            + diversity_score.saturating_mul(20))
-            .saturating_div(100);
+        // let base_weight = (storage_proof_score.saturating_mul(80)
+        //     + diversity_score.saturating_mul(20))
+        //     .saturating_div(100);
+        let base_weight = storage_proof_score;
 
         // Apply reputation modifier
         let final_weight = (base_weight as u64)
