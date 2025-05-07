@@ -266,6 +266,7 @@ pub mod pallet {
 		EmptyDisksArray,
 		MemoryExceedsFiveTB,
 		ConsensusNotReached,
+		SuccessfulPinsExceedTotal
 	}
 
 	#[pallet::storage]
@@ -652,6 +653,15 @@ pub mod pallet {
 				user_requests_count + miners_metrics.len() as u32 <= max_requests_per_block,
 				Error::<T>::TooManyRequests
 			);
+
+
+			// Validate metrics and update storage
+			for miner in miners_metrics.iter() {
+				ensure!(
+					miner.successful_pin_checks <= miner.total_pin_checks,
+					Error::<T>::SuccessfulPinsExceedTotal
+				);
+			}
 		
 			// Update user's storage requests count
 			RequestsCount::<T>::insert(node_info.node_id.clone(), user_requests_count + miners_metrics.len() as u32);
