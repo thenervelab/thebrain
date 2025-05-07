@@ -7,7 +7,7 @@ impl NodeMetricsData {
     const MIN_STORAGE_GB: u32 = 2048; // Minimum 2TB storage
     const MAX_SCORE: u32 = 65535; // 16-bit maximum
     const INTERNAL_SCALING: u32 = 1_000_000;
-    const MIN_PIN_CHECKS: u32 = 10; // Minimum pin checks for valid scoring
+    const MIN_PIN_CHECKS: u32 = 5; // Minimum pin checks for valid scoring
     const SLASH_THRESHOLD: u32 = 3; // Number of failed storage proofs before slashing
     const REPUTATION_NEUTRAL: u32 = 1000; // Neutral reputation points
     const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
@@ -114,31 +114,36 @@ impl NodeMetricsData {
             return 0; // Only handle storage miners
         }
 
-        // Early return for invalid metrics
-        if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024)
-            || metrics.bandwidth_mbps < 125
-            || metrics.primary_network_interface.is_none()
-            || metrics.disks.is_empty()
-        {
-            return 0;
-        }
+        // // Early return for invalid metrics
+        // if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024)
+        //     || metrics.bandwidth_mbps < 125
+        //     || metrics.primary_network_interface.is_none()
+        //     || metrics.disks.is_empty()
+        // {
+        //     return 0;
+        // }
 
         // Calculate storage proof score (main component)
         let storage_proof_score = Self::calculate_storage_proof_score(metrics).saturating_div(100);
+        log::info!("storage_proof_score: {}", storage_proof_score);
 
         // Get reputation points and calculate modifier
         let reputation_points = Self::update_reputation_points::<T>(metrics, coldkey);
+        log::info!("reputation_points: {}", reputation_points);
         let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
+        log::info!("reputation_modifier: {}", reputation_modifier);
 
         // Calculate diversity score (unchanged)
         let diversity_score =
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
+        log::info!("diversity_score: {}", diversity_score);
 
         // Base weight: storage proof (80%), diversity (20%)
         // let base_weight = (storage_proof_score.saturating_mul(80)
         //     + diversity_score.saturating_mul(20))
         //     .saturating_div(100);
         let base_weight = storage_proof_score;
+        log::info!("base_weight: {}", base_weight);
 
         // Apply reputation modifier
         let final_weight = (base_weight as u64)
@@ -147,6 +152,7 @@ impl NodeMetricsData {
             .max(1)
             .min(Self::MAX_SCORE as u64) as u32;
 
+        log::info!("final_weight: {}", final_weight);
         final_weight
     }
 
