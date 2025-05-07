@@ -71,25 +71,19 @@ pub mod pallet {
     use pallet_registration::Pallet as RegistrationPallet;
     use pallet_registration::NodeType;
     use pallet_credits::Pallet as CreditsPallet;
-    // use pallet_storage_s3::Pallet as StorageS3Pallet;
     use pallet_utils::SubscriptionId;
     use sp_core::H256;
     use sp_std::{vec, vec::Vec};
     use num_traits::float::FloatCore;
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_subaccount::traits::SubAccounts;
-    use frame_system::offchain::Signer;
-    use sp_runtime::offchain::storage_lock::StorageLock;
+    // use frame_system::offchain::Signer;
     use pallet_credits::TotalLockedAlpha;
     use pallet_credits::TotalCreditsPurchased;
-    use sp_runtime::offchain::Duration;
-    use sp_runtime::offchain::storage_lock::BlockAndTime;
     use frame_system::offchain::SendTransactionTypes;
     use frame_system::offchain::AppCrypto;
-    use frame_system::offchain::SigningTypes;
     use frame_system::offchain::SendUnsignedTransaction;
     use frame_support::traits::ExistenceRequirement;
-    // use pallet_compute::ComputeRequestStatus;
     use sp_runtime::traits::Zero;
     use ipfs_pallet::FileInput;
     use sp_core::U256;
@@ -101,8 +95,7 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {    
-
+        fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
             // Clear all entries; limit is u32::MAX to ensure we get them all
             let result = UserRequestsCount::<T>::clear(u32::MAX, None);
 
@@ -111,7 +104,6 @@ pub mod pallet {
                 Self::handle_storage_subscription_charging(current_block);
                 // Self::handle_storage_s3_subscription_charging(current_block);
                 // Self::handle_compute_subscription_charging(current_block);
-
             }
 
             // Return some weight (adjust based on actual implementation)
@@ -189,8 +181,8 @@ pub mod pallet {
         type MaxRequestsPerBlock: Get<u32>;
     }
 
-	const LOCK_BLOCK_EXPIRATION: u32 = 3;
-    const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
+	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
+    // const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
 
     #[pallet::storage]
     #[pallet::getter(fn plans)]
@@ -438,7 +430,8 @@ pub mod pallet {
         /// No subscription found for the given user
         NoSubscriptionFound,
         StorageOperationsDisabled,
-        TooManyRequests
+        TooManyRequests,
+        OperationNotAllowed
 	}
     
 	#[pallet::storage]
@@ -455,33 +448,6 @@ pub mod pallet {
     #[pallet::getter(fn sudo_key)]
     pub type SudoKey<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
     
-    #[pallet::validate_unsigned]
-    impl<T: Config> ValidateUnsigned for Pallet<T> {
-        type Call = Call<T>;
-        fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-            match call {
-                Call::process_storage_request_approval { owner, storage_cost, signature: _} => {
-					let current_block = frame_system::Pallet::<T>::block_number();
-					// Create a unique hash combining all relevant data
-					let mut data = Vec::new();
-					data.extend_from_slice(&current_block.encode());
-					data.extend_from_slice(&owner.encode());
-                    data.extend_from_slice(&storage_cost.encode());
-					let unique_hash = sp_io::hashing::blake2_256(&data);
-	
-					ValidTransaction::with_tag_prefix("MarketPlaceOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides(("process_storage_request_approval", unique_hash))
-						.longevity(5)
-						.propagate(true)
-						.build()
-                },
-                _ => InvalidTransaction::Call.into(),
-            }
-        }
-    }
-
-
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
         /// Enable backup for a user's subscription from marketplace pallet
@@ -606,6 +572,15 @@ pub mod pallet {
                 Error::<T>::NodeTypeDisabled
             );
 
+            // Check if the account is a sub-account, and if so, use the main account
+            let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
+                Ok(main) => {
+                    ensure!(<pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::can_upload(caller.clone()), Error::<T>::OperationNotAllowed);
+                    main
+                },
+                Err(_) => caller.clone(), // If not a sub-account, use the original account
+            };
+            
             // Check if a specific miner is requested and charge an additional fee
             if miner_ids.is_some() {
                 // Define a fixed fee for requesting a specific miner
@@ -618,24 +593,18 @@ pub mod pallet {
 
                 // Ensure the payer has sufficient balance
                 ensure!(
-                    <pallet_balances::Pallet<T>>::free_balance(&caller) >= total_fee,
+                    <pallet_balances::Pallet<T>>::free_balance(&owner) >= total_fee,
                     Error::<T>::InsufficientBalance
                 );
 
                 // Charge the specific miner request fee
                 <pallet_balances::Pallet<T>>::transfer(
-                    &caller.clone(), 
+                    &owner.clone(), 
                     &Self::account_id(), 
                     total_fee, 
                     ExistenceRequirement::AllowDeath
                 )?;
             }
-
-            // Check if the account is a sub-account, and if so, use the main account
-            let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
-                Ok(main) => main,
-                Err(_) => caller.clone(), // If not a sub-account, use the original account
-            };
 
             Self::process_storage_requests(&owner.clone(), &files_input.clone(), miner_ids)?;
 
@@ -670,7 +639,10 @@ pub mod pallet {
 
             // Check if the account is a sub-account, and if so, use the main account
             let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
-                Ok(main) => main,
+                Ok(main) => {
+                    ensure!(<pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::can_delete(caller.clone()), Error::<T>::OperationNotAllowed);
+                    main
+                },
                 Err(_) => caller.clone(), // If not a sub-account, use the original account
             };
 
@@ -879,56 +851,6 @@ pub mod pallet {
                 os_name, 
                 url: os_details.url 
             });
-
-            Ok(().into())
-        }
-
-        // Sudo function to increase the price of an existing plan
-        #[pallet::call_index(10)]
-        #[pallet::weight((10_000, Pays::No))]
-        pub fn increase_plan_price(
-            origin: OriginFor<T>,
-            plan_id: T::Hash,
-            new_price: u128,
-        ) -> DispatchResult {
-            ensure_none(origin)?;
-            
-            // Retrieve the existing plan
-            let mut plan = <Plans<T>>::get(plan_id)
-                .ok_or(Error::<T>::NoneValue)?;
-
-            // Update the plan's price
-            plan.price = new_price;
-
-            // Store the updated plan
-            <Plans<T>>::insert(plan_id, plan);
-
-            // Emit an event (optional, you might want to add this to the Events enum)
-            Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
-
-            Ok(())
-        }
-
-		#[pallet::call_index(11)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-        pub fn process_storage_request_approval(
-            origin: OriginFor<T>,
-            owner: T::AccountId,
-            storage_cost: u128,
-            _signature: <T as SigningTypes>::Signature,
-		) -> DispatchResultWithPostInfo {
-            ensure_none(origin)?;
-
-            let _ = Self::consume_credits(owner.clone(), storage_cost,
-            Self::account_id().clone(), RankingsPallet::<T>::account_id().clone());
-
-            let _ = Self::update_storage_last_charged_at(&owner);
-
-			// Emit event for marketplace account reward
-			RankingsPallet::<T>::deposit_event(pallet_rankings::Event::RewardDistributed {
-				account: Self::account_id(),
-				amount: storage_cost.try_into().unwrap_or_default()
-			});
 
             Ok(().into())
         }
@@ -1422,7 +1344,7 @@ pub mod pallet {
         }
 
         /// Retrieve active compute subscriptions specifically
-        fn get_active_compute_subscriptions() -> Vec<(T::AccountId, UserPlanSubscription<T>)> {
+        fn _get_active_compute_subscriptions() -> Vec<(T::AccountId, UserPlanSubscription<T>)> {
             UserPlanSubscriptions::<T>::iter()
                 .filter(|(_, subscription)| {
                     subscription.active 
@@ -1613,55 +1535,6 @@ pub mod pallet {
 
             Ok(())
         }
-
-        pub fn call_storage_request_approval_charging(account_id: T::AccountId, storage_cost: u128) {
-			// Create a unique lock for the save hardware info operation
-			let mut lock = StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-				b"Marketplace::storage_request_approval_lock",
-				LOCK_BLOCK_EXPIRATION,
-				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-			);
-		
-            if let Ok(_guard) = lock.try_lock() {
-                // Fetch signer accounts using AuthorityId
-                let signer = Signer::<T, <T as pallet::Config>::AuthorityId>::all_accounts();
-                if !signer.can_sign() {
-                    log::warn!("No accounts available for signing in signer.");
-                    return;
-                }
-            
-                // Prepare and sign the payload
-                let results = signer.send_unsigned_transaction(
-                    |account| {
-                        StorageApprovalPayload {
-                            account_id: account_id.clone(),
-                            storage_cost: storage_cost.clone(),
-                            public: account.public.clone(),
-                            _marker: PhantomData,
-                        }
-                    },
-                    |payload, signature| {
-                        Call::process_storage_request_approval {
-                            owner: payload.account_id,
-                            storage_cost: payload.storage_cost,
-                            signature,
-                        }
-                    },
-                );
-            
-                // Process results of the transaction submission
-                for (acc, res) in &results {
-                    match res {
-                        Ok(()) => log::info!("[{:?}] Successfully submitted signed Approval update", acc.id),
-                        Err(e) => log::error!("[{:?}] Error submitting hardware update: {:?}", acc.id, e),
-                    }
-                }
-
-            } else {
-				log::error!("❌ Could not acquire lock for updating metrics data");
-			};
-		}
-
 
         /// Deposit credits and alpha into a new batch
         fn do_deposit(

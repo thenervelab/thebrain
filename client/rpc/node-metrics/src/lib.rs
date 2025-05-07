@@ -3,8 +3,8 @@ use jsonrpsee::core::RpcResult;
 pub use rpc_core_node_metrics::NodeMetricsApiServer;
 use rpc_primitives_node_metrics::NodeMetricsRuntimeApi;
 use rpc_primitives_node_metrics::{
-	Batch, MinerRewardSummary, NodeMetricsData, NodeType, Status, UserBucket, UserFile,
-	UserVmDetails,
+	Batch, MinerRewardSummary, NodeMetricsData, NodeType, Status,  UserFile,
+	// UserVmDetails,
 };
 use sp_api::ProvideRuntimeApi;
 use sp_blockchain::HeaderBackend;

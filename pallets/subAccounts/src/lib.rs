@@ -44,14 +44,10 @@ mod benchmarking;
 
 pub mod weights;
 pub use weights::WeightInfo;
-// pub mod migrations; // Add this line
 
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	// use frame_support::traits::OnRuntimeUpgrade;
-	// use crate::migrations::MigrateToNewStorageFormat;
-	// use frame_system::pallet_prelude::BlockNumberFor;
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
@@ -68,48 +64,47 @@ pub mod pallet {
 		/// Weight information for extrinsics in this pallet.
 		type WeightInfo: WeightInfo;
 
-		// type OnRuntimeUpgrade: OnRuntimeUpgrade;
+		#[pallet::constant]
+		type MaxSubAccountsLimit: Get<u32>;
 	}
-
-	// /// Store the main account of a given address with a boolean flag
-	// #[pallet::storage]
-	// #[pallet::getter(fn new_sub_account)]
-	// /// This is the new storage format after migration
-	// pub type NewSubAccount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, (T::AccountId, bool)>;
 
 	/// Store the main account of a given address
 	#[pallet::storage]
 	#[pallet::getter(fn sub_account)]
 	pub type SubAccount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, T::AccountId>;
 
-	// // Define the storage version
-	// const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
-
-	// #[pallet::hooks]
-	// impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-	//     fn on_runtime_upgrade() -> Weight {
-	//         // Check the on-chain storage version
-	//         let on_chain_version = StorageVersion::get::<Pallet<T>>();
-	//         if on_chain_version < STORAGE_VERSION {
-	//             // Perform the migration
-	//             let weight = MigrateToNewStorageFormat::<T>::on_runtime_upgrade();
-	//             // Set the new storage version
-	//             StorageVersion::put::<Pallet<T>>(&STORAGE_VERSION);
-	//             weight
-	//         } else {
-	//             Weight::zero()
-	//         }
-	//     }
-	// }
-
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// A sub account has been added
-		SubAccountAdded { main: T::AccountId, sub: T::AccountId },
-		/// A sub account has been removed
-		SubAccountRemoved { main: T::AccountId, sub: T::AccountId },
+        /// A sub account has been added
+        SubAccountAdded { main: T::AccountId, sub: T::AccountId, role: Role },
+        /// A sub account has been removed
+        SubAccountRemoved { main: T::AccountId, sub: T::AccountId },
+        /// A sub account's role has been updated
+        SubAccountRoleUpdated { main: T::AccountId, sub: T::AccountId, new_role: Role },
 	}
+
+	/// Role types for sub-accounts
+	#[derive(Encode, Decode, Clone, RuntimeDebug, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
+	pub enum Role {
+		/// Can upload content
+		Upload,
+		/// Can upload and delete content
+		UploadDelete,
+		/// No permissions (default)
+		None,
+	}
+
+	impl Default for Role {
+		fn default() -> Self {
+			Role::None
+		}
+	}
+
+	/// New storage for sub-account roles (added without modifying existing storage)
+	#[pallet::storage]
+	#[pallet::getter(fn sub_account_role)]
+	pub type SubAccountRole<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, Role>;
 
 	#[pallet::error]
 	pub enum Error<T> {
@@ -121,6 +116,14 @@ pub mod pallet {
 		NoAccountsLeft,
 		/// Cannot add a sub account twice
 		AlreadySubAccount,
+		/// Main account cannot be a sub-account
+		MainCannotBeSubAccount,
+		/// Cannot be a Sub Account of Itself
+		CannotBeOwnSubAccount,
+		/// Reached Limit
+		TooManySubAccounts,
+		/// Invalid role change
+		InvalidRoleChange,
 	}
 
 	#[pallet::call(weight(<T as Config>::WeightInfo))]
@@ -141,22 +144,45 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			main: T::AccountId,
 			new_sub_account: T::AccountId,
+			role: Role,
 		) -> DispatchResultWithPostInfo {
 			let sender = ensure_signed(origin)?;
 
 			// Check if the sender has permission to add a sub account
 			Self::is_sub_account(sender, main.clone())?;
 
-			// Check that the sub account wasn't added before.
+			// Ensure the main account is not a sub-account
+			ensure!(
+				!SubAccount::<T>::contains_key(main.clone()),
+				Error::<T>::MainCannotBeSubAccount
+			);
+		
+			// Check that the sub account wasn't added before
 			ensure!(
 				!SubAccount::<T>::contains_key(new_sub_account.clone()),
 				Error::<T>::AlreadySubAccount
 			);
 
-			SubAccount::<T>::insert(new_sub_account.clone(), main.clone());
+			ensure!(main != new_sub_account, Error::<T>::CannotBeOwnSubAccount);
 
-			// Emit an event
-			Self::deposit_event(Event::SubAccountAdded { main, sub: new_sub_account });
+			let sub_account_count = SubAccount::<T>::iter()
+			.filter(|(k, v)| v == &main)
+			.count() as u32;
+		
+			ensure!(
+				sub_account_count < T::MaxSubAccountsLimit::get(),
+				Error::<T>::TooManySubAccounts
+			);
+
+			SubAccountRole::<T>::insert(new_sub_account.clone(), role.clone());
+			SubAccount::<T>::insert(new_sub_account.clone(), main.clone());
+			
+            // Emit an event
+            Self::deposit_event(Event::SubAccountAdded { 
+                main, 
+                sub: new_sub_account,
+                role,
+            });
 
 			Ok(().into())
 		}
@@ -197,12 +223,55 @@ pub mod pallet {
 
 			// Remove the sub account
 			SubAccount::<T>::remove(sub_account_to_remove.clone());
+			SubAccountRole::<T>::remove(sub_account_to_remove.clone());
 
 			// Emit an event
 			Self::deposit_event(Event::SubAccountRemoved { main, sub: sub_account_to_remove });
 
 			Ok(().into())
 		}
+
+
+		/// Update the role of a sub-account
+        ///
+        /// The origin must be Signed and the sender should have access to 'main'
+        ///
+        /// Parameters:
+        /// - `main`: The main account that owns the sub-account
+        /// - `sub_account`: The sub-account to update
+        /// - `new_role`: The new role to assign
+        ///
+        /// Emits `SubAccountRoleUpdated` event when successful.
+        #[pallet::call_index(2)]
+        pub fn update_sub_account_role(
+            origin: OriginFor<T>,
+            main: T::AccountId,
+            sub_account: T::AccountId,
+            new_role: Role,
+        ) -> DispatchResultWithPostInfo {
+            let sender = ensure_signed(origin)?;
+
+            // Check permissions
+            Self::is_sub_account(sender, main.clone())?;
+
+            // Ensure the sub account exists and belongs to the main account
+            ensure!(
+                SubAccount::<T>::get(&sub_account) == Some(main.clone()),
+                Error::<T>::NotAllowed
+            );
+
+            // Update the role
+            SubAccountRole::<T>::insert(sub_account.clone(), new_role.clone());
+
+            // Emit an event
+            Self::deposit_event(Event::SubAccountRoleUpdated {
+                main,
+                sub: sub_account,
+                new_role,
+            });
+
+            Ok(().into())
+        }
 	}
 
 	impl<T: Config> SubAccounts<T::AccountId> for Pallet<T> {
@@ -234,11 +303,48 @@ pub mod pallet {
 			ensure!(!SubAccount::<T>::contains_key(who), Error::<T>::AlreadySubAccount);
 			Ok(())
 		}
+
+		/// Check if a sub-account has upload permissions
+		fn can_upload(who: T::AccountId) -> bool {
+			SubAccountRole::<T>::get(who)
+				.map(|role| matches!(role, Role::Upload | Role::UploadDelete))
+				.unwrap_or(false)
+		}
+
+		/// Check if a sub-account has delete permissions
+		fn can_delete(who: T::AccountId) -> bool {
+			SubAccountRole::<T>::get(who)
+				.map(|role| matches!(role, Role::UploadDelete))
+				.unwrap_or(false)
+		}
+		
 	}
 
 	impl<T: Config> ChargeFees<T::AccountId> for Pallet<T> {
 		fn get_main_account(who: &T::AccountId) -> Option<T::AccountId> {
 			SubAccount::<T>::get(who)
+		}
+	}
+
+	// Additional helper functions for roles
+	impl<T: Config> Pallet<T> {
+		/// Check if a sub-account has upload permissions
+		pub fn can_upload(who: &T::AccountId) -> bool {
+			SubAccountRole::<T>::get(who)
+				.map(|role| matches!(role, Role::Upload | Role::UploadDelete))
+				.unwrap_or(false)
+		}
+
+		/// Check if a sub-account has delete permissions
+		pub fn can_delete(who: &T::AccountId) -> bool {
+			SubAccountRole::<T>::get(who)
+				.map(|role| matches!(role, Role::UploadDelete))
+				.unwrap_or(false)
+		}
+
+		/// Get the role of a sub-account
+		pub fn get_role(who: &T::AccountId) -> Option<Role> {
+			SubAccountRole::<T>::get(who)
 		}
 	}
 }

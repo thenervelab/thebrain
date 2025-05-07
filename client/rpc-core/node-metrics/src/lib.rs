@@ -4,8 +4,8 @@ pub mod types;
 use sp_runtime::AccountId32;
 
 use rpc_primitives_node_metrics::{
-	Batch, MinerRewardSummary, NodeMetricsData, NodeType, Status, UserBucket, UserFile,
-	UserVmDetails,
+	Batch, MinerRewardSummary, NodeMetricsData, NodeType, Status, UserFile,
+	
 };
 
 /// Net rpc interface.

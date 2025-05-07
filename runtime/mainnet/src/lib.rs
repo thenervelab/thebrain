@@ -174,7 +174,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9013,
+	spec_version: 9043,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1171,6 +1171,7 @@ impl pallet_registration::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	// Use Pallet instead of the crate name
 	type MetagraphInfo = pallet_metagraph::Pallet<Runtime>;
+	type MetricsInfo = pallet_execution_unit::Pallet<Runtime>;
 	type MinerStakeThreshold = ConstU32<0>;
 	type ChainDecimals = ConstU32<18>;
 	type PalletId = ResgisterPalletId;
@@ -1245,6 +1246,9 @@ impl pallet_rankings::Config for Runtime {
 	type InstanceID = RankingsInstanceId1;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
+	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
+	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
+	type LocalRpcUrl = LocalRpcUrl;
 }
 
 // // Add a second ranking pallet implementation
@@ -1267,6 +1271,9 @@ impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 	type InstanceID = RankingsInstanceId3;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
+	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
+	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
+	type LocalRpcUrl = LocalRpcUrl;
 }
 
 // // Add a Fourth ranking pallet implementation
@@ -1320,7 +1327,7 @@ parameter_types! {
 	pub const ExecutionUnitSystemInfoRpcMethod: &'static str = "sys_getSystemInfo";
 	pub const BlockTimeSecs :u32 =  SECONDS_PER_BLOCK as u32;
 	/// number of blocks at which uptime will be checked
-	pub const BlockCheckInterval : u32 = 150;
+	pub const BlockCheckInterval : u32 = 300;
 	pub const GetReadProofRpcMethod: &'static str = "state_getReadProof";
 	pub const SystemHealthRpcMethod: &'static str = "system_health";
 	pub const IPFSBaseUrl: &'static str = "http://localhost:5001";
@@ -1328,8 +1335,9 @@ parameter_types! {
 	pub const MaxOffchainRequestsPerPeriod: u32 = 20;
 	pub const RequestsClearInterval: u32 = 10;
 	pub const MaxOffchainHardwareSubmitRequestsPerPeriod: u32 = 1;
-	pub const HardwareSubmitRequestsClearInterval: u32 = 150;
 	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
+	pub const LocalDefaultGenesisHash: &'static str = "0x28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9";
+	pub const ConsensusPeriod: BlockNumber = 10;
 }
 
 impl pallet_execution_unit::Config for Runtime {
@@ -1347,7 +1355,11 @@ impl pallet_execution_unit::Config for Runtime {
 	type RequestsClearInterval = RequestsClearInterval;
 	type IpfsServiceUrl = IpfsServiceUrl;
 	type MaxOffchainHardwareSubmitRequestsPerPeriod = MaxOffchainHardwareSubmitRequestsPerPeriod;
-	type HardwareSubmitRequestsClearInterval = HardwareSubmitRequestsClearInterval;
+	type HardwareSubmitRequestsClearInterval = BlockCheckInterval;
+	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
+	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
+	type ConsensusPeriod = ConsensusPeriod;
+    type ConsensusThreshold = ConstU32<2>;
 }
 
 impl pallet_offences::Config for Runtime {
@@ -1476,12 +1488,14 @@ impl pallet_child_bounties::Config for Runtime {
 
 parameter_types! {
 	pub const SubAccountStringLimit: u32 = 300;
+	pub const MaxSubAccountsLimit: u32 = 50;	
 }
 
 impl pallet_subaccount::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
 	type StringLimit = SubAccountStringLimit;
+	type MaxSubAccountsLimit = MaxSubAccountsLimit;
 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
 }
 

@@ -8,6 +8,10 @@ pub trait SubAccounts<AccountId> {
 	fn is_sub_account(sender: AccountId, main: AccountId) -> Result<(), DispatchError>;
 
 	fn already_sub_account(who: AccountId) -> Result<(), DispatchError>;
+
+	fn can_upload(who: AccountId) -> bool;
+	
+	fn can_delete(who: AccountId) -> bool;
 }
 
 pub trait ChargeFees<AccountId> {

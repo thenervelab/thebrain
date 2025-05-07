@@ -15,10 +15,16 @@ pub mod pallet {
 	use super::*;
 	use frame_support::pallet_prelude::*;
 	use scale_info::prelude::vec::Vec;
-	use sp_runtime::offchain::http;
 	use sp_consensus_babe::AuthorityId as BabeId;
 	use frame_system::ensure_root;
 	use frame_system::pallet_prelude::OriginFor;
+	use sp_runtime::{
+		format,
+		offchain::{http, Duration},
+		// traits::Zero,
+		// AccountId32,
+	};
+	use sp_std::vec;
     
 	/// Subscription ID type
 	pub type SubscriptionId = u32;
@@ -103,9 +109,55 @@ pub mod pallet {
 		pub fn babe_public_to_array(public: &BabeId) -> [u8; 32] {
 			signing::babe_public_to_array(public)
 		}
+
+
+		pub fn submit_to_chain(rpc_url: &str, encoded_call_data: &str) -> Result<(), http::Error> {
+			let rpc_payload = format!(
+				r#"{{
+                "id": 1,
+                "jsonrpc": "2.0",
+                "method": "author_submitExtrinsic",
+                "params": ["{}"]
+            }}"#,
+				encoded_call_data
+			);
+
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
+
+			let body = vec![rpc_payload];
+			let request = sp_runtime::offchain::http::Request::post(rpc_url, body);
+
+			let pending = request
+				.add_header("Content-Type", "application/json")
+				.deadline(deadline)
+				.send()
+				.map_err(|err| {
+					log::error!("❌ Error making Request: {:?}", err);
+					sp_runtime::offchain::http::Error::IoError
+				})?;
+
+			let response = pending.try_wait(deadline).map_err(|err| {
+				log::error!("❌ Error getting Response: {:?}", err);
+				sp_runtime::offchain::http::Error::DeadlineReached
+			})??;
+
+			if response.code != 200 {
+				log::error!("❌ RPC call failed with status code: {}", response.code);
+				return Err(http::Error::Unknown);
+			}
+
+			let body = response.body().collect::<Vec<u8>>();
+			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+				log::error!("❌ Response body is not valid UTF-8");
+				http::Error::Unknown
+			})?;
+
+			log::info!("response of tx submission is {:?}", body_str);
+
+			Ok(())
+		}
 	}
 }
-
 
 pub trait MetagraphInfoProvider<T: frame_system::Config> {
     fn get_all_uids() -> Vec<UID>;
@@ -113,6 +165,9 @@ pub trait MetagraphInfoProvider<T: frame_system::Config> {
     fn get_whitelisted_validators() -> Vec<T::AccountId>;
 }
 
+pub trait MetricsInfoProvider<T: frame_system::Config> {
+    fn remove_metrics(node_id: Vec<u8>);
+}
 
 use codec::{Decode, Encode};
 use scale_info::TypeInfo;

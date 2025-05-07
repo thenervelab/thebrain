@@ -40,6 +40,7 @@ use core::marker::PhantomData;
 pub trait WeightInfo {
 	fn add_sub_account() -> Weight;
 	fn remove_sub_account() -> Weight;
+	fn update_sub_account_role() -> Weight;
 }
 
 /// Weights for `pallet_subaccount` using the Substrate node and recommended hardware.
@@ -75,6 +76,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(4_u64))
 			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
+	
+	fn update_sub_account_role() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `1656`
+		//  Estimated: `6100`
+		// Minimum execution time: 52_000_000 picoseconds.
+		Weight::from_parts(42_000_000, 6100)
+			.saturating_add(T::DbWeight::get().reads(4_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
+	
 }
 
 // For backwards compatibility and tests.
@@ -106,6 +118,16 @@ impl WeightInfo for () {
 		//  Estimated: `6100`
 		// Minimum execution time: 52_000_000 picoseconds.
 		Weight::from_parts(52_000_000, 6100)
+			.saturating_add(RocksDbWeight::get().reads(4_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+
+	fn update_sub_account_role() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `1656`
+		//  Estimated: `6100`
+		// Minimum execution time: 52_000_000 picoseconds.
+		Weight::from_parts(42_000_000, 6100)
 			.saturating_add(RocksDbWeight::get().reads(4_u64))
 			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}

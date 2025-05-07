@@ -33,14 +33,14 @@ pub enum TriggerType {
 	Manual,
 }
 
-#[derive(PartialEq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default)]
+#[derive(PartialEq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, Deserialize)]
 pub enum NetworkType {
 	Private,
 	#[default]
 	Public,
 }
 
-#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
+#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq, Deserialize)]
 pub struct NetworkDetails {
 	pub network_type: NetworkType,
 	pub city: Option<Vec<u8>>,
@@ -49,7 +49,7 @@ pub struct NetworkDetails {
 	pub loc: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
+#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq, Deserialize)]
 pub struct NetworkInterfaceInfo {
 	pub name: Vec<u8>,
 	pub mac_address: Option<Vec<u8>>,
@@ -58,7 +58,7 @@ pub struct NetworkInterfaceInfo {
 	pub network_details: Option<NetworkDetails>,
 }
 
-#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
+#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq,Deserialize)]
 pub struct DiskInfo {
 	pub name: Vec<u8>,
 	pub disk_type: Vec<u8>,
@@ -73,7 +73,7 @@ pub struct OfflineStatus<BlockNumber> {
 	pub at_block: BlockNumber,     // the block at which the miner was offline
 }
 
-#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
+#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq, Deserialize)]
 pub struct DiskDetails {
 	pub name: Vec<u8>,
 	pub serial: Vec<u8>,
@@ -83,7 +83,7 @@ pub struct DiskDetails {
 	pub disk_type: Vec<u8>,
 }
 
-#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
+#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq, Deserialize)]
 pub struct SystemInfo {
 	pub memory_mb: u64,
 	pub free_memory_mb: u64,
@@ -318,4 +318,12 @@ pub struct ApiUnpinItem {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ApiUnpinRequest {
     pub items: Vec<ApiUnpinItem>,
+}
+
+// Define the struct for miner metrics
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct MinerPinMetrics {
+    pub node_id: Vec<u8>,
+    pub total_pin_checks: u32,
+    pub successful_pin_checks: u32,
 }

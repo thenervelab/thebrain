@@ -84,6 +84,18 @@ pub mod pallet {
 	};
 	use sp_std::collections::btree_map::BTreeMap;
 	use sp_std::vec::Vec;
+	use sp_std::vec;
+	use pallet_registration::Pallet as RegistrationPallet;
+	use pallet_utils::Pallet as UtilsPallet;
+	use sp_runtime::{
+		format,
+		offchain::{
+			http,
+		},
+	};
+	use serde_json::Value;
+	use codec::alloc::string::ToString;
+	use scale_info::prelude::string::String;
 
 	const LOCK_BLOCK_EXPIRATION: u32 = 3;
 	const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
@@ -99,6 +111,7 @@ pub mod pallet {
 		+ pallet_staking::Config
 		+ SendTransactionTypes<Call<Self, I>>
 		+ pallet_registration::Config
+		+ pallet_utils::Config
 		+ pallet_balances::Config
 		+ frame_system::offchain::SigningTypes
 	{
@@ -127,6 +140,15 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type BlocksPerEra: Get<u32>;
+
+		#[pallet::constant]
+        type LocalDefaultSpecVersion: Get<u32>;
+    
+        #[pallet::constant]
+        type LocalDefaultGenesisHash: Get<&'static str>;
+
+		#[pallet::constant]
+		type LocalRpcUrl: Get<&'static str>;
 	}
 
 	#[pallet::storage]
@@ -157,6 +179,8 @@ pub mod pallet {
 		NoSignerAvailable,
 		/// Could not acquire the lock for updating rankings
 		CannotAcquireLock,
+		NodeNotRegistered,
+		InvalidNodeType,
 	}
 
 	// rankings of the nodes
@@ -197,68 +221,8 @@ pub mod pallet {
 		pub reward: u128,
 	}
 
-	// Validate unsigned transactions implementation
-	#[pallet::validate_unsigned]
-	impl<T: Config<I>, I: 'static> ValidateUnsigned for Pallet<T, I> {
-		type Call = Call<T, I>;
-
-		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-			match call {
-				Call::update_rankings {
-					all_nodes_ss58,
-					weights,
-					node_ids,
-					node_types,
-					block_number,
-					ranking_instance_id,
-				} => {
-					// Create a unique hash based on the input parameters
-					let unique_hash = blake2_128(
-						&[
-							all_nodes_ss58.concat(),
-							weights.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<_>>(),
-							node_ids.concat(),
-							node_types.iter().map(|nt| nt.encode()).collect::<Vec<_>>().concat(),
-							block_number.encode(),
-							ranking_instance_id.encode(),
-						]
-						.concat(),
-					);
-
-					ValidTransaction::with_tag_prefix("RankingOffchain")
-						.priority(TransactionPriority::max_value())
-						.longevity(5)
-						.propagate(true)
-						// Add the unique hash to ensure transaction uniqueness
-						.and_provides(unique_hash)
-						.build()
-				},
-				_ => InvalidTransaction::Call.into(),
-			}
-		}
-	}
-
 	#[pallet::call]
 	impl<T: Config<I>, I: 'static> Pallet<T, I> {
-		#[pallet::call_index(0)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn update_rankings(
-			origin: OriginFor<T>,
-			all_nodes_ss58: Vec<Vec<u8>>,
-			weights: Vec<u16>,
-			node_ids: Vec<Vec<u8>>,
-			node_types: Vec<NodeType>,
-			_block_number: BlockNumberFor<T>,
-			_ranking_instance_id: u32,
-		) -> DispatchResult {
-			// Check that the extrinsic was signed and get the signer.
-			ensure_none(origin)?;
-
-			let _ = Self::do_update_rankings(weights, all_nodes_ss58, node_ids, node_types);
-			// Return a successful `DispatchResult`
-			Ok(())
-		}
-
 		#[pallet::call_index(1)]
 		#[pallet::weight(T::DbWeight::get().writes(1))]
 		pub fn update_rank_distribution_limit(
@@ -276,6 +240,33 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		#[pallet::call_index(0)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn update_rankings(
+			origin: OriginFor<T>,
+			weights: Vec<u16>,
+			all_nodes_ss58: Vec<Vec<u8>>,
+			node_ids: Vec<Vec<u8>>,
+			node_types: Vec<NodeType>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			ensure!(node_info.is_some(), Error::<T, I>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T, I>::InvalidNodeType);
+
+			let _ = Self::do_update_rankings(weights, all_nodes_ss58, node_ids, node_types);
+			log::info!("✅ Successfully updated rankings");
+			// Return a successful `DispatchResult`
+			Ok(())
+		}
 	}
 
 	impl<T: Config<I>, I: 'static> Pallet<T, I> {
@@ -285,69 +276,128 @@ pub mod pallet {
 			all_nodes_ss58: Vec<Vec<u8>>,
 			node_ids: Vec<Vec<u8>>,
 			node_types: Vec<NodeType>,
-			block_number: BlockNumberFor<T>,
+			_block_number: BlockNumberFor<T>,
 			ranking_instance_id: u32,
-		) {
-			let mut lock =
-				StorageLock::<BlockAndTime<frame_system::Pallet<T>>>::with_block_and_time_deadline(
-					b"Ranking::update_rankings_lock",
-					LOCK_BLOCK_EXPIRATION,
-					Duration::from_millis(LOCK_TIMEOUT_EXPIRATION.into()),
-				);
+		) -> Result<(), &'static str> {
+			// generate hex and call rpc 
+			let hex_result = Self::get_hex_for_submit_rankings(weights, all_nodes_ss58, node_ids, node_types, ranking_instance_id).map_err(|e| {
+				log::error!("❌ Failed to get signed rankings hex: {:?}", e);
+				"Failed to get signed rankings hex"
+			})?;
 
-			if let Ok(_guard) = lock.try_lock() {
-				let signer = Signer::<T, <T as pallet::Config<I>>::AuthorityId>::all_accounts();
+			let local_rpc_url = <T as pallet::Config<I>>::LocalRpcUrl::get();
+			// Now use the hex_result in the function
+			UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)
+				.map_err(|e| {
+					log::error!("❌ Failed to submit the extrinsic for rankings info: {:?}", e);
+					"Failed to submit the extrinsic for rankings info"
+				})?;
 
-				// Check if there are any accounts and log them
-				if signer.can_sign() {
-					log::info!("Signer has accounts available for signing.");
-				} else {
-					log::warn!("No accounts available for signing in signer.");
-				}
-
-				let results = signer.send_unsigned_transaction(
-					|account| {
-						// Create a payload with all necessary data for the update_rankings call
-						UpdateRankingsPayload {
-							all_nodes_ss58: all_nodes_ss58.clone(),
-							weights: weights.clone(),
-							node_ids: node_ids.clone(),
-							node_types: node_types.clone(),
-							ranking_instance_id: ranking_instance_id.clone(),
-							public: account.public.clone(),
-							block_number,
-							_marker: PhantomData, // Add this line
-						}
-					},
-					|payload, _signature| {
-						// Construct the call with the payload and signature
-						Call::update_rankings {
-							all_nodes_ss58: payload.all_nodes_ss58,
-							weights: payload.weights,
-							node_ids: payload.node_ids,
-							node_types: payload.node_types,
-							ranking_instance_id: payload.ranking_instance_id,
-							block_number: payload.block_number,
-						}
-					},
-				);
-
-				// Restore error processing with more comprehensive logging
-				for (acc, res) in &results {
-					match res {
-						Ok(_) => {
-							log::info!("[{:?}] Successfully submitted rankings update", acc.id)
-						},
-						Err(e) => {
-							log::error!("[{:?}] Failed to submit rankings update: {:?}", acc.id, e)
-						},
-					}
-				}
-			} else {
-				log::error!("❌ Could not acquire lock for saving Rankings Update");
-			};
+			// Return a successful `Result`
+			Ok(())
 		}
 
+		pub fn get_hex_for_submit_rankings(
+			weights: Vec<u16>,
+			all_nodes_ss58: Vec<Vec<u8>>,
+			node_ids: Vec<Vec<u8>>,
+			node_types: Vec<NodeType>,
+			ranking_instance_id: u32
+		) -> Result<String, http::Error> {
+			let local_default_spec_version = T::LocalDefaultSpecVersion::get();
+			let local_default_genesis_hash = T::LocalDefaultGenesisHash::get();
+			let local_rpc_url = <T as pallet::Config<I>>::LocalRpcUrl::get();
+		
+			let rpc_payload = format!(
+				r#"{{
+					"jsonrpc": "2.0",
+					"method": "submit_rankings",
+					"params": [{{
+						"weights": [{}],
+						"all_nodes_ss58": [{}],
+						"node_ids": [{}],
+						"node_types": [{}],
+						"ranking_instance_id": {},
+						"default_spec_version": {},
+						"default_genesis_hash": "{}",
+						"local_rpc_url": "{}"
+					}}],
+					"id": 1
+				}}"#,
+				weights.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(", "),
+				all_nodes_ss58.iter()
+					.map(|ss58| format!("[{}]", ss58.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")))
+					.collect::<Vec<_>>().join(", "),
+				node_ids.iter()
+					.map(|id| format!("[{}]", id.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")))
+					.collect::<Vec<_>>().join(", "),
+					node_types.iter()
+					.map(|nt| format!("\"{}\"", match nt {
+						NodeType::Validator => "Validator",
+						NodeType::StorageMiner => "StorageMiner",
+						NodeType::StorageS3 => "StorageS3", 
+						NodeType::ComputeMiner => "ComputeMiner",
+						NodeType::GpuMiner => "GpuMiner"
+					}))
+					.collect::<Vec<_>>().join(", "),
+				ranking_instance_id,
+				local_default_spec_version,
+				local_default_genesis_hash,
+				local_rpc_url
+			);
+		
+			// Convert the JSON value to a string
+			let rpc_payload_string = rpc_payload.to_string();
+		
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
+
+			let body = vec![rpc_payload_string];
+			let request = sp_runtime::offchain::http::Request::post(local_rpc_url, body);
+
+			let pending = request
+				.add_header("Content-Type", "application/json")
+				.deadline(deadline)
+				.send()
+				.map_err(|err| {
+					log::error!("❌ Error making Request: {:?}", err);
+					sp_runtime::offchain::http::Error::IoError
+				})?;
+
+			let response = pending.try_wait(deadline).map_err(|err| {
+				log::error!("❌ Error getting Response: {:?}", err);
+				sp_runtime::offchain::http::Error::DeadlineReached
+			})??;
+
+			if response.code != 200 {
+				log::error!("❌ RPC call failed with status code: {}", response.code);
+				return Err(http::Error::Unknown);
+			}
+
+			let body = response.body().collect::<Vec<u8>>();
+			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+				log::error!("❌ Response body is not valid UTF-8");
+				http::Error::Unknown
+			})?;
+
+			// Parse the JSON response
+			let json_response: Value = serde_json::from_str(body_str).map_err(|_| {
+				log::error!("❌ Failed to parse JSON response");
+				http::Error::Unknown
+			})?;
+
+			// Extract the hex string from the result field
+			let hex_result = json_response
+				.get("result")
+				.and_then(Value::as_str) // Get the result as a string
+				.ok_or_else(|| {
+					log::error!("❌ 'result' field not found in response");
+					http::Error::Unknown
+				})?;
+
+			// Return the hex string
+			Ok(hex_result.to_string())		
+		}
+		
 		/// Update rankings based on node ids and their corresponding weights
 		pub fn do_update_rankings(
 			weights: Vec<u16>,
@@ -620,6 +670,10 @@ pub mod pallet {
 			RankedList::<T, I>::get() // Access the storage item
 		}
 
+		pub fn get_node_ranking(key: Vec<u8>) -> Option<NodeRankings<BlockNumberFor<T>>> {
+			Rankings::<T, I>::get(key)
+		}
+		
 		// Helper function to get list of miners with their pending rewards for a specific node type
 		pub fn get_miners_pending_rewards(
 			node_type: NodeType,
