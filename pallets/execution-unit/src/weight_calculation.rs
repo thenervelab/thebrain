@@ -13,15 +13,18 @@ impl NodeMetricsData {
     const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
 
     // Calculate storage proof score (primary weight component)
-    fn calculate_storage_proof_score(metrics: &NodeMetricsData) -> u64 {
+    fn calculate_storage_proof_score(
+        metrics: &NodeMetricsData,
+        total_pin_checks: u32,
+        total_successful_pin_checks: u32) -> u64 {
         if metrics.total_pin_checks < Self::MIN_PIN_CHECKS {
             return 0; // Insufficient pin checks
         }
 
         // Pin check success rate (70% weight)
-        let pin_success_score = (metrics.successful_pin_checks as u64)
+        let pin_success_score = (total_successful_pin_checks as u64)
             .saturating_mul(Self::INTERNAL_SCALING as u64)
-            .saturating_div(metrics.total_pin_checks as u64);
+            .saturating_div(total_pin_checks as u64);
 
         // Storage usage score (30% weight)
         let storage_usage_score = if metrics.ipfs_storage_max > 0 {
@@ -63,12 +66,15 @@ impl NodeMetricsData {
     fn update_reputation_points<T: ipfs_pallet::Config>(
         metrics: &NodeMetricsData,
         coldkey: &T::AccountId,
+        total_pin_checks: u32,
+        total_successful_pin_checks: u32,
+        
     ) -> u32 {
         let mut reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
 
         // Increase points for successful storage proofs
-        if metrics.total_pin_checks >= Self::MIN_PIN_CHECKS {
-            let success_rate = (metrics.successful_pin_checks * 100) / metrics.total_pin_checks;
+        if total_pin_checks >= Self::MIN_PIN_CHECKS {
+            let success_rate = (total_successful_pin_checks * 100) / total_pin_checks;
             if success_rate >= 95 {
                 reputation_points = reputation_points.saturating_add(50); // +50 for high success
             } else if success_rate >= 80 {
@@ -77,7 +83,7 @@ impl NodeMetricsData {
         }
 
 		// Slash points for failed storage proofs
-		let failed_count = metrics.total_pin_checks - metrics.successful_pin_checks;
+		let failed_count = total_pin_checks - total_successful_pin_checks;
         if failed_count >= Self::SLASH_THRESHOLD {
             reputation_points = reputation_points.saturating_mul(9).saturating_div(10); // 10% slash
         }
@@ -103,7 +109,7 @@ impl NodeMetricsData {
         reputation_points
     }
 
-    pub fn calculate_weight<T: pallet_marketplace::Config + ipfs_pallet::Config>(
+    pub fn calculate_weight<T: pallet_marketplace::Config + ipfs_pallet::Config + pallet_registration::Config + crate::Config>(
         _node_type: NodeType,
         metrics: &NodeMetricsData,
         all_nodes_metrics: &[NodeMetricsData],
@@ -113,6 +119,29 @@ impl NodeMetricsData {
         if _node_type != NodeType::StorageMiner {
             return 0; // Only handle storage miners
         }
+
+        let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(metrics.miner_id.clone());
+
+        // Aggregate pin checks across all linked nodes
+        let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.into_iter().fold(
+            (0u32, 0u32),
+            |(total, successful), node_id| {
+                if let Some(node_metrics) = crate::Pallet::<T>::get_node_metrics(node_id) {
+                    (
+                        total.saturating_add(node_metrics.total_pin_checks),
+                        successful.saturating_add(node_metrics.successful_pin_checks),
+                    )
+                } else {
+                    (total, successful)
+                }
+            },
+        );
+
+        total_pin_checks = total_pin_checks + metrics.total_pin_checks;
+        successful_pin_checks = successful_pin_checks + metrics.successful_pin_checks;
+
+        log::info!("Total pin checks across linked nodes: {}", total_pin_checks);
+        log::info!("Successful pin checks across linked nodes: {}", successful_pin_checks);
 
         // // Early return for invalid metrics
         // if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024)
@@ -124,11 +153,11 @@ impl NodeMetricsData {
         // }
 
         // Calculate storage proof score (main component)
-        let storage_proof_score = Self::calculate_storage_proof_score(metrics).saturating_div(100);
+        let storage_proof_score = Self::calculate_storage_proof_score(metrics, total_pin_checks, successful_pin_checks).saturating_div(100);
         log::info!("storage_proof_score: {}", storage_proof_score);
 
         // Get reputation points and calculate modifier
-        let reputation_points = Self::update_reputation_points::<T>(metrics, coldkey);
+        let reputation_points = Self::update_reputation_points::<T>(metrics, coldkey, total_pin_checks, successful_pin_checks);
         log::info!("reputation_points: {}", reputation_points);
         let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
         log::info!("reputation_modifier: {}", reputation_modifier);
