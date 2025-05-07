@@ -1360,7 +1360,8 @@ impl pallet_execution_unit::Config for Runtime {
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 	type ConsensusPeriod = ConsensusPeriod;
     type ConsensusThreshold = ConstU32<2>;
-}
+	type ConsensusSimilarityThreshold = ConstU32<85>;  // pin checks should match 85 %
+} 
 
 impl pallet_offences::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;

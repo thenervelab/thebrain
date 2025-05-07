@@ -160,8 +160,12 @@ pub mod pallet {
         type LocalDefaultGenesisHash: Get<&'static str>;
 
 		type ConsensusPeriod: Get<BlockNumberFor<Self>>;
+		
 		#[pallet::constant]
         type ConsensusThreshold: Get<u32>;
+
+		#[pallet::constant]
+		type ConsensusSimilarityThreshold: Get<u32>; // Percentage (e.g., 85 for 85%)
 	}
 
 
@@ -1622,30 +1626,46 @@ pub mod pallet {
 			Ok(hex_result.to_string())		
 		}
 
-
-		fn apply_consensus() {
-            let all_miners: Vec<Vec<u8>> = TemporaryPinReports::<T>::iter_keys().map(|(miner_id, _)| miner_id).collect::<Vec<_>>();
+        fn apply_consensus() {
+            let all_miners: Vec<Vec<u8>> = TemporaryPinReports::<T>::iter_keys()
+                .map(|(miner_id, _)| miner_id)
+                .collect::<Vec<_>>();
             for miner_id in all_miners {
-                let reports: Vec<MinerPinMetrics> = TemporaryPinReports::<T>::iter_prefix(&miner_id).map(|(_, report)| report).collect();
+                let reports: Vec<MinerPinMetrics> = TemporaryPinReports::<T>::iter_prefix(&miner_id)
+                    .map(|(_, report)| report)
+                    .collect();
                 if reports.is_empty() {
                     continue;
                 }
 
                 let total_reports = reports.len() as u32;
                 let threshold = T::ConsensusThreshold::get();
-                let mut total_pin_checks = 0u32;
-                let mut successful_pin_checks = 0u32;
+                let similarity_threshold = T::ConsensusSimilarityThreshold::get() as f32 / 100.0; // e.g., 0.85 for 85%
 
+                // Calculate sums for averaging
+                let mut total_pin_checks_sum = 0u64;
+                let mut successful_pin_checks_sum = 0u64;
                 for report in &reports {
-                    total_pin_checks += report.total_pin_checks;
-                    successful_pin_checks += report.successful_pin_checks;
+                    total_pin_checks_sum += report.total_pin_checks as u64;
+                    successful_pin_checks_sum += report.successful_pin_checks as u64;
                 }
 
-                let avg_total_pin_checks = total_pin_checks / total_reports;
-                let avg_successful_pin_checks = successful_pin_checks / total_reports;
+                // Calculate averages
+                let avg_total_pin_checks = (total_pin_checks_sum / total_reports as u64) as u32;
+                let avg_successful_pin_checks = (successful_pin_checks_sum / total_reports as u64) as u32;
 
+                // Define acceptable ranges based on similarity threshold
+                let total_pin_checks_min = (avg_total_pin_checks as f32 * similarity_threshold).floor() as u32;
+                let total_pin_checks_max = (avg_total_pin_checks as f32 / similarity_threshold).ceil() as u32;
+                let successful_pin_checks_min = (avg_successful_pin_checks as f32 * similarity_threshold).floor() as u32;
+                let successful_pin_checks_max = (avg_successful_pin_checks as f32 / similarity_threshold).ceil() as u32;
+
+                // Count validators with reports within acceptable ranges
                 let agreeing_validators = reports.iter().filter(|report| {
-                    report.total_pin_checks == avg_total_pin_checks && report.successful_pin_checks == avg_successful_pin_checks
+                    report.total_pin_checks >= total_pin_checks_min &&
+                    report.total_pin_checks <= total_pin_checks_max &&
+                    report.successful_pin_checks >= successful_pin_checks_min &&
+                    report.successful_pin_checks <= successful_pin_checks_max
                 }).count() as u32;
 
                 if agreeing_validators >= threshold {
@@ -1662,13 +1682,12 @@ pub mod pallet {
                     Self::deposit_event(Event::ConsensusFailed { miner_id: miner_id.clone() });
                 }
 
+                // Clear temporary reports for this miner
                 TemporaryPinReports::<T>::remove_prefix(&miner_id, None);
             }
         }
-
 	}
 }
-
 
 impl<T: Config> MetricsInfoProvider<T> for Pallet<T> {
 	fn remove_metrics(node_id: Vec<u8>) {
