@@ -268,8 +268,8 @@ pub mod pallet {
 					// Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
 					let updated_weight = match previous_rankings {
 						Some(rankings) => {
-							// Equivalent to 0.3 * new_weight + 0.7 * previous_rankings.weight
-							((3 * new_weight) + (7 * rankings.weight as u32)) / 10
+							// Equivalent to 0.1 * new_weight + 0.9 * previous_rankings.weight
+							((1 * new_weight) + (9 * rankings.weight as u32)) / 10
 						}
 						None => new_weight // Use new weight if no previous ranking
 					};
@@ -305,8 +305,8 @@ pub mod pallet {
 						// Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
 						let updated_weight = match previous_rankings {
 							Some(rankings) => {
-								// Equivalent to 0.3 * weight + 0.7 * previous_rankings.weight
-								((3 * weight as u32) + (7 * rankings.weight as u32)) / 10
+								// Equivalent to 0.1 * weight + 0.9 * previous_rankings.weight
+								((1 * weight as u32) + (9 * rankings.weight as u32)) / 10
 							}
 							None => weight as u32 // Use new weight if no previous ranking
 						};
@@ -615,8 +615,8 @@ pub mod pallet {
 					// Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
 					let updated_weight = match previous_rankings {
 						Some(rankings) => {
-							// Equivalent to 0.3 * new_weight + 0.7 * previous_rankings.weight
-							((3 * new_weight) + (7 * rankings.weight as u32)) / 10
+							// Equivalent to 0.1 * new_weight + 0.9 * previous_rankings.weight
+							((1 * new_weight) + (9 * rankings.weight as u32)) / 10
 						}
 						None => new_weight // Use new weight if no previous ranking
 					};
@@ -653,8 +653,8 @@ pub mod pallet {
 						// Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
 						let updated_weight = match previous_rankings {
 							Some(rankings) => {
-								// Equivalent to 0.3 * weight + 0.7 * previous_rankings.weight
-								((3 * weight as u32) + (7 * rankings.weight as u32)) / 10
+								// Equivalent to 0.1 * weight + 0.9 * previous_rankings.weight
+								((1 * weight as u32) + (9 * rankings.weight as u32)) / 10
 							}
 							None => weight as u32 // Use new weight if no previous ranking
 						};
