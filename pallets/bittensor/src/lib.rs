@@ -184,17 +184,8 @@ pub mod pallet {
 							}
 						}
 					}
-					let previous_rankings = RankingsPallet::<T>::get_node_ranking(miner.node_id.clone());
-					// Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
-					let updated_weight = match previous_rankings {
-						Some(rankings) => {
-							// Equivalent to 0.1 * weight + 0.9 * previous_rankings.weight
-							((1 * weight as u32) + (9 * rankings.weight as u32)) / 10
-						}
-						None => weight as u32 // Use new weight if no previous ranking
-					};
 
-					storage_weights.push(updated_weight as u16);
+					storage_weights.push(weight as u16);
 				} else {
 					log::info!("Node metrics not found for storage miner: {:?}", miner.node_id);
 				}
@@ -368,16 +359,7 @@ pub mod pallet {
 							}
 						}
 					}
-					let previous_rankings = RankingsPallet::<T, pallet_rankings::Instance3>::get_node_ranking(miner.node_id.clone());
-					// Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
-					let updated_weight = match previous_rankings {
-						Some(rankings) => {
-							// Equivalent to 0.1 * weight + 0.9 * previous_rankings.weight
-							((1 * weight as u32) + (9 * rankings.weight as u32)) / 10
-						}
-						None => weight as u32 // Use new weight if no previous ranking
-					};
-					validator_weights.push(updated_weight as u16);
+					validator_weights.push(weight as u16);
 				} else {
 					log::info!(
 						"Node metrics not found for validator miner: {:?}",

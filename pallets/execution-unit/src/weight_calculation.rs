@@ -109,7 +109,7 @@ impl NodeMetricsData {
         reputation_points
     }
 
-    pub fn calculate_weight<T: pallet_marketplace::Config + ipfs_pallet::Config + pallet_registration::Config + crate::Config>(
+    pub fn calculate_weight<T: pallet_marketplace::Config + ipfs_pallet::Config + pallet_registration::Config + crate::Config + pallet_rankings::Config>(
         _node_type: NodeType,
         metrics: &NodeMetricsData,
         all_nodes_metrics: &[NodeMetricsData],
@@ -182,7 +182,20 @@ impl NodeMetricsData {
             .min(Self::MAX_SCORE as u64) as u32;
 
         log::info!("final_weight: {}", final_weight);
-        final_weight
+
+        let previous_rankings = pallet_rankings::Pallet::<T>::get_node_ranking(metrics.miner_id.clone());
+        // Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
+        let updated_weight = match previous_rankings {
+            Some(rankings) => {
+                // Equivalent to 0.1 * weight + 0.9 * previous_rankings.weight
+                ((1 * final_weight as u32) + (9 * rankings.weight as u32)) / 10
+            }
+            None => final_weight as u32 // Use new weight if no previous ranking
+        };
+
+        log::info!("updated_weight: {}", updated_weight);
+
+        updated_weight
     }
 
     // Unchanged functions (included for completeness)
