@@ -97,7 +97,6 @@ pub struct StorageUnpinUpdateRequest<AccountId> {
 	pub user_profile_cid: FileHash,
 }
 
-
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub struct UpdatedMinerProfileItem {
     pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,

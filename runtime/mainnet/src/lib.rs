@@ -167,14 +167,13 @@ pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
 		c: PRIMARY_PROBABILITY,
 		allowed_slots: sp_consensus_babe::AllowedSlots::PrimaryAndSecondaryPlainSlots,
 	};
-
 /// This runtime version.
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9042,
+	spec_version: 9043,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1332,11 +1331,13 @@ parameter_types! {
 	pub const SystemHealthRpcMethod: &'static str = "system_health";
 	pub const IPFSBaseUrl: &'static str = "http://localhost:5001";
 	pub const UnregistrationBuffer : u32 = 60;
-	pub const MaxOffchainRequestsPerPeriod: u32 = 20;
+	pub const MaxOffchainRequestsPerPeriod: u32 = 150;
 	pub const RequestsClearInterval: u32 = 10;
 	pub const MaxOffchainHardwareSubmitRequestsPerPeriod: u32 = 1;
 	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
 	pub const LocalDefaultGenesisHash: &'static str = "0x28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9";
+	pub const ConsensusPeriod: BlockNumber = 10;
+	// pub const EpochDuration: u32 = 10;
 }
 
 impl pallet_execution_unit::Config for Runtime {
@@ -1357,7 +1358,11 @@ impl pallet_execution_unit::Config for Runtime {
 	type HardwareSubmitRequestsClearInterval = BlockCheckInterval;
 	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
-}
+	type ConsensusPeriod = ConsensusPeriod;
+    type ConsensusThreshold = ConstU32<2>;
+	type ConsensusSimilarityThreshold = ConstU32<85>; 
+	type EpochDuration = ConstU32<1200>;
+} 
 
 impl pallet_offences::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;

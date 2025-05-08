@@ -158,8 +158,18 @@ pub mod pallet {
     
         #[pallet::constant]
         type LocalDefaultGenesisHash: Get<&'static str>;
-	}
 
+		type ConsensusPeriod: Get<BlockNumberFor<Self>>;
+		
+		#[pallet::constant]
+        type ConsensusThreshold: Get<u32>;
+
+		#[pallet::constant]
+		type ConsensusSimilarityThreshold: Get<u32>; // Percentage (e.g., 85 for 85%)
+
+		#[pallet::constant]
+		type EpochDuration: Get<u32>;
+	}
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -202,6 +212,8 @@ pub mod pallet {
 		/// Emitted when disks array is empty.
 		EmptyDisksArray { node_id: Vec<u8> },
 		MemoryExceedsFiveTB { node_id: Vec<u8> },
+		ConsensusReached { miner_id: Vec<u8>, total_pin_checks: u32, successful_pin_checks: u32 },
+        ConsensusFailed { miner_id: Vec<u8> },
 	}
 
 	#[derive(Debug, Encode, Decode, Clone, PartialEq, Eq, TypeInfo)]
@@ -236,6 +248,10 @@ pub mod pallet {
 	#[pallet::getter(fn purge_deregistered_nodes_enabled)]
 	pub type PurgeDeregisteredNodesEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
+	#[pallet::storage]
+    pub(super) type TemporaryPinReports<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, Vec<u8>, Blake2_128Concat, T::AccountId, MinerPinMetrics, OptionQuery>;
+
 	#[pallet::error]
 	pub enum Error<T> {
 		MetricsNotFound,
@@ -251,7 +267,9 @@ pub mod pallet {
 		NoPrimaryNetworkInterface,
 		/// Disks array is empty.
 		EmptyDisksArray,
-		MemoryExceedsFiveTB
+		MemoryExceedsFiveTB,
+		ConsensusNotReached,
+		SuccessfulPinsExceedTotal
 	}
 
 	#[pallet::storage]
@@ -261,6 +279,14 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn hardware_requests_count)]
 	pub type HardwareRequestsCount<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn total_pin_checks_per_epoch)]
+	pub type TotalPinChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn successful_pin_checks_per_epoch)]
+	pub type SuccessfulPinChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn hardware_requests_last_block)]
@@ -299,6 +325,19 @@ pub mod pallet {
 			// Only purge if the feature is enabled
 			if Self::purge_deregistered_nodes_enabled() {
 				Self::purge_nodes_if_deregistered_on_bittensor();
+			}
+
+
+			let consensus_period = T::ConsensusPeriod::get();
+            if _n % consensus_period == 0u32.into() {
+                Self::apply_consensus();
+            }
+
+			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
+			if _n % epoch_clear_interval.into() == 0u32.into() {
+				// Clear per-epoch pin stats for all miners
+				TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
 			}
 
 			Weight::zero()
@@ -633,28 +672,21 @@ pub mod pallet {
 				user_requests_count + miners_metrics.len() as u32 <= max_requests_per_block,
 				Error::<T>::TooManyRequests
 			);
+			
+			// Validate metrics and update storage
+			for miner in miners_metrics.iter() {
+				ensure!(
+					miner.successful_pin_checks <= miner.total_pin_checks,
+					Error::<T>::SuccessfulPinsExceedTotal
+				);
+			}
 		
 			// Update user's storage requests count
 			RequestsCount::<T>::insert(node_info.node_id.clone(), user_requests_count + miners_metrics.len() as u32);
 		
-			// Process each miner's metrics
-			for miner in miners_metrics {
-				// Fetch existing metrics
-				let mut metrics = NodeMetrics::<T>::get(&miner.node_id)
-					.ok_or(Error::<T>::MetricsNotFound)?;
-		
-				// Update the metrics
-				metrics.total_pin_checks += miner.total_pin_checks;
-				metrics.successful_pin_checks += miner.successful_pin_checks;
-		
-				// Insert the updated metrics back into storage
-				NodeMetrics::<T>::insert(miner.node_id.clone(), metrics);
-		
-				// Emit event for each miner
-				Self::deposit_event(Event::PinCheckMetricsUpdated { 
-					node_id: miner.node_id 
-				});
-			}
+            for miner in miners_metrics {
+                TemporaryPinReports::<T>::insert(&miner.node_id, &who, miner.clone());
+            }
 		
 			Ok(().into())
 		}
@@ -1620,9 +1652,120 @@ pub mod pallet {
 			// Return the hex string
 			Ok(hex_result.to_string())		
 		}
+
+		fn apply_consensus() {
+			let all_miners: Vec<Vec<u8>> = TemporaryPinReports::<T>::iter_keys()
+				.map(|(miner_id, _)| miner_id)
+				.collect::<Vec<_>>();
+			let threshold = T::ConsensusThreshold::get();
+		
+			for miner_id in all_miners {
+				let reports: Vec<MinerPinMetrics> = TemporaryPinReports::<T>::iter_prefix(&miner_id)
+					.map(|(_, report)| report)
+					.collect();
+		
+				if reports.is_empty() {
+					continue;
+				}
+				let total_reports = reports.len() as u32;
+				if total_reports >= threshold {
+					let similarity_percentage = T::ConsensusSimilarityThreshold::get(); // e.g., 85 for 85%
+		
+					// Calculate sums for averaging
+					let mut total_pin_checks_sum = 0u64;
+					let mut successful_pin_checks_sum = 0u64;
+					for report in &reports {
+						total_pin_checks_sum += report.total_pin_checks as u64;
+						successful_pin_checks_sum += report.successful_pin_checks as u64;
+					}
+		
+					// Calculate averages (as u128 for precise arithmetic)
+					let avg_total_pin_checks = (total_pin_checks_sum as u128 / total_reports as u128) as u32;
+					let avg_successful_pin_checks = (successful_pin_checks_sum as u128 / total_reports as u128) as u32;
+		
+					let similarity = similarity_percentage as u128;
+		
+					// Define acceptable ranges with proper zero handling
+					let total_pin_checks_min = if avg_total_pin_checks == 0 {
+						0
+					} else {
+						((avg_total_pin_checks as u128 * similarity) / 100).max(1)
+					};
+					let total_pin_checks_max = if avg_total_pin_checks == 0 {
+						0
+					} else {
+						((avg_total_pin_checks as u128 * 115) / 100).max(1)
+					};
+		
+					let successful_pin_checks_min = if avg_successful_pin_checks == 0 {
+						0
+					} else {
+						((avg_successful_pin_checks as u128 * similarity) / 100).max(1)
+					};
+					let successful_pin_checks_max = if avg_successful_pin_checks == 0 {
+						0
+					} else {
+						((avg_successful_pin_checks as u128 * 115) / 100).max(1)
+					};
+		
+					// Count validators with reports within acceptable ranges
+					let agreeing_validators = reports.iter().filter(|report| {
+						let total_pin = report.total_pin_checks as u128;
+						let successful_pin = report.successful_pin_checks as u128;
+		
+						total_pin >= total_pin_checks_min &&
+						total_pin <= total_pin_checks_max &&
+						successful_pin >= successful_pin_checks_min &&
+						successful_pin <= successful_pin_checks_max
+					}).count() as u32;
+		
+					// Debug logging
+					log::info!(
+						"Miner: {:?}, Reports: {}, Avg Total: {}, Avg Success: {}, Total Range: [{}, {}], Success Range: [{}, {}], Agreeing: {}, Threshold: {}, Similarity: {}",
+						miner_id,
+						total_reports,
+						avg_total_pin_checks,
+						avg_successful_pin_checks,
+						total_pin_checks_min,
+						total_pin_checks_max,
+						successful_pin_checks_min,
+						successful_pin_checks_max,
+						agreeing_validators,
+						threshold,
+						similarity_percentage
+					);
+		
+					if agreeing_validators >= threshold {
+						let mut metrics = NodeMetrics::<T>::get(&miner_id).unwrap_or_default();
+						metrics.total_pin_checks += avg_total_pin_checks;
+						metrics.successful_pin_checks += avg_successful_pin_checks;
+						NodeMetrics::<T>::insert(&miner_id, metrics);
+		
+						// Update total pin checks per epoch
+						let total_pin = TotalPinChecksPerEpoch::<T>::get(&miner_id);
+						TotalPinChecksPerEpoch::<T>::insert(&miner_id, total_pin + avg_total_pin_checks);
+
+						// Update successful pin checks per epoch
+						let successful_pin = SuccessfulPinChecksPerEpoch::<T>::get(&miner_id);
+						SuccessfulPinChecksPerEpoch::<T>::insert(&miner_id, successful_pin + avg_successful_pin_checks);
+
+						Self::deposit_event(Event::ConsensusReached {
+							miner_id: miner_id.clone(),
+							total_pin_checks: avg_total_pin_checks,
+							successful_pin_checks: avg_successful_pin_checks,
+						});
+					} else {
+						Self::deposit_event(Event::ConsensusFailed { miner_id: miner_id.clone() });
+					}
+		
+					// Clear temporary reports for this miner
+					TemporaryPinReports::<T>::remove_prefix(&miner_id, None);
+				}
+			}
+		}
+				
 	}
 }
-
 
 impl<T: Config> MetricsInfoProvider<T> for Pallet<T> {
 	fn remove_metrics(node_id: Vec<u8>) {

@@ -670,6 +670,10 @@ pub mod pallet {
 			RankedList::<T, I>::get() // Access the storage item
 		}
 
+		pub fn get_node_ranking(key: Vec<u8>) -> Option<NodeRankings<BlockNumberFor<T>>> {
+			Rankings::<T, I>::get(key)
+		}
+		
 		// Helper function to get list of miners with their pending rewards for a specific node type
 		pub fn get_miners_pending_rewards(
 			node_type: NodeType,

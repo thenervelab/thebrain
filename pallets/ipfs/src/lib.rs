@@ -184,7 +184,7 @@ pub mod pallet {
 			// get all degraded miners and add rebalance Request and then delete them
 			let degraded_miners = RegistrationPallet::<T>::get_all_degraded_storage_miners();
 			for miner in degraded_miners {
-				// let _ = Self::add_rebalance_request_from_node(miner);
+				let _ = Self::add_rebalance_request_from_node(miner.clone());
 				RegistrationPallet::<T>::try_unregister_storage_miner(miner);
 			}
 			
@@ -200,7 +200,8 @@ pub mod pallet {
 		UnpinRequestCompleted { owner: T::AccountId, file_hash: FileHash, file_size: u128 },
 		PinningEnabledChanged { enabled: bool },
 		MinerProfilesUpdated { miner_count: u32 },
-		StorageRequestsCleared
+		StorageRequestsCleared,
+		ReputationPointsUpdated { coldkey: T::AccountId, points: u32 },
 	}
 
 	#[pallet::error]
@@ -230,7 +231,8 @@ pub mod pallet {
 		UnauthorizedLocker,
 		MinersAlreadyLocked,
 		NodeIdTooLong,
-		RequestNotFound
+		RequestNotFound,
+		InvalidReputationPoints,
 	}
 
 	// the file size where the key is encoded file hash
@@ -268,6 +270,11 @@ pub mod pallet {
 		BoundedVec<StorageUnpinRequest<T::AccountId>, ConstU32<MAX_UNPIN_REQUESTS>>, 
 		ValueQuery
 	>;
+
+	#[pallet::storage]
+    #[pallet::getter(fn reputation_points)]
+    pub type ReputationPoints<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn rebalance_request)]
@@ -1772,5 +1779,18 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		pub fn set_reputation_points(coldkey: &T::AccountId, points: u32) -> Result<(), Error<T>> {
+            ensure!(
+                points <= 10_000,
+                Error::<T>::InvalidReputationPoints
+            );
+            ReputationPoints::<T>::insert(coldkey, points);
+            Self::deposit_event(Event::ReputationPointsUpdated {
+                coldkey: coldkey.clone(),
+                points,
+            });
+            Ok(())
+        }
 	}
 }
