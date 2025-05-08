@@ -141,14 +141,14 @@ impl NodeMetricsData {
         log::info!("Total pin checks across linked nodes: {}", total_pin_checks);
         log::info!("Successful pin checks across linked nodes: {}", successful_pin_checks);
 
-        // // Early return for invalid metrics
-        // if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024)
-        //     || metrics.bandwidth_mbps < 125
-        //     || metrics.primary_network_interface.is_none()
-        //     || metrics.disks.is_empty()
-        // {
-        //     return 0;
-        // }
+        // Early return for invalid metrics
+        if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024)
+            || metrics.bandwidth_mbps < 125
+            || metrics.primary_network_interface.is_none()
+            || metrics.disks.is_empty()
+        {
+            return 0;
+        }
 
         // Calculate storage proof score (main component)
         let storage_proof_score = Self::calculate_storage_proof_score(metrics, total_pin_checks, successful_pin_checks).saturating_div(100);

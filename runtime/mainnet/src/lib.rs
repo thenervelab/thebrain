@@ -167,14 +167,13 @@ pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
 		c: PRIMARY_PROBABILITY,
 		allowed_slots: sp_consensus_babe::AllowedSlots::PrimaryAndSecondaryPlainSlots,
 	};
-
 /// This runtime version.
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9047,
+	spec_version: 9043,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1143,7 +1142,7 @@ impl pallet_ip::Config for Runtime {
 
 parameter_types! {
 	pub const VersionKeyStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555d8cb0c0627a5cd77797c62415dbef9624b00";
-	pub const BittensorCallSubmission : u32 = 20;
+	pub const BittensorCallSubmission : u32 = 100;
 	pub const DefaultGenesisHash: &'static str = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03";
 }
 
@@ -1327,12 +1326,12 @@ parameter_types! {
 	pub const ExecutionUnitSystemInfoRpcMethod: &'static str = "sys_getSystemInfo";
 	pub const BlockTimeSecs :u32 =  SECONDS_PER_BLOCK as u32;
 	/// number of blocks at which uptime will be checked
-	pub const BlockCheckInterval : u32 = 20;
+	pub const BlockCheckInterval : u32 = 300;
 	pub const GetReadProofRpcMethod: &'static str = "state_getReadProof";
 	pub const SystemHealthRpcMethod: &'static str = "system_health";
 	pub const IPFSBaseUrl: &'static str = "http://localhost:5001";
 	pub const UnregistrationBuffer : u32 = 60;
-	pub const MaxOffchainRequestsPerPeriod: u32 = 20;
+	pub const MaxOffchainRequestsPerPeriod: u32 = 150;
 	pub const RequestsClearInterval: u32 = 10;
 	pub const MaxOffchainHardwareSubmitRequestsPerPeriod: u32 = 1;
 	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
@@ -1360,9 +1359,9 @@ impl pallet_execution_unit::Config for Runtime {
 	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 	type ConsensusPeriod = ConsensusPeriod;
-    type ConsensusThreshold = ConstU32<1>;
+    type ConsensusThreshold = ConstU32<2>;
 	type ConsensusSimilarityThreshold = ConstU32<85>; 
-	type EpochDuration = ConstU32<40>;
+	type EpochDuration = ConstU32<1200>;
 } 
 
 impl pallet_offences::Config for Runtime {

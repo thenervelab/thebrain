@@ -672,8 +672,7 @@ pub mod pallet {
 				user_requests_count + miners_metrics.len() as u32 <= max_requests_per_block,
 				Error::<T>::TooManyRequests
 			);
-
-
+			
 			// Validate metrics and update storage
 			for miner in miners_metrics.iter() {
 				ensure!(
