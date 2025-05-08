@@ -135,8 +135,8 @@ impl NodeMetricsData {
             },
         );
         
-        total_pin_checks = total_pin_checks + metrics.total_pin_checks;
-        successful_pin_checks = successful_pin_checks + metrics.successful_pin_checks;
+        total_pin_checks = total_pin_checks + crate::Pallet::<T>::total_pin_checks_per_epoch(&metrics.miner_id);
+        successful_pin_checks = successful_pin_checks + crate::Pallet::<T>::successful_pin_checks_per_epoch(&metrics.miner_id);
 
         log::info!("Total pin checks across linked nodes: {}", total_pin_checks);
         log::info!("Successful pin checks across linked nodes: {}", successful_pin_checks);
