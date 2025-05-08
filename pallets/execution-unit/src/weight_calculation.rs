@@ -12,20 +12,20 @@ impl NodeMetricsData {
     const REPUTATION_NEUTRAL: u32 = 1000; // Neutral reputation points
     const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
 
-    // Calculate storage proof score (primary weight component)
     fn calculate_storage_proof_score(
         metrics: &NodeMetricsData,
         total_pin_checks: u32,
-        total_successful_pin_checks: u32) -> u64 {
-        if metrics.total_pin_checks < Self::MIN_PIN_CHECKS {
-            return 0; // Insufficient pin checks
+        total_successful_pin_checks: u32
+    ) -> u64 {
+        if total_pin_checks == 0 || metrics.total_pin_checks < Self::MIN_PIN_CHECKS {
+            return 0; // Avoid division by zero or insufficient pin checks
         }
-
+    
         // Pin check success rate (70% weight)
         let pin_success_score = (total_successful_pin_checks as u64)
             .saturating_mul(Self::INTERNAL_SCALING as u64)
             .saturating_div(total_pin_checks as u64);
-
+    
         // Storage usage score (30% weight)
         let storage_usage_score = if metrics.ipfs_storage_max > 0 {
             let usage_percent = (metrics.current_storage_bytes * 100) / metrics.total_storage_bytes;
@@ -39,12 +39,12 @@ impl NodeMetricsData {
         } else {
             0
         };
-
+    
         // Weighted combination
         (pin_success_score.saturating_mul(70) + storage_usage_score.saturating_mul(30))
             .saturating_div(100)
     }
-
+    
     // Calculate reputation modifier based on coldkey reputation points
     fn calculate_reputation_modifier(reputation_points: u32) -> u64 {
         // Map reputation points to a multiplier between 0.5 and 1.5
