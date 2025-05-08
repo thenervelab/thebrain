@@ -312,7 +312,7 @@ where
 		let cpu_cores = sys.cpus().len() as u32;
 
 		// Memory info (in MB)
-		let memory_mb = sys.total_memory() / 1024;
+		let memory_mb = sys.total_memory() / 1024; 
 		let free_memory_mb = sys.available_memory() / 1024;
 
 		// Create a HashSet to track seen disk names

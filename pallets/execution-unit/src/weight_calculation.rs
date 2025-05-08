@@ -138,9 +138,6 @@ impl NodeMetricsData {
         total_pin_checks = total_pin_checks + crate::Pallet::<T>::total_pin_checks_per_epoch(&metrics.miner_id);
         successful_pin_checks = successful_pin_checks + crate::Pallet::<T>::successful_pin_checks_per_epoch(&metrics.miner_id);
 
-        log::info!("Total pin checks across linked nodes: {}", total_pin_checks);
-        log::info!("Successful pin checks across linked nodes: {}", successful_pin_checks);
-
         // Early return for invalid metrics
         if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024)
             || metrics.bandwidth_mbps < 125
@@ -152,34 +149,27 @@ impl NodeMetricsData {
 
         // Calculate storage proof score (main component)
         let storage_proof_score = Self::calculate_storage_proof_score(metrics, total_pin_checks, successful_pin_checks).saturating_div(100);
-        log::info!("storage_proof_score: {}", storage_proof_score);
-
+       
         // Get reputation points and calculate modifier
         let reputation_points = Self::update_reputation_points::<T>(metrics, coldkey, total_pin_checks, successful_pin_checks);
-        log::info!("reputation_points: {}", reputation_points);
         let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
-        log::info!("reputation_modifier: {}", reputation_modifier);
-
+       
         // Calculate diversity score (unchanged)
         let diversity_score =
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
-        log::info!("diversity_score: {}", diversity_score);
-
+        
         // Base weight: storage proof (80%), diversity (20%)
         // let base_weight = (storage_proof_score.saturating_mul(80)
         //     + diversity_score.saturating_mul(20))
         //     .saturating_div(100);
         let base_weight = storage_proof_score;
-        log::info!("base_weight: {}", base_weight);
-
+        
         // Apply reputation modifier
         let final_weight = (base_weight as u64)
             .saturating_mul(reputation_modifier)
             .saturating_div(Self::INTERNAL_SCALING as u64)
             .max(1)
             .min(Self::MAX_SCORE as u64) as u32;
-
-        log::info!("final_weight: {}", final_weight);
 
         let previous_rankings = pallet_rankings::Pallet::<T>::get_node_ranking(metrics.miner_id.clone());
         // Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
@@ -191,8 +181,7 @@ impl NodeMetricsData {
             None => final_weight as u32 // Use new weight if no previous ranking
         };
 
-        log::info!("updated_weight: {}", updated_weight);
-
+        
         updated_weight
     }
 

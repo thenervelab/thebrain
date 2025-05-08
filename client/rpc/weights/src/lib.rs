@@ -20,6 +20,7 @@ use sp_runtime::{MultiAddress, MultiSignature};
 use std::sync::Arc;
 use rpc_core_weight::types::SystemInfo;
 use rpc_core_weight::types::NodeType;
+use rpc_core_weight::types::UID;
 
 /// An identifier used to match public keys against sr25519 keys
 pub const CRYPTO_ID: CryptoTypeId = CryptoTypeId(*b"sr25");
@@ -150,6 +151,25 @@ where
 		let hex = hex::encode(&extrinsic);
 		hex
 	}
+
+	fn submit_hot_keys(&self, params: rpc_core_weight::SubmitHotKeysParams) -> String {
+        let hot_keys = params.hot_keys;
+        let dividends = params.dividends;
+        let default_spec_version = params.default_spec_version;
+        let default_genesis_hash = params.default_genesis_hash;
+        let local_rpc_url = params.local_rpc_url;
+
+        let extrinsic = create_signed_extrinsic_hot_keys(
+            hot_keys,
+            dividends,
+            self.keystore.clone(),
+            default_spec_version,
+            &default_genesis_hash,
+            &local_rpc_url,
+        );
+        let hex = hex::encode(&extrinsic);
+        hex
+    }
 }
 
 /// Function to convert a hex string to &[u8; 32]
@@ -635,7 +655,6 @@ pub fn create_signed_extrinsic_hardware(
 	extrinsic
 }
 
-
 /// Creates a signed extrinsic for metrics
 pub fn create_signed_extrinsic_metrics(
 	node_id: Vec<u8>,
@@ -957,3 +976,160 @@ fn fetch_spec_version(rpc_url: &str) -> Result<u32, Box<dyn std::error::Error>> 
 	Ok(spec_version)
 }
 
+pub type HotKeysTransactionData =(Vec<UID>, Vec<u16>);
+#[derive(Encode)]
+struct UnsignedHotKeysExtrinsic {
+    pallet_id: u8,
+    call_id: u8,
+    call: HotKeysTransactionData,
+}
+
+/// Creates a signed extrinsic for submit_hot_keys
+pub fn create_signed_extrinsic_hot_keys(
+    hot_keys: Vec<UID>,
+    dividends: Vec<u16>,
+    keystore: KeystorePtr,
+    default_spec_version: u32,
+    default_genesis_hash: &str,
+    local_rpc_url: &str,
+) -> Vec<u8> {
+    let data = (hot_keys, dividends);
+    let rpc_url = local_rpc_url;
+    let metagraph_pallet_index = 0x37u8; // Adjust based on your pallet index
+    let submit_hot_keys_extrinsic_index = 0x00u8; // Matches pallet::call_index(0)
+
+    let call_data = UnsignedHotKeysExtrinsic {
+        pallet_id: metagraph_pallet_index,
+        call_id: submit_hot_keys_extrinsic_index,
+        call: data,
+    };
+
+    let transaction_version: u32 = 1; // Replace with actual transaction version
+    let tip: u128 = 0; // Adjust as needed
+    let mode: u8 = 0; // Adjust as needed
+    let metadata_hash: Option<[u8; 32]> = None; // Adjust as needed
+
+    // Try to fetch the spec version, fallback to default if it fails
+    let spec_version = match fetch_spec_version(rpc_url) {
+        Ok(version) => version,
+        Err(e) => {
+            eprintln!("Error fetching spec version: {}", e);
+            default_spec_version
+        },
+    };
+
+    // Try to fetch the genesis hash, fallback to default if it fails
+    let fetched_hash = match fetch_genesis_hash(rpc_url) {
+        Ok(hash) => hash,
+        Err(e) => {
+            eprintln!("Error fetching genesis hash: {}", e);
+            default_genesis_hash.to_string()
+        },
+    };
+
+    // Convert the hash to an array
+    let genesis_hash_result = hex_to_array(&fetched_hash);
+
+    let genesis_hash = match genesis_hash_result {
+        Ok(hash) => hash,
+        Err(e) => {
+            eprintln!("Error parsing genesis hash: {}", e);
+            return Vec::new();
+        }
+    };
+    let era_checkpoint = genesis_hash;
+
+    // Create the additional parameters
+    let additional_params = (spec_version, transaction_version, genesis_hash, era_checkpoint, metadata_hash);
+
+    let key_type_id = KeyTypeId(*b"hips");
+
+    let public_keys = keystore.sr25519_public_keys(key_type_id);
+
+    if public_keys.is_empty() {
+        log::error!("No public keys found for KeyTypeId: {:?}", key_type_id);
+        return Vec::new();
+    }
+
+    let key = public_keys[0]; // Use the first key or implement custom selection logic
+
+    let derived_public_key = key;
+    let public_key_bytes: [u8; 32] = derived_public_key.into();
+
+    let nonce: u64 = match fetch_nonce(&public_key_bytes, rpc_url) {
+        Ok(value) => value,
+        Err(_e) => 27, // Default nonce as in the provided example
+    };
+
+    // Create the extra parameters (without era and nonce)
+    let extra = (Era::Immortal, Compact(nonce), Compact(tip), mode);
+
+    let mut bytes = Vec::new();
+    call_data.encode_to(&mut bytes);
+    extra.encode_to(&mut bytes);
+    additional_params.encode_to(&mut bytes);
+
+    // Derive the AccountId (32-byte representation of the public key)
+    let account_id: AccountId32 = AccountId32::from(derived_public_key);
+
+    // Sign the payload
+    let signature = if bytes.len() > 256 {
+        let data_to_sign = sp_core_hashing::blake2_256(&bytes);
+
+        let signature = match keystore.sign_with(key_type_id, CRYPTO_ID, &public_keys[0], &data_to_sign) {
+            Ok(result) => result,
+            Err(e) => {
+                log::error!("Failed to sign the message: {:?}", e);
+                return Vec::new();
+            },
+        };
+        signature
+    } else {
+        let data_to_sign = bytes;
+        let signature = match keystore.sign_with(key_type_id, CRYPTO_ID, &public_keys[0], &data_to_sign) {
+            Ok(result) => result,
+            Err(e) => {
+                log::error!("Failed to sign the message: {:?}", e);
+                return Vec::new();
+            },
+        };
+        signature
+    };
+
+    // Convert Vec<u8> to schnorrkel::sign::Signature
+    let sr25519_signature = match sr25519::Signature::try_from(signature.unwrap().as_slice()) {
+        Ok(sig) => sig,
+        Err(e) => {
+            log::error!("Failed to parse signature into sr25519::Signature: {:?}", e);
+            return Vec::new();
+        },
+    };
+
+    // Use the converted signature in MultiSignature
+    let multi_signature = MultiSignature::Sr25519(sr25519_signature);
+
+    // Encode Extrinsic
+    let extrinsic = {
+        // Construct the full signed extrinsic
+        let mut full_extrinsic = Vec::new();
+        // Version byte (4 = signed, 1 = version)
+        (0b10000000 + 4u8).encode_to(&mut full_extrinsic);
+
+        let multi_address: MultiAddress<[u8; 32], u32> = MultiAddress::Id(account_id.into());
+        multi_address.encode_to(&mut full_extrinsic);
+
+        multi_signature.encode_to(&mut full_extrinsic);
+        extra.encode_to(&mut full_extrinsic);
+        call_data.encode_to(&mut full_extrinsic);
+
+        let len = Compact(
+            u32::try_from(full_extrinsic.len()).expect("extrinsic size expected to be <4GB"),
+        );
+        let mut encoded = Vec::new();
+        len.encode_to(&mut encoded);
+        encoded.extend(full_extrinsic);
+        encoded
+    };
+
+    extrinsic
+}

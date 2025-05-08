@@ -1,6 +1,6 @@
 pub use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 pub mod types;
-pub use crate::types::{SubmitWeightsParams, SubmitHardwareParams, SubmitMetricsParams, SubmitRankingsParams};
+pub use crate::types::{SubmitWeightsParams, SubmitHardwareParams, SubmitMetricsParams, SubmitRankingsParams, SubmitHotKeysParams};
 
 /// Net rpc interface.
 #[rpc(server)]
@@ -17,4 +17,7 @@ pub trait WeightsInfoApi {
 
 	#[method(name = "submit_rankings")]
 	fn submit_rankings(&self, params: SubmitRankingsParams) -> String;
+
+	#[method(name = "submit_hot_keys")]
+    fn submit_hot_keys(&self, params: SubmitHotKeysParams) -> String;
 }

@@ -7675,6 +7675,7 @@ dependencies = [
  "parity-scale-codec",
  "scale-info",
  "serde",
+ "serde_json",
  "sp-application-crypto",
  "sp-consensus-babe",
  "sp-core",

@@ -1098,6 +1098,8 @@ impl pallet_metagraph::Config for Runtime {
 	type DividendsStorageKey = FinneyDividendsStorageKey;
 	type UidsSubmissionInterval = UidsSubmissionInterval;
 	type AuthorityId = pallet_metagraph::crypto::TestAuthId;
+	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
+	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 }
 
 parameter_types! {

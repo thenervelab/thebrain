@@ -304,8 +304,8 @@ pub mod pallet {
 			node_types: Vec<NodeType>,
 			ranking_instance_id: u32
 		) -> Result<String, http::Error> {
-			let local_default_spec_version = T::LocalDefaultSpecVersion::get();
-			let local_default_genesis_hash = T::LocalDefaultGenesisHash::get();
+			let local_default_spec_version = <T as pallet::Config<I>>::LocalDefaultSpecVersion::get();
+			let local_default_genesis_hash = <T as pallet::Config<I>>::LocalDefaultGenesisHash::get();
 			let local_rpc_url = <T as pallet::Config<I>>::LocalRpcUrl::get();
 		
 			let rpc_payload = format!(
