@@ -166,6 +166,9 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type ConsensusSimilarityThreshold: Get<u32>; // Percentage (e.g., 85 for 85%)
+
+		#[pallet::constant]
+		type EpochDuration: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -278,6 +281,14 @@ pub mod pallet {
 	pub type HardwareRequestsCount<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
+	#[pallet::getter(fn total_pin_checks_per_epoch)]
+	pub type TotalPinChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn successful_pin_checks_per_epoch)]
+	pub type SuccessfulPinChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
 	#[pallet::getter(fn hardware_requests_last_block)]
 	pub type HardwareRequestsLastBlock<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, BlockNumberFor<T>, ValueQuery>;
 
@@ -316,10 +327,18 @@ pub mod pallet {
 				Self::purge_nodes_if_deregistered_on_bittensor();
 			}
 
+
 			let consensus_period = T::ConsensusPeriod::get();
             if _n % consensus_period == 0u32.into() {
                 Self::apply_consensus();
             }
+
+			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
+			if _n % epoch_clear_interval.into() == 0u32.into() {
+				// Clear per-epoch pin stats for all miners
+				TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+			}
 
 			Weight::zero()
 		}
@@ -1723,6 +1742,14 @@ pub mod pallet {
 						metrics.successful_pin_checks += avg_successful_pin_checks;
 						NodeMetrics::<T>::insert(&miner_id, metrics);
 		
+						// Update total pin checks per epoch
+						let total_pin = TotalPinChecksPerEpoch::<T>::get(&miner_id);
+						TotalPinChecksPerEpoch::<T>::insert(&miner_id, total_pin + avg_total_pin_checks);
+
+						// Update successful pin checks per epoch
+						let successful_pin = SuccessfulPinChecksPerEpoch::<T>::get(&miner_id);
+						SuccessfulPinChecksPerEpoch::<T>::insert(&miner_id, successful_pin + avg_successful_pin_checks);
+
 						Self::deposit_event(Event::ConsensusReached {
 							miner_id: miner_id.clone(),
 							total_pin_checks: avg_total_pin_checks,
@@ -1737,7 +1764,6 @@ pub mod pallet {
 				}
 			}
 		}
-		
 				
 	}
 }

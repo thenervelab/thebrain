@@ -1338,6 +1338,7 @@ parameter_types! {
 	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
 	pub const LocalDefaultGenesisHash: &'static str = "0x28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9";
 	pub const ConsensusPeriod: BlockNumber = 10;
+	// pub const EpochDuration: u32 = 10;
 }
 
 impl pallet_execution_unit::Config for Runtime {
@@ -1361,6 +1362,7 @@ impl pallet_execution_unit::Config for Runtime {
 	type ConsensusPeriod = ConsensusPeriod;
     type ConsensusThreshold = ConstU32<1>;
 	type ConsensusSimilarityThreshold = ConstU32<85>;  // pin checks should match 85 %
+	type EpochDuration = ConstU32<10>;
 } 
 
 impl pallet_offences::Config for Runtime {

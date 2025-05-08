@@ -122,21 +122,19 @@ impl NodeMetricsData {
 
         let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(metrics.miner_id.clone());
 
-        // Aggregate pin checks across all linked nodes
         let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.into_iter().fold(
             (0u32, 0u32),
             |(total, successful), node_id| {
-                if let Some(node_metrics) = crate::Pallet::<T>::get_node_metrics(node_id) {
-                    (
-                        total.saturating_add(node_metrics.total_pin_checks),
-                        successful.saturating_add(node_metrics.successful_pin_checks),
-                    )
-                } else {
-                    (total, successful)
-                }
+                let total_epoch = crate::Pallet::<T>::total_pin_checks_per_epoch(&node_id);
+                let success_epoch = crate::Pallet::<T>::successful_pin_checks_per_epoch(&node_id);
+        
+                (
+                    total.saturating_add(total_epoch),
+                    successful.saturating_add(success_epoch),
+                )
             },
         );
-
+        
         total_pin_checks = total_pin_checks + metrics.total_pin_checks;
         successful_pin_checks = successful_pin_checks + metrics.successful_pin_checks;
 
