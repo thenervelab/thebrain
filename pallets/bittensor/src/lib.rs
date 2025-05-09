@@ -22,7 +22,7 @@ pub mod pallet {
 	use pallet_metagraph::Pallet as MetagraphPallet;
 	use pallet_metagraph::{Role, UID};
 	use pallet_rankings::Pallet as RankingsPallet;
-	use pallet_registration::LinkedNodes;
+	// use pallet_registration::LinkedNodes;
 	use pallet_registration::{NodeInfo, NodeType, Pallet as RegistrationPallet};
 	use pallet_utils::Pallet as UtilsPallet;
 	use scale_info::prelude::string::String;
@@ -150,7 +150,6 @@ pub mod pallet {
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
 			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-
 			let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
 			for miner in all_miners {
@@ -172,7 +171,7 @@ pub mod pallet {
 					);
 
 					let current_block_number = <frame_system::Pallet<T>>::block_number();
-					let buffer = 300u32;
+					let buffer = 3000u32;
 					let blocks_online =
 						ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 					if let Some(blocks) = blocks_online {
@@ -188,8 +187,7 @@ pub mod pallet {
 					storage_weights.push(weight as u16);
 				} else {
 					log::info!("Node metrics not found for storage miner: {:?}", miner.node_id);
-				}
-				
+				}				
 
 				// Other logic remains the same...
 				let miner_ss58 =

@@ -1,6 +1,7 @@
 pub use crate::types::NodeMetricsData;
 use pallet_registration::NodeType;
 use sp_std::{collections::btree_map::BTreeMap, vec::Vec};
+use scale_info::prelude::string::String;
 
 impl NodeMetricsData {
     // Configuration constants
@@ -202,14 +203,14 @@ impl NodeMetricsData {
         log::info!("Total pin checks across linked nodes: {}", total_pin_checks);
         log::info!("Successful pin checks across linked nodes: {}", successful_pin_checks);
 
-        // Early return for invalid metrics
-        if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024)
-            || metrics.bandwidth_mbps < 125
-            || metrics.primary_network_interface.is_none()
-            || metrics.disks.is_empty()
-        {
-            return 0;
-        }
+        // // Early return for invalid metrics
+        // if metrics.ipfs_storage_max < (Self::MIN_STORAGE_GB as u64 * 1024 * 1024 * 1024)
+        //     || metrics.bandwidth_mbps < 125
+        //     || metrics.primary_network_interface.is_none()
+        //     || metrics.disks.is_empty()
+        // {
+        //     return 0;
+        // }
 
         // Calculate storage proof score (main component)
         let storage_proof_score = Self::calculate_storage_proof_score(
@@ -225,7 +226,6 @@ impl NodeMetricsData {
             successful_ping_checks,
         ).saturating_div(100);
         log::info!("ping_score: {}", ping_score);
-
 
         let overall_pin_score = Self::calculate_overall_pin_score(
             total_overall_pin_score,
@@ -268,12 +268,11 @@ impl NodeMetricsData {
         let updated_weight = match previous_rankings {
             Some(rankings) => {
                 // Ensure at least weight of 1 after blending
-                ((1 * final_weight as u32) + (9 * rankings.weight as u32)) / 10
-                    .max(1)  // Add this to preserve minimum weight
+                (((1 * final_weight as u32) + (9 * rankings.weight as u32)) / 10).max(1)
             }
-            None => final_weight as u32
-        };
-        log::info!("updated_weight: {}", updated_weight);
+            None => final_weight as u32,
+        };        
+        log::info!("updated_weight: {}, metrics miner id: {}", updated_weight, String::from_utf8_lossy(&metrics.miner_id));
 
         updated_weight
     }

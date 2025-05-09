@@ -550,6 +550,12 @@ pub mod pallet {
 			ensure!(lock_info.miners_locked, Error::<T>::MinersNotLocked);
 			ensure!(lock_info.locker == who, Error::<T>::UnauthorizedLocker);
 
+			MinerLockInfos::<T>::put(MinersLockInfo {
+				miners_locked: false,
+				locker: who.clone(),
+				locked_at: <frame_system::Pallet<T>>::block_number(),
+			});
+
 			for request in requests {
 			    // Check that all miners are registered as storage miners
 			    for miner_profile in request.miner_pin_requests.iter() {
@@ -601,23 +607,6 @@ pub mod pallet {
 			    <UserTotalFilesSize<T>>::mutate(request.storage_request_owner.clone(), |total_size| {
 			    	*total_size = Some(total_size.unwrap_or(0) + request.file_size);
 			    });
-
-			    // // Set all miners free after processing the pin request
-			    // for miner_profile in miner_pin_requests.iter() {
-			    // 	// Set the miner's state to Free
-			    // 	MinerStates::<T>::insert(&miner_profile.miner_node_id.clone(), MinerState::Free);
-			    // }
-
-			    // // Iterate over all miners and set them to Locked
-			    // for (miner_node_id, _) in MinerStates::<T>::iter() {
-			    // 	MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
-			    // }
-
-			    MinerLockInfos::<T>::put(MinersLockInfo {
-			    	miners_locked: false,
-			    	locker: who.clone(),
-			    	locked_at: <frame_system::Pallet<T>>::block_number(),
-			    });			
 						
 			    // Update MinerTotalFilesSize for each miner
 			    for miner_profile in request.miner_pin_requests.iter() {
@@ -672,6 +661,12 @@ pub mod pallet {
 			ensure!(lock_info.miners_locked, Error::<T>::MinersNotLocked);
 			ensure!(lock_info.locker == who, Error::<T>::UnauthorizedLocker);
 
+			MinerLockInfos::<T>::put(MinersLockInfo {
+				miners_locked: false,
+				locker: who.clone(),
+				locked_at: <frame_system::Pallet<T>>::block_number(),
+			});
+
 			// // Check that all miners are in a locked state before processing
 			// for miner_profile in miner_pin_requests.iter() {
 			// 	let miner_state = MinerStates::<T>::get(&miner_profile.miner_node_id);
@@ -719,11 +714,6 @@ pub mod pallet {
 				// 	MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
 				// }
 
-				MinerLockInfos::<T>::put(MinersLockInfo {
-					miners_locked: false,
-					locker: who.clone(),
-					locked_at: <frame_system::Pallet<T>>::block_number(),
-				});			
 							
 				// Update MinerTotalFilesSize for each miner
 				for miner_profile in request.miner_pin_requests.iter() {
