@@ -1027,7 +1027,7 @@ pub mod pallet {
 		
 			let url = format!("{}/api/v0/dag/stat?arg={}", T::IPFSBaseUrl::get(), hash_str);
 
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 			
 			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
 			
@@ -1087,7 +1087,7 @@ pub mod pallet {
 		
 			let url = format!("{}/api/v0/routing/findprovs?arg={}", T::IPFSBaseUrl::get(), hash_str); // Updated to use the constant
 		
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(8_000));
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 			
 			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
 
@@ -1159,7 +1159,7 @@ pub mod pallet {
 			})?;
 			// Update the URL to include the count parameter
 			let url = format!("{}/api/v0/ping?arg={}&count=5", T::IPFSBaseUrl::get(), node_id);
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(15_000));
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 
 			// Use POST instead of GET, as ping typically requires a POST request
 			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
@@ -1206,7 +1206,7 @@ pub mod pallet {
 			let url = format!("{}/api/v0/repo/gc", base_url);
 		
 			// Request Timeout
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 		
 			// Dummy body since this is a POST request (IPFS API expects POST for GC)
 			let body = vec![DUMMY_REQUEST_BODY];
@@ -1252,7 +1252,7 @@ pub mod pallet {
 		// Pin a JSON string to IPFS and return its CID
 		pub fn pin_file_to_ipfs(json_string: &str) -> Result<String, http::Error> {
 			let url = format!("{}/api/v0/add", T::IPFSBaseUrl::get());
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 		
 			// Convert JSON string to bytes
 			let json_bytes = json_string.as_bytes();
@@ -1318,7 +1318,7 @@ pub mod pallet {
 
 		pub fn fetch_ipfs_content(cid: &str) -> Result<Vec<u8>, http::Error> {
 			let url = format!("{}/api/v0/cat?arg={}", T::IPFSBaseUrl::get(), cid);
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 	
 			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
 			let pending = request
@@ -1362,7 +1362,7 @@ pub mod pallet {
 		  
 			// Request Timeout
 			let deadline =
-				sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
+				sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 				
 			let body = vec![DUMMY_REQUEST_BODY];
 			// getting the list of all pinned Files from node
@@ -1396,7 +1396,7 @@ pub mod pallet {
 		// Fetch currently pinned CIDs from the local IPFS node
 		fn get_pinned_cids() -> Result<Vec<String>, http::Error> {
 			let url = format!("{}/api/v0/pin/ls", T::IPFSBaseUrl::get());
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 	
 			let request = sp_runtime::offchain::http::Request::post(&url, vec![DUMMY_REQUEST_BODY.to_vec()]);
 			let pending = request
@@ -1530,7 +1530,7 @@ pub mod pallet {
 
 			// Request Timeout
 			let deadline =
-				sp_io::offchain::timestamp().add(Duration::from_millis(5_000));
+				sp_io::offchain::timestamp().add(Duration::from_millis(30_000));
 				
 			let body = vec![DUMMY_REQUEST_BODY];
 			// Pin the file

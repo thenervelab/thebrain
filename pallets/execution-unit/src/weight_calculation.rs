@@ -231,28 +231,24 @@ impl NodeMetricsData {
             total_overall_pin_score,
             total_successfull_overall_pin_score
         ).saturating_div(100);
-        log::info!("overall pin checks score: {}", overall_pin_score);
-
+     
         // Get reputation points and calculate modifier
         let reputation_points = Self::update_reputation_points::<T>(metrics, coldkey, total_pin_checks, successful_pin_checks);
-        log::info!("reputation_points: {}", reputation_points);
         let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
-        log::info!("reputation_modifier: {}", reputation_modifier);
-
+     
         // Calculate diversity score (unchanged)
         let diversity_score =
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
-        log::info!("diversity_score: {}", diversity_score);
-
+     
         // Base weight: storage proof (80%), diversity (20%)
         // let base_weight = (storage_proof_score.saturating_mul(80)
         //     + diversity_score.saturating_mul(20))
         //     .saturating_div(100);
 
         // New base weight calculation: 70% storage proof, 30% ping score
-        let base_weight = (storage_proof_score.saturating_mul(70) + ping_score.saturating_mul(20) + overall_pin_score.saturating_mul(10))
-        .saturating_div(100);
-        log::info!("base_weight: {}", base_weight);
+        // let base_weight = (storage_proof_score.saturating_mul(70) + ping_score.saturating_mul(20) + overall_pin_score.saturating_mul(10))
+        // .saturating_div(100);
+        let base_weight = storage_proof_score;
 
         // Apply reputation modifier
         let final_weight = (base_weight as u64)
@@ -260,8 +256,6 @@ impl NodeMetricsData {
             .saturating_div(Self::INTERNAL_SCALING as u64)
             .max(1)
             .min(Self::MAX_SCORE as u64) as u32;
-
-        log::info!("final_weight: {}", final_weight);
 
         let previous_rankings = pallet_rankings::Pallet::<T>::get_node_ranking(metrics.miner_id.clone());
         // Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
