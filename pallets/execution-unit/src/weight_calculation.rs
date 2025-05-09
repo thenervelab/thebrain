@@ -17,8 +17,8 @@ impl NodeMetricsData {
         total_pin_checks: u32,
         total_successful_pin_checks: u32
     ) -> u64 {
-        if total_pin_checks == 0 || metrics.total_pin_checks < Self::MIN_PIN_CHECKS {
-            return 0; // Avoid division by zero or insufficient pin checks
+        if total_pin_checks == 0 || total_pin_checks < Self::MIN_PIN_CHECKS {
+            return 1; // Avoid division by zero or insufficient pin checks
         }
     
         // Pin check success rate (70% weight)
@@ -43,6 +43,32 @@ impl NodeMetricsData {
         // Weighted combination
         (pin_success_score.saturating_mul(70) + storage_usage_score.saturating_mul(30))
             .saturating_div(100)
+    }
+
+    fn calculate_ping_score(
+        total_ping_checks: u32,
+        total_successful_ping_checks: u32,
+    ) -> u64 {
+        if total_ping_checks == 0 {
+            return 0;
+        }
+
+        (total_successful_ping_checks as u64)
+            .saturating_mul(Self::INTERNAL_SCALING as u64)
+            .saturating_div(total_ping_checks as u64)
+    }
+
+    fn calculate_overall_pin_score(
+        total_overall_pin_checks: u32,
+        total_overall_successful_pin_checks: u32,
+    ) -> u64 {
+        if total_overall_pin_checks == 0 {
+            return 0;
+        }
+
+        (total_overall_successful_pin_checks as u64)
+            .saturating_mul(Self::INTERNAL_SCALING as u64)
+            .saturating_div(total_overall_pin_checks as u64)
     }
     
     // Calculate reputation modifier based on coldkey reputation points
@@ -121,8 +147,8 @@ impl NodeMetricsData {
         }
 
         let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(metrics.miner_id.clone());
-
-        let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.into_iter().fold(
+        // calculate total pin checks per epoch
+        let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.clone().into_iter().fold(
             (0u32, 0u32),
             |(total, successful), node_id| {
                 let total_epoch = crate::Pallet::<T>::total_pin_checks_per_epoch(&node_id);
@@ -134,9 +160,44 @@ impl NodeMetricsData {
                 )
             },
         );
+        // calculate total ping checks per epoch
+        let (mut total_ping_checks, mut successful_ping_checks) = linked_nodes.clone().into_iter().fold(
+            (0u32, 0u32),
+            |(total, successful), node_id| {
+                let total_epoch = crate::Pallet::<T>::total_ping_checks_per_epoch(&node_id);
+                let success_epoch = crate::Pallet::<T>::successful_ping_checks_per_epoch(&node_id);
+        
+                (
+                    total.saturating_add(total_epoch),
+                    successful.saturating_add(success_epoch),
+                )
+            },
+        );
+
+        // calculate overall total pin checks per epoch
+        let (mut total_overall_pin_score, mut total_successfull_overall_pin_score) = linked_nodes.into_iter().fold(
+            (0u32, 0u32),
+            |(total, successful), node_id| {
+                let linked_node_metrics = crate::Pallet::<T>::get_node_metrics(node_id);
+                if linked_node_metrics.is_some() {
+                    let metrics_data = linked_node_metrics.unwrap();
+                    (
+                        total.saturating_add(metrics_data.total_pin_checks),
+                        successful.saturating_add(metrics_data.successful_pin_checks),
+                    )
+                } else {
+                    // Return the accumulator unchanged if metrics are None
+                    (total, successful)
+                }
+            },
+        );
         
         total_pin_checks = total_pin_checks + crate::Pallet::<T>::total_pin_checks_per_epoch(&metrics.miner_id);
         successful_pin_checks = successful_pin_checks + crate::Pallet::<T>::successful_pin_checks_per_epoch(&metrics.miner_id);
+        total_ping_checks = total_ping_checks + crate::Pallet::<T>::total_ping_checks_per_epoch(&metrics.miner_id);
+        successful_ping_checks = successful_ping_checks + crate::Pallet::<T>::successful_ping_checks_per_epoch(&metrics.miner_id);
+        total_overall_pin_score = total_overall_pin_score + metrics.total_pin_checks;
+        total_successfull_overall_pin_score = total_successfull_overall_pin_score + metrics.successful_pin_checks;
 
         log::info!("Total pin checks across linked nodes: {}", total_pin_checks);
         log::info!("Successful pin checks across linked nodes: {}", successful_pin_checks);
@@ -151,8 +212,26 @@ impl NodeMetricsData {
         }
 
         // Calculate storage proof score (main component)
-        let storage_proof_score = Self::calculate_storage_proof_score(metrics, total_pin_checks, successful_pin_checks).saturating_div(100);
+        let storage_proof_score = Self::calculate_storage_proof_score(
+            metrics, 
+            total_pin_checks, 
+            successful_pin_checks,
+        ).saturating_div(100);
         log::info!("storage_proof_score: {}", storage_proof_score);
+
+        // Calculate ping score separately
+        let ping_score = Self::calculate_ping_score(
+            total_ping_checks,
+            successful_ping_checks,
+        ).saturating_div(100);
+        log::info!("ping_score: {}", ping_score);
+
+
+        let overall_pin_score = Self::calculate_overall_pin_score(
+            total_overall_pin_score,
+            total_successfull_overall_pin_score
+        ).saturating_div(100);
+        log::info!("overall pin checks score: {}", overall_pin_score);
 
         // Get reputation points and calculate modifier
         let reputation_points = Self::update_reputation_points::<T>(metrics, coldkey, total_pin_checks, successful_pin_checks);
@@ -169,7 +248,10 @@ impl NodeMetricsData {
         // let base_weight = (storage_proof_score.saturating_mul(80)
         //     + diversity_score.saturating_mul(20))
         //     .saturating_div(100);
-        let base_weight = storage_proof_score;
+
+        // New base weight calculation: 70% storage proof, 30% ping score
+        let base_weight = (storage_proof_score.saturating_mul(70) + ping_score.saturating_mul(20) + overall_pin_score.saturating_mul(10))
+        .saturating_div(100);
         log::info!("base_weight: {}", base_weight);
 
         // Apply reputation modifier
@@ -185,12 +267,12 @@ impl NodeMetricsData {
         // Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
         let updated_weight = match previous_rankings {
             Some(rankings) => {
-                // Equivalent to 0.1 * weight + 0.9 * previous_rankings.weight
+                // Ensure at least weight of 1 after blending
                 ((1 * final_weight as u32) + (9 * rankings.weight as u32)) / 10
+                    .max(1)  // Add this to preserve minimum weight
             }
-            None => final_weight as u32 // Use new weight if no previous ranking
+            None => final_weight as u32
         };
-
         log::info!("updated_weight: {}", updated_weight);
 
         updated_weight

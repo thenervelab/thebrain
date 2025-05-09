@@ -289,6 +289,14 @@ pub mod pallet {
 	pub type SuccessfulPinChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
+	#[pallet::getter(fn total_ping_checks_per_epoch)]
+	pub type TotalPingChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn successful_ping_checks_per_epoch)]
+	pub type SuccessfulPingChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
 	#[pallet::getter(fn hardware_requests_last_block)]
 	pub type HardwareRequestsLastBlock<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, BlockNumberFor<T>, ValueQuery>;
 
@@ -336,8 +344,10 @@ pub mod pallet {
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			if _n % epoch_clear_interval.into() == 0u32.into() {
 				// Clear per-epoch pin stats for all miners
-				TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
-				SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let _ = TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let _ = SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let _ = TotalPingChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 			}
 
 			Weight::zero()
@@ -669,7 +679,7 @@ pub mod pallet {
 			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(node_info.node_id.clone());
 			ensure!(
-				user_requests_count + miners_metrics.len() as u32 <= max_requests_per_block,
+				user_requests_count + 1u32 <= max_requests_per_block,
 				Error::<T>::TooManyRequests
 			);
 			
@@ -1744,10 +1754,22 @@ pub mod pallet {
 						// Update total pin checks per epoch
 						let total_pin = TotalPinChecksPerEpoch::<T>::get(&miner_id);
 						TotalPinChecksPerEpoch::<T>::insert(&miner_id, total_pin + avg_total_pin_checks);
+						
+						// Update total ping checks per epoch
+						let total_ping = TotalPingChecksPerEpoch::<T>::get(&miner_id);
+						TotalPingChecksPerEpoch::<T>::insert(&miner_id, total_ping + 1);
 
 						// Update successful pin checks per epoch
 						let successful_pin = SuccessfulPinChecksPerEpoch::<T>::get(&miner_id);
 						SuccessfulPinChecksPerEpoch::<T>::insert(&miner_id, successful_pin + avg_successful_pin_checks);
+
+						// if there is any successful pin check means miner is online 
+						let successful_ping = SuccessfulPingChecksPerEpoch::<T>::get(&miner_id);
+						if avg_successful_pin_checks > 0 {
+							SuccessfulPingChecksPerEpoch::<T>::insert(&miner_id, successful_ping + 1);
+						}else{
+							SuccessfulPingChecksPerEpoch::<T>::insert(&miner_id, successful_ping);
+						}
 
 						Self::deposit_event(Event::ConsensusReached {
 							miner_id: miner_id.clone(),
