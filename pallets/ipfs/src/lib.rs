@@ -187,6 +187,11 @@ pub mod pallet {
 				let _ = Self::add_rebalance_request_from_node(miner.clone());
 				RegistrationPallet::<T>::try_unregister_storage_miner(miner);
 			}
+
+			// Remove MinerProfile entries with empty miner_profile_id
+			MinerProfile::<T>::iter().filter(|(_, profile_id)| profile_id.is_empty()).for_each(|(node_id, _)| {
+				MinerProfile::<T>::remove(&node_id);
+			});
 			
 			Weight::zero()
 		}
@@ -1755,17 +1760,20 @@ pub mod pallet {
 	
 			// Fetch miner_profile_id (CID) from MinerProfile storage
 			let miner_profile_id = MinerProfile::<T>::get(&bounded_node_id);
-	
-			// Create a new request
-			let request = RebalanceRequestItem {
-				node_id: bounded_node_id,
-				miner_profile_id: miner_profile_id,
-			};
-	
-			// Append to RebalanceRequest storage
-			let mut requests = <RebalanceRequest<T>>::get();
-			requests.try_push(request);
-			<RebalanceRequest<T>>::put(requests);
+
+			// Only create and push request if miner_profile_id is non-empty
+			if !miner_profile_id.is_empty() {
+				// Create a new request
+				let request = RebalanceRequestItem {
+					node_id: bounded_node_id,
+					miner_profile_id: miner_profile_id,
+				};
+
+				// Append to RebalanceRequest storage
+				let mut requests = <RebalanceRequest<T>>::get();
+				requests.try_push(request);
+				<RebalanceRequest<T>>::put(requests);
+			}
 
 			Ok(())
 		}
