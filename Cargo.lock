@@ -4653,6 +4653,7 @@ dependencies = [
  "frame-system",
  "hex",
  "log",
+ "pallet-proxy",
  "pallet-rankings",
  "pallet-registration",
  "pallet-staking",

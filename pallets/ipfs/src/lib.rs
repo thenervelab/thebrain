@@ -94,6 +94,7 @@ pub mod pallet {
 	use sp_std::convert::TryInto;
 	use sp_core::crypto::Ss58Codec;
 	use sp_std::collections::btree_set::BTreeSet;
+	use pallet_proxy::Pallet as ProxyPallet;
 
 	const DUMMY_REQUEST_BODY: &[u8; 78] = b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
 
@@ -102,7 +103,8 @@ pub mod pallet {
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config + SendTransactionTypes<Call<Self>> +  pallet_staking::Config + pallet_registration::Config + pallet_rankings::Config + pallet_utils::Config {
+	pub trait Config: frame_system::Config + SendTransactionTypes<Call<Self>> +  pallet_staking::Config + 
+						pallet_registration::Config + pallet_rankings::Config + pallet_utils::Config + pallet_proxy::Config{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		#[pallet::constant]
@@ -136,7 +138,6 @@ pub mod pallet {
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-
 		fn offchain_worker(_block_number: BlockNumberFor<T>) {
 			let current_block = _block_number.saturated_into::<u32>();
 						
@@ -384,8 +385,15 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
 			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 
 			// Unwrap safely after checking it's Some
@@ -411,7 +419,7 @@ pub mod pallet {
 
 			// Remove the storage request
 			<UserStorageRequests<T>>::remove(
-				who.clone(), 
+				main_account.clone(), 
 				update_hash.clone()
 			);
 
@@ -436,8 +444,15 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
 			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 			let node_info = node_info.unwrap();
 
@@ -480,8 +495,15 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+			log::info!("Main account: {:?}", main_account);
 			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 
 			// Unwrap safely after checking it's Some
@@ -510,12 +532,14 @@ pub mod pallet {
 
 			// Check if miners are already locked
 			let lock_info = MinerLockInfos::<T>::get();
-			ensure!(!lock_info.unwrap().miners_locked, Error::<T>::MinersAlreadyLocked);
- 
+			if lock_info.is_some() {
+				ensure!(!lock_info.unwrap().miners_locked, Error::<T>::MinersAlreadyLocked);
+			}
+
 			// Create MinersLockInfo object
 			let lock_info = MinersLockInfo {
 				miners_locked: true,
-				locker: who.clone(),
+				locker: main_account.clone(),
 				locked_at: <frame_system::Pallet<T>>::block_number(),
 			};
 
@@ -540,8 +564,15 @@ pub mod pallet {
 				Error::<T>::AssignmentNotEnabled
 			);
 
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
 			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 
 			// Unwrap safely after checking it's Some
@@ -553,11 +584,11 @@ pub mod pallet {
 			// Check that miners are globally locked and locked by the caller
 			let lock_info = MinerLockInfos::<T>::get().ok_or(Error::<T>::MinersNotLocked)?;
 			ensure!(lock_info.miners_locked, Error::<T>::MinersNotLocked);
-			ensure!(lock_info.locker == who, Error::<T>::UnauthorizedLocker);
+			ensure!(lock_info.locker == main_account, Error::<T>::UnauthorizedLocker);
 
 			MinerLockInfos::<T>::put(MinersLockInfo {
 				miners_locked: false,
-				locker: who.clone(),
+				locker: main_account.clone(),
 				locked_at: <frame_system::Pallet<T>>::block_number(),
 			});
 
@@ -651,8 +682,15 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
 			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 
 			// Unwrap safely after checking it's Some
@@ -664,11 +702,11 @@ pub mod pallet {
 			// Check that miners are globally locked and locked by the caller
 			let lock_info = MinerLockInfos::<T>::get().ok_or(Error::<T>::MinersNotLocked)?;
 			ensure!(lock_info.miners_locked, Error::<T>::MinersNotLocked);
-			ensure!(lock_info.locker == who, Error::<T>::UnauthorizedLocker);
+			ensure!(lock_info.locker == main_account, Error::<T>::UnauthorizedLocker);
 
 			MinerLockInfos::<T>::put(MinersLockInfo {
 				miners_locked: false,
-				locker: who.clone(),
+				locker: main_account.clone(),
 				locked_at: <frame_system::Pallet<T>>::block_number(),
 			});
 
@@ -719,7 +757,7 @@ pub mod pallet {
 				// 	MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
 				// }
 
-							
+						
 				// Update MinerTotalFilesSize for each miner
 				for miner_profile in request.miner_pin_requests.iter() {
 					<MinerTotalFilesSize<T>>::mutate(&miner_profile.miner_node_id, |total_size| {
@@ -802,9 +840,16 @@ pub mod pallet {
 		
 			// Check if assignment is enabled
 			ensure!(Self::assignment_enabled(), Error::<T>::AssignmentNotEnabled);
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
 		
 			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 		
 			let node_info = node_info.unwrap();
@@ -1790,5 +1835,39 @@ pub mod pallet {
             });
             Ok(())
         }
+
+		fn get_primary_account(proxy: &T::AccountId) -> Result<Option<T::AccountId>, DispatchError> {
+			// First check if this is actually a main account
+			let (proxy_definitions, _) = pallet_proxy::Pallet::<T>::proxies(proxy);
+			if !proxy_definitions.is_empty() {
+				return Ok(Some(proxy.clone()));
+			}
+		
+			// Get all validator nodes and their owners
+			let validator_nodes = pallet_registration::Pallet::<T>::get_all_nodes_by_node_type(
+				pallet_registration::NodeType::Validator
+			);
+			
+			let mut main_account = None;
+		
+			// Iterate through validator owners
+			for node_info in validator_nodes {
+				let (proxies, _) = pallet_proxy::Pallet::<T>::proxies(&node_info.owner);
+				
+				for p in proxies.iter() {
+					if &p.delegate == proxy {
+						main_account = Some(node_info.owner.clone());
+						break;
+					}
+				}
+				
+				if main_account.is_some() {
+					break;
+				}
+			}
+		
+			Ok(main_account)
+		}
+		
 	}
 }
