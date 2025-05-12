@@ -183,10 +183,10 @@ pub mod pallet {
 		InvalidNodeType,
 	}
 
-	// rankings of the nodes
-	#[pallet::storage]
-	pub type Rankings<T: Config<I>, I: 'static = ()> =
-		StorageMap<_, Blake2_128Concat, Vec<u8>, NodeRankings<BlockNumberFor<T>>>;
+	// // rankings of the nodes
+	// #[pallet::storage]
+	// pub type Rankings<T: Config<I>, I: 'static = ()> =
+	// 	StorageMap<_, Blake2_128Concat, Vec<u8>, NodeRankings<BlockNumberFor<T>>>;
 
 	#[pallet::storage]
 	pub type RankedList<T: Config<I>, I: 'static = ()> =
@@ -746,8 +746,6 @@ pub mod pallet {
 	impl<T: Config<I>, I: 'static> Hooks<BlockNumberFor<T>> for Pallet<T, I> {
 		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
 			let mut weight_used = Weight::zero();
-			// Remove all entries from Rankings storage
-			Rankings::<T, I>::remove_all(None);
 
 			if n % T::BlocksPerEra::get().into() == Zero::zero() {
 				let mut distribution_count: u16 = 0;
