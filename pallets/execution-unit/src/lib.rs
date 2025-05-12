@@ -226,15 +226,6 @@ pub mod pallet {
 		StorageMap<_, Blake2_128Concat, Vec<u8>, NodeMetricsData, OptionQuery>;
 
 	#[pallet::storage]
-	pub(super) type DowntimeStatus<T: Config> =
-		StorageValue<_, Vec<OfflineStatus<BlockNumberFor<T>>>, ValueQuery>;
-
-	#[pallet::storage]
-	#[pallet::getter(fn benchmark_results)]
-	pub(super) type BenchmarkResults<T: Config> =
-		StorageMap<_, Blake2_128Concat, Vec<u8>, BenchmarkResult<BlockNumberFor<T>>, ValueQuery>;
-
-	#[pallet::storage]
 	#[pallet::getter(fn purge_deregistered_nodes_enabled)]
 	pub type PurgeDeregisteredNodesEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
