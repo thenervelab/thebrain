@@ -17,15 +17,31 @@ impl NodeMetricsData {
     const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
     const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024 ; // 1GB as max file size for scoring
 
-    fn calculate_storage_proof_score(
+    fn calculate_storage_proof_score<T: ipfs_pallet::Config>(
         metrics: &NodeMetricsData,
         total_pin_checks: u32,
-        total_successful_pin_checks: u32
+        total_successful_pin_checks: u32,
+        miner_id : Vec<u8>
     ) -> u64 {
         if total_pin_checks == 0 || metrics.total_pin_checks < Self::MIN_PIN_CHECKS {
             return 0; // Avoid division by zero or insufficient pin checks
         }
-    
+
+        // Convert Vec<u8> to BoundedVec
+        let bounded_miner_id = match BoundedVec::<u8, ConstU32<64>>::try_from(miner_id) {
+            Ok(id) => id,
+            Err(_) => return 0, // if conversion fails
+        };
+
+        if !ipfs_pallet::Pallet::<T>::has_miner_profile(&bounded_miner_id) {
+            return 0;
+        }
+
+        // Check if miner has a profile
+        if ipfs_pallet::Pallet::<T>::miner_profile(bounded_miner_id).is_empty() {
+            return 0;
+        }
+
         // Pin check success rate (70% weight)
         let pin_success_score = (total_successful_pin_checks as u64)
             .saturating_mul(Self::INTERNAL_SCALING as u64)
@@ -63,14 +79,31 @@ impl NodeMetricsData {
             .saturating_div(total_ping_checks as u64)
     }
 
-    fn calculate_overall_pin_score(
+    fn calculate_overall_pin_score<T: ipfs_pallet::Config>(
         total_overall_pin_checks: u32,
         total_overall_successful_pin_checks: u32,
+        miner_id : Vec<u8>
     ) -> u64 {
         if total_overall_pin_checks == 0 {
             return 0;
         }
 
+        // Convert Vec<u8> to BoundedVec
+        let bounded_miner_id = match BoundedVec::<u8, ConstU32<64>>::try_from(miner_id) {
+            Ok(id) => id,
+            Err(_) => return 0, // if conversion fails
+        };
+
+        if !ipfs_pallet::Pallet::<T>::has_miner_profile(&bounded_miner_id) {
+            return 0;
+        }
+
+        // Check if miner has a profile
+        if ipfs_pallet::Pallet::<T>::miner_profile(bounded_miner_id).is_empty() {
+            return 0;
+        }
+
+        
         (total_overall_successful_pin_checks as u64)
             .saturating_mul(Self::INTERNAL_SCALING as u64)
             .saturating_div(total_overall_pin_checks as u64)
@@ -217,10 +250,11 @@ impl NodeMetricsData {
         // }
 
         // Calculate storage proof score (main component)
-        let storage_proof_score = Self::calculate_storage_proof_score(
+        let storage_proof_score = Self::calculate_storage_proof_score::<T>(
             metrics, 
             total_pin_checks, 
             successful_pin_checks,
+            metrics.miner_id.clone(),
         ).saturating_div(100);
         log::info!("storage_proof_score: {}", storage_proof_score);
 
@@ -231,9 +265,10 @@ impl NodeMetricsData {
         ).saturating_div(100);
         log::info!("ping_score: {}", ping_score);
 
-        let overall_pin_score = Self::calculate_overall_pin_score(
+        let overall_pin_score = Self::calculate_overall_pin_score::<T>(
             total_overall_pin_score,
-            total_successfull_overall_pin_score
+            total_successfull_overall_pin_score,
+            metrics.miner_id.clone(),
         ).saturating_div(100);
 
         // Calculate file size score

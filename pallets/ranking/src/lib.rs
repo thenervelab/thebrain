@@ -431,9 +431,6 @@ pub mod pallet {
 					is_active: true,
 				};
 
-				// Store in Rankings map
-				Rankings::<T, I>::insert(node_id.clone(), node_ranking.clone());
-
 				// Add to vector for sorting
 				all_rankings.push(node_ranking);
 			}
@@ -671,7 +668,10 @@ pub mod pallet {
 		}
 
 		pub fn get_node_ranking(key: Vec<u8>) -> Option<NodeRankings<BlockNumberFor<T>>> {
-			Rankings::<T, I>::get(key)
+			// Get the full ranked list and find the node with matching node_id
+			RankedList::<T, I>::get()
+				.into_iter()
+				.find(|node| node.node_id == key)
 		}
 		
 		// Helper function to get list of miners with their pending rewards for a specific node type
@@ -746,6 +746,9 @@ pub mod pallet {
 	impl<T: Config<I>, I: 'static> Hooks<BlockNumberFor<T>> for Pallet<T, I> {
 		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
 			let mut weight_used = Weight::zero();
+			// Remove all entries from Rankings storage
+			Rankings::<T, I>::remove_all(None);
+
 			if n % T::BlocksPerEra::get().into() == Zero::zero() {
 				let mut distribution_count: u16 = 0;
 

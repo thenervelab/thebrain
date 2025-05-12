@@ -1868,6 +1868,10 @@ pub mod pallet {
 		
 			Ok(main_account)
 		}
+
+		pub fn has_miner_profile(miner_id: &BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) -> bool {
+			MinerProfile::<T>::contains_key(miner_id)
+		}
 		
 	}
 }

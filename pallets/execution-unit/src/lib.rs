@@ -55,8 +55,6 @@ pub mod pallet {
 	use crate::weights::WeightInfo;
 	use scale_codec::alloc::string::ToString;
 	use scale_info::prelude::string::String;
-	// use ipfs_pallet::{FileHash, MAX_NODE_ID_LENGTH};
-	// use ipfs_pallet::MinerProfileItem;
 	use frame_support::{pallet_prelude::*, traits::Randomness};
 	use frame_system::{
 		offchain::{
@@ -64,7 +62,6 @@ pub mod pallet {
 		},
 		pallet_prelude::*,
 	};
-	// use ipfs_pallet::Pallet as IpfsPallet;
 	use num_traits::float::FloatCore;
 	use pallet_babe::RandomnessFromOneEpochAgo;
 	use pallet_metagraph::UIDs;
@@ -77,7 +74,6 @@ pub mod pallet {
 		format,
 		offchain::{
 			http,
-			// storage_lock::{BlockAndTime, StorageLock},
 			Duration,
 		},
 		traits::Zero,
@@ -85,16 +81,10 @@ pub mod pallet {
 	};
 	use sp_std::prelude::*;
 	use sp_runtime::Saturating;
-	// use pallet_registration::NodeInfo;
 	use serde_json::Value;
-	// use pallet_rankings::Pallet as RankingsPallet;
-	// use ipfs_pallet::MinerPinRequest;
-	// use ipfs_pallet::StorageRequest;
-	// use ipfs_pallet::UserProfile;
 	use sp_std::collections::btree_map::BTreeMap;
-	// use ipfs_pallet::StorageUnpinRequest;
-
-	// const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
+	use pallet_registration::ColdkeyNodeRegistration;
+	use pallet_registration::NodeRegistration;
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + 
@@ -348,6 +338,24 @@ pub mod pallet {
 				let _ = SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = TotalPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
+			}
+
+			// Clean up NodeMetrics if not registered
+			for (node_id, _) in NodeMetrics::<T>::iter() {
+				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
+					|| NodeRegistration::<T>::contains_key(&node_id);
+				if !is_registered {
+					NodeMetrics::<T>::remove(&node_id);
+				}
+			}
+
+			// Clean up BlockNumbers if node not registered
+			for (node_id, _) in BlockNumbers::<T>::iter() {
+				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
+					|| NodeRegistration::<T>::contains_key(&node_id);
+				if !is_registered {
+					BlockNumbers::<T>::remove(&node_id);
+				}
 			}
 
 			Weight::zero()
