@@ -183,11 +183,6 @@ pub mod pallet {
 		InvalidNodeType,
 	}
 
-	// // rankings of the nodes
-	// #[pallet::storage]
-	// pub type Rankings<T: Config<I>, I: 'static = ()> =
-	// 	StorageMap<_, Blake2_128Concat, Vec<u8>, NodeRankings<BlockNumberFor<T>>>;
-
 	#[pallet::storage]
 	pub type RankedList<T: Config<I>, I: 'static = ()> =
 		StorageValue<_, Vec<NodeRankings<BlockNumberFor<T>>>, ValueQuery>; // Sorted list of nodes by weight

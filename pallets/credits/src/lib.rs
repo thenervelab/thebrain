@@ -175,11 +175,6 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
-	// Storage for unique ID counter
-	#[pallet::storage]
-	#[pallet::getter(fn next_locked_credit_id)]
-	pub(super) type NextLockedCreditId<T: Config> = StorageValue<_, u64, ValueQuery>;
-
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -672,15 +667,6 @@ pub mod pallet {
 
 			Ok(())
 		}
-
-		// /// Helper function to generate a unique ID
-		// fn generate_unique_id() -> u64 {
-		//     // Increment and retrieve the next unique ID from storage
-		//     NextLockedCreditId::<T>::mutate(|id| {
-		//         *id += 1;
-		//         *id
-		//     })
-		// }
 
 		/// Helper function to get the free credits of an account.
 		pub fn get_free_credits(account: &T::AccountId) -> u128 {
