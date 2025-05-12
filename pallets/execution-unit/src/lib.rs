@@ -159,6 +159,10 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type EpochDuration: Get<u32>;
+
+		/// The block interval at which to update miner reputations
+		#[pallet::constant]
+		type ReputationUpdateInterval: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -347,6 +351,11 @@ pub mod pallet {
 				if !is_registered {
 					BlockNumbers::<T>::remove(&node_id);
 				}
+			}
+
+			let reputation_update_interval = T::ReputationUpdateInterval::get();
+			if _n % reputation_update_interval.into() == 0u32.into() {
+				Self::update_all_active_miners_reputation();
 			}
 
 			Weight::zero()
@@ -1781,6 +1790,85 @@ pub mod pallet {
 		
 					// Clear temporary reports for this miner
 					TemporaryPinReports::<T>::remove_prefix(&miner_id, None);
+				}
+			}
+		}
+
+		// Update reputation points (called externally by pallet logic)
+		fn update_reputation_points(
+			metrics: &NodeMetricsData,
+			coldkey: &T::AccountId,		
+		) -> u32 {
+			const MIN_PIN_CHECKS: u32 = 5; // Minimum pin checks for valid scoring
+			const SLASH_THRESHOLD: u32 = 3; // Number of failed storage proofs before slashing
+			let mut reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
+	
+			let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(metrics.miner_id.clone());
+			// calculate total pin checks per epoch
+			let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.clone().into_iter().fold(
+				(0u32, 0u32),
+				|(total, successful), node_id| {
+					let total_epoch = Self::total_pin_checks_per_epoch(&node_id);
+					let success_epoch = Self::successful_pin_checks_per_epoch(&node_id);
+			
+					(
+						total.saturating_add(total_epoch),
+						successful.saturating_add(success_epoch),
+					)
+				},
+			);
+
+			total_pin_checks = total_pin_checks + Self::total_pin_checks_per_epoch(&metrics.miner_id);
+			successful_pin_checks = successful_pin_checks + Self::successful_pin_checks_per_epoch(&metrics.miner_id);
+
+			// Increase points for successful storage proofs
+			if total_pin_checks >= MIN_PIN_CHECKS {
+				let success_rate = (successful_pin_checks * 100) / total_pin_checks;
+				if success_rate >= 95 {
+					reputation_points = reputation_points.saturating_add(50); // +50 for high success
+				} else if success_rate >= 80 {
+					reputation_points = reputation_points.saturating_add(20); // +20 for good success
+				}
+			}
+		
+			// Slash points for failed storage proofs
+			let failed_count = total_pin_checks - successful_pin_checks;
+			if failed_count >= SLASH_THRESHOLD {
+				reputation_points = reputation_points.saturating_mul(9).saturating_div(10); // 10% slash
+			}
+		
+			// Slash points for significant downtime
+			if metrics.recent_downtime_hours > 24 {
+				reputation_points = reputation_points.saturating_mul(8).saturating_div(10); // 20% slash
+			}
+		
+			// Slash points for false capacity claims
+			if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size
+				|| (metrics.ipfs_storage_max > 0
+					&& metrics.current_storage_bytes < metrics.ipfs_storage_max / 20)
+			{
+				reputation_points = reputation_points.saturating_mul(5).saturating_div(10); // 50% slash
+			}
+		
+			// Cap reputation points
+			reputation_points = reputation_points.min(3000).max(100);
+	
+			// Store updated points
+			ipfs_pallet::Pallet::<T>::set_reputation_points(coldkey, reputation_points);
+			reputation_points
+		}	
+		
+		// Function to update reputation points for all active miners
+		fn update_all_active_miners_reputation() {
+			// Get all active miners
+			let active_miners = pallet_registration::Pallet::<T>::get_all_coldkey_active_nodes();
+			
+			// Iterate through each miner
+			for miner in active_miners.iter() {
+				// Get node metrics for this miner
+				if let Some(metrics) = Self::get_node_metrics(miner.node_id.clone()) {
+					// Update reputation points if metrics exist
+					Self::update_reputation_points(&metrics, &miner.owner);
 				}
 			}
 		}

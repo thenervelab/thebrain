@@ -126,52 +126,6 @@ impl NodeMetricsData {
         }
     }
 
-    // Update reputation points (called externally by pallet logic)
-    fn update_reputation_points<T: ipfs_pallet::Config>(
-        metrics: &NodeMetricsData,
-        coldkey: &T::AccountId,
-        total_pin_checks: u32,
-        total_successful_pin_checks: u32,
-        
-    ) -> u32 {
-        let mut reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
-
-        // Increase points for successful storage proofs
-        if total_pin_checks >= Self::MIN_PIN_CHECKS {
-            let success_rate = (total_successful_pin_checks * 100) / total_pin_checks;
-            if success_rate >= 95 {
-                reputation_points = reputation_points.saturating_add(50); // +50 for high success
-            } else if success_rate >= 80 {
-                reputation_points = reputation_points.saturating_add(20); // +20 for good success
-            }
-        }
-
-		// Slash points for failed storage proofs
-		let failed_count = total_pin_checks - total_successful_pin_checks;
-        if failed_count >= Self::SLASH_THRESHOLD {
-            reputation_points = reputation_points.saturating_mul(9).saturating_div(10); // 10% slash
-        }
-
-        // Slash points for significant downtime
-        if metrics.recent_downtime_hours > 24 {
-            reputation_points = reputation_points.saturating_mul(8).saturating_div(10); // 20% slash
-        }
-
-        // Slash points for false capacity claims
-        if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size
-            || (metrics.ipfs_storage_max > 0
-                && metrics.current_storage_bytes < metrics.ipfs_storage_max / 20)
-        {
-            reputation_points = reputation_points.saturating_mul(5).saturating_div(10); // 50% slash
-        }
-
-        // Cap reputation points
-        reputation_points = reputation_points.min(3000).max(100);
-
-        // Store updated points
-        ipfs_pallet::Pallet::<T>::set_reputation_points(coldkey, reputation_points);
-        reputation_points
-    }
 
     pub fn calculate_weight<T: pallet_marketplace::Config + ipfs_pallet::Config + pallet_registration::Config + crate::Config + pallet_rankings::Config>(
         _node_type: NodeType,
@@ -281,7 +235,7 @@ impl NodeMetricsData {
         log::info!("file_size_score: {}", file_size_score);        
      
         // Get reputation points and calculate modifier
-        let reputation_points = Self::update_reputation_points::<T>(metrics, coldkey, total_pin_checks, successful_pin_checks);
+        let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
         let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
      
         // Calculate diversity score (unchanged)
