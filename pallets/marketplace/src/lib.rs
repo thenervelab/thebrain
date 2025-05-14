@@ -96,8 +96,11 @@ pub mod pallet {
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
-            // Clear all entries; limit is u32::MAX to ensure we get them all
-            let result = UserRequestsCount::<T>::clear(u32::MAX, None);
+            // Only execute on blocks divisible by the configured interval
+            if current_block % 15u32.into() == 0u32.into() {
+                // Clear all entries; limit is u32::MAX to ensure we get them all
+                let result = UserRequestsCount::<T>::clear(u32::MAX, None);
+            }
 
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
@@ -105,6 +108,9 @@ pub mod pallet {
                 // Self::handle_storage_s3_subscription_charging(current_block);
                 // Self::handle_compute_subscription_charging(current_block);
             }
+
+            // Clear all records in the UserFileHashes storage map
+            <UserFileHashes<T>>::clear(u32::MAX, None);
 
             // Return some weight (adjust based on actual implementation)
             T::DbWeight::get().reads_writes(1, 1)
@@ -1364,16 +1370,6 @@ pub mod pallet {
                 file_inputs.to_vec(),
                 miner_ids.clone()
             )?;
-
-            // Add file hashes to user's file hashes
-            UserFileHashes::<T>::mutate(owner.clone(), |existing_hashes| {
-                let new_hashes: Vec<Vec<u8>> = file_inputs
-                    .iter()
-                    .map(|file_input| file_input.file_hash.clone())
-                    .collect();
-                
-                existing_hashes.extend(new_hashes);
-            });
 
             Ok(())
         }

@@ -239,6 +239,7 @@ pub mod pallet {
 		NodeIdTooLong,
 		RequestNotFound,
 		InvalidReputationPoints,
+		UserIsBlacklisted
 	}
 
 	// the file size where the key is encoded file hash
@@ -265,6 +266,16 @@ pub mod pallet {
 		Blake2_128Concat, 
 		FileHash,         // Second key: File Hash
 		Option<StorageRequest<T::AccountId,BlockNumberFor<T>>>,
+		ValueQuery
+	>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn blacklisted_users)]
+	pub type BlacklistedUsers<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		bool,
 		ValueQuery
 	>;
 
@@ -905,6 +916,25 @@ pub mod pallet {
 		
 			Ok(())
 		}		
+
+		#[pallet::call_index(11)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn blacklist_user(
+			origin: OriginFor<T>,
+			user: T::AccountId,
+			blacklist: bool,
+		) -> DispatchResult {
+			// Ensure this is called by sudo
+			ensure_root(origin)?;
+	
+			if blacklist {
+				BlacklistedUsers::<T>::insert(&user, true);
+			} else {
+				BlacklistedUsers::<T>::remove(&user);
+			}
+	
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T>{
@@ -914,6 +944,13 @@ pub mod pallet {
 			file_inputs: Vec<FileInput>,
 			miner_ids: Option<Vec<Vec<u8>>>
 		) -> Result<(), Error<T>> {
+
+			// Check if user is blacklisted
+			ensure!(
+				!BlacklistedUsers::<T>::contains_key(&owner),
+				Error::<T>::UserIsBlacklisted
+			);
+
 			let current_block = frame_system::Pallet::<T>::block_number();
 
 			// Validate input
