@@ -109,9 +109,6 @@ pub mod pallet {
                 // Self::handle_compute_subscription_charging(current_block);
             }
 
-            // Clear all records in the UserFileHashes storage map
-            <UserFileHashes<T>>::clear(u32::MAX, None);
-
             // Return some weight (adjust based on actual implementation)
             T::DbWeight::get().reads_writes(1, 1)
         }
@@ -222,16 +219,6 @@ pub mod pallet {
         T::AccountId,
         UserPlanSubscription<T>,
         OptionQuery,
-    >;
-
-    #[pallet::storage]
-    #[pallet::getter(fn user_file_hashes)]
-    pub type UserFileHashes<T: Config> = StorageMap<
-        _,
-        Blake2_128Concat,
-        T::AccountId,
-        Vec<Vec<u8>>,
-        ValueQuery
     >;
 
     // Storage for OS Disk Image URLs
