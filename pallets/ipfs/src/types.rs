@@ -5,7 +5,7 @@ use sp_std::prelude::*;
 use serde::{Serialize, Deserialize};
 use crate::Config;
 use sp_std::{prelude::*, marker::PhantomData};
-use frame_system::{pallet_prelude::BlockNumberFor, offchain::SignedPayload};
+use frame_system::offchain::SignedPayload;
 
 // Define maximum lengths for bounded vectors
 pub const MAX_FILE_HASH_LENGTH: u32 = 350;
@@ -68,7 +68,8 @@ impl Default for MinerState {
 pub struct MinerProfileItem {
     pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
     pub cid: FileHash,
-    pub files_count: u32
+    pub files_count: u32,
+    pub files_size: u32,
 }
 
 #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
@@ -80,10 +81,9 @@ pub struct FileInput {
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub struct StorageRequestUpdate<AccountId> {
-	pub miner_pin_requests: Vec<MinerProfileItem>,
 	pub storage_request_owner: AccountId,
 	pub storage_request_file_hash: FileHash,
-	pub file_size: u128,
+	pub file_size: u32,
 	pub user_profile_cid: FileHash,
 }
 

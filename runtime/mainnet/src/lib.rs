@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9059,
+	spec_version: 9061,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1119,6 +1119,7 @@ impl ipfs_pallet::Config for Runtime {
 	type PinPinningInterval = PinPinningInterval;
 	type MaxOffchainRequestsPerPeriod = MaxOffchainRequestsPerPeriod;
 	type RequestsClearInterval = RequestsClearInterval;
+	type EpochPeriod = ConstU64<100>;
 }
 
 parameter_types! {

@@ -239,7 +239,7 @@ impl NodeMetricsData {
         let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
      
         // Calculate diversity score (unchanged)
-        let diversity_score =
+        let _diversity_score =
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
      
         // New base weight calculation: 60% storage proof, 10% ping score, overall_pin_score 5% 

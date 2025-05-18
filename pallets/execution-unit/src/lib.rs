@@ -703,6 +703,7 @@ pub mod pallet {
 			RequestsCount::<T>::insert(node_info.node_id.clone(), user_requests_count + miners_metrics.len() as u32);
 		
             for miner in miners_metrics {
+				log::info!("submitting miner id {}", String::from_utf8_lossy(&miner.node_id));
                 TemporaryPinReports::<T>::insert(&miner.node_id, &who, miner.clone());
             }
 		
