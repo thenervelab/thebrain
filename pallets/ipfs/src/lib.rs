@@ -535,7 +535,8 @@ pub mod pallet {
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
 		pub fn update_pin_and_storage_requests(
 			origin: OriginFor<T>,
-			requests: Vec<StorageRequestUpdate<T::AccountId>>
+			requests: Vec<StorageRequestUpdate<T::AccountId>>,
+			miner_profiles: Vec<MinerProfileItem>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
@@ -604,86 +605,42 @@ pub mod pallet {
 			    });
 			}
 
+
+			// Ensure all miners are registered as StorageMiners
+			for miner_profile in miner_profiles.iter() {
+				let miner_node_id_vec = miner_profile.miner_node_id.clone().into_inner();
+				let miner_node_info =
+					RegistrationPallet::<T>::get_node_registration_info(miner_node_id_vec.clone());
+				ensure!(
+					miner_node_info.is_some(),
+					Error::<T>::NodeNotRegistered
+				);
+				let miner_node_info = miner_node_info.unwrap();
+				ensure!(
+					miner_node_info.node_type == NodeType::StorageMiner,
+					Error::<T>::InvalidNodeType
+				);
+			}
+
+			// Update total file size and pinned file count for each miner
+			for miner_profile in miner_profiles.iter() {
+				<MinerTotalFilesSize<T>>::insert(&miner_profile.miner_node_id, miner_profile.files_size as u128);
+				<MinerTotalFilesPinned<T>>::insert(
+					&miner_profile.miner_node_id,
+					miner_profile.files_count,
+				);
+				// Update MinerProfile storage with node ID and CID
+				<MinerProfile<T>>::insert(
+					miner_profile.miner_node_id.clone(), 
+					BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(
+						miner_profile.cid.clone().into_inner().to_vec()
+					).unwrap_or_else(|v: Vec<u8>| 
+						BoundedVec::truncate_from(v)
+					)
+				);
+			}
+
 			Ok(().into())
-		}
-
-		#[pallet::call_index(8)]
-		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
-		pub fn update_miner_profiles(
-				origin: OriginFor<T>,
-				miner_profiles: Vec<MinerProfileItem>,
-			) -> DispatchResult {
-				let who = ensure_signed(origin)?;
-
-				// Check if assignment is enabled
-				ensure!(
-					Self::assignment_enabled(), 
-					Error::<T>::AssignmentNotEnabled
-				);
-
-				// Check if this is a proxy account and get the main account
-				let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
-					primary
-				} else {
-					who.clone() // If not a proxy, use the account itself
-				};
-
-				// Check if the node is registered
-				let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
-				ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
-
-				// Unwrap safely after checking it's Some
-				let node_info = node_info.unwrap();
-
-				// Check if the node type is Validator
-				ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
-
-				// Check if the signer is the current selected validator of epoch
-				let current_validator = Self::select_validator()?;
-				ensure!(
-					main_account == current_validator,
-					Error::<T>::NotCurrentEpochValidator
-				);
-
-				// Ensure all miners are registered as StorageMiners
-				for miner_profile in miner_profiles.iter() {
-					let miner_node_id_vec = miner_profile.miner_node_id.clone().into_inner();
-
-					let miner_node_info =
-						RegistrationPallet::<T>::get_node_registration_info(miner_node_id_vec.clone());
-					ensure!(
-						miner_node_info.is_some(),
-						Error::<T>::NodeNotRegistered
-					);
-
-					let miner_node_info = miner_node_info.unwrap();
-					ensure!(
-						miner_node_info.node_type == NodeType::StorageMiner,
-						Error::<T>::InvalidNodeType
-					);
-				}
-
-				// Update total file size and pinned file count for each miner
-				for miner_profile in miner_profiles.iter() {
-					<MinerTotalFilesSize<T>>::insert(&miner_profile.miner_node_id, miner_profile.files_size as u128);
-
-					<MinerTotalFilesPinned<T>>::insert(
-						&miner_profile.miner_node_id,
-						miner_profile.files_count,
-					);
-
-					// Update MinerProfile storage with node ID and CID
-					<MinerProfile<T>>::insert(
-						miner_profile.miner_node_id.clone(), 
-						BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(
-							miner_profile.cid.clone().into_inner().to_vec()
-						).unwrap_or_else(|v: Vec<u8>| 
-							BoundedVec::truncate_from(v)
-						)
-					);
-				}
-
-				Ok(())
 		}
 
 		// miners request to store a file given file hash 
