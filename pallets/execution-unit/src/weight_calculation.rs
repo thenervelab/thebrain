@@ -113,7 +113,9 @@ impl NodeMetricsData {
     fn calculate_reputation_modifier(reputation_points: u32) -> u64 {
         // Map reputation points to a multiplier between 0.5 and 1.5
         let base = Self::INTERNAL_SCALING as u64;
-        if reputation_points < 500 {
+        if reputation_points == 0 {
+            1 // does not effect calculations
+        }else if reputation_points < 500 {
             base / 2 // 0.5x for low reputation
         } else if reputation_points < 1000 {
             base * 3 / 4 // 0.75x

@@ -189,7 +189,7 @@ pub mod pallet {
 			}
 							
 			// Remove storage requests older than 500 blocks
-			// Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(500u32));
+			Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(700u32));
 
 			// Sync miner states
 			Self::sync_miner_states();
@@ -234,6 +234,11 @@ pub mod pallet {
 		StorageRequestsCleared,
 		ReputationPointsUpdated { coldkey: T::AccountId, points: u32 },
 		RotationStatusChanged(bool),
+	    /// A user's storage request was removed due to IPFS unavailability
+		IpfsUnavailable {
+			owner: T::AccountId,
+			file_hash: FileHash,
+		},
 	}
 
 	#[pallet::error]
@@ -605,22 +610,21 @@ pub mod pallet {
 			    });
 			}
 
-
-			// Ensure all miners are registered as StorageMiners
-			for miner_profile in miner_profiles.iter() {
-				let miner_node_id_vec = miner_profile.miner_node_id.clone().into_inner();
-				let miner_node_info =
-					RegistrationPallet::<T>::get_node_registration_info(miner_node_id_vec.clone());
-				ensure!(
-					miner_node_info.is_some(),
-					Error::<T>::NodeNotRegistered
-				);
-				let miner_node_info = miner_node_info.unwrap();
-				ensure!(
-					miner_node_info.node_type == NodeType::StorageMiner,
-					Error::<T>::InvalidNodeType
-				);
-			}
+			// // Ensure all miners are registered as StorageMiners
+			// for miner_profile in miner_profiles.iter() {
+			// 	let miner_node_id_vec = miner_profile.miner_node_id.clone().into_inner();
+			// 	let miner_node_info =
+			// 		RegistrationPallet::<T>::get_node_registration_info(miner_node_id_vec.clone());
+			// 	ensure!(
+			// 		miner_node_info.is_some(),
+			// 		Error::<T>::NodeNotRegistered
+			// 	);
+			// 	let miner_node_info = miner_node_info.unwrap();
+			// 	ensure!(
+			// 		miner_node_info.node_type == NodeType::StorageMiner,
+			// 		Error::<T>::InvalidNodeType
+			// 	);
+			// }
 
 			// Update total file size and pinned file count for each miner
 			for miner_profile in miner_profiles.iter() {
@@ -858,6 +862,40 @@ pub mod pallet {
 			RotationWhitelistingEnabled::<T>::put(enabled);
 
 			Self::deposit_event(Event::RotationStatusChanged(enabled));
+			Ok(())
+		}
+
+		#[pallet::call_index(13)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn clear_all_data(origin: OriginFor<T>) -> DispatchResult {
+			ensure_root(origin)?; // Only root (sudo) can call this
+
+			// Clear MinerProfile
+			for (node_id, _) in <MinerProfile<T>>::iter() {
+				<MinerProfile<T>>::remove(node_id);
+			}
+
+			// Clear UserProfile
+			for (account_id, _) in <UserProfile<T>>::iter() {
+				<UserProfile<T>>::remove(account_id);
+			}
+
+			// Clear MinerStates
+			for (miner_id, _) in <MinerStates<T>>::iter() {
+				<MinerStates<T>>::remove(miner_id);
+			}
+
+			// Clear MinerLockInfos (single value)
+			<MinerLockInfos<T>>::kill();
+
+			for (user, _) in UserTotalFilesSize::<T>::iter() {
+				UserTotalFilesSize::<T>::insert(user, 0u128);
+			}
+			for (miner, _) in MinerTotalFilesSize::<T>::iter() {
+				MinerTotalFilesSize::<T>::insert(miner.clone(), 0u128);
+				MinerTotalFilesPinned::<T>::insert(miner, 0u32);
+			}
+
 			Ok(())
 		}
 	}
@@ -1699,6 +1737,7 @@ pub mod pallet {
 			// Remove the old requests
 			for (owner, file_hash) in requests_to_remove {
 				UserStorageRequests::<T>::remove(&owner, &file_hash);
+				Self::deposit_event(Event::IpfsUnavailable { owner, file_hash });
 			}
 		}	
 

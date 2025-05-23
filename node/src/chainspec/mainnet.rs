@@ -155,7 +155,7 @@ pub fn hippius_testnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 		.with_id("local_testnet")
 		.with_chain_type(ChainType::Live)
 		.with_properties(properties)
-		.with_genesis_config_patch(mainnet_genesis(
+		.with_genesis_config_patch(testnet_genesis(
 			// Initial validators
 			vec![authority.clone()],
 			// Endowed accounts
@@ -347,4 +347,78 @@ fn get_fully_funded_accounts_for<'a, T: AsRef<[&'a str]>>(
 		.iter()
 		.map(|acc| generate_fully_loaded_evm_account_for(acc))
 		.collect()
+}
+
+
+/// Configure initial storage state for FRAME modules.
+#[allow(clippy::too_many_arguments)]
+fn testnet_genesis(
+    initial_authorities: Vec<(AccountId, BabeId, GrandpaId, ImOnlineId)>,
+    endowed_accounts: Vec<(AccountId, Balance)>,
+    root_key: AccountId,
+    chain_id: u64,
+    _genesis_non_airdrop: Vec<(u128, u64, u64, u128)>,
+    genesis_evm_distribution: Vec<(H160, fp_evm::GenesisAccount)>,
+) -> serde_json::Value {
+    let stakers: Vec<(AccountId, AccountId, Balance, StakerStatus<AccountId>)> =
+        initial_authorities
+            .iter()
+            .map(|x| (x.0.clone(), x.0.clone(), 3 * UNIT, StakerStatus::<AccountId>::Validator))
+            .collect::<Vec<_>>();
+
+    let evm_accounts = {
+        let mut map = BTreeMap::new();
+        for (address, account) in genesis_evm_distribution {
+            map.insert(address, account);
+        }
+        let fully_loaded_accounts = get_fully_funded_accounts_for([]);
+        map.extend(fully_loaded_accounts);
+        map
+    };
+
+    let council_members: Vec<AccountId> = vec![root_key.clone()];
+    
+    // Generate session keys for both session.keys and session.nextKeys
+    let session_keys: Vec<(AccountId, AccountId, hippius_mainnet_runtime::opaque::SessionKeys)> = initial_authorities
+        .iter()
+        .map(|x| {
+            (
+                x.0.clone(),
+                x.0.clone(),
+                generate_session_keys(x.1.clone(), x.2.clone(), x.3.clone()),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "balances": {
+            "balances": endowed_accounts.to_vec(),
+        },
+        "sudo": {
+            "key": Some(root_key)
+        },
+        "session": {
+            "keys": session_keys.clone(),
+        },
+        "staking": {
+            "validatorCount": initial_authorities.len() as u32,
+            "minimumValidatorCount": 1,
+            "invulnerables": initial_authorities.iter().map(|x| x.0.clone()).collect::<Vec<_>>(),
+            "slashRewardFraction": Perbill::from_percent(10),
+            "stakers": stakers,
+        },
+        "council": {
+            "members": council_members,
+        },
+        "babe": {
+            "epochConfig": hippius_mainnet_runtime::BABE_GENESIS_EPOCH_CONFIG,
+        },
+        "evm": {
+            "accounts": evm_accounts
+        },
+        "evmChainId": { "chainId": chain_id },
+        "vesting": {
+            "vesting": Vec::<(AccountId, u64, u64, u128)>::new(),
+        }
+    })
 }

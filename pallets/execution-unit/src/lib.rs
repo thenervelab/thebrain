@@ -1800,59 +1800,60 @@ pub mod pallet {
 			metrics: &NodeMetricsData,
 			coldkey: &T::AccountId,		
 		) -> u32 {
-			const MIN_PIN_CHECKS: u32 = 5; // Minimum pin checks for valid scoring
-			const SLASH_THRESHOLD: u32 = 3; // Number of failed storage proofs before slashing
-			let mut reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
+			// const MIN_PIN_CHECKS: u32 = 5; // Minimum pin checks for valid scoring
+			// const SLASH_THRESHOLD: u32 = 3; // Number of failed storage proofs before slashing
+			// let mut reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
+			let mut reputation_points = 0u32;
 	
-			let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(metrics.miner_id.clone());
-			// calculate total pin checks per epoch
-			let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.clone().into_iter().fold(
-				(0u32, 0u32),
-				|(total, successful), node_id| {
-					let total_epoch = Self::total_pin_checks_per_epoch(&node_id);
-					let success_epoch = Self::successful_pin_checks_per_epoch(&node_id);
+			// let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(metrics.miner_id.clone());
+			// // calculate total pin checks per epoch
+			// let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.clone().into_iter().fold(
+			// 	(0u32, 0u32),
+			// 	|(total, successful), node_id| {
+			// 		let total_epoch = Self::total_pin_checks_per_epoch(&node_id);
+			// 		let success_epoch = Self::successful_pin_checks_per_epoch(&node_id);
 			
-					(
-						total.saturating_add(total_epoch),
-						successful.saturating_add(success_epoch),
-					)
-				},
-			);
+			// 		(
+			// 			total.saturating_add(total_epoch),
+			// 			successful.saturating_add(success_epoch),
+			// 		)
+			// 	},
+			// );
 
-			total_pin_checks = total_pin_checks + Self::total_pin_checks_per_epoch(&metrics.miner_id);
-			successful_pin_checks = successful_pin_checks + Self::successful_pin_checks_per_epoch(&metrics.miner_id);
+			// total_pin_checks = total_pin_checks + Self::total_pin_checks_per_epoch(&metrics.miner_id);
+			// successful_pin_checks = successful_pin_checks + Self::successful_pin_checks_per_epoch(&metrics.miner_id);
 
-			// Increase points for successful storage proofs
-			if total_pin_checks >= MIN_PIN_CHECKS {
-				let success_rate = (successful_pin_checks * 100) / total_pin_checks;
-				if success_rate >= 95 {
-					reputation_points = reputation_points.saturating_add(50); // +50 for high success
-				} else if success_rate >= 80 {
-					reputation_points = reputation_points.saturating_add(20); // +20 for good success
-				}
-			}
+			// // Increase points for successful storage proofs
+			// if total_pin_checks >= MIN_PIN_CHECKS {
+			// 	let success_rate = (successful_pin_checks * 100) / total_pin_checks;
+			// 	if success_rate >= 95 {
+			// 		reputation_points = reputation_points.saturating_add(50); // +50 for high success
+			// 	} else if success_rate >= 80 {
+			// 		reputation_points = reputation_points.saturating_add(20); // +20 for good success
+			// 	}
+			// }
 		
-			// Slash points for failed storage proofs
-			let failed_count = total_pin_checks - successful_pin_checks;
-			if failed_count >= SLASH_THRESHOLD {
-				reputation_points = reputation_points.saturating_mul(9).saturating_div(10); // 10% slash
-			}
+			// // Slash points for failed storage proofs
+			// let failed_count = total_pin_checks - successful_pin_checks;
+			// if failed_count >= SLASH_THRESHOLD {
+			// 	reputation_points = reputation_points.saturating_mul(9).saturating_div(10); // 10% slash
+			// }
 		
-			// Slash points for significant downtime
-			if metrics.recent_downtime_hours > 24 {
-				reputation_points = reputation_points.saturating_mul(8).saturating_div(10); // 20% slash
-			}
+			// // Slash points for significant downtime
+			// if metrics.recent_downtime_hours > 24 {
+			// 	reputation_points = reputation_points.saturating_mul(8).saturating_div(10); // 20% slash
+			// }
 		
-			// Slash points for false capacity claims
-			if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size
-				|| (metrics.ipfs_storage_max > 0
-					&& metrics.current_storage_bytes < metrics.ipfs_storage_max / 20)
-			{
-				reputation_points = reputation_points.saturating_mul(5).saturating_div(10); // 50% slash
-			}
+			// // Slash points for false capacity claims
+			// if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size
+			// 	|| (metrics.ipfs_storage_max > 0
+			// 		&& metrics.current_storage_bytes < metrics.ipfs_storage_max / 20)
+			// {
+			// 	reputation_points = reputation_points.saturating_mul(5).saturating_div(10); // 50% slash
+			// }
 		
-			// Cap reputation points
-			reputation_points = reputation_points.min(3000).max(100);
+			// // Cap reputation points
+			// reputation_points = reputation_points.min(3000).max(100);
 	
 			// Store updated points
 			ipfs_pallet::Pallet::<T>::set_reputation_points(coldkey, reputation_points);
