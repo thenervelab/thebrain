@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9066,
+	spec_version: 9069,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1362,7 +1362,7 @@ impl pallet_execution_unit::Config for Runtime {
 	type ConsensusPeriod = ConsensusPeriod;
     type ConsensusThreshold = ConstU32<2>;
 	type ConsensusSimilarityThreshold = ConstU32<85>; 
-	type EpochDuration = ConstU32<1200>;
+	type EpochDuration = ConstU32<500>; // epoch pin checks clear duration
 	type ReputationUpdateInterval = ConstU32<15>;
 } 
 

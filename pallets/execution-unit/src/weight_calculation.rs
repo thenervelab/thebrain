@@ -11,8 +11,8 @@ impl NodeMetricsData {
     const MIN_STORAGE_GB: u32 = 2048; // Minimum 2TB storage
     const MAX_SCORE: u32 = 65535; // 16-bit maximum
     const INTERNAL_SCALING: u32 = 1_000_000;
-    const MIN_PIN_CHECKS: u32 = 5; // Minimum pin checks for valid scoring
-    const SLASH_THRESHOLD: u32 = 3; // Number of failed storage proofs before slashing
+    const MIN_PIN_CHECKS: u32 = 1; // Minimum pin checks for valid scoring
+    const SLASH_THRESHOLD: u32 = 1; // Number of failed storage proofs before slashing
     const REPUTATION_NEUTRAL: u32 = 1000; // Neutral reputation points
     const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
     const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024 ; // 1GB as max file size for scoring
@@ -49,7 +49,7 @@ impl NodeMetricsData {
     
         // Storage usage score (30% weight)
         let storage_usage_score = if metrics.ipfs_storage_max > 0 {
-            let usage_percent = (metrics.current_storage_bytes * 100) / metrics.total_storage_bytes;
+            let usage_percent = (metrics.ipfs_repo_size * 100) / metrics.ipfs_storage_max;
             if usage_percent >= 5 && usage_percent <= 90 {
                 (metrics.current_storage_bytes as u64)
                     .saturating_mul(Self::INTERNAL_SCALING as u64)
@@ -62,7 +62,7 @@ impl NodeMetricsData {
         };
     
         // Weighted combination
-        (pin_success_score.saturating_mul(70) + storage_usage_score.saturating_mul(30))
+        (pin_success_score.saturating_mul(30) + storage_usage_score.saturating_mul(70))
             .saturating_div(100)
     }
 
