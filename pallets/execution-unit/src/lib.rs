@@ -327,7 +327,9 @@ pub mod pallet {
             }
 
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
-			if _n % epoch_clear_interval.into() == 0u32.into() {
+			let first_epoch_block = 38u32.into(); // hardcoded or derived
+
+			if ((_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into()) {
 				// Clear per-epoch pin stats for all miners
 				let _ = TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
