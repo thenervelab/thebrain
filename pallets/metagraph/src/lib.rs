@@ -153,11 +153,6 @@ pub mod pallet {
 	>;
 
 	#[pallet::storage]
-	#[pallet::getter(fn finalized_blocks)]
-	pub type FinalizedBlocks<T: Config> =
-		StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, bool, ValueQuery>;
-
-	#[pallet::storage]
 	#[pallet::getter(fn get_stored_dividends)]
 	pub type StoredDividends<T> = StorageValue<_, Vec<u16>, ValueQuery>;
 
@@ -625,8 +620,6 @@ pub mod pallet {
 				// Update storage only if consensus is reached
 				<UIDs<T>>::put(hot_keys.clone());
 				StoredDividends::<T>::put(dividends);
-				// Mark block as finalized
-				FinalizedBlocks::<T>::insert(current_block, true);
 
 				// Count validators and miners
 				let validators =

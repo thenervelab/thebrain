@@ -356,7 +356,6 @@ pallet-execution-unit = { path = "pallets/execution-unit", default-features = fa
 
 ipfs-pallet  = { path = "pallets/ipfs", default-features = false }
 pallet-alpha-bridge = { path = "pallets/alpha-bridge", default-features = false }
-#pallet-storage-s3 = { path = "pallets/storage-s3", default-features = false }
 pallet-ip = { path = "pallets/ip", default-features = false }
 pallet-rankings   = { path = "pallets/ranking", default-features = false }
 pallet-utils  = { path = "pallets/utils", default-features = false }

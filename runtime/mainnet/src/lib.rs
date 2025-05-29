@@ -1,4 +1,3 @@
-
 // This file is part of The Brain.
 // Copyright (C) 2022-2024 The Nerve Lab
 //
@@ -174,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9075,
+	spec_version: 9077,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1543,10 +1542,6 @@ impl pallet_tx_pause::Config for Runtime {
 	type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
 }
 
-// impl pallet_storage_s3::Config for Runtime {
-// 	type RuntimeEvent = RuntimeEvent;
-// }
-
 parameter_types! {
 	pub const BasicDeposit: Balance = deposit(0, 100);
 	pub const ByteDeposit: Balance = deposit(0, 100);
@@ -1750,7 +1745,6 @@ construct_runtime!(
 		Credits: pallet_credits = 65,
 		// Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69,
-		// Storage: pallet_storage_s3 = 72,
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
 		IpfsPallet: ipfs_pallet = 75
@@ -3202,14 +3196,6 @@ impl_runtime_apis! {
 			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(miner_id)
 		}
 
-		// fn get_bucket_size( bucket_name: Vec<u8>) -> u128{
-		// 	<pallet_storage_s3::Pallet<Runtime>>::get_bucket_size(bucket_name)
-		// }
-
-		// fn get_user_bandwidth( account_id: AccountId32) -> u128{
-		// 	<pallet_storage_s3::Pallet<Runtime>>::get_user_bandwidth(account_id)
-		// }
-
 		fn get_free_credits_rpc(account: Option<AccountId32>) -> Vec<(AccountId32, u128)>{
 			<pallet_credits::Pallet<Runtime>>::get_free_credits_rpc(account)
 		}
@@ -3287,10 +3273,6 @@ impl_runtime_apis! {
 				None => None,
 			}
 		}
-
-		// fn get_total_bucket_size( account_id: AccountId32) -> u128{
-		// 	<pallet_storage_s3::Pallet<Runtime>>::get_total_bucket_size(account_id)
-		// }
 
 		fn get_total_distributed_rewards_by_node_type(node_type: rpc_primitives_node_metrics::NodeType) -> u128 {
 			// Convert RPC NodeType to Pallet NodeType
@@ -3370,16 +3352,6 @@ impl_runtime_apis! {
 			})
 			.collect()
 		}
-
-		// fn get_user_buckets(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserBucket> {
-		// 	<pallet_storage_s3::Pallet<Runtime>>::get_user_buckets(account)
-		// 	.into_iter()
-		// 	.map(|bucket| rpc_primitives_node_metrics::UserBucket {
-		// 		bucket_name: bucket.bucket_name.clone(),
-		// 		bucket_size: bucket.bucket_size.clone(),
-		// 	})
-		// 	.collect()
-		// }
 
 		// fn get_user_vms(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserVmDetails<AccountId32, u32, [u8; 32]>> {
 		// 	Compute::get_user_vms(account)
