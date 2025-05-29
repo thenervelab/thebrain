@@ -520,7 +520,7 @@ pub mod pallet {
 
 		// miners request to store a file given file hash
 		#[pallet::call_index(6)]
-		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
+		#[pallet::weight((0, Pays::No))]
 		pub fn update_pin_and_storage_requests(
 			origin: OriginFor<T>,
 			requests: Vec<StorageRequestUpdate<T::AccountId>>,

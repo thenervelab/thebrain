@@ -667,7 +667,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(2)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		#[pallet::weight((0, Pays::No))]
 		pub fn update_pin_check_metrics(
 			origin: OriginFor<T>,
 			miners_metrics: Vec<MinerPinMetrics>,
