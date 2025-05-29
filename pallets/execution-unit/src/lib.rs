@@ -97,7 +97,7 @@ pub mod pallet {
 					  pallet_credits::Config + 
 					  ipfs_pallet::Config + 
 					  pallet_balances::Config +
-					  pallet_rankings::Config 
+					  pallet_rankings::Config
 		{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
@@ -320,8 +320,7 @@ pub mod pallet {
 				Self::purge_nodes_if_deregistered_on_bittensor();
 			}
 
-
-			let consensus_period = T::ConsensusPeriod::get();
+			let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
             if _n % consensus_period == 0u32.into() {
                 Self::apply_consensus();
             }
@@ -329,7 +328,7 @@ pub mod pallet {
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			let first_epoch_block = 38u32.into(); // hardcoded or derived
 
-			if ((_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into()) {
+			if (_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
 				// Clear per-epoch pin stats for all miners
 				let _ = TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
@@ -674,9 +673,16 @@ pub mod pallet {
 			miners_metrics: Vec<MinerPinMetrics>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
-		
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = ipfs_pallet::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
 			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 		
 			// Unwrap safely after checking it's Some
@@ -1678,7 +1684,7 @@ pub mod pallet {
 			let all_miners: Vec<Vec<u8>> = TemporaryPinReports::<T>::iter_keys()
 				.map(|(miner_id, _)| miner_id)
 				.collect::<Vec<_>>();
-			let threshold = T::ConsensusThreshold::get();
+			let threshold = <T as pallet::Config>::ConsensusThreshold::get();
 		
 			for miner_id in all_miners {
 				let reports: Vec<MinerPinMetrics> = TemporaryPinReports::<T>::iter_prefix(&miner_id)
@@ -1690,7 +1696,7 @@ pub mod pallet {
 				}
 				let total_reports = reports.len() as u32;
 				if total_reports >= threshold {
-					let similarity_percentage = T::ConsensusSimilarityThreshold::get(); // e.g., 85 for 85%
+					let similarity_percentage = <T as pallet::Config>::ConsensusSimilarityThreshold::get(); // e.g., 85 for 85%
 		
 					// Calculate sums for averaging
 					let mut total_pin_checks_sum = 0u64;

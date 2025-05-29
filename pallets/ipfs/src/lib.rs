@@ -1739,7 +1739,7 @@ pub mod pallet {
 				UserStorageRequests::<T>::remove(&owner, &file_hash);
 				Self::deposit_event(Event::IpfsUnavailable { owner, file_hash });
 			}
-		}	
+		}
 
 		pub fn sync_miner_states() {	
 			// Get all active storage miners
@@ -1810,7 +1810,7 @@ pub mod pallet {
             Ok(())
         }
 
-		fn get_primary_account(proxy: &T::AccountId) -> Result<Option<T::AccountId>, DispatchError> {
+		pub fn get_primary_account(proxy: &T::AccountId) -> Result<Option<T::AccountId>, DispatchError> {
 			// First check if this is actually a main account
 			let (proxy_definitions, _) = pallet_proxy::Pallet::<T>::proxies(proxy);
 			if !proxy_definitions.is_empty() {
