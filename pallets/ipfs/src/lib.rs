@@ -191,9 +191,6 @@ pub mod pallet {
 			// Remove storage requests older than 500 blocks
 			Self::cleanup_old_storage_requests(current_block, BlockNumberFor::<T>::from(700u32));
 
-			// Sync miner states
-			Self::sync_miner_states();
-
 			// get all degraded miners and add rebalance Request and then delete them
 			let degraded_miners = RegistrationPallet::<T>::get_all_degraded_storage_miners();
 			for miner in degraded_miners {
@@ -373,20 +370,6 @@ pub mod pallet {
 	#[pallet::storage]
     #[pallet::getter(fn assignment_enabled)]
     pub type AssignmentEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
-
-	#[pallet::storage]
-	#[pallet::getter(fn miner_state)]
-	pub type MinerStates<T: Config> = StorageMap<
-		_, 
-		Blake2_128Concat, 
-		BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, // Miner ID
-		MinerState,  // Miner's current state
-		ValueQuery   // Default to Free if not set
-	>;
-
-	#[pallet::storage]
-	#[pallet::getter(fn miner_lock_info)]
-	pub type MinerLockInfos<T: Config> = StorageValue<_, MinersLockInfo<T::AccountId, BlockNumberFor<T>>, OptionQuery>;	
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -879,14 +862,6 @@ pub mod pallet {
 			for (account_id, _) in <UserProfile<T>>::iter() {
 				<UserProfile<T>>::remove(account_id);
 			}
-
-			// Clear MinerStates
-			for (miner_id, _) in <MinerStates<T>>::iter() {
-				<MinerStates<T>>::remove(miner_id);
-			}
-
-			// Clear MinerLockInfos (single value)
-			<MinerLockInfos<T>>::kill();
 
 			for (user, _) in UserTotalFilesSize::<T>::iter() {
 				UserTotalFilesSize::<T>::insert(user, 0u128);
@@ -1704,11 +1679,6 @@ pub mod pallet {
 			MinerTotalFilesSize::<T>::get(&miner_id_bounded).unwrap_or(0)
 		}
 
-		/// Check if a miner is in a Free state
-		pub fn is_miner_free(miner_node_id: &BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) -> bool {
-			MinerStates::<T>::get(miner_node_id) == MinerState::Free
-		}
-
 		/// Get all storage requests that are already assigned
 		pub fn get_assigned_storage_requests() -> Vec<(T::AccountId, FileHash, StorageRequest<T::AccountId, BlockNumberFor<T>>)> {
 			UserStorageRequests::<T>::iter()
@@ -1738,37 +1708,6 @@ pub mod pallet {
 			for (owner, file_hash) in requests_to_remove {
 				UserStorageRequests::<T>::remove(&owner, &file_hash);
 				Self::deposit_event(Event::IpfsUnavailable { owner, file_hash });
-			}
-		}
-
-		pub fn sync_miner_states() {	
-			// Get all active storage miners
-			let active_miners = RegistrationPallet::<T>::get_all_active_storage_miners();
-	
-			// Collect active miner IDs into a BTreeSet
-			let active_miner_ids: BTreeSet<Vec<u8>> = active_miners
-				.into_iter()
-				.map(|miner| miner.node_id)
-				.collect();
-	
-			// Iterate through all MinerStates
-			for (miner_node_id, _) in MinerStates::<T>::iter() {
-				let miner_node_id_vec = miner_node_id.to_vec();
-	
-				if active_miner_ids.contains(&miner_node_id_vec) {
-					// If miner is still active and not locked, set to Free
-					match MinerStates::<T>::get(&miner_node_id) {
-						MinerState::Locked => {
-							// Do nothing
-						},
-						_ => {
-							MinerStates::<T>::insert(&miner_node_id, MinerState::Free);
-						}
-					}
-				} else {
-					// Miner no longer registered => remove their MinerState
-					MinerStates::<T>::remove(&miner_node_id);
-				}
 			}
 		}
 
