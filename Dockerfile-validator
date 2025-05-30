@@ -1,10 +1,31 @@
-# Use Ubuntu base with newer glibc
+
+# Build stage
+FROM ubuntu:24.04 AS builder
+
+# Same changes as above
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    cmake \
+    clang \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV PROTOC=/usr/bin/protoc
+
+WORKDIR /hippius
+COPY . .
+RUN cargo build --release --bin hippius
+
+# Runtime stage
 FROM ubuntu:24.04
 
-LABEL maintainer="The Nerve Lab"
-LABEL description="Hippius Validator Node"
-
-# Install runtime dependencies
+# Install runtime deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl-dev \
@@ -13,8 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the binary (no keys!)
-COPY ./target/release/hippius /usr/local/bin/
+# Copy binary from builder
+COPY --from=builder /hippius/target/release/hippius /usr/local/bin/
 
 # Create non-root user and data directory
 RUN useradd -m -u 5000 -U -s /bin/sh -d /hippius hippius && \
