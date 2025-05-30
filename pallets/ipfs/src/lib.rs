@@ -236,6 +236,19 @@ pub mod pallet {
 			owner: T::AccountId,
 			file_hash: FileHash,
 		},
+		UserProfileUpdated {
+			owner: T::AccountId,
+			cid: FileHash,
+		},
+		MinerProfileUpdated {
+			miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+			cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
+		},
+		/// Emitted when validator is rotated at the beginning of a new epoch.
+		ValidatorRotated {
+			new_validator: T::AccountId,
+			epoch_start_block: BlockNumberFor<T>,
+		},
 	}
 
 	#[pallet::error]
@@ -583,7 +596,12 @@ pub mod pallet {
 			    );
 
 			    // Update UserProfile storage
-			    UserProfile::<T>::insert(&request.storage_request_owner, request.user_profile_cid);
+			    UserProfile::<T>::insert(&request.storage_request_owner, request.user_profile_cid.clone());
+
+				Self::deposit_event(Event::UserProfileUpdated {
+					owner: request.storage_request_owner.clone(),
+					cid: request.user_profile_cid.clone(),
+				});
 
 				// Deposit an event to log the pin request update
 			    Self::deposit_event(Event::StorageRequestUpdated {
@@ -616,15 +634,18 @@ pub mod pallet {
 					&miner_profile.miner_node_id,
 					miner_profile.files_count,
 				);
+		
 				// Update MinerProfile storage with node ID and CID
-				<MinerProfile<T>>::insert(
-					miner_profile.miner_node_id.clone(), 
-					BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(
-						miner_profile.cid.clone().into_inner().to_vec()
-					).unwrap_or_else(|v: Vec<u8>| 
-						BoundedVec::truncate_from(v)
-					)
-				);
+				let bounded_cid = BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(
+					miner_profile.cid.clone().into_inner().to_vec(),
+				).unwrap_or_else(|v: Vec<u8>| BoundedVec::truncate_from(v));
+
+				<MinerProfile<T>>::insert(miner_profile.miner_node_id.clone(), bounded_cid.clone());
+
+				Self::deposit_event(Event::MinerProfileUpdated {
+					miner_node_id: miner_profile.miner_node_id.clone(),
+					cid: bounded_cid,
+				});
 			}
 
 			Ok(().into())
@@ -1869,7 +1890,13 @@ pub mod pallet {
 				}
 			};
 
-			CurrentEpochValidator::<T>::put(Some((next_validator, current_block)));
+			CurrentEpochValidator::<T>::put(Some((next_validator.clone(), current_block)));
+
+			// Emit event for validator rotation
+			Self::deposit_event(Event::ValidatorRotated {
+				new_validator: next_validator,
+				epoch_start_block: current_block,
+			});
 
 			Ok(true) // Rotation occurred
 		}

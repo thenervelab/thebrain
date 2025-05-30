@@ -1863,7 +1863,7 @@ pub mod pallet {
 			reputation_points = reputation_points.min(3000).max(100);
 	
 			// Store updated points
-			ipfs_pallet::Pallet::<T>::set_reputation_points(coldkey, reputation_points);
+			let _ = ipfs_pallet::Pallet::<T>::set_reputation_points(coldkey, reputation_points);
 			reputation_points
 		}	
 		
