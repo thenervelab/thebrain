@@ -104,3 +104,47 @@ cargo build --release
 
 # Start Node
 ./target/release/hippius-node 
+
+### 🐳 Docker Quick Start
+
+> **Note:**  
+> - Ensure the `hippius-node` binary is present in the project root **before** building any Docker image.  
+> - Double-check that the keystore path and network file path are correct for your setup **before running** the container.
+
+#### Validator Node
+
+```bash
+# Build Validator Docker Image
+docker build -t hippius-validator -f Dockerfile-validator .
+
+# Set permissions for data directory
+sudo chown -R $USER:$USER /opt/hippius/data
+chmod -R 777 /opt/hippius/data
+
+# Run Validator Node in Docker
+docker run -d --name hippius-validator \
+  --user 1000:1000 \
+  -p 30333:30333 -p 9933:9933 -p 9944:9944 -p 9615:9615 \
+  -v /opt/hippius/data:/data \
+  -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
+  hippius-validator
+```
+
+#### Miner Node
+
+```bash
+# Build Miner Docker Image
+docker build -t hippius-miner -f Dockerfile-Miner .
+
+# Set permissions for data directory
+sudo chown -R $USER:$USER /opt/hippius/data
+chmod -R 777 /opt/hippius/data
+
+# Run Miner Node in Docker
+docker run -d --name hippius-miner \
+  --user 1000:1000 \
+  -p 30333:30333 -p 9933:9933 -p 9944:9944 -p 9615:9615 \
+  -v /opt/hippius/data:/data \
+  -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
+  hippius-miner
+```
