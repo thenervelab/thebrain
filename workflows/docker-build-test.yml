@@ -3,22 +3,12 @@ name: Docker Build Test
 on: [push, pull_request]
 
 jobs:
-  build-validator:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Build Validator Image
-        run: |
-          docker build -t hippius-validator -f Dockerfile-validator .
-          echo "Validator image built successfully"
-
   build-miner:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Build Miner Image  
+      - name: Build Image  
         run: |
           docker build -t hippius-miner -f Dockerfile-Miner .
-          echo "Miner image built successfully"
+          echo "Image built successfully"

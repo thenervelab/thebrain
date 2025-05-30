@@ -1022,6 +1022,20 @@ pub mod pallet {
 			degraded_nodes
 		}
 
+		pub fn get_registration_block(
+			node_id: &Vec<u8>,
+		) -> Option<BlockNumberFor<T>> {
+			// Check NodeRegistration storage
+			if let Some(node_info) = NodeRegistration::<T>::get(node_id) {
+				return Some(node_info.registered_at);
+			}
+			// Check ColdkeyNodeRegistration storage
+			if let Some(node_info) = ColdkeyNodeRegistration::<T>::get(node_id) {
+				return Some(node_info.registered_at);
+			}
+			None
+		}
+
 		pub fn try_unregister_storage_miner(
 			node_to_deregister: Vec<u8>,
 		) -> Result<(), Error<T>> {

@@ -22,7 +22,7 @@ pub mod pallet {
 	use pallet_metagraph::Pallet as MetagraphPallet;
 	use pallet_metagraph::{Role, UID};
 	use pallet_rankings::Pallet as RankingsPallet;
-	// use pallet_registration::LinkedNodes;
+	use sp_runtime::Saturating;
 	use pallet_registration::{NodeInfo, NodeType, Pallet as RegistrationPallet};
 	use pallet_utils::Pallet as UtilsPallet;
 	use scale_info::prelude::string::String;
@@ -86,6 +86,9 @@ pub mod pallet {
 		SubmissionDisabled,
 	}
 
+	// Minimum blocks required for new miners to be eligible for top ranks
+    const MIN_BLOCKS_REGISTERED: u32 = 1000;
+
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
@@ -113,20 +116,6 @@ pub mod pallet {
 				},
 			}
 		}
-	}
-
-	#[pallet::call]
-	impl<T: Config> Pallet<T> {
-		// #[pallet::call_index(0)]
-		// #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		// pub fn set_value(origin: OriginFor<T>, new_value: Vec<u8>) -> DispatchResult {
-		//     let sender = ensure_signed(origin)?;
-
-		//     // Update the storage
-		//     StoredData::<T>::put(new_value.clone());
-
-		//     Ok(())
-		// }
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -161,7 +150,15 @@ pub mod pallet {
 				if let Some(metrics) =
 					ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
 				{
-					geo_distribution.insert(metrics.geolocation.clone(), 1);
+					// Get current block number
+					let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+					// Get registration block number
+					let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+						&miner.node_id.clone(),
+					);
+
+					// Calculate weight
 					let mut weight = WeightCalculation::calculate_weight::<T>(
 						NodeType::StorageMiner,
 						&metrics,
@@ -170,7 +167,22 @@ pub mod pallet {
 						&miner.owner,
 					);
 
-					let current_block_number = <frame_system::Pallet<T>>::block_number();
+					// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
+					if let Some(reg_block) = registration_block {
+						let blocks_since_registration = current_block_number.saturating_sub(reg_block);
+						if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
+							// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
+							weight = ((weight as u64) * 20 / 100).max(1) as u32;
+						}
+					} else {
+						// If no registration block is found, assume invalid or unregistered miner
+						weight = 1; // Set to minimal non-zero weight
+						log::info!(
+							"No registration block found for miner: {:?}. Weight set to 1.",
+							String::from_utf8_lossy(&miner.node_id)
+						);
+					}
+
 					let buffer = 3000u32;
 					let blocks_online =
 						ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
@@ -237,7 +249,7 @@ pub mod pallet {
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
 			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-			let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+			let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
 			for miner in all_miners {
 				if miner.node_type != NodeType::StorageS3 {
@@ -248,15 +260,39 @@ pub mod pallet {
 				if let Some(metrics) =
 					ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
 				{
-					geo_distribution.insert(metrics.geolocation.clone(), 1);
+					// Get current block number
+					let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+					// Get registration block number
+					let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+						&miner.node_id.clone(),
+					);
+
+					// Calculate weight
 					let mut weight = WeightCalculation::calculate_weight::<T>(
-						NodeType::StorageS3,
+						NodeType::StorageMiner,
 						&metrics,
 						all_nodes_metrics,
 						&geo_distribution,
 						&miner.owner,
 					);
-					let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+					// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
+					if let Some(reg_block) = registration_block {
+						let blocks_since_registration = current_block_number.saturating_sub(reg_block);
+						if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
+							// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
+							weight = ((weight as u64) * 20 / 100).max(1) as u32;
+							
+						}
+					} else {
+						// If no registration block is found, assume invalid or unregistered miner
+						weight = 1; // Set to minimal non-zero weight
+						log::info!(
+							"No registration block found for miner: {:?}. Weight set to 1.",
+							String::from_utf8_lossy(&miner.node_id)
+						);
+					}
 					let buffer = 300u32;
 					let blocks_online =
 						ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
@@ -325,7 +361,7 @@ pub mod pallet {
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
 			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-			let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+			let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
 			for miner in all_miners {
 				if miner.node_type != NodeType::Validator {
@@ -336,15 +372,39 @@ pub mod pallet {
 				if let Some(metrics) =
 					ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
 				{
-					geo_distribution.insert(metrics.geolocation.clone(), 1);
+					// Get current block number
+					let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+					// Get registration block number
+					let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+						&miner.node_id.clone(),
+					);
+
+					// Calculate weight
 					let mut weight = WeightCalculation::calculate_weight::<T>(
-						NodeType::Validator,
+						NodeType::StorageMiner,
 						&metrics,
 						all_nodes_metrics,
 						&geo_distribution,
 						&miner.owner,
 					);
-					let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+					// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
+					if let Some(reg_block) = registration_block {
+						let blocks_since_registration = current_block_number.saturating_sub(reg_block);
+						if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
+							// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
+							weight = ((weight as u64) * 20 / 100).max(1) as u32;
+							
+						}
+					} else {
+						// If no registration block is found, assume invalid or unregistered miner
+						weight = 1; // Set to minimal non-zero weight
+						log::info!(
+							"No registration block found for miner: {:?}. Weight set to 1.",
+							String::from_utf8_lossy(&miner.node_id)
+						);
+					}
 					let buffer = 300u32;
 					let blocks_online =
 						ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
@@ -414,7 +474,7 @@ pub mod pallet {
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
 			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-			let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+			let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
 			for miner in all_miners {
 				if miner.node_type != NodeType::GpuMiner {
@@ -425,15 +485,40 @@ pub mod pallet {
 				if let Some(metrics) =
 					ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
 				{
-					geo_distribution.insert(metrics.geolocation.clone(), 1);
+					// Get current block number
+					let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+					// Get registration block number
+					let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+						&miner.node_id.clone(),
+					);
+
+					// Calculate weight
 					let mut weight = WeightCalculation::calculate_weight::<T>(
-						NodeType::GpuMiner,
+						NodeType::StorageMiner,
 						&metrics,
 						all_nodes_metrics,
 						&geo_distribution,
 						&miner.owner,
 					);
-					let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+					// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
+					if let Some(reg_block) = registration_block {
+						let blocks_since_registration = current_block_number.saturating_sub(reg_block);
+						if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
+							// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
+							weight = ((weight as u64) * 20 / 100).max(1) as u32;
+							
+						}
+					} else {
+						// If no registration block is found, assume invalid or unregistered miner
+						weight = 1; // Set to minimal non-zero weight
+						log::info!(
+							"No registration block found for miner: {:?}. Weight set to 1.",
+							String::from_utf8_lossy(&miner.node_id)
+						);
+					}
+
 					let buffer = 300u32;
 					let blocks_online =
 						ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
@@ -499,7 +584,7 @@ pub mod pallet {
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
 			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-			let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+			let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
 			for miner in all_miners {
 				if miner.node_type != NodeType::ComputeMiner {
@@ -510,16 +595,39 @@ pub mod pallet {
 				if let Some(metrics) =
 					ExecutionPallet::<T>::get_node_metrics(miner.node_id.clone())
 				{
-					geo_distribution.insert(metrics.geolocation.clone(), 1);
+					// Get current block number
+					let current_block_number = <frame_system::Pallet<T>>::block_number();
+
+					// Get registration block number
+					let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+						&miner.node_id.clone(),
+					);
+
+					// Calculate weight
 					let mut weight = WeightCalculation::calculate_weight::<T>(
-						NodeType::ComputeMiner,
+						NodeType::StorageMiner,
 						&metrics,
 						all_nodes_metrics,
 						&geo_distribution,
 						&miner.owner,
 					);
 
-					let current_block_number = <frame_system::Pallet<T>>::block_number();
+					// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
+					if let Some(reg_block) = registration_block {
+						let blocks_since_registration = current_block_number.saturating_sub(reg_block);
+						if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
+							// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
+							weight = ((weight as u64) * 20 / 100).max(1) as u32;
+						}
+					} else {
+						// If no registration block is found, assume invalid or unregistered miner
+						weight = 1; // Set to minimal non-zero weight
+						log::info!(
+							"No registration block found for miner: {:?}. Weight set to 1.",
+							String::from_utf8_lossy(&miner.node_id)
+						);
+					}
+
 					let buffer = 300u32;
 					let blocks_online =
 						ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
