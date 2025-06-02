@@ -104,34 +104,40 @@ cargo build --release
 
 # Start Node
 ./target/release/hippius-node 
+```
+
 
 ### 🐳 Docker Quick Start
 
 > **Note:**  
 > - Ensure the `hippius-node` binary is present in the project root **before** building any Docker image.  
 > - Double-check that the keystore path and network file path are correct for your setup **before running** the container.
-```
+
 
 ## Pull Image from GitHub Container Registry
 
 You can pull the pre-built hippius-node image directly from GitHub Container Registry (GHCR):
 
-# Pull the latest image
+### Pull the latest image
 docker pull ghcr.io/thenervelab/thebrain/hippius-node:latest
 
-# Optionally, pull a specific version using the SHA tag (replace <SHA> with the desired tag)
+### Optionally, pull a specific version using the SHA tag (replace <SHA> with the desired tag)
 docker pull ghcr.io/thenervelab/thebrain/hippius-node:<SHA>
 
-
-#### Validator Node
+## Build and run Image Locally
 
 ```bash
 # Build Validator Docker Image
-docker build -t hippius-validator -f Dockerfile-validator .
+docker build -t hippius-node .
 
 # Set permissions for data directory
 sudo chown -R $USER:$USER /opt/hippius/data
 chmod -R 777 /opt/hippius/data
+```
+
+### Run as Validator Node
+
+```bash
 
 # Run Validator Node in Docker
 docker run -d --name hippius-validator \
@@ -150,7 +156,7 @@ docker run -d --name hippius-validator \
 
 ```bash
 # Build Miner Docker Image
-docker build -t hippius-miner -f Dockerfile-Miner .
+docker build -t hippius-miner .
 
 # Set permissions for data directory
 sudo chown -R $USER:$USER /opt/hippius/data
@@ -164,3 +170,4 @@ docker run -d --name hippius-miner \
   -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
   hippius-node
 ```
+
