@@ -30,12 +30,12 @@ jobs:
       
       - name: Build and push miner image
         run: |
-          docker build -t $REGISTRY/$IMAGE_NAME_MINER:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME_MINER:latest -f Dockerfile-Miner .
+          docker build -t $REGISTRY/$IMAGE_NAME_MINER:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME_MINER:latest -f Dockerfile-miner .
           docker push $REGISTRY/$IMAGE_NAME_MINER --all-tags
           
       - name: Build and push validator image
         run: |
-          docker build -t $REGISTRY/$IMAGE_NAME_VALIDATOR:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME_VALIDATOR:latest -f Dockerfile-Validator .
+          docker build -t $REGISTRY/$IMAGE_NAME_VALIDATOR:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME_VALIDATOR:latest -f Dockerfile-validator .
           docker push $REGISTRY/$IMAGE_NAME_VALIDATOR --all-tags
 
       - name: Ensure Public Visibility
