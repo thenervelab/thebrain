@@ -1,0 +1,54 @@
+name: Docker Build and Push Public Images
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_MINER: ${{ github.repository }}/hippius-miner
+  IMAGE_NAME_VALIDATOR: ${{ github.repository }}/hippius-validator
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push miner image
+        run: |
+          docker build -t $REGISTRY/$IMAGE_NAME_MINER:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME_MINER:latest -f Dockerfile-Miner .
+          docker push $REGISTRY/$IMAGE_NAME_MINER --all-tags
+          
+      - name: Build and push validator image
+        run: |
+          docker build -t $REGISTRY/$IMAGE_NAME_VALIDATOR:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME_VALIDATOR:latest -f Dockerfile-Validator .
+          docker push $REGISTRY/$IMAGE_NAME_VALIDATOR --all-tags
+
+      - name: Ensure Public Visibility
+        run: |
+          # Set miner image to public
+          curl -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/user/packages/container/${{ env.IMAGE_NAME_MINER }}/visibility" \
+            -d '{"visibility":"public"}'
+          # Set validator image to public
+          curl -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/user/packages/container/${{ env.IMAGE_NAME_VALIDATOR }}/visibility" \
+            -d '{"visibility":"public"}'
