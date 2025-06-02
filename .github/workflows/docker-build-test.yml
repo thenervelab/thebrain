@@ -1,4 +1,4 @@
-name: Docker Build and Push Public Images
+name: Docker Build and Push Public Image
 
 on:
   push:
@@ -8,8 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME_MINER: ${{ github.repository }}/hippius-miner
-  IMAGE_NAME_VALIDATOR: ${{ github.repository }}/hippius-validator
+  IMAGE_NAME: ${{ github.repository }}/hippius-node  # Single image for both modes
 
 jobs:
   build-and-push:
@@ -28,27 +27,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Build and push miner image
+      - name: Build and push hippius image
         run: |
-          docker build -t $REGISTRY/$IMAGE_NAME_MINER:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME_MINER:latest -f Dockerfile-miner .
-          docker push $REGISTRY/$IMAGE_NAME_MINER --all-tags
-          
-      - name: Build and push validator image
-        run: |
-          docker build -t $REGISTRY/$IMAGE_NAME_VALIDATOR:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME_VALIDATOR:latest -f Dockerfile-validator .
-          docker push $REGISTRY/$IMAGE_NAME_VALIDATOR --all-tags
+          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} -t $REGISTRY/$IMAGE_NAME:latest .
+          docker push $REGISTRY/$IMAGE_NAME --all-tags
 
       - name: Ensure Public Visibility
         run: |
-          # Set miner image to public
           curl -X PATCH \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/user/packages/container/${{ env.IMAGE_NAME_MINER }}/visibility" \
-            -d '{"visibility":"public"}'
-          # Set validator image to public
-          curl -X PATCH \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/user/packages/container/${{ env.IMAGE_NAME_VALIDATOR }}/visibility" \
+            "https://api.github.com/user/packages/container/${{ env.IMAGE_NAME }}/visibility" \
             -d '{"visibility":"public"}'

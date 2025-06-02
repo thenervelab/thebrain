@@ -1,17 +1,8 @@
-
-# Build stage
+# Build stage (same for both)
 FROM ubuntu:24.04 AS builder
 
-# Same changes as above
 RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    build-essential \
-    cmake \
-    clang \
-    pkg-config \
-    libssl-dev \
-    protobuf-compiler \
+    git curl build-essential cmake clang pkg-config libssl-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -22,22 +13,15 @@ WORKDIR /hippius
 COPY . .
 RUN cargo build --release --bin hippius
 
-# Runtime stage
+# Runtime stage (supports both miner/validator)
 FROM ubuntu:24.04
 
-# Install runtime deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libssl-dev \
-    libgcc-s1 \
-    libstdc++6 \
-    curl \
+    ca-certificates libssl-dev libgcc-s1 libstdc++6 curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy binary from builder
 COPY --from=builder /hippius/target/release/hippius /usr/local/bin/
 
-# Create non-root user and data directory
 RUN useradd -m -u 5000 -U -s /bin/sh -d /hippius hippius && \
     mkdir -p /data && \
     chown -R hippius:hippius /data
@@ -49,18 +33,17 @@ VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=3s CMD curl --fail http://localhost:9933/health || exit 1
 
+# Default to miner mode, but allow override via CMD
 ENTRYPOINT ["/usr/local/bin/hippius"]
 CMD ["--base-path=/data", \
      "--chain=hippius", \
-     "--validator", \
      "--offchain-worker=Always", \
      "--rpc-external", \
      "--unsafe-rpc-external", \
      "--rpc-cors=all", \
-     "--rpc-methods=Unsafe", \
      "--database=paritydb", \
-     "--name=hippius-testnet-validator", \
+     "--name=hippius-node", \
      "--telemetry-url=wss://telemetry.polkadot.io/submit/ 0", \
-     "--out-peers=500", \
-     "--in-peers=500", \
-     "--bootnodes=/ip4/91.134.72.142/tcp/30333/ws/p2p/12D3KooWRJdyfLdhPzyQrUHKWdEooNPsNFWRTfCS8tDSeysPDxVR"]
+     "--no-mdns", \
+     "--out-peers=450", \
+     "--in-peers=525"]

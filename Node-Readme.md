@@ -127,7 +127,11 @@ docker run -d --name hippius-validator \
   -p 30333:30333 -p 9933:9933 -p 9944:9944 -p 9615:9615 \
   -v /opt/hippius/data:/data \
   -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
-  hippius-validator
+  hippius-node \
+  --validator \                       
+  --rpc-methods=Unsafe \              
+  --name="hippius-testnet-validator" \   
+  --bootnodes=/ip4/91.134.72.142/tcp/30333/ws/p2p/12D3KooWRJdyfLdhPzyQrUHKWdEooNPsNFWRTfCS8tDSeysPDxVR
 ```
 
 #### Miner Node
@@ -146,5 +150,5 @@ docker run -d --name hippius-miner \
   -p 30333:30333 -p 9933:9933 -p 9944:9944 -p 9615:9615 \
   -v /opt/hippius/data:/data \
   -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
-  hippius-miner
+  hippius-node
 ```
