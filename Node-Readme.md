@@ -110,6 +110,18 @@ cargo build --release
 > **Note:**  
 > - Ensure the `hippius-node` binary is present in the project root **before** building any Docker image.  
 > - Double-check that the keystore path and network file path are correct for your setup **before running** the container.
+```
+
+## Pull Image from GitHub Container Registry
+
+You can pull the pre-built hippius-node image directly from GitHub Container Registry (GHCR):
+
+# Pull the latest image
+docker pull ghcr.io/thenervelab/thebrain/hippius-node:latest
+
+# Optionally, pull a specific version using the SHA tag (replace <SHA> with the desired tag)
+docker pull ghcr.io/thenervelab/thebrain/hippius-node:<SHA>
+
 
 #### Validator Node
 
