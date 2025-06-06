@@ -135,39 +135,34 @@ sudo chown -R $USER:$USER /opt/hippius/data
 chmod -R 777 /opt/hippius/data
 ```
 
-### Run as Validator Node
-
-```bash
-
 # Run Validator Node in Docker
+```bash
 docker run -d --name hippius-validator \
-  --user 1000:1000 \
-  -p 30333:30333 -p 9933:9933 -p 9944:9944 -p 9615:9615 \
+  -p 30333:30333 \
+  -p 9933:9933 \
+  -p 9944:9944 \
+  -p 9615:9615 \
   -v /opt/hippius/data:/data \
   -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
-  hippius-node \
-  --validator \                       
-  --rpc-methods=Unsafe \              
-  --name="hippius-testnet-validator" \   
-  --bootnodes=/ip4/91.134.72.142/tcp/30333/ws/p2p/12D3KooWRJdyfLdhPzyQrUHKWdEooNPsNFWRTfCS8tDSeysPDxVR
+  -e BASE_PATH=/data \
+  -e CHAIN=dev \
+  -e NODE_KEY_FILE=/data/node-key \
+  -e VALIDATOR=1 \
+  ghcr.io/thenervelab/thebrain/hippius-node:5ed72523e16da0a809fb08604ac2097105ef7483
 ```
 
 #### Miner Node
 
 ```bash
-# Build Miner Docker Image
-docker build -t hippius-miner .
-
-# Set permissions for data directory
-sudo chown -R $USER:$USER /opt/hippius/data
-chmod -R 777 /opt/hippius/data
-
-# Run Miner Node in Docker
 docker run -d --name hippius-miner \
-  --user 1000:1000 \
-  -p 30333:30333 -p 9933:9933 -p 9944:9944 -p 9615:9615 \
+  -p 30333:30333 \
+  -p 9933:9933 \
+  -p 9944:9944 \
+  -p 9615:9615 \
   -v /opt/hippius/data:/data \
   -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
-  hippius-node
+  -e BASE_PATH=/data \
+  -e CHAIN=dev \
+  -e NODE_KEY_FILE=/data/node-key \
+  ghcr.io/thenervelab/thebrain/hippius-node:5ed72523e16da0a809fb08604ac2097105ef7483
 ```
-

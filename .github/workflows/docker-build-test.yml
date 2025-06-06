@@ -3,12 +3,12 @@ name: Docker Build and Push Public Image
 on:
   push:
     branches:
-      - ci
+      - main
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/hippius-node  # Single image for both modes
+  IMAGE_NAME: ${{ github.repository }}/hippius-node
 
 jobs:
   build-and-push:
