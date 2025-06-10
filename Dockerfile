@@ -19,7 +19,7 @@ FROM ubuntu:24.04
 # Install only runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl-dev libgcc-s1 libstdc++6 \
-    curl python3 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy compiled binary from builder
