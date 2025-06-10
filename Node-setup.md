@@ -152,7 +152,6 @@ docker run -d --name hippius-validator \
 ```
 
 #### Miner Node
-
 ```bash
 docker run -d --name hippius-miner \
   -p 30333:30333 \

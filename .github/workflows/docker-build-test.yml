@@ -3,7 +3,7 @@ name: Docker Build and Push Public Image
 on:
   push:
     branches:
-      - main
+      - ci
   workflow_dispatch:
 
 env:
