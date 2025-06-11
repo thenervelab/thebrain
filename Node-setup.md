@@ -148,6 +148,7 @@ docker run -d --name hippius-validator \
   -e CHAIN=dev \
   -e NODE_KEY_FILE=/data/node-key \
   -e VALIDATOR=1 \
+  -e bootnodes=/ip4/149.5.28.23/tcp/30333/p2p/12D3KooWMuNG6ASCMDsyA45sUgYsYs1qHHrhkfhaMx7QNF98aWMZ \
   ghcr.io/thenervelab/thebrain/hippius-node:5ed72523e16da0a809fb08604ac2097105ef7483
 ```
 
@@ -163,5 +164,6 @@ docker run -d --name hippius-miner \
   -e BASE_PATH=/data \
   -e CHAIN=dev \
   -e NODE_KEY_FILE=/data/node-key \
+  -e bootnodes=/ip4/149.5.28.23/tcp/30333/p2p/12D3KooWMuNG6ASCMDsyA45sUgYsYs1qHHrhkfhaMx7QNF98aWMZ \
   ghcr.io/thenervelab/thebrain/hippius-node:5ed72523e16da0a809fb08604ac2097105ef7483
 ```
