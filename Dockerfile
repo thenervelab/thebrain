@@ -30,7 +30,7 @@ RUN useradd -m -u 5000 -U -s /bin/sh -d /hippius hippius && \
     mkdir -p /data
 
 # Copy/create the entrypoint script (same logic)
-RUN echo '#!/bin/sh\nset -e\nCMD_ARGS="--offchain-worker=Always --base-path=${BASE_PATH} --chain=${CHAIN} --port=30333 --unsafe-rpc-external --rpc-cors=all --rpc-external --database=paritydb --name=hippius-storage-miner --no-mdns --out-peers=450 --in-peers=525"\n\n# Add bootnodes if specified\nif [ -n "$BOOTNODES" ]; then\n  CMD_ARGS="$CMD_ARGS --bootnodes=${BOOTNODES}"\nfi\n\nif [ -n "$VALIDATOR" ]; then\n  CMD_ARGS="$CMD_ARGS --validator --rpc-methods=Unsafe "\nfi\nexec /usr/local/bin/hippius $CMD_ARGS' > /usr/local/bin/entrypoint.sh && \
+RUN echo '#!/bin/sh\nset -e\nCMD_ARGS="--offchain-worker=Always --base-path=${BASE_PATH} --chain=${CHAIN} --port=30333 --unsafe-rpc-external --rpc-cors=all --rpc-external --rpc-methods=Unsafe --database=paritydb --name=hippius-storage-miner --no-mdns --out-peers=450 --in-peers=525"\n\n# Add bootnodes if specified\nif [ -n "$BOOTNODES" ]; then\n  CMD_ARGS="$CMD_ARGS --bootnodes=${BOOTNODES}"\nfi\n\nif [ -n "$VALIDATOR" ]; then\n  CMD_ARGS="$CMD_ARGS --validator "\nfi\nexec /usr/local/bin/hippius $CMD_ARGS' > /usr/local/bin/entrypoint.sh && \
     chmod +x /usr/local/bin/entrypoint.sh
 
 USER hippius
