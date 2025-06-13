@@ -581,12 +581,9 @@ pub mod pallet {
 			    // Update user's storage requests count
 			    RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
 
-				let file_size_u32 = u32::try_from(request.file_size)
-					.map_err(|_| Error::<T>::FileSizeOverflow)?;
-
 				<UserTotalFilesSize<T>>::insert(
 					request.storage_request_owner.clone(),
-					file_size_u32 as u128,
+					request.file_size,
 				);
 				
 			    // Remove the storage request

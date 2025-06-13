@@ -13,9 +13,7 @@ impl NodeMetricsData {
     const INTERNAL_SCALING: u32 = 1_000_000;
     const MIN_PIN_CHECKS: u32 = 1; // Minimum pin checks for valid scoring
     const SLASH_THRESHOLD: u32 = 1; // Number of failed storage proofs before slashing
-    const REPUTATION_NEUTRAL: u32 = 1000; // Neutral reputation points
-    const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
-    const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024 ; // 1GB as max file size for scoring
+    const MAX_FILE_SIZE: u128 = 1024 * 1024 * 1024 ; // 1GB as max file size for scoring
 
     fn calculate_storage_proof_score<T: ipfs_pallet::Config>(
         metrics: &NodeMetricsData,
@@ -103,7 +101,6 @@ impl NodeMetricsData {
             return 0;
         }
 
-        
         (total_overall_successful_pin_checks as u64)
             .saturating_mul(Self::INTERNAL_SCALING as u64)
             .saturating_div(total_overall_pin_checks as u64)
@@ -111,23 +108,18 @@ impl NodeMetricsData {
     
     // Calculate reputation modifier based on coldkey reputation points
     fn calculate_reputation_modifier(reputation_points: u32) -> u64 {
-        // Map reputation points to a multiplier between 0.5 and 1.5
         let base = Self::INTERNAL_SCALING as u64;
-        if reputation_points == 0 {
-            1 // does not effect calculations
-        }else if reputation_points < 500 {
-            base / 2 // 0.5x for low reputation
-        } else if reputation_points < 1000 {
-            base * 3 / 4 // 0.75x
-        } else if reputation_points < 1500 {
-            base // 1.0x
-        } else if reputation_points < 2000 {
-            base * 5 / 4 // 1.25x
-        } else {
-            base * 3 / 2 // 1.5x cap
+        match reputation_points {
+            0..=300 => base * 4 / 10,   // 0.4x
+            301..=600 => base * 6 / 10,  // 0.6x
+            601..=900 => base * 8 / 10,  // 0.8x
+            901..=1200 => base * 10 / 10,// 1.0x
+            1201..=1600 => base * 12 / 10,// 1.2x
+            1601..=2000 => base * 15 / 10,// 1.5x
+            2001..=3000 => base * 18 / 10,// 1.8x
+            _ => base * 20 / 10,        // 2.0x (cap)
         }
     }
-
 
     pub fn calculate_weight<T: pallet_marketplace::Config + ipfs_pallet::Config + pallet_registration::Config + crate::Config + pallet_rankings::Config>(
         _node_type: NodeType,
@@ -234,27 +226,38 @@ impl NodeMetricsData {
         let file_size = ipfs_pallet::Pallet::<T>::miner_files_size(miner_id_bounded)
             .unwrap_or(0);
         let file_size_score = Self::calculate_file_size_score(file_size).saturating_div(100);
-        log::info!("file_size_score: {}", file_size_score);        
-     
-        // Get reputation points and calculate modifier
-        let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
-        let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
-     
+
+        // Convert file_size_score from u128 to u64 to match other scores
+        let file_size_score_u64 : u64 = file_size_score.min(u64::MAX as u128)
+            .try_into()
+            .unwrap_or(0);
+        log::info!("file_size_score: {}", file_size_score_u64);        
+
         // Calculate diversity score (unchanged)
         let _diversity_score =
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
+
+        let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
+        let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
      
         // New base weight calculation: 60% storage proof, 10% ping score, overall_pin_score 5% 
         let base_weight = (storage_proof_score.saturating_mul(60) + ping_score.saturating_mul(10) + 
-                           overall_pin_score.saturating_mul(5) + file_size_score.saturating_mul(25))
+                           overall_pin_score.saturating_mul(5) + file_size_score_u64.saturating_mul(25))
         .saturating_div(100);
 
         // Apply reputation modifier
-        let final_weight = (base_weight as u64)
-            .saturating_mul(reputation_modifier)
-            .saturating_div(Self::INTERNAL_SCALING as u64)
-            .max(1)
-            .min(Self::MAX_SCORE as u64) as u32;
+        let adjusted_weight = (base_weight as u64)
+                .saturating_mul(reputation_modifier)
+                .saturating_div(Self::INTERNAL_SCALING as u64)
+                .max(1)
+                .min(Self::MAX_SCORE as u64) as u32;
+
+        // 4. Apply soft ceiling (gradual compression)
+        let final_weight = if adjusted_weight > 52428 {
+            52428 + (adjusted_weight - 52428) / 4  // Compress top scores
+        } else {
+            adjusted_weight
+        } as u32;
 
         let previous_rankings = pallet_rankings::Pallet::<T>::get_node_ranking(metrics.miner_id.clone());
         // Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
@@ -314,18 +317,18 @@ impl NodeMetricsData {
 
     fn calculate_file_size_score(
         file_size: u128,
-    ) -> u64 {
+    ) -> u128 {
         if file_size == 0 {
             return 0;
         }
 
         // Normalize file size against MAX_FILE_SIZE
-        let file_size_score = (file_size as u64)
-            .saturating_mul(Self::INTERNAL_SCALING as u64)
+        let file_size_score = (file_size as u128)
+            .saturating_mul(Self::INTERNAL_SCALING as u128)
             .saturating_div(Self::MAX_FILE_SIZE);
         
         // Cap the score to prevent over-weighting
-        file_size_score.min(Self::INTERNAL_SCALING as u64)
+        file_size_score.min(Self::INTERNAL_SCALING as u128)
     }
 
 }
