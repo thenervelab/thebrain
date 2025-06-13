@@ -42,16 +42,6 @@ pub struct StorageRequest<AccountId, BlockNumberFor> {
     pub is_assigned: bool,
 }
 
-
-// This will store info relasinceted storage request
-#[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
-pub struct MinerPinRequest<BlockNumber> {
-    pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
-    pub file_hash: FileHash,
-    pub created_at: BlockNumber,
-    pub file_size_in_bytes: u32,
-}
-
 #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, TypeInfo, MaxEncodedLen, Serialize, Deserialize)]
 pub enum MinerState {
     Free,
@@ -69,7 +59,7 @@ pub struct MinerProfileItem {
     pub miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
     pub cid: FileHash,
     pub files_count: u32,
-    pub files_size: u32,
+    pub files_size: u128,
 }
 
 #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
@@ -83,7 +73,7 @@ pub struct FileInput {
 pub struct StorageRequestUpdate<AccountId> {
 	pub storage_request_owner: AccountId,
 	pub storage_request_file_hash: FileHash,
-	pub file_size: u32,
+	pub file_size: u128,
 	pub user_profile_cid: FileHash,
 }
 
