@@ -237,8 +237,8 @@ impl NodeMetricsData {
         log::info!("file_size_score: {}", file_size_score);        
      
         // Get reputation points and calculate modifier
-        let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
-        let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
+        // let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
+        // let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
      
         // Calculate diversity score (unchanged)
         let _diversity_score =
@@ -251,7 +251,7 @@ impl NodeMetricsData {
 
         // Apply reputation modifier
         let final_weight = (base_weight as u64)
-            .saturating_mul(reputation_modifier)
+            // .saturating_mul(reputation_modifier)
             .saturating_div(Self::INTERNAL_SCALING as u64)
             .max(1)
             .min(Self::MAX_SCORE as u64) as u32;
