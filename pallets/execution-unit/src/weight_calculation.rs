@@ -109,22 +109,14 @@ impl NodeMetricsData {
             .saturating_div(total_overall_pin_checks as u64)
     }
     
-    // Calculate reputation modifier based on coldkey reputation points
-    fn calculate_reputation_modifier(reputation_points: u32) -> u64 {
-        // Map reputation points to a multiplier between 0.5 and 1.5
-        let base = Self::INTERNAL_SCALING as u64;
-        if reputation_points == 0 {
-            1 // does not effect calculations
-        }else if reputation_points < 500 {
-            base / 2 // 0.5x for low reputation
-        } else if reputation_points < 1000 {
-            base * 3 / 4 // 0.75x
-        } else if reputation_points < 1500 {
-            base // 1.0x
-        } else if reputation_points < 2000 {
-            base * 5 / 4 // 1.25x
-        } else {
-            base * 3 / 2 // 1.5x cap
+    fn calculate_reputation_bonus(reputation_points: u32) -> u64 {
+        match reputation_points {
+            0 => 0,             // No bonus
+            1..=499 => 20,       // Small bonus
+            500..=999 => 50,     // Medium bonus
+            1000..=1499 => 100,  // Good bonus
+            1500..=1999 => 150,  // Better bonus
+            _ => 200,            // Max bonus
         }
     }
 
@@ -237,8 +229,9 @@ impl NodeMetricsData {
         log::info!("file_size_score: {}", file_size_score);        
      
         // Get reputation points and calculate modifier
-        // let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
-        // let reputation_modifier = Self::calculate_reputation_modifier(reputation_points);
+        let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
+        let reputation_modifier = Self::calculate_reputation_bonus(reputation_points);
+
      
         // Calculate diversity score (unchanged)
         let _diversity_score =
@@ -250,11 +243,11 @@ impl NodeMetricsData {
         .saturating_div(100);
 
         // Apply reputation modifier
-        let final_weight = (base_weight as u64)
-            // .saturating_mul(reputation_modifier)
-            .saturating_div(Self::INTERNAL_SCALING as u64)
+        let final_weight = (base_weight)
+            .saturating_add(reputation_modifier) // modifier is now a u32 bonus
             .max(1)
-            .min(Self::MAX_SCORE as u64) as u32;
+            .min(Self::MAX_SCORE as u64);
+
 
         let previous_rankings = pallet_rankings::Pallet::<T>::get_node_ranking(metrics.miner_id.clone());
         // Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
