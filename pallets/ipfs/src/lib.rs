@@ -1166,6 +1166,12 @@ pub mod pallet {
 
 			Ok(node_ids)
 		}
+
+    	/// Calculates the total file size stored across all miners in the network
+        pub fn get_total_network_storage() -> u128 {
+            MinerTotalFilesSize::<T>::iter()
+                .fold(0u128, |total, (_, size)| total.saturating_add(size))
+        }
 		
 		// Helper function to ping an IPFS node to track uptime
 		fn ping_node(node_id_bytes: Vec<u8>) -> Result<bool, http::Error> {
