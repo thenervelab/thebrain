@@ -1285,9 +1285,11 @@ pub mod pallet {
 				let account = AccountId32::new(account_bytes);
 				let owner_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
 					.to_ss58check();
+				log::info!("is_owner_in_uids : Checking owner SS58: {}", owner_ss58);
 				// Check if validator is in UIDs or matches the keep address
 				let is_in_uids =
 					uids.iter().any(|uid| uid.substrate_address.to_ss58check() == owner_ss58);
+
 				return is_in_uids;
 			}
 			false

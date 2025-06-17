@@ -254,9 +254,10 @@ impl NodeMetricsData {
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
      
         // New base weight calculation: 60% storage proof, 10% ping score, overall_pin_score 5% 
-        let base_weight = (storage_proof_score.saturating_mul(20) + ping_score.saturating_mul(10) + 
-                           overall_pin_score.saturating_mul(5) + file_size_score.saturating_mul(65))
+        let base_weight = (storage_proof_score.saturating_mul(15) + ping_score.saturating_mul(10) + 
+                           overall_pin_score.saturating_mul(10) + file_size_score.saturating_mul(65))
         .saturating_div(100);
+        
         // Apply reputation modifier
         let final_weight = (base_weight)
             .saturating_add(reputation_modifier) // modifier is now a u32 bonus
@@ -269,7 +270,7 @@ impl NodeMetricsData {
         let updated_weight = match previous_rankings {
             Some(rankings) => {
                 // Ensure at least weight of 1 after blending
-                (((1 * final_weight as u32) + (9 * rankings.weight as u32)) / 10).max(1)
+                (((3 * final_weight as u32) + (7 * rankings.weight as u32)) / 10).max(1)
             }
             None => final_weight as u32,
         };

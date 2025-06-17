@@ -170,4 +170,3 @@ docker run -d --name hippius-miner \
   -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
   hippius-node
 ```
-

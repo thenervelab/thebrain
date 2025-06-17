@@ -1344,7 +1344,7 @@ pub mod pallet {
 			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node's status is not Degraded
-					if !matches!(node_info.status, Status::Degraded) && matches!(node_info.node_type, NodeType::StorageMiner) {
+					if !matches!(node_info.status, Status::Degraded) &&  matches!(node_info.node_type, NodeType::StorageMiner) {
 						// Check for uniqueness
 						if !seen_node_ids.contains(&node_info.node_id) {
 							seen_node_ids.push(node_info.node_id.clone());
