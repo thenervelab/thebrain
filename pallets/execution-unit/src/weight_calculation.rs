@@ -252,11 +252,15 @@ impl NodeMetricsData {
         // Calculate diversity score (unchanged)
         let _diversity_score =
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
-     
+        
         // New base weight calculation: 60% storage proof, 10% ping score, overall_pin_score 5% 
-        let base_weight = (storage_proof_score.saturating_mul(15) + ping_score.saturating_mul(10) + 
-                           overall_pin_score.saturating_mul(10) + file_size_score.saturating_mul(65))
+        let base_weight = (storage_proof_score.saturating_mul(20) + ping_score.saturating_mul(10) + 
+                           overall_pin_score.saturating_mul(15) + file_size_score.saturating_mul(55))
         .saturating_div(100);
+        log::info!(
+            "Base weight: {}, Storage proof score: {}, Ping score: {}, Overall pin score: {}, File size score: {}",
+            base_weight, storage_proof_score, ping_score, overall_pin_score, file_size_score
+        );
         
         // Apply reputation modifier
         let final_weight = (base_weight)
@@ -320,39 +324,39 @@ impl NodeMetricsData {
             .saturating_div(100)
     }
 
-fn calculate_file_size_score<T: ipfs_pallet::Config>(
-    file_size_bytes: u128,
-) -> u64 {
-    const MB: u128 = 1_048_576; // 1 MB in bytes
-    const MIN_SCORE: u64 = 100;   // Minimum score
-    const MAX_SCORE: u64 = 10_000; // Maximum score
-    const SCALE_FACTOR: u128 = 1_000_000; // For precise percentage calculation
+    fn calculate_file_size_score<T: ipfs_pallet::Config>(
+        file_size_bytes: u128,
+    ) -> u64 {
+        const MB: u128 = 1_048_576; // 1 MB in bytes
+        const MIN_SCORE: u64 = 1_000;   // Minimum score (10x increase)
+        const MAX_SCORE: u64 = 100_000; // Maximum score (10x increase)
+        const SCALE_FACTOR: u128 = 1_000_000; // Same scaling precision
 
-    if file_size_bytes == 0 {
-        return MIN_SCORE;
+        if file_size_bytes == 0 {
+            return MIN_SCORE;
+        }
+
+        let total_size = ipfs_pallet::Pallet::<T>::get_total_network_storage();
+        if total_size == 0 {
+            return MIN_SCORE;
+        }
+
+        // Calculate percentage of total network storage (0-100% scaled by SCALE_FACTOR)
+        let percentage_scaled = (file_size_bytes * SCALE_FACTOR) / total_size;
+
+        // Updated exponential scaling curve (1,000-100,000)
+        let score = if percentage_scaled < 1_000 {          // <0.1% of network
+            MIN_SCORE + percentage_scaled as u64           // 1,000-2,000 (10x)
+        } else if percentage_scaled < 10_000 {             // 0.1%-1%
+            2_000 + (percentage_scaled as u64 * 2)         // 2,000-20,000 (10x)
+        } else if percentage_scaled < 100_000 {            // 1%-10%
+            20_000 + (percentage_scaled as u64 * 5)        // 20,000-70,000 (10x)
+        } else {                                          // >10%
+            70_000 + (percentage_scaled as u64 / 2)        // 70,000-120,000 (capped at 100k)
+        };
+
+        // Ensure we stay within bounds
+        score.max(MIN_SCORE).min(MAX_SCORE)
     }
-
-    let total_size = ipfs_pallet::Pallet::<T>::get_total_network_storage();
-    if total_size == 0 {
-        return MIN_SCORE;
-    }
-
-    // Calculate percentage of total network storage (0-100% scaled by SCALE_FACTOR)
-    let percentage_scaled = (file_size_bytes * SCALE_FACTOR) / total_size;
-
-    // Exponential scaling curve (100-10,000)
-    let score = if percentage_scaled < 1_000 {          // <0.1% of network
-        MIN_SCORE + percentage_scaled as u64 / 10      // 100-200
-    } else if percentage_scaled < 10_000 {             // 0.1%-1%
-        200 + (percentage_scaled as u64 / 20)          // 200-700
-    } else if percentage_scaled < 100_000 {            // 1%-10%
-        700 + (percentage_scaled as u64 / 50)          // 700-2,700
-    } else {                                          // >10%
-        2_700 + (percentage_scaled as u64 / 200)       // 2,700-7,700
-    };
-
-    // Ensure we stay within bounds
-    score.max(MIN_SCORE).min(MAX_SCORE)
-}
 
 }
