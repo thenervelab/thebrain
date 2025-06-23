@@ -3948,7 +3948,7 @@ dependencies = [
  "pallet-notifications-precompile",
  "pallet-offences",
  "pallet-preimage",
- "pallet-proxy",
+ "pallet-proxy 37.0.0",
  "pallet-rankings",
  "pallet-registration",
  "pallet-scheduler",
@@ -4653,7 +4653,7 @@ dependencies = [
  "frame-system",
  "hex",
  "log",
- "pallet-proxy",
+ "pallet-proxy 37.0.0",
  "pallet-rankings",
  "pallet-registration",
  "pallet-staking",
@@ -7214,7 +7214,7 @@ dependencies = [
  "hex-literal 0.4.1",
  "pallet-balances",
  "pallet-evm",
- "pallet-proxy",
+ "pallet-proxy 37.0.0",
  "pallet-timestamp",
  "parity-scale-codec",
  "precompile-utils",
@@ -7796,6 +7796,22 @@ dependencies = [
 [[package]]
 name = "pallet-proxy"
 version = "37.0.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "pallet-balances",
+ "pallet-utility",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-proxy"
+version = "37.0.0"
 source = "git+https://github.com/paritytech/polkadot-sdk?branch=stable2407#9b18aef31b7226d7d7e665b10d6d741e8740ab4e"
 dependencies = [
  "frame-benchmarking",
@@ -7842,7 +7858,7 @@ dependencies = [
  "pallet-babe",
  "pallet-balances",
  "pallet-credits",
- "pallet-proxy",
+ "pallet-proxy 37.0.0",
  "pallet-session",
  "pallet-staking",
  "pallet-utils",
@@ -8086,7 +8102,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "pallet-balances",
- "pallet-proxy",
+ "pallet-proxy 37.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
  "pallet-utility",
  "parity-scale-codec",
  "scale-info",

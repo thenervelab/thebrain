@@ -41,5 +41,3 @@ pub enum Status {
 	Degraded,
 	Offline,
 }
-
-
