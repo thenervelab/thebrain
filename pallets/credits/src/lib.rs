@@ -324,23 +324,6 @@ pub mod pallet {
 			})
 		}
 
-		/// Mint credits (only callable by authority accounts)
-		#[pallet::call_index(2)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn mint(
-			origin: OriginFor<T>,
-			who: T::AccountId,
-			amount: u128,
-			code: Option<Vec<u8>>,
-		) -> DispatchResult {
-			// Ensure the caller is an authority
-			let authority = ensure_signed(origin)?;
-			Self::ensure_is_authority(&authority)?;
-
-			// Call the helper function
-			Self::do_mint(who, amount, code)
-		}
-
 		/// Burn credits (only callable by authority accounts)
 		#[pallet::call_index(3)]
 		#[pallet::weight((0, Pays::No))]
