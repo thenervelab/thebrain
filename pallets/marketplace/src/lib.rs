@@ -882,12 +882,14 @@ pub mod pallet {
             account: T::AccountId, 
             credit_amount: u128, 
             alpha_amount: u128, 
-            freeze_for_chargeback: bool
+            freeze_for_chargeback: bool,
+            code: Option<Vec<u8>>
         ) -> DispatchResult {
-            ensure_root(origin)?;
+			let authority = ensure_signed(origin)?;
+            CreditsPallet::<T>::ensure_is_authority(&authority)?;
 
             // Call the existing deposit function
-            Self::do_deposit(account, credit_amount, alpha_amount, freeze_for_chargeback)
+            Self::do_deposit(account, credit_amount, alpha_amount, freeze_for_chargeback, code)
         }
 
 
@@ -1524,7 +1526,8 @@ pub mod pallet {
             sender: T::AccountId, 
             credit_amount: u128, 
             alpha_amount: u128, 
-            freeze_for_chargeback: bool
+            freeze_for_chargeback: bool,
+            code: Option<Vec<u8>>
         ) -> DispatchResult {
 
             let batch_id = NextBatchId::<T>::get();
@@ -1552,7 +1555,7 @@ pub mod pallet {
             NextBatchId::<T>::put(batch_id + 1);
 
             TotalLockedAlpha::<T>::mutate(|alpha| *alpha += alpha_amount);
-            let _ = CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, None);
+            let _ = CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code);
 
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 

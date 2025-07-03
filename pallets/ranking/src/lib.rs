@@ -871,7 +871,7 @@ pub mod pallet {
 									let mut records = RewardsRecord::<T, I>::get(node_id.clone());
 
 									records.push(RewardsRecordDetails {
-										node_types: NodeType::StorageS3,
+										node_types: NodeType::ComputeMiner,
 										weight: reward_u128 as u16,
 										amount: reward_u128,
 										account: account.clone(),
@@ -966,7 +966,7 @@ pub mod pallet {
 									let mut records = RewardsRecord::<T, I>::get(node_id.clone());
 
 									records.push(RewardsRecordDetails {
-										node_types: NodeType::StorageS3,
+										node_types: NodeType::GpuMiner,
 										weight: reward_u128 as u16,
 										amount: reward_u128,
 										account: account.clone(),
@@ -1154,7 +1154,7 @@ pub mod pallet {
 									let mut records = RewardsRecord::<T, I>::get(node_id.clone());
 
 									records.push(RewardsRecordDetails {
-										node_types: NodeType::StorageS3,
+										node_types: NodeType::StorageMiner,
 										weight: reward_u128 as u16,
 										amount: reward_u128,
 										account: account.clone(),

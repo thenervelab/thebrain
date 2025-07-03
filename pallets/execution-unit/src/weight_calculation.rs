@@ -1,4 +1,3 @@
-
 pub use crate::types::NodeMetricsData;
 use pallet_registration::NodeType;
 use sp_std::{collections::btree_map::BTreeMap, vec::Vec};
@@ -33,12 +32,20 @@ impl NodeMetricsData {
             Err(_) => return 0, // if conversion fails
         };
 
-        if !ipfs_pallet::Pallet::<T>::has_miner_profile(&bounded_miner_id) {
-            return 0;
-        }
+        let main_has_profile = ipfs_pallet::Pallet::<T>::has_miner_profile(&bounded_miner_id)
+            && !ipfs_pallet::Pallet::<T>::miner_profile(bounded_miner_id.clone()).is_empty();
 
-        // Check if miner has a profile
-        if ipfs_pallet::Pallet::<T>::miner_profile(bounded_miner_id).is_empty() {
+        let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(bounded_miner_id.clone());
+        let any_linked_has_profile = linked_nodes.iter().any(|node_id| {
+            if let Ok(bounded_node_id) = BoundedVec::<u8, ConstU32<64>>::try_from(node_id.clone()) {
+                ipfs_pallet::Pallet::<T>::has_miner_profile(&bounded_node_id)
+                    && !ipfs_pallet::Pallet::<T>::miner_profile(bounded_node_id).is_empty()
+            } else {
+                false
+            }
+        });
+
+        if !main_has_profile && !any_linked_has_profile {
             return 0;
         }
 
@@ -107,12 +114,20 @@ impl NodeMetricsData {
             Err(_) => return 0, // if conversion fails
         };
 
-        if !ipfs_pallet::Pallet::<T>::has_miner_profile(&bounded_miner_id) {
-            return 0;
-        }
+        let main_has_profile = ipfs_pallet::Pallet::<T>::has_miner_profile(&bounded_miner_id)
+            && !ipfs_pallet::Pallet::<T>::miner_profile(bounded_miner_id.clone()).is_empty();
 
-        // Check if miner has a profile
-        if ipfs_pallet::Pallet::<T>::miner_profile(bounded_miner_id).is_empty() {
+        let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(bounded_miner_id.clone());
+        let any_linked_has_profile = linked_nodes.iter().any(|node_id| {
+            if let Ok(bounded_node_id) = BoundedVec::<u8, ConstU32<64>>::try_from(node_id.clone()) {
+                ipfs_pallet::Pallet::<T>::has_miner_profile(&bounded_node_id)
+                    && !ipfs_pallet::Pallet::<T>::miner_profile(bounded_node_id).is_empty()
+            } else {
+                false
+            }
+        });
+
+        if !main_has_profile && !any_linked_has_profile {
             return 0;
         }
 

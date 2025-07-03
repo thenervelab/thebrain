@@ -235,12 +235,15 @@ pub mod pallet {
 			let who = ensure_signed(origin)?;
 			let delegate = T::Lookup::lookup(delegate)?;
 		    // Auto-fund proxy
-			T::Currency::transfer(
-				&who,
-				&delegate,
-				T::ExistentialDeposit::get(),
-				ExistenceRequirement::KeepAlive,
-			)?;
+			let delegate_balance = T::Currency::free_balance(&delegate);
+			if delegate_balance < T::ExistentialDeposit::get() {
+				T::Currency::transfer(
+					&who,
+					&delegate,
+					T::ExistentialDeposit::get() - delegate_balance,
+					ExistenceRequirement::KeepAlive,
+				)?;
+			}
 			Self::add_proxy_delegate(&who, delegate, proxy_type, delay)
 		}
 
