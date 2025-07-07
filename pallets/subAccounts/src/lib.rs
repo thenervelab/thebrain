@@ -48,9 +48,15 @@ pub use weights::WeightInfo;
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
+	use frame_support::traits::ExistenceRequirement;
+	use frame_support::traits::Currency;
+	use frame_support::traits::ReservableCurrency;
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
+
+	type BalanceOf<T> =
+	<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
@@ -66,6 +72,11 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type MaxSubAccountsLimit: Get<u32>;
+
+		type ExistentialDeposit: Get<BalanceOf<Self>>;
+
+		/// The currency mechanism.
+		type Currency: ReservableCurrency<Self::AccountId>;
 	}
 
 	/// Store the main account of a given address
@@ -149,7 +160,7 @@ pub mod pallet {
 			let sender = ensure_signed(origin)?;
 
 			// Check if the sender has permission to add a sub account
-			Self::is_sub_account(sender, main.clone())?;
+			Self::is_sub_account(sender.clone(), main.clone())?;
 
 			// Ensure the main account is not a sub-account
 			ensure!(
@@ -173,6 +184,17 @@ pub mod pallet {
 				sub_account_count < T::MaxSubAccountsLimit::get(),
 				Error::<T>::TooManySubAccounts
 			);
+
+		    // Only transfer if new sub-account's balance is below existential deposit
+			let sub_account_balance = T::Currency::free_balance(&new_sub_account);
+			if sub_account_balance < T::ExistentialDeposit::get() {
+				T::Currency::transfer(
+					&sender,
+					&new_sub_account,
+					T::ExistentialDeposit::get() - sub_account_balance,
+					ExistenceRequirement::KeepAlive,
+				)?;
+			}
 
 			SubAccountRole::<T>::insert(new_sub_account.clone(), role.clone());
 			SubAccount::<T>::insert(new_sub_account.clone(), main.clone());

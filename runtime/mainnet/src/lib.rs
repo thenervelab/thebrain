@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9106,
+	spec_version: 9107,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1327,7 +1327,7 @@ parameter_types! {
 	pub const ExecutionUnitSystemInfoRpcMethod: &'static str = "sys_getSystemInfo";
 	pub const BlockTimeSecs :u32 =  SECONDS_PER_BLOCK as u32;
 	/// number of blocks at which uptime will be checked
-	pub const BlockCheckInterval : u32 = 20;
+	pub const BlockCheckInterval : u32 = 300;
 	pub const GetReadProofRpcMethod: &'static str = "state_getReadProof";
 	pub const SystemHealthRpcMethod: &'static str = "system_health";
 	pub const IPFSBaseUrl: &'static str = "http://localhost:5001";
@@ -1338,6 +1338,7 @@ parameter_types! {
 	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
 	pub const LocalDefaultGenesisHash: &'static str = "0x28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9";
 	pub const ConsensusPeriod: BlockNumber = 10;
+	pub const ConsensusThreshold: u32 = 2;
 	// pub const EpochDuration: u32 = 10;
 }
 
@@ -1360,11 +1361,11 @@ impl pallet_execution_unit::Config for Runtime {
 	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 	type ConsensusPeriod = ConsensusPeriod;
-    type ConsensusThreshold = ConstU32<2>;
+    type ConsensusThreshold = ConsensusThreshold;
 	type ConsensusSimilarityThreshold = ConstU32<85>; 
 	type EpochDuration = ConstU32<100>; // epoch pin checks clear duration
 	type ReputationUpdateInterval = ConstU32<15>;
-} 
+}  
 
 impl pallet_offences::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
@@ -1500,6 +1501,8 @@ impl pallet_subaccount::Config for Runtime {
 	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
 	type StringLimit = SubAccountStringLimit;
 	type MaxSubAccountsLimit = MaxSubAccountsLimit;
+	type ExistentialDeposit = ExistentialDeposit;
+	type Currency = Balances;
 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
 }
 
