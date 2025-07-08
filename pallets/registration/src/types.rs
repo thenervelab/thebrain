@@ -14,6 +14,13 @@ pub struct NodeInfo<BlockNumber, AccountId> {
 	pub owner: AccountId,
 }
 
+// DeregistrationReport with created_at field
+#[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
+pub struct DeregistrationReport<BlockNumberFor> {
+    pub node_id: Vec<u8>,
+    pub created_at: BlockNumberFor, // Block number when the report was created
+}
+
 #[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
 pub enum NodeType {
 	Validator,

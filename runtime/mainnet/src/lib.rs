@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9107,
+	spec_version: 9108,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1183,6 +1183,10 @@ impl pallet_registration::Config for Runtime {
 	type BlocksPerDay = BlocksPerDay;
 	type ProxyTypeCompatType = ProxyType;
 	type NodeCooldownPeriod = ConstU64<100>;
+	type MaxDeregRequestsPerPeriod = ConstU32<2>;
+	type ConsensusThreshold = ConsensusThreshold;
+	type ConsensusPeriod = ConsensusPeriod;
+	type EpochDuration = ConstU32<100>; // epoch pin checks clear duration
 }
 
 parameter_types! {
