@@ -1032,7 +1032,7 @@ pub mod pallet {
         //     Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
                     
         //     // Record transaction
-        //     Self::record_native_transaction(
+        //     Self::record_credits_transaction(
         //         &who,
         //         NativeTransactionType::Subscription,
         //         (plan_price_native).into(),
@@ -1067,7 +1067,7 @@ pub mod pallet {
         //     Ok(())
         // }
 
-        fn record_native_transaction(
+        fn record_credits_transaction(
             who: &T::AccountId,
             transaction_type: NativeTransactionType,
             amount: Points,
@@ -1127,7 +1127,7 @@ pub mod pallet {
         //                             Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
 
         //                         // Record transaction
-        //                         let _ = Self::record_native_transaction(
+        //                         let _ = Self::record_credits_transaction(
         //                             &account_id,
         //                             NativeTransactionType::Subscription,
         //                             charge_amount.into(),
@@ -1200,7 +1200,7 @@ pub mod pallet {
                             Self::account_id().clone(), RankingsPallet::<T>::account_id().clone());
 
                         // Record transaction
-                        let _ = Self::record_native_transaction(
+                        let _ = Self::record_credits_transaction(
                             &user,
                             NativeTransactionType::Subscription,
                             charge_amount.into(),
@@ -1296,7 +1296,7 @@ pub mod pallet {
         //                 Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id().clone());
 
         //                 // Record transaction
-        //                 let _ = Self::record_native_transaction(
+        //                 let _ = Self::record_credits_transaction(
         //                     &user,
         //                     NativeTransactionType::Subscription,
         //                     charge_amount.into(),
