@@ -891,6 +891,55 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		#[pallet::call_index(14)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn reset_miner_profiles(
+			origin: OriginFor<T>,
+			profiles: Vec<(Vec<u8>, Vec<u8>)>, // (miner_id, profile_cid)
+		) -> DispatchResult {
+			ensure_root(origin)?; // Only root (sudo) can call this
+
+			// Clear all existing MinerProfiles
+			for (node_id, _) in <MinerProfile<T>>::iter() {
+				<MinerProfile<T>>::remove(node_id);
+			}
+
+			for (miner_id, profile_cid) in profiles {
+				let bounded_miner_id = BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(miner_id)
+					.map_err(|_| Error::<T>::NodeIdTooLong)?;
+				let bounded_profile_cid = BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(profile_cid)
+					.map_err(|_| Error::<T>::NodeIdTooLong)?;
+				<MinerProfile<T>>::insert(bounded_miner_id, bounded_profile_cid);
+			}
+
+			Ok(())
+		}
+
+
+		#[pallet::call_index(15)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn reset_user_profiles(
+			origin: OriginFor<T>,
+			profiles: Vec<(T::AccountId, Vec<u8>)>, // (user_account, profile_cid)
+		) -> DispatchResult {
+			ensure_root(origin)?; // Only root (sudo) can call this
+
+			// Clear all existing UserProfiles
+			for (account_id, _) in <UserProfile<T>>::iter() {
+				<UserProfile<T>>::remove(account_id);
+			}
+
+			// Set new profiles from the input array
+			for (user_account, profile_cid) in profiles {
+				let bounded_profile_cid = FileHash::try_from(profile_cid)
+					.map_err(|_| Error::<T>::NodeIdTooLong)?;
+				<UserProfile<T>>::insert(user_account, bounded_profile_cid);
+			}
+
+			Ok(())
+		}
+
 	}
 
 	impl<T: Config> Pallet<T>{
