@@ -240,6 +240,8 @@ pub mod pallet {
 			owner: T::AccountId,
 			cid: FileHash,
 		},
+		UsersProfilesUpdated,
+		MinersProfilesUpdated,
 		MinerProfileUpdated {
 			miner_node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
 			cid: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
@@ -891,6 +893,92 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		#[pallet::call_index(14)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn update_miner_profiles(
+			origin: OriginFor<T>,
+			profiles: Vec<(Vec<u8>, Vec<u8>)>, // (miner_id, profile_cid)
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Clear all existing MinerProfiles
+			for (node_id, _) in <MinerProfile<T>>::iter() {
+				<MinerProfile<T>>::remove(node_id);
+			}
+
+			for (miner_id, profile_cid) in profiles {
+				let bounded_miner_id = BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(miner_id)
+					.map_err(|_| Error::<T>::NodeIdTooLong)?;
+				let bounded_profile_cid = BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(profile_cid)
+					.map_err(|_| Error::<T>::NodeIdTooLong)?;
+				<MinerProfile<T>>::insert(bounded_miner_id, bounded_profile_cid);
+			}
+
+			Self::deposit_event(Event::MinersProfilesUpdated);
+
+			Ok(())
+		}
+
+		#[pallet::call_index(15)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn update_user_profiles(
+			origin: OriginFor<T>,
+			profiles: Vec<(T::AccountId, Vec<u8>)>, // (user_account, profile_cid)
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Clear all existing UserProfiles
+			for (account_id, _) in <UserProfile<T>>::iter() {
+				<UserProfile<T>>::remove(account_id);
+			}
+
+			// Set new profiles from the input array
+			for (user_account, profile_cid) in profiles {
+				let bounded_profile_cid = FileHash::try_from(profile_cid)
+					.map_err(|_| Error::<T>::NodeIdTooLong)?;
+				<UserProfile<T>>::insert(user_account, bounded_profile_cid);
+			}
+
+			Self::deposit_event(Event::UsersProfilesUpdated);
+
+			Ok(())
+		}
+
 	}
 
 	impl<T: Config> Pallet<T>{
