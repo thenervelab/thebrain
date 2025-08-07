@@ -1037,8 +1037,14 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
 			// Check if the node is registered and is a validator
-			let node_info = Self::get_registered_node_for_owner(&who);
+			let node_info = Self::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 			let node_info = node_info.unwrap();
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
@@ -1365,6 +1371,40 @@ pub mod pallet {
 
 			active_storage_miners
 		}
+
+		pub fn get_primary_account(proxy: &T::AccountId) -> Result<Option<T::AccountId>, DispatchError> {
+			// First check if this is actually a main account
+			let (proxy_definitions, _) = pallet_proxy::Pallet::<T>::proxies(proxy);
+			if !proxy_definitions.is_empty() {
+				return Ok(Some(proxy.clone()));
+			}
+		
+			// Get all validator nodes and their owners
+			let validator_nodes = Self::get_all_nodes_by_node_type(
+				NodeType::Validator
+			);
+			
+			let mut main_account = None;
+		
+			// Iterate through validator owners
+			for node_info in validator_nodes {
+				let (proxies, _) = pallet_proxy::Pallet::<T>::proxies(&node_info.owner);
+				
+				for p in proxies.iter() {
+					if &p.delegate == proxy {
+						main_account = Some(node_info.owner.clone());
+						break;
+					}
+				}
+				
+				if main_account.is_some() {
+					break;
+				}
+			}
+		
+			Ok(main_account)
+		}
+
 
 		pub fn get_chain_decimals() -> u32 {
 			T::ChainDecimals::get()
