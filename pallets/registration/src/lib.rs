@@ -118,6 +118,9 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type EpochDuration: Get<u32>;		
+
+		#[pallet::constant]
+	    type ReportRequestsClearInterval: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -276,6 +279,16 @@ pub mod pallet {
 			// Initialize fees if not already set
 			if CurrentNodeTypeFee::<T>::iter().count() == 0 {
 				Self::initialize_node_type_fees();
+			}
+
+			let report_clear_interval = <T as pallet::Config>::ReportRequestsClearInterval::get();
+
+			// Clear entries every 1000 blocks
+			if _n % report_clear_interval.into() == 0u32.into() {
+				// Iterate through all entries in HardwareRequestsCount
+				ReportSubmissionCount::<T>::iter().for_each(|(node_id, _count)| {
+					ReportSubmissionCount::<T>::remove(&node_id);
+				});
 			}
 
 	        let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
@@ -1053,12 +1066,12 @@ pub mod pallet {
 			let max_requests_per_block = <T as pallet::Config>::MaxDeregRequestsPerPeriod::get();
 			let user_requests_count = ReportSubmissionCount::<T>::get(node_info.node_id.clone());
 			ensure!(
-				user_requests_count + node_ids.len() as u32 <= max_requests_per_block,
+				user_requests_count  <= max_requests_per_block,
 				Error::<T>::TooManyRequests
 			);
 
 			// Update user's storage requests count
-			ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count + node_ids.len() as u32);
+			ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count + 1);
 
 			// Store deregistration reports with current block number
 			let current_block = <frame_system::Pallet<T>>::block_number();

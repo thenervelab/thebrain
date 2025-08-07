@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9112,
+	spec_version: 9113,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1165,6 +1165,7 @@ parameter_types! {
 	pub const ValidatorInitialFee: Balance = 200_000_000_000; // 200 tokens
 	pub const ComputeMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
 	pub const GpuMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
+	pub const ReportRequestsClearInterval : u32 = 1000;
 }
 
 impl pallet_registration::Config for Runtime {
@@ -1183,10 +1184,11 @@ impl pallet_registration::Config for Runtime {
 	type BlocksPerDay = BlocksPerDay;
 	type ProxyTypeCompatType = ProxyType;
 	type NodeCooldownPeriod = ConstU64<100>;
-	type MaxDeregRequestsPerPeriod = ConstU32<2>;
+	type MaxDeregRequestsPerPeriod = ConstU32<20>;
 	type ConsensusThreshold = ConsensusThreshold;
 	type ConsensusPeriod = ConsensusPeriod;
 	type EpochDuration = ConstU32<100>; // epoch pin checks clear duration
+	type ReportRequestsClearInterval = ReportRequestsClearInterval;
 }
 
 parameter_types! {
