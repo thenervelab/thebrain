@@ -1922,9 +1922,7 @@ pub mod pallet {
 				.collect();
 				
 			// Define the addresses to keep
-			const KEEP_ADDRESS: &str = "5FH2vToACmzqqD2WXJsUZ5dDaXEfejYg4EMc4yJThCFBwhZK";
-			const KEEP_ADDRESS2: &str = "5FLcxzsKzaynqMvXcX4pwCD4GV8Cndx5WCqzTfL7LLuwoyWq";
-			const KEEP_ADDRESS3: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
+			const ONLY_ADDRESS: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
 			if Self::rotation_whitelisting_enabled() {
 				// Filter validators to only include the keep addresses
 				validator_accounts.retain(|validator| {
@@ -1935,51 +1933,16 @@ pub mod pallet {
 							.unwrap_or_default(),
 					)
 					.to_ss58check();
-					validator_ss58 == KEEP_ADDRESS
-						|| validator_ss58 == KEEP_ADDRESS2
-						|| validator_ss58 == KEEP_ADDRESS3
+					validator_ss58 == ONLY_ADDRESS
 				});
 			}
 
 			// If no validators match the keep addresses, return an error
 			ensure!(!validator_accounts.is_empty(), Error::<T>::NoValidatorsAvailable);
 
-			// If only one validator, select it (allow consecutive epochs)
-			if validator_accounts.len() == 1 {
-				CurrentEpochValidator::<T>::put(Some((validator_accounts[0].clone(), current_block)));
-				return Ok(true); // Rotation occurred
-			}
-
-			// Check if current validator is one of the keep addresses, or force true if rotation is disabled
-			let is_current_validator_in_keep = if !Self::rotation_whitelisting_enabled() {
-				true // Force "keep" to prevent rotation
-			} else {
-				current_validator.as_ref().map_or(false, |v| {
-					let validator_ss58 = AccountId32::new(v.encode().try_into().unwrap_or_default()).to_ss58check();
-					validator_ss58 == KEEP_ADDRESS
-						|| validator_ss58 == KEEP_ADDRESS2
-						|| validator_ss58 == KEEP_ADDRESS3
-				})
-			};
-
-			let next_validator = if current_validator.is_none() || !is_current_validator_in_keep {
-				// If no current validator or current validator is not in keep addresses, pick the first keep address
-				validator_accounts[0].clone()
-			} else {
-				// Multiple validators: ensure the next validator is different
-				let current_index = current_validator
-					.as_ref()
-					.and_then(|v| validator_accounts.iter().position(|acc| acc == v))
-					.unwrap_or(0); // Default to 0 if not found
-
-				let candidate_index = (current_index + 1) % validator_accounts.len();
-				// Ensure we don't select the current validator unless it's the only option
-				if Some(&validator_accounts[candidate_index]) == current_validator.as_ref() {
-					validator_accounts[(candidate_index + 1) % validator_accounts.len()].clone()
-				} else {
-					validator_accounts[candidate_index].clone()
-				}
-			};
+			// Always pick the whitelisted validator address if present
+			// Since we filtered above, the first (and intended) candidate is the only allowed one
+			let next_validator = validator_accounts[0].clone();
 
 			CurrentEpochValidator::<T>::put(Some((next_validator.clone(), current_block)));
 

@@ -161,12 +161,6 @@ pub mod pallet {
 
 			// Check if the sender has permission to add a sub account
 			Self::is_sub_account(sender.clone(), main.clone())?;
-
-			// Ensure the main account is not a sub-account
-			ensure!(
-				!SubAccount::<T>::contains_key(main.clone()),
-				Error::<T>::MainCannotBeSubAccount
-			);
 		
 			// Check that the sub account wasn't added before
 			ensure!(
