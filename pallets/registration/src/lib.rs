@@ -143,6 +143,17 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
+	/// Storage for banned account IDs
+	#[pallet::storage]
+	#[pallet::getter(fn banned_accounts)]
+	pub type BannedAccounts<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,  // The account ID that is banned
+		bool,          // Always true, just using a map for existence check
+		ValueQuery,
+	>;
+
 	/// Tracks when nodes were deregistered
 	#[pallet::storage]
 	#[pallet::getter(fn last_deregistered_nodes)]
@@ -242,6 +253,10 @@ pub mod pallet {
 		DeregistrationConsensusFailed {
 			node_id: Vec<u8>,
 		},
+		AccountBanStatusChanged {
+			account: T::AccountId,
+			banned: bool,
+		},
 	}
 
 	#[pallet::error]
@@ -270,7 +285,8 @@ pub mod pallet {
 		OwnerAlreadyRegistered,
 		InvalidNodeType,
 		NodeNotDegradedStorageMiner,
-		TooManyRequests
+		TooManyRequests,
+		AccountBanned
 	}
 
 	#[pallet::hooks]
@@ -386,6 +402,12 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
 
+			// Check if the account is banned
+			ensure!(
+				!Self::is_account_banned(&owner), 
+				Error::<T>::AccountBanned
+			);
+
 			// Check if the owner already has a registered node
 			ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
 
@@ -427,6 +449,12 @@ pub mod pallet {
 			ipfs_node_id: Option<Vec<u8>>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
+
+			// Check if the account is banned
+			ensure!(
+				!Self::is_account_banned(&who), 
+				Error::<T>::AccountBanned
+			);
 
 			// Check if the owner already has a registered node
 			ensure!(!Self::is_owner_node_registered(&who), Error::<T>::OwnerAlreadyRegistered);
@@ -584,6 +612,12 @@ pub mod pallet {
 			ipfs_node_id: Option<Vec<u8>>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
+
+			// Check if the account is banned
+			ensure!(
+				!Self::is_account_banned(&who), 
+				Error::<T>::AccountBanned
+			);
 
 			// Check if the owner already has a registered node
 			ensure!(!Self::is_owner_node_registered(&who), Error::<T>::OwnerAlreadyRegistered);
@@ -828,6 +862,12 @@ pub mod pallet {
 			ipfs_node_id: Option<Vec<u8>>,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
+
+			// Check if the account is banned
+			ensure!(
+				!Self::is_account_banned(&owner), 
+				Error::<T>::AccountBanned
+			);
 
 			// Check if the owner already has a registered node
 			ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
@@ -1087,6 +1127,28 @@ pub mod pallet {
 			TemporaryDeregistrationReports::<T>::insert(&who, existing_reports);
 
 			Ok(().into())
+		}
+
+		/// Ban or unban an account from registering nodes
+		#[pallet::call_index(15)]  // Use the next available call index
+		#[pallet::weight(10_000)]  // Adjust weight as needed
+		pub fn set_account_ban_status(
+			origin: OriginFor<T>,
+			account: T::AccountId,
+			banned: bool,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			
+			if banned {
+				BannedAccounts::<T>::insert(&account, true);
+			} else {
+				BannedAccounts::<T>::remove(&account);
+			}
+			
+			// Emit an event for the ban status change
+			Self::deposit_event(Event::AccountBanStatusChanged { account, banned });
+			
+			Ok(())
 		}
 
 	}
@@ -1590,6 +1652,11 @@ pub mod pallet {
 				T::StorageMiners3InitialFee::get(),
 			);
 			CurrentNodeTypeFee::<T>::insert(NodeType::GpuMiner, T::GpuMinerInitialFee::get());
+		}
+
+		/// Check if an account is banned
+		fn is_account_banned(account: &T::AccountId) -> bool {
+			BannedAccounts::<T>::contains_key(account)
 		}
 
 		/// Calculate dynamic fee for a node type
