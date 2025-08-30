@@ -181,7 +181,7 @@ pub mod pallet {
 	pub type ReportSubmissionCount<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
-	pub(super) type TemporaryDeregistrationReports<T: Config> =
+	pub type TemporaryDeregistrationReports<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, Vec<DeregistrationReport<BlockNumberFor<T>>>, ValueQuery>;
 
 	// Add new storage items
@@ -200,7 +200,7 @@ pub mod pallet {
 		StorageMap<_, Blake2_128Concat, NodeType, BlockNumberFor<T>, ValueQuery>;
 
 	#[pallet::event]
-	#[pallet::generate_deposit(pub(super) fn deposit_event)]
+	#[pallet::generate_deposit(pub fn deposit_event)]
 	pub enum Event<T: Config> {
 		NodeRegistered {
 			node_id: Vec<u8>,
@@ -291,10 +291,10 @@ pub mod pallet {
 				});
 			}
 
-	        let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
-			if _n % consensus_period == 0u32.into() {
-				Self::apply_deregistration_consensus();
-			}
+	        // let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
+			// if _n % consensus_period == 0u32.into() {
+			// 	Self::apply_deregistration_consensus();
+			// }
 
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			let first_epoch_block = 38u32.into(); // hardcoded or derived
@@ -1423,55 +1423,6 @@ pub mod pallet {
 			T::ChainDecimals::get()
 		}
 
-		fn apply_deregistration_consensus() {
-			// Collect all reports from all validators
-			let all_reports: Vec<(T::AccountId, Vec<DeregistrationReport<BlockNumberFor<T>>>)> = TemporaryDeregistrationReports::<T>::iter().collect();
-			let threshold = <T as pallet::Config>::ConsensusThreshold::get();
-
-			// Group reports by node_id
-			let mut reports_by_node: sp_std::collections::btree_map::BTreeMap<Vec<u8>, Vec<(T::AccountId, DeregistrationReport<BlockNumberFor<T>>)>> = sp_std::collections::btree_map::BTreeMap::new();
-			for (validator_id, reports) in all_reports {
-				for report in reports {
-					reports_by_node
-						.entry(report.node_id.clone())
-						.or_insert_with(Vec::new)
-						.push((validator_id.clone(), report));
-				}
-			}
-
-			for (node_id, reports) in reports_by_node {
-				if reports.is_empty() {
-					continue;
-				}
-
-				let total_reports = reports.len() as u32;
-				if total_reports >= threshold {
-					// Count unique validators
-					let unique_validators: sp_std::collections::btree_set::BTreeSet<T::AccountId> = reports
-						.iter()
-						.map(|(validator_id, _)| validator_id.clone())
-						.collect();
-
-					let agreeing_validators = unique_validators.len() as u32;
-
-					log::info!(
-						"Node: {:?}, Total Reports: {}, Agreeing Validators: {}, Threshold: {}",
-						node_id,
-						total_reports,
-						agreeing_validators,
-						threshold
-					);
-
-					if agreeing_validators >= threshold {
-						// Consensus reached, unregister the node
-						Self::do_unregister_main_node(node_id.clone());
-						Self::deposit_event(Event::DeregistrationConsensusReached { node_id: node_id.clone() });
-					} else {
-						Self::deposit_event(Event::DeregistrationConsensusFailed { node_id: node_id.clone() });
-					}
-				}
-			}
-		}
 
 		/// Fetch all registered miners whose status is not degraded
 		pub fn get_all_nodes_by_node_type(

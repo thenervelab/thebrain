@@ -71,8 +71,6 @@ pub mod pallet {
 	};
 	use sp_std::vec;
 	use pallet_utils::Pallet as UtilsPallet;
-	use pallet_registration::Pallet as RegistrationPallet;
-	use pallet_registration::NodeType;
 	use crate::types::{
 		FileHash, 
 		StorageRequest, 
@@ -95,6 +93,14 @@ pub mod pallet {
 	use sp_io::hashing::blake2_128;
 	use sp_runtime::AccountId32;
 	use sp_core::crypto::Ss58Codec;
+	use pallet_registration::{DeregistrationReport, TemporaryDeregistrationReports};// Add these near your other pallet imports
+	use pallet_registration::{
+		NodeType, 
+		Pallet as RegistrationPallet, 
+		Config as RegistrationConfig,
+		Event as RegistrationEvent
+	};
+
 
 	const DUMMY_REQUEST_BODY: &[u8; 78] = b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
 
@@ -182,6 +188,12 @@ pub mod pallet {
 		}
 
 		fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
+			// Check for consensus application every consensus period
+			let consensus_period = <T as pallet_registration::Config>::ConsensusPeriod::get();
+			if current_block % consensus_period == 0u32.into() {
+				Self::apply_deregistration_consensus();
+			}
+
 			// Clear entries every 10 blocks
 			if current_block % T::RequestsClearInterval::get().into() == 0u32.into() {
 				// Clear all entries; limit is u32::MAX to ensure we get them all
@@ -1896,6 +1908,86 @@ pub mod pallet {
 
 		pub fn has_miner_profile(miner_id: &BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>) -> bool {
 			MinerProfile::<T>::contains_key(miner_id)
+		}
+
+		fn apply_deregistration_consensus() {
+			use pallet_registration::TemporaryDeregistrationReports;
+			
+			// Collect all reports from all validators
+			let all_reports: Vec<(T::AccountId, Vec<pallet_registration::DeregistrationReport<BlockNumberFor<T>>>)> = 
+				TemporaryDeregistrationReports::<T>::iter().collect();
+			
+			// Get threshold from registration config
+			let threshold = <T as pallet_registration::Config>::ConsensusThreshold::get();
+		
+			// Group reports by node_id
+			let mut reports_by_node: sp_std::collections::btree_map::BTreeMap<
+				Vec<u8>, 
+				Vec<(T::AccountId, pallet_registration::DeregistrationReport<BlockNumberFor<T>>)>
+			> = sp_std::collections::btree_map::BTreeMap::new();
+			
+			for (validator_id, reports) in all_reports {
+				for report in reports {
+					reports_by_node
+						.entry(report.node_id.clone())
+						.or_insert_with(Vec::new)
+						.push((validator_id.clone(), report));
+				}
+			}
+		
+			for (node_id, reports) in reports_by_node {
+				if reports.is_empty() {
+					continue;
+				}
+		
+				let total_reports = reports.len() as u32;
+				if total_reports >= threshold {
+					// Count unique validators
+					let unique_validators: sp_std::collections::btree_set::BTreeSet<T::AccountId> = reports
+						.iter()
+						.map(|(validator_id, _)| validator_id.clone())
+						.collect();
+		
+					let agreeing_validators = unique_validators.len() as u32;
+		
+					log::info!(
+						"Node: {:?}, Total Reports: {}, Agreeing Validators: {}, Threshold: {}",
+						node_id,
+						total_reports,
+						agreeing_validators,
+						threshold
+					);
+		
+					if agreeing_validators >= threshold {
+						// Miner is not registered, clear metrics
+						// Convert Vec<u8> to BoundedVec
+						let bounded_node_id = match BoundedVec::try_from(node_id.clone()) {
+							Ok(bounded) => bounded,
+							Err(_) => {
+								log::error!("Node ID too large to convert to BoundedVec: {:?}", node_id);
+								continue; // Skip this node if conversion fails
+							}
+						};
+						MinerTotalFilesSize::<T>::insert(bounded_node_id.clone(), 0u128);
+						MinerTotalFilesPinned::<T>::insert(bounded_node_id.clone(), 0u32);
+						// Consensus reached, unregister the node
+						RegistrationPallet::<T>::do_unregister_main_node(node_id.clone());
+						
+						// Use proper event emission
+						pallet_registration::Pallet::<T>::deposit_event(
+							pallet_registration::Event::<T>::DeregistrationConsensusReached { 
+								node_id: node_id.clone() 
+							}
+						);
+					} else {
+						pallet_registration::Pallet::<T>::deposit_event(
+							pallet_registration::Event::<T>::DeregistrationConsensusFailed { 
+								node_id: node_id.clone() 
+							}
+						);
+					}
+				}
+			}
 		}
 
 		fn rotate_validator(
