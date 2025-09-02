@@ -141,6 +141,14 @@ class StorageMonitor:
             return 0
         except Exception as e:
             logger.error(f"Error getting block number: {e}")
+            # If it's an SSL error, try to refresh the connection
+            if "SSL" in str(e) or "ssl" in str(e):
+                logger.warning("SSL error detected in block number fetch, will attempt reconnection")
+                # Mark for reconnection in the main loop
+                if hasattr(self, '_hippius_ssl_error_count'):
+                    self._hippius_ssl_error_count += 1
+                else:
+                    self._hippius_ssl_error_count = 1
             return 0
 
     def update_uids_with_roles(self, uids, dividends):
@@ -275,6 +283,42 @@ class StorageMonitor:
         while True:
             try:
                 current_block = self.get_block_number(self.my_chain)
+                
+                # Check if we need to reconnect due to SSL errors
+                if hasattr(self, '_hippius_ssl_error_count') and self._hippius_ssl_error_count > 3:
+                    logger.warning("Multiple SSL errors detected on Hippius chain, attempting reconnection...")
+                    try:
+                        # Try to refresh just the Hippius connection first
+                        logger.info("Refreshing Hippius chain connection...")
+                        ssl_context = create_ssl_context()
+                        try:
+                            self.my_chain = SubstrateInterface(
+                                url=self.my_chain_url,
+                                use_remote_preset=True,
+                                ss58_format=42,
+                                ssl_context=ssl_context
+                            )
+                        except TypeError:
+                            self.my_chain = SubstrateInterface(
+                                url=self.my_chain_url,
+                                use_remote_preset=True,
+                                ss58_format=42
+                            )
+                        self._hippius_ssl_error_count = 0
+                        logger.info("✅ Successfully reconnected to Hippius chain")
+                        # Get fresh block number after reconnection
+                        current_block = self.get_block_number(self.my_chain)
+                    except Exception as reconnect_e:
+                        logger.error(f"Failed to reconnect to Hippius chain: {reconnect_e}")
+                        # Fall back to full reconnection
+                        try:
+                            self.connect_chains()
+                            current_block = self.get_block_number(self.my_chain)
+                        except Exception as full_reconnect_e:
+                            logger.error(f"Full reconnection also failed: {full_reconnect_e}")
+                            await asyncio.sleep(10)
+                            continue
+                
                 blocks_since_last = current_block - self.last_processed_block
                 
                 # Log progress every 10 blocks
@@ -326,6 +370,24 @@ class StorageMonitor:
                         logger.error("❌ Failed to fetch data from Bittensor after all retries")
                         logger.info("🔄 Will retry at next block interval")
 
+                # Periodic connection health check (every 100 iterations = ~10 minutes)
+                if hasattr(self, '_iteration_count'):
+                    self._iteration_count += 1
+                else:
+                    self._iteration_count = 1
+                
+                if self._iteration_count % 100 == 0:
+                    logger.info("🔄 Performing periodic connection health check...")
+                    try:
+                        # Test Hippius connection
+                        test_block = self.get_block_number(self.my_chain)
+                        if test_block > 0:
+                            logger.info(f"✅ Hippius connection healthy (block: {test_block})")
+                        else:
+                            logger.warning("⚠️ Hippius connection may be unhealthy")
+                    except Exception as health_e:
+                        logger.warning(f"⚠️ Health check failed: {health_e}")
+                
                 await asyncio.sleep(6)
 
             except KeyboardInterrupt:
