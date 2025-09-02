@@ -144,8 +144,8 @@ pub mod pallet {
 	pub type TotalCreditsPurchased<T> = StorageValue<_, u128, ValueQuery>;
 
 	#[pallet::storage]
-	#[pallet::getter(fn total_locked_alpha)]
-	pub type TotalLockedAlpha<T> = StorageValue<_, u128, ValueQuery>;
+	pub type AlphaBalances<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
 
 	// Define separate storage for free credits.
 	#[pallet::storage]
@@ -357,11 +357,9 @@ pub mod pallet {
 			// Ensure the caller is an authority
 			ensure_root(origin)?;
 
-			// Decrease the alpha balance of the sudo key
-			let current_alpha_balance = TotalLockedAlpha::<T>::get();
-			ensure!(current_alpha_balance >= alpha_amount, Error::<T>::InsufficientAlphaBalance);
-
-			TotalLockedAlpha::<T>::set(current_alpha_balance - alpha_amount);
+			AlphaBalances::<T>::mutate(&user_to_credit, |credits| {
+				*credits += alpha_amount
+			});
 
 			// Increase the user's credits
 			FreeCredits::<T>::mutate(&user_to_credit, |credits| {

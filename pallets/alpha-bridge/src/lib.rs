@@ -18,7 +18,7 @@ pub mod pallet {
 	use frame_support::traits::Currency;
 	use frame_support::traits::ExistenceRequirement;
 	use frame_support::PalletId;
-	use pallet_credits::TotalLockedAlpha;
+	use pallet_credits::AlphaBalances;
 	use sp_runtime::traits::AtLeast32BitUnsigned;
 	use sp_std::collections::btree_set::BTreeSet;
 
@@ -47,10 +47,6 @@ pub mod pallet {
 
 	// New pallet_balances balance type
 	pub type BalanceOf<T> = <T as pallet_balances::Config>::Balance;
-
-	#[pallet::storage]
-	pub type AlphaBalances<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
 
 	#[pallet::storage]
 	pub type ProcessedEvents<T: Config> =
@@ -116,6 +112,7 @@ pub mod pallet {
 		AuthorityAlreadyExists,
 		AuthorityNotFound,
 		NotAuthorized,
+		InsufficientConfirmations
 	}
 
 	#[pallet::call]
@@ -135,50 +132,55 @@ pub mod pallet {
 			// Prevent double-spending
 			ensure!(!ProcessedEvents::<T>::contains_key(&proof), Error::<T>::DoubleSpendDetected);
 
-			let (_, pending_amount, mut confirmations) =
-				PendingMints::<T>::get(&proof).unwrap_or((user.clone(), amount, BTreeSet::new()));
+			// Atomically add confirmation
+			let threshold_met = PendingMints::<T>::try_mutate(&proof, |entry| {
+				let (stored_user, stored_amount, confirmations) = entry.as_mut().ok_or(Error::<T>::InvalidProof)?;
+				ensure!(stored_user == &user, Error::<T>::InvalidProof);
+				ensure!(stored_amount == &amount, Error::<T>::InvalidProof);
+				ensure!(!confirmations.contains(&operator), Error::<T>::AlreadyConfirmed);
+				confirmations.insert(operator.clone());
+				Ok::<bool, Error<T>>(confirmations.len() as u32 >= MinRequiredSignatures::<T>::get())
+			})?;
 
-			// Ensure consistent amount
-			ensure!(pending_amount == amount, Error::<T>::InvalidProof);
+			if threshold_met {
+				// Atomically process the mint
+				PendingMints::<T>::try_mutate(&proof, |entry| {
+					let (stored_user, stored_amount, confirmations) = entry.take().ok_or(Error::<T>::InvalidProof)?;
+					ensure!(stored_user == user, Error::<T>::InvalidProof);
+					ensure!(stored_amount == amount, Error::<T>::InvalidProof);
+					ensure!(confirmations.len() as u32 >= MinRequiredSignatures::<T>::get(), Error::<T>::InsufficientConfirmations);
 
-			// Add confirmation
-			ensure!(!confirmations.contains(&operator), Error::<T>::AlreadyConfirmed);
-			confirmations.insert(operator);
+					// Update balance atomically
+					AlphaBalances::<T>::mutate(&user, |balance| {
+						*balance = balance.saturating_add(amount);
+					});
 
-			// Check against the minimum required signatures
-			let min_signatures = MinRequiredSignatures::<T>::get();
-			if confirmations.len() as u32 >= min_signatures {
-				// Threshold met, execute mint to pallet account
-				let pallet_account = Self::account_id();
-				let current_balance = AlphaBalances::<T>::get(&user);
-				let new_balance = current_balance.saturating_add(amount);
-				AlphaBalances::<T>::insert(&user, new_balance);
-				ProcessedEvents::<T>::insert(&proof, true);
-				PendingMints::<T>::remove(&proof);
+					// Mark event as processed
+					ProcessedEvents::<T>::insert(&proof, true);
 
-				// Increase total alpha in pool
-				TotalLockedAlpha::<T>::mutate(|alpha| *alpha += amount);
+					// Mint tokens to bridge pallet
+					let pallet_account = Self::account_id();
+					let _ = pallet_balances::Pallet::<T>::deposit_creating(
+						&pallet_account,
+						amount.try_into().unwrap_or_default(),
+					);
 
-				// mint tokens to bridge pallet
-				let _ = pallet_balances::Pallet::<T>::deposit_creating(
-					&pallet_account,
-					amount.try_into().unwrap_or_default(),
-				);
+					// Transfer funds from bridge pallet account to user account
+					let _ = <pallet_balances::Pallet<T>>::transfer(
+						&pallet_account,
+						&user,
+						amount.try_into().unwrap_or_default(),
+						ExistenceRequirement::AllowDeath,
+					);
 
-				// Transfer funds from bridge pallet account to user account
-				<pallet_balances::Pallet<T>>::transfer(
-					&pallet_account,
-					&user,
-					amount.try_into().unwrap_or_default(),
-					ExistenceRequirement::AllowDeath,
-				)?;
-
-				Self::deposit_event(Event::AlphaMinted(user, amount));
+					Self::deposit_event(Event::AlphaMinted(user.clone(), amount));
+					Ok::<(), Error<T>>(())
+				})?;
 			} else {
-				// Still pending
-				PendingMints::<T>::insert(&proof, (user.clone(), amount, confirmations));
-				Self::deposit_event(Event::AlphaMintPending(proof, user, amount));
+				// Emit pending event (no need for mutate here as already updated above)
+				Self::deposit_event(Event::AlphaMintPending(proof.clone(), user.clone(), amount));
 			}
+
 			Ok(())
 		}
 
@@ -207,9 +209,6 @@ pub mod pallet {
 				amount.try_into().unwrap_or_default(),
 				false, // keep_alive set to false to allow burning entire balance
 			);
-
-			// Decrease total alpha in pool
-			TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= amount);
 
 			PendingBurns::<T>::insert(
 				&nonce,
@@ -301,9 +300,6 @@ pub mod pallet {
 			// Restore the user's alpha balance
 			let current_balance = AlphaBalances::<T>::get(&user);
 			AlphaBalances::<T>::insert(&user, current_balance + amount);
-
-			// Revert the total alpha in pool reduction
-			TotalLockedAlpha::<T>::mutate(|alpha| *alpha += amount);
 
 			// mint tokens to bridge pallet
 			let _ = pallet_balances::Pallet::<T>::deposit_creating(

@@ -78,7 +78,7 @@ pub mod pallet {
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_subaccount::traits::SubAccounts;
     // use frame_system::offchain::Signer;
-    use pallet_credits::TotalLockedAlpha;
+    use pallet_credits::AlphaBalances;
     use pallet_credits::TotalCreditsPurchased;
     use frame_system::offchain::SendTransactionTypes;
     use frame_system::offchain::AppCrypto;
@@ -547,6 +547,10 @@ pub mod pallet {
             miner_ids: Option<Vec<Vec<u8>>>,
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
+
+            // Check if user has any credits
+            let user_credits = CreditsPallet::<T>::get_free_credits(&caller);
+            ensure!(user_credits > 0, Error::<T>::InsufficientFreeCredits);
 
             // Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxRequestsPerBlock::get();
@@ -1554,7 +1558,7 @@ pub mod pallet {
             UserBatches::<T>::append(&sender, batch_id);
             NextBatchId::<T>::put(batch_id + 1);
 
-            TotalLockedAlpha::<T>::mutate(|alpha| *alpha += alpha_amount);
+            AlphaBalances::<T>::mutate(&sender, |alpha| *alpha += alpha_amount);
             let _ = CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code);
 
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
@@ -1598,7 +1602,7 @@ pub mod pallet {
                         } else {
                             if batch.is_frozen && <frame_system::Pallet<T>>::block_number() >= batch.release_time {
                                 batch.is_frozen = false;
-                                TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.pending_alpha);
+                                AlphaBalances::<T>::mutate(&batch.owner, |alpha| *alpha -= batch.pending_alpha);
         
                                 Self::distribute_alpha(
                                     batch.owner.clone(),
@@ -1610,7 +1614,7 @@ pub mod pallet {
                                 batch.pending_alpha = 0;
                             }
         
-                            TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= alpha_to_release_u128);
+                            AlphaBalances::<T>::mutate(&batch.owner, |alpha| *alpha -= alpha_to_release_u128);
                             Self::distribute_alpha(
                                 batch.owner.clone(),
                                 alpha_to_release_u128,
@@ -1632,8 +1636,6 @@ pub mod pallet {
         
             Ok(())
         }
-        
-
 
         fn distribute_alpha(
             batch_owner: T::AccountId,
@@ -1688,7 +1690,7 @@ pub mod pallet {
                 ensure!(batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time, "Invalid chargeback");
 
                 // Decrease the total locked Alpha by the remaining Alpha in the batch
-                TotalLockedAlpha::<T>::mutate(|alpha| *alpha -= batch.remaining_alpha);
+                AlphaBalances::<T>::mutate(&batch.owner, |alpha| *alpha -= batch.remaining_alpha);
 
                 // Remove the batch from the user's batch list
                 UserBatches::<T>::mutate(&batch.owner, |batches| {

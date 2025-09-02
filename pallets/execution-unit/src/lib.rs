@@ -58,7 +58,7 @@ pub mod pallet {
 	use frame_support::{pallet_prelude::*, traits::Randomness};
 	use frame_system::{
 		offchain::{
-			AppCrypto, SendTransactionTypes, SendUnsignedTransaction, Signer, SigningTypes,
+			AppCrypto, SendTransactionTypes,
 		},
 		pallet_prelude::*,
 	};
@@ -82,7 +82,6 @@ pub mod pallet {
 	use sp_std::prelude::*;
 	use sp_runtime::Saturating;
 	use serde_json::Value;
-	use sp_std::collections::btree_map::BTreeMap;
 	use pallet_registration::ColdkeyNodeRegistration;
 	use pallet_registration::NodeRegistration;
 

@@ -53,9 +53,6 @@ pub mod pallet {
 	use sp_std::collections::btree_map::BTreeMap;
 	use scale_info::prelude::string::String;
 
-	// const LOCK_BLOCK_EXPIRATION: u32 = 1;
-	// const LOCK_TIMEOUT_EXPIRATION: u32 = 3000;
-
 	// Define a constant for token decimals (typically at the top of the file)
 	pub const DECIMALS: u32 = 18;
 
@@ -154,6 +151,10 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn is_validator_whitelist_enabled)]
+	pub type ValidatorWhitelistEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
 	/// Tracks when nodes were deregistered
 	#[pallet::storage]
 	#[pallet::getter(fn last_deregistered_nodes)]
@@ -175,6 +176,10 @@ pub mod pallet {
 		Vec<Vec<u8>>, // The vector of linked node IDs
 		ValueQuery,
 	>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn whitelisted_validators)]
+    pub type WhitelistedValidators<T: Config> = StorageValue<_, BoundedVec<T::AccountId, ConstU32<{ 16 * 1024 }>>, ValueQuery>;
 
 	// Saves all the miners who have pinned for that file hash
 	#[pallet::storage]
@@ -257,6 +262,7 @@ pub mod pallet {
 			account: T::AccountId,
 			banned: bool,
 		},
+		WhitelistUpdated,
 	}
 
 	#[pallet::error]
@@ -286,7 +292,9 @@ pub mod pallet {
 		InvalidNodeType,
 		NodeNotDegradedStorageMiner,
 		TooManyRequests,
-		AccountBanned
+		AccountBanned,
+		ExceededMaxWhitelistedValidators,
+		NodeNotWhitelisted
 	}
 
 	#[pallet::hooks]
@@ -447,17 +455,53 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			pay_in_credits: bool,
 			ipfs_node_id: Option<Vec<u8>>,
+			owner: T::AccountId
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			if ValidatorWhitelistEnabled::<T>::get() {
+				// Check if this is a proxy account and get the main account
+				let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+					primary
+				} else {
+					who.clone() // If not a proxy, use the account itself
+				};
+				// Check if the node is registered and is a validator
+				let node_info = Self::get_registered_node_for_owner(&main_account);
+				ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+				let node_info = node_info.unwrap();
+				ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+				// Check if validator is whitelisted if whitelist is not empty
+				let whitelist = WhitelistedValidators::<T>::get();
+				if !whitelist.is_empty() {
+					ensure!(
+						whitelist.contains(&main_account),
+						Error::<T>::NodeNotWhitelisted
+					);
+				}
+
+				// Rate limit: maximum storage requests per block per user
+				let max_requests_per_block = <T as pallet::Config>::MaxDeregRequestsPerPeriod::get();
+				let user_requests_count = ReportSubmissionCount::<T>::get(node_info.node_id.clone());
+				ensure!(
+					user_requests_count  <= max_requests_per_block,
+					Error::<T>::TooManyRequests
+				);
+
+				// Update user's storage requests count
+				ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count + 1);
+
+			}
+
 			// Check if the account is banned
 			ensure!(
-				!Self::is_account_banned(&who), 
+				!Self::is_account_banned(&owner), 
 				Error::<T>::AccountBanned
 			);
 
 			// Check if the owner already has a registered node
-			ensure!(!Self::is_owner_node_registered(&who), Error::<T>::OwnerAlreadyRegistered);
+			ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
 
 			// Check cooldown period
 			let current_block = <frame_system::Pallet<T>>::block_number();
@@ -511,7 +555,7 @@ pub mod pallet {
 				// This is a placeholder - replace with actual stake checking logic
 				ensure!(
 					pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(
-						who.clone()
+						owner.clone()
 					))
 					.map(|ledger| ledger.active)
 					.unwrap_or_default()
@@ -523,14 +567,14 @@ pub mod pallet {
 			// Get all UIDs using the MetagraphInfo provider
 			let uids = T::MetagraphInfo::get_all_uids();
 
-			if let Ok(account_bytes) = who.clone().encode().try_into() {
+			if let Ok(account_bytes) = owner.clone().encode().try_into() {
 				let account = AccountId32::new(account_bytes);
-				let who_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
+				let owner_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
 					.to_ss58check();
 
 				// Check if the caller is in UIDs
 				let is_in_uids =
-					uids.iter().any(|uid| uid.substrate_address.to_ss58check() == who_ss58);
+					uids.iter().any(|uid| uid.substrate_address.to_ss58check() == owner_ss58);
 
 				// Check if the caller is not in UIDs and return an error
 				ensure!(is_in_uids, Error::<T>::NodeNotInUids);
@@ -538,11 +582,11 @@ pub mod pallet {
 				// If the caller is in UIDs, check if the node_type matches the role
 				if is_in_uids {
 					let whitelist = T::MetagraphInfo::get_whitelisted_validators();
-					let is_whitelisted = whitelist.iter().any(|validator| validator == &who);
+					let is_whitelisted = whitelist.iter().any(|validator| validator == &owner);
 
 					if !is_whitelisted {
 						if let Some(uid) =
-							uids.iter().find(|uid| uid.substrate_address.to_ss58check() == who_ss58)
+							uids.iter().find(|uid| uid.substrate_address.to_ss58check() == owner_ss58)
 						{
 							ensure!(uid.role == node_type.to_role(), Error::<T>::NodeTypeMismatch);
 						}
@@ -556,14 +600,14 @@ pub mod pallet {
 
 					// Ensure user has sufficient balance
 					ensure!(
-						<pallet_balances::Pallet<T>>::free_balance(&who) >= fee,
+						<pallet_balances::Pallet<T>>::free_balance(&owner) >= fee,
 						Error::<T>::InsufficientBalanceForFee
 					);
 
 					if !pay_in_credits {
 						// Transfer fee to the pallet's account
 						<pallet_balances::Pallet<T>>::transfer(
-							&who.clone(),
+							&owner.clone(),
 							&Self::account_id(),
 							fee,
 							ExistenceRequirement::AllowDeath,
@@ -571,7 +615,7 @@ pub mod pallet {
 					} else {
 						// decrease credits and mint balance
 						let fee_u128: u128 = fee.try_into().unwrap_or_default();
-						CreditsPallet::<T>::decrease_user_credits(&who.clone(), fee_u128);
+						CreditsPallet::<T>::decrease_user_credits(&owner.clone(), fee_u128);
 						// Deposit charge to marketplace account
 						let _ = pallet_balances::Pallet::<T>::deposit_creating(
 							&Self::account_id(),
@@ -593,7 +637,7 @@ pub mod pallet {
 				ipfs_node_id,
 				status: Status::Online,
 				registered_at: current_block_number,
-				owner: who,
+				owner,
 			};
 			ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
 
@@ -610,17 +654,53 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			pay_in_credits: bool,
 			ipfs_node_id: Option<Vec<u8>>,
+			owner: T::AccountId
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			if ValidatorWhitelistEnabled::<T>::get() {
+				// Check if this is a proxy account and get the main account
+				let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+					primary
+				} else {
+					who.clone() // If not a proxy, use the account itself
+				};
+				// Check if the node is registered and is a validator
+				let node_info = Self::get_registered_node_for_owner(&main_account);
+				ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+				let node_info = node_info.unwrap();
+				ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+				// Check if validator is whitelisted if whitelist is not empty
+				let whitelist = WhitelistedValidators::<T>::get();
+				if !whitelist.is_empty() {
+					ensure!(
+						whitelist.contains(&main_account),
+						Error::<T>::NodeNotWhitelisted
+					);
+				}
+
+				// Rate limit: maximum storage requests per block per user
+				let max_requests_per_block = <T as pallet::Config>::MaxDeregRequestsPerPeriod::get();
+				let user_requests_count = ReportSubmissionCount::<T>::get(node_info.node_id.clone());
+				ensure!(
+					user_requests_count  <= max_requests_per_block,
+					Error::<T>::TooManyRequests
+				);
+
+				// Update user's storage requests count
+				ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count + 1);
+
+			}
+
 			// Check if the account is banned
 			ensure!(
-				!Self::is_account_banned(&who), 
+				!Self::is_account_banned(&owner), 
 				Error::<T>::AccountBanned
 			);
 
 			// Check if the owner already has a registered node
-			ensure!(!Self::is_owner_node_registered(&who), Error::<T>::OwnerAlreadyRegistered);
+			ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
 
 			// Check cooldown period
 			let current_block = <frame_system::Pallet<T>>::block_number();
@@ -633,7 +713,7 @@ pub mod pallet {
 
 			// Check if the caller is a proxy and retrieve the real (main) account
 			let proxy_def = ProxyPallet::<T>::find_proxy(
-				&coldkey, &who, None, // Accept any proxy type for now
+				&coldkey, &owner, None, // Accept any proxy type for now
 			)
 			.map_err(|_| Error::<T>::NotAProxyAccount)?;
 
@@ -680,7 +760,7 @@ pub mod pallet {
 			let existing_node = NodeRegistration::<T>::iter().find(
 				|(_registered_node_id, registered_node_info)| {
 					if let Some(info) = registered_node_info {
-						info.owner == who
+						info.owner == owner
 					} else {
 						false
 					}
@@ -710,7 +790,7 @@ pub mod pallet {
 				// This is a placeholder - replace with actual stake checking logic
 				ensure!(
 					pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(
-						who.clone()
+						owner.clone()
 					))
 					.map(|ledger| ledger.active)
 					.unwrap_or_default()
@@ -722,7 +802,7 @@ pub mod pallet {
 			// Get all UIDs using the MetagraphInfo provider
 			let uids = T::MetagraphInfo::get_all_uids();
 
-			if let Ok(account_bytes) = who.clone().encode().try_into() {
+			if let Ok(account_bytes) = owner.clone().encode().try_into() {
 				let account = AccountId32::new(account_bytes);
 				let who_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
 					.to_ss58check();
@@ -734,7 +814,7 @@ pub mod pallet {
 				// If the caller is in UIDs, check if the node_type matches the role
 				if is_in_uids {
 					let whitelist = T::MetagraphInfo::get_whitelisted_validators();
-					let is_whitelisted = whitelist.iter().any(|validator| validator == &who);
+					let is_whitelisted = whitelist.iter().any(|validator| validator == &owner);
 
 					if !is_whitelisted {
 						if let Some(uid) =
@@ -752,14 +832,14 @@ pub mod pallet {
 
 					// Ensure user has sufficient balance
 					ensure!(
-						<pallet_balances::Pallet<T>>::free_balance(&who) >= fee,
+						<pallet_balances::Pallet<T>>::free_balance(&owner) >= fee,
 						Error::<T>::InsufficientBalanceForFee
 					);
 
 					if !pay_in_credits {
 						// Transfer fee to the pallet's account
 						<pallet_balances::Pallet<T>>::transfer(
-							&who.clone(),
+							&owner.clone(),
 							&Self::account_id(),
 							fee,
 							ExistenceRequirement::AllowDeath,
@@ -767,7 +847,7 @@ pub mod pallet {
 					} else {
 						// decrease credits and mint balance
 						let fee_u128: u128 = fee.try_into().unwrap_or_default();
-						CreditsPallet::<T>::decrease_user_credits(&who.clone(), fee_u128);
+						CreditsPallet::<T>::decrease_user_credits(&owner.clone(), fee_u128);
 						// Deposit charge to marketplace account
 						let _ = pallet_balances::Pallet::<T>::deposit_creating(
 							&Self::account_id(),
@@ -789,7 +869,7 @@ pub mod pallet {
 				ipfs_node_id,
 				status: Status::Online,
 				registered_at: current_block_number,
-				owner: who,
+				owner: owner,
 			};
 
 			NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
@@ -1130,8 +1210,8 @@ pub mod pallet {
 		}
 
 		/// Ban or unban an account from registering nodes
-		#[pallet::call_index(15)]  // Use the next available call index
-		#[pallet::weight(10_000)]  // Adjust weight as needed
+		#[pallet::call_index(15)]
+		#[pallet::weight((0, Pays::No))]
 		pub fn set_account_ban_status(
 			origin: OriginFor<T>,
 			account: T::AccountId,
@@ -1150,6 +1230,27 @@ pub mod pallet {
 			
 			Ok(())
 		}
+
+	    /// Set the list of whitelisted validators
+        /// 
+        /// Can only be called by root.
+		#[pallet::call_index(16)]
+		#[pallet::weight((0, Pays::No))]
+        pub fn set_whitelisted_validators(
+            origin: OriginFor<T>,
+            validators: Vec<T::AccountId>,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            
+            // Convert to bounded vec
+            let bounded_validators = BoundedVec::<T::AccountId, ConstU32<{ 16 * 1024 }>>::try_from(validators)
+                .map_err(|_| Error::<T>::ExceededMaxWhitelistedValidators)?;
+                
+            WhitelistedValidators::<T>::put(bounded_validators);
+            
+            Self::deposit_event(Event::WhitelistUpdated);
+            Ok(())
+        }
 
 	}
 
@@ -1746,7 +1847,7 @@ pub mod pallet {
 				return;
 			}
 			
-			if let Some(node_info) = NodeRegistration::<T>::get(&node_id) {
+			if let Some(_node_info) = NodeRegistration::<T>::get(&node_id) {
 				// Find the main node by searching LinkedNodes
 				let main_node_id = LinkedNodes::<T>::iter()
 					.find_map(|(main_node, linked_nodes)| 

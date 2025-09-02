@@ -171,7 +171,7 @@ pub mod pallet {
 			ensure!(main != new_sub_account, Error::<T>::CannotBeOwnSubAccount);
 
 			let sub_account_count = SubAccount::<T>::iter()
-			.filter(|(k, v)| v == &main)
+			.filter(|(_k, v)| v == &main)
 			.count() as u32;
 		
 			ensure!(

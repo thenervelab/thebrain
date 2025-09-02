@@ -4,7 +4,7 @@ use frame_support::pallet_prelude::*;
 use sp_std::prelude::*;
 use serde::{Serialize, Deserialize};
 use crate::Config;
-use sp_std::{prelude::*, marker::PhantomData};
+use sp_std::marker::PhantomData;
 use frame_system::offchain::SignedPayload;
 
 // Define maximum lengths for bounded vectors

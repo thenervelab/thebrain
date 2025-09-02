@@ -90,17 +90,12 @@ pub mod pallet {
 	use sp_runtime::Saturating;
 	use sp_std::convert::TryInto;
 	use sp_std::collections::btree_set::BTreeSet;
-	use sp_io::hashing::blake2_128;
 	use sp_runtime::AccountId32;
 	use sp_core::crypto::Ss58Codec;
-	use pallet_registration::{DeregistrationReport, TemporaryDeregistrationReports};// Add these near your other pallet imports
 	use pallet_registration::{
 		NodeType, 
 		Pallet as RegistrationPallet, 
-		Config as RegistrationConfig,
-		Event as RegistrationEvent
 	};
-
 
 	const DUMMY_REQUEST_BODY: &[u8; 78] = b"{\"id\": 10, \"jsonrpc\": \"2.0\", \"method\": \"chain_getFinalizedHead\", \"params\": []}";
 
@@ -207,7 +202,7 @@ pub mod pallet {
 			let degraded_miners = RegistrationPallet::<T>::get_all_degraded_storage_miners();
 			for miner in degraded_miners {
 				let _ = Self::add_rebalance_request_from_node(miner.clone());
-				RegistrationPallet::<T>::try_unregister_storage_miner(miner);
+				let _ = RegistrationPallet::<T>::try_unregister_storage_miner(miner);
 			}
 
 			// Remove MinerProfile entries with empty miner_profile_id

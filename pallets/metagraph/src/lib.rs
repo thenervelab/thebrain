@@ -203,34 +203,9 @@ pub mod pallet {
 		DecodingError,
 		ValidatorAlreadyWhitelisted,
 		ValidatorNotWhitelisted,
-	}
-
-	/// Validate unsigned call to this module.
-	///
-	/// By default unsigned transactions are disallowed, but implementing the validator
-	/// here we make sure that some particular calls (the ones produced by offchain worker)
-	/// are being whitelisted and marked as valid.
-	#[pallet::validate_unsigned]
-	impl<T: Config> ValidateUnsigned for Pallet<T> {
-		type Call = Call<T>;
-
-		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-			match call {
-				Call::submit_hot_keys { hot_keys, signature: _, dividends } => {
-					ValidTransaction::with_tag_prefix("MetagraphOffchain")
-						.priority(TransactionPriority::max_value())
-						.and_provides((
-							"submit_hot_keys",
-							hot_keys.len() as u64,
-							dividends.len() as u64,
-						))
-						.longevity(5)
-						.propagate(true)
-						.build()
-				},
-				_ => InvalidTransaction::Call.into(),
-			}
-		}
+		NotWhitelistedValidator,
+		NodeNotRegistered,
+		InvalidNodeType,
 	}
 
 	#[pallet::hooks]
@@ -385,33 +360,33 @@ pub mod pallet {
 											return;
 										}
 
-										let results = signer.send_unsigned_transaction(
-											|account| UIDsPayload {
-												uids: uids.clone(),
-												public: account.public.clone(),
-												dividends: dividends.clone(),
-												_marker: PhantomData,
-											},
-											|payload, signature| Call::submit_hot_keys {
-												hot_keys: payload.uids,
-												dividends: payload.dividends,
-												signature,
-											},
-										);
+										// let results = signer.send_unsigned_transaction(
+										// 	|account| UIDsPayload {
+										// 		uids: uids.clone(),
+										// 		public: account.public.clone(),
+										// 		dividends: dividends.clone(),
+										// 		_marker: PhantomData,
+										// 	},
+										// 	|payload, signature| Call::submit_hot_keys {
+										// 		hot_keys: payload.uids,
+										// 		dividends: payload.dividends,
+										// 		signature,
+										// 	},
+										// );
 
-										for (account, result) in results {
-											match result {
-												Ok(_) => log::info!(
-													"[{:?}] Successfully submitted UIDs",
-													account.id
-												),
-												Err(e) => log::error!(
-													"[{:?}] Failed to submit UIDs: {:?}",
-													account.id,
-													e
-												),
-											}
-										}
+										// for (account, result) in results {
+										// 	match result {
+										// 		Ok(_) => log::info!(
+										// 			"[{:?}] Successfully submitted UIDs",
+										// 			account.id
+										// 		),
+										// 		Err(e) => log::error!(
+										// 			"[{:?}] Failed to submit UIDs: {:?}",
+										// 			account.id,
+										// 			e
+										// 		),
+										// 	}
+										// }
 									},
 									(Err(e), _) => log::error!("Error fetching UIDs: {:?}", e),
 									(_, Err(e)) => log::error!("Error fetching dividends: {:?}", e),
@@ -457,7 +432,9 @@ pub mod pallet {
 
 		/// Get all UIDs from storage
 		pub fn get_all_registered_uids() -> Vec<UID> {
+			// Get the UIDs from storage
 			Self::get_uids() // This uses the automatically generated getter from StorageValue
+
 		}
 
 		fn check_consensus(
@@ -593,49 +570,56 @@ pub mod pallet {
 		// submits hotkeys fetched from tao to our local storage
 		#[pallet::call_index(0)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn submit_hot_keys(
+		pub fn submit_hot_keys_info(
 			origin: OriginFor<T>,
 			hot_keys: Vec<UID>,
-			dividends: Vec<u16>,
-			_signature: <T as SigningTypes>::Signature,
+			dividends: Vec<u16>
 		) -> DispatchResultWithPostInfo {
-			ensure_none(origin)?;
+			let who = ensure_signed(origin)?;
 
-			let current_block = <frame_system::Pallet<T>>::block_number();
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = RegistrationPallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
 
-			// Get validator account from signature
-			let authorities = <pallet_babe::Pallet<T>>::authorities();
-			let validator_key = &authorities[0].0;
-			let validator_account = T::AccountId::decode(&mut &validator_key.encode()[..])
-				.map_err(|_| Error::<T>::DecodingError)?;
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+			let node_info = node_info.unwrap();
 
-			// Store submission
-			ValidatorSubmissions::<T>::mutate(current_block, |submissions| {
-				submissions.insert(validator_account.clone(), hot_keys.clone());
+			// Check if node type is Validator
+			ensure!(
+				node_info.node_type == NodeType::Validator,
+				Error::<T>::InvalidNodeType
+			);
+
+			// Check if the main account is a whitelisted validator
+			let whitelisted = <WhitelistedValidators<T>>::get();
+			ensure!(
+				whitelisted.contains(&main_account),
+				Error::<T>::NotWhitelistedValidator
+			);
+
+			// Update storage only if consensus is reached
+			<UIDs<T>>::put(hot_keys.clone());
+			StoredDividends::<T>::put(dividends);
+
+			// Count validators and miners
+			let validators =
+				hot_keys.iter().filter(|uid| matches!(uid.role, Role::Validator)).count()
+					as u32;
+			let miners =
+				hot_keys.iter().filter(|uid| matches!(uid.role, Role::Miner)).count() as u32;
+
+			// Emit events
+			Self::deposit_event(Event::HotKeysUpdated {
+				count: hot_keys.len() as u32,
+				validators,
+				miners,
 			});
-
-			// Check consensus
-			let submissions = Self::validator_submissions(current_block);
-			if Self::check_consensus(&submissions, &hot_keys) {
-				// Update storage only if consensus is reached
-				<UIDs<T>>::put(hot_keys.clone());
-				StoredDividends::<T>::put(dividends);
-
-				// Count validators and miners
-				let validators =
-					hot_keys.iter().filter(|uid| matches!(uid.role, Role::Validator)).count()
-						as u32;
-				let miners =
-					hot_keys.iter().filter(|uid| matches!(uid.role, Role::Miner)).count() as u32;
-
-				// Emit events
-				Self::deposit_event(Event::HotKeysUpdated {
-					count: hot_keys.len() as u32,
-					validators,
-					miners,
-				});
-				Self::deposit_event(Event::StorageUpdated { uids_count: hot_keys.len() as u32 });
-			}
+			Self::deposit_event(Event::StorageUpdated { uids_count: hot_keys.len() as u32 });
 
 			Ok(().into())
 		}

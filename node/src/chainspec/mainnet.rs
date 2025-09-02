@@ -148,7 +148,7 @@ pub fn hippius_testnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 	properties.insert("ss58Format".into(), 42.into());
 
 	let authority = get_testnet_authority_keys();
-	let account_id = authority.0.clone();
+	let _account_id = authority.0.clone();
 
 	Ok(ChainSpec::builder(WASM_BINARY.expect("WASM not available"), Default::default())
 		.with_name("Hippius Testnet")
@@ -218,7 +218,7 @@ pub fn local_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 		.build())
 }
 
-pub fn hippius_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
+pub fn hippius_mainnet_config(_chain_id: u64) -> Result<ChainSpec, String> {
     // Load the custom chainspec from JSON file
     let custom_chainspec_bytes = include_bytes!("../../../chainspecs/mainnet/hippius_raw_bak.json");
     let mut chain_spec_json: serde_json::Value = serde_json::from_slice(custom_chainspec_bytes)

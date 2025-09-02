@@ -1,7 +1,6 @@
 pub use crate::types::NodeMetricsData;
 use pallet_registration::NodeType;
 use sp_std::{collections::btree_map::BTreeMap, vec::Vec};
-use scale_info::prelude::string::String;
 use frame_support::BoundedVec;
 use sp_runtime::traits::ConstU32;
 
@@ -11,10 +10,10 @@ impl NodeMetricsData {
     const MAX_SCORE: u32 = 65535; // 16-bit maximum
     const INTERNAL_SCALING: u32 = 1_000_000;
     const MIN_PIN_CHECKS: u32 = 1; // Minimum pin checks for valid scoring
-    const SLASH_THRESHOLD: u32 = 1; // Number of failed storage proofs before slashing
-    const REPUTATION_NEUTRAL: u32 = 1000; // Neutral reputation points
-    const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
-    const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024 ; // 1GB as max file size for scoring
+    // const SLASH_THRESHOLD: u32 = 1; // Number of failed storage proofs before slashing
+    // const REPUTATION_NEUTRAL: u32 = 1000; // Neutral reputation points
+    // const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
+    // const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024 ; // 1GB as max file size for scoring
 
     fn calculate_storage_proof_score<T: ipfs_pallet::Config>(
         metrics: &NodeMetricsData,
