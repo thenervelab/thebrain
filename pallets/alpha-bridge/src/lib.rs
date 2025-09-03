@@ -134,6 +134,11 @@ pub mod pallet {
 
 			// Atomically add confirmation
 			let threshold_met = PendingMints::<T>::try_mutate(&proof, |entry| {
+				if entry.is_none() {
+					// Create new pending mint if it doesn't exist
+					*entry = Some((user.clone(), amount, BTreeSet::new()));
+				}
+				
 				let (stored_user, stored_amount, confirmations) = entry.as_mut().ok_or(Error::<T>::InvalidProof)?;
 				ensure!(stored_user == &user, Error::<T>::InvalidProof);
 				ensure!(stored_amount == &amount, Error::<T>::InvalidProof);

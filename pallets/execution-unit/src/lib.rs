@@ -82,8 +82,8 @@ pub mod pallet {
 	use sp_std::prelude::*;
 	use sp_runtime::Saturating;
 	use serde_json::Value;
-	use pallet_registration::ColdkeyNodeRegistration;
-	use pallet_registration::NodeRegistration;
+	use pallet_registration::pallet::ColdkeyNodeRegistration;
+	use pallet_registration::pallet::NodeRegistration;
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + 

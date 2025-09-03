@@ -1,7 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 pub use pallet::*;
 pub use types::*;
-// pub mod migrations; // Add this line
+
+mod migrations;
+pub use migrations::*;
 #[cfg(test)]
 mod mock;
 
@@ -25,6 +27,7 @@ pub mod pallet {
 	use frame_support::traits::Currency;
 	use frame_support::traits::ExistenceRequirement;
 	use frame_support::PalletId;
+	use sp_core::H256;
 	use frame_support::{
 		dispatch::DispatchResultWithPostInfo,
 		pallet_prelude::*,
@@ -38,6 +41,11 @@ pub mod pallet {
 		offchain::SendTransactionTypes,
 		pallet_prelude::*,
 	};
+	use crate::migrations::AddIsVerifiedField;
+	// Add this to avoid naming conflicts with the migration storage aliases
+	#[cfg(feature = "try-runtime")]
+	use migrations::{NodeRegistration as MigrationNodeRegistration, ColdkeyNodeRegistration as MigrationColdkeyNodeRegistration};
+	use scale_info::scale;
 	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_proxy::Pallet as ProxyPallet;
 	use pallet_utils::{MetagraphInfoProvider,MetricsInfoProvider};
@@ -52,6 +60,8 @@ pub mod pallet {
 	use sp_std::collections::btree_set::BTreeSet;
 	use sp_std::collections::btree_map::BTreeMap;
 	use scale_info::prelude::string::String;
+	use sp_io::hashing::blake2_256;
+	use frame_support::traits::OnRuntimeUpgrade;
 
 	// Define a constant for token decimals (typically at the top of the file)
 	pub const DECIMALS: u32 = 18;
@@ -215,6 +225,25 @@ pub mod pallet {
 	pub type LastRegistrationBlock<T: Config> =
 		StorageMap<_, Blake2_128Concat, NodeType, BlockNumberFor<T>, ValueQuery>;
 
+	/// One-shot challenge guard (replay protection)
+	#[pallet::storage]
+	pub type UsedChallenges<T: Config> = StorageMap<
+		_, Blake2_128Concat, H256, BlockNumberFor<T>, ValueQuery
+	>;
+
+	/// Remember the bound libp2p identities (by your node_id)
+	#[pallet::storage]
+	#[pallet::getter(fn libp2p_main_identity)]
+	pub type Libp2pMainIdentity<T: Config> = StorageMap<
+		_, Blake2_128Concat, Vec<u8>, (Libp2pKeyType, Vec<u8>), OptionQuery
+	>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn libp2p_ipfs_identity)]
+	pub type Libp2pIpfsIdentity<T: Config> = StorageMap<
+		_, Blake2_128Concat, Vec<u8>, (Libp2pKeyType, Vec<u8>), OptionQuery
+	>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -226,6 +255,11 @@ pub mod pallet {
 		},
 		NodeUnregistered {
 			node_id: Vec<u8>,
+		},
+		/// Emitted when multiple nodes are unregistered in a batch
+		NodeUnregisteredBatch {
+			/// Number of nodes that were unregistered
+			count: u32,
 		},
 		NodeStatusUpdated {
 			node_id: Vec<u8>,
@@ -263,6 +297,16 @@ pub mod pallet {
 			banned: bool,
 		},
 		WhitelistUpdated,
+		/// A node was successfully verified
+		NodeVerified { 
+			node_id: Vec<u8>,
+			owner: T::AccountId,
+		},
+		/// A coldkey node was successfully verified
+		ColdkeyNodeVerified { 
+			node_id: Vec<u8>,
+			owner: T::AccountId,
+		},
 	}
 
 	#[pallet::error]
@@ -294,11 +338,28 @@ pub mod pallet {
 		TooManyRequests,
 		AccountBanned,
 		ExceededMaxWhitelistedValidators,
-		NodeNotWhitelisted
-	}
+		NodeNotWhitelisted,
+		InvalidSignature,
+		InvalidKeyType,
+		InvalidChallenge,
+		InvalidChallengeDomain,
+		ChallengeExpired,
+		ChallengeReused,
+		GenesisMismatch,
+		PublicKeyMismatch,
+		ChallengeMismatch,
+		/// Batch unregistration failed due to too many nodes
+		TooManyUnverifiedNodes,
+		NodeAlreadyVerified,
+		Unauthorized,
+	}	
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_runtime_upgrade() -> Weight {
+			AddIsVerifiedField::<T>::on_runtime_upgrade()
+		}
+	
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
 			// Initialize fees if not already set
 			if CurrentNodeTypeFee::<T>::iter().count() == 0 {
@@ -393,6 +454,14 @@ pub mod pallet {
 
 			}
 
+			// GC used challenges (keep it light)
+			UsedChallenges::<T>::iter()
+			.filter(|(_, until)| *until <= _n)
+			.map(|(h, _)| h)
+			.collect::<Vec<_>>()
+			.into_iter()
+			.for_each(|h| { UsedChallenges::<T>::remove(h); });
+
 			Weight::zero()
 		}
 	}
@@ -438,6 +507,7 @@ pub mod pallet {
 				node_type,
 				ipfs_node_id,
 				status: Status::Online,
+				is_verified: true,
 				registered_at: current_block_number,
 				owner,
 			};
@@ -455,44 +525,57 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			pay_in_credits: bool,
 			ipfs_node_id: Option<Vec<u8>>,
-			owner: T::AccountId
+			owner: T::AccountId,
+			ipfs_peer_id: Vec<u8>,
+			main_key_type: Libp2pKeyType,
+			main_public_key: Vec<u8>,
+			main_sig: Vec<u8>,
+			ipfs_key_type: Libp2pKeyType,
+			ipfs_public_key: Vec<u8>,
+			ipfs_sig: Vec<u8>,
+			challenge_bytes: Vec<u8>,
+			ipfs_id_hex: Vec<u8>,
+			node_id_hex: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
-			if ValidatorWhitelistEnabled::<T>::get() {
-				// Check if this is a proxy account and get the main account
-				let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
-					primary
-				} else {
-					who.clone() // If not a proxy, use the account itself
-				};
-				// Check if the node is registered and is a validator
-				let node_info = Self::get_registered_node_for_owner(&main_account);
-				ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
-				let node_info = node_info.unwrap();
-				ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+			// --- Decode & check the challenge ---
+			let mut rdr = &challenge_bytes[..];
+			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
+				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
 
-				// Check if validator is whitelisted if whitelist is not empty
-				let whitelist = WhitelistedValidators::<T>::get();
-				if !whitelist.is_empty() {
-					ensure!(
-						whitelist.contains(&main_account),
-						Error::<T>::NodeNotWhitelisted
-					);
-				}
+			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
+			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
+			ensure!(ch.account == owner, Error::<T>::InvalidAccountId);
+			ensure!(ch.expires_at >= <frame_system::Pallet<T>>::block_number(), Error::<T>::ChallengeExpired);
+			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
+			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
+			ensure!(ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex), Error::<T>::ChallengeMismatch);
 
-				// Rate limit: maximum storage requests per block per user
-				let max_requests_per_block = <T as pallet::Config>::MaxDeregRequestsPerPeriod::get();
-				let user_requests_count = ReportSubmissionCount::<T>::get(node_info.node_id.clone());
-				ensure!(
-					user_requests_count  <= max_requests_per_block,
-					Error::<T>::TooManyRequests
-				);
+			let ch_hash = Self::blake256(&challenge_bytes);
+			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
-				// Update user's storage requests count
-				ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count + 1);
+			// --- Verify the two libp2p signatures (ed25519 now; extend later if needed) ---
+			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
+			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
 
-			}
+			// Verify signatures
+			ensure!(Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key), Error::<T>::InvalidSignature);
+			ensure!(Self::verify_ed25519(&challenge_bytes, &ipfs_sig,  &ipfs_public_key),  Error::<T>::InvalidSignature);
+			
+			// NEW: Verify that public keys match the expected peer IDs
+			ensure!(
+				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
+				Error::<T>::PublicKeyMismatch
+			);
+			
+			ensure!(
+				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
+				Error::<T>::PublicKeyMismatch
+			);
+
+			// Mark challenge used (replay protection)
+			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
 
 			// Check if the account is banned
 			ensure!(
@@ -636,11 +719,16 @@ pub mod pallet {
 				node_type,
 				ipfs_node_id,
 				status: Status::Online,
+				is_verified: true,
 				registered_at: current_block_number,
 				owner,
 			};
 			ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
-
+			
+			// Persist identities (for later audits/liveness checks)
+			Libp2pMainIdentity::<T>::insert(node_id.clone(), (main_key_type, main_public_key));
+			Libp2pIpfsIdentity::<T>::insert(node_id.clone(), (ipfs_key_type, ipfs_public_key));
+			
 			Self::deposit_event(Event::MainNodeRegistered { node_id });
 			Ok(().into())
 		}
@@ -654,44 +742,57 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			pay_in_credits: bool,
 			ipfs_node_id: Option<Vec<u8>>,
-			owner: T::AccountId
+			ipfs_peer_id: Vec<u8>,
+			owner: T::AccountId,
+			main_key_type: Libp2pKeyType,
+			main_public_key: Vec<u8>,
+			main_sig: Vec<u8>,
+			ipfs_key_type: Libp2pKeyType,
+			ipfs_public_key: Vec<u8>,
+			ipfs_sig: Vec<u8>,
+			challenge_bytes: Vec<u8>,
+			ipfs_id_hex: Vec<u8>,
+			node_id_hex: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
-			if ValidatorWhitelistEnabled::<T>::get() {
-				// Check if this is a proxy account and get the main account
-				let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
-					primary
-				} else {
-					who.clone() // If not a proxy, use the account itself
-				};
-				// Check if the node is registered and is a validator
-				let node_info = Self::get_registered_node_for_owner(&main_account);
-				ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
-				let node_info = node_info.unwrap();
-				ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+			// --- Decode & check the challenge ---
+			let mut rdr = &challenge_bytes[..];
+			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
+				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
 
-				// Check if validator is whitelisted if whitelist is not empty
-				let whitelist = WhitelistedValidators::<T>::get();
-				if !whitelist.is_empty() {
-					ensure!(
-						whitelist.contains(&main_account),
-						Error::<T>::NodeNotWhitelisted
-					);
-				}
+			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
+			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
+			ensure!(ch.account == owner, Error::<T>::InvalidAccountId);
+			ensure!(ch.expires_at >= <frame_system::Pallet<T>>::block_number(), Error::<T>::ChallengeExpired);
+			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
+			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
+			ensure!(ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex), Error::<T>::ChallengeMismatch);
 
-				// Rate limit: maximum storage requests per block per user
-				let max_requests_per_block = <T as pallet::Config>::MaxDeregRequestsPerPeriod::get();
-				let user_requests_count = ReportSubmissionCount::<T>::get(node_info.node_id.clone());
-				ensure!(
-					user_requests_count  <= max_requests_per_block,
-					Error::<T>::TooManyRequests
-				);
+			let ch_hash = Self::blake256(&challenge_bytes);
+			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
-				// Update user's storage requests count
-				ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count + 1);
+			// --- Verify the two libp2p signatures (ed25519 now; extend later if needed) ---
+			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
+			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
 
-			}
+			// Verify signatures
+			ensure!(Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key), Error::<T>::InvalidSignature);
+			ensure!(Self::verify_ed25519(&challenge_bytes, &ipfs_sig,  &ipfs_public_key),  Error::<T>::InvalidSignature);
+			
+			// NEW: Verify that public keys match the expected peer IDs
+			ensure!(
+				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
+				Error::<T>::PublicKeyMismatch
+			);
+			
+			ensure!(
+				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
+				Error::<T>::PublicKeyMismatch
+			);
+
+			// Mark challenge used (replay protection)
+			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
 
 			// Check if the account is banned
 			ensure!(
@@ -786,8 +887,6 @@ pub mod pallet {
 
 			// If the node type is Validator, ensure minimum stake
 			if node_type == NodeType::Validator {
-				// You'll need to implement a way to check the staked amount
-				// This is a placeholder - replace with actual stake checking logic
 				ensure!(
 					pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(
 						owner.clone()
@@ -868,6 +967,7 @@ pub mod pallet {
 				node_type,
 				ipfs_node_id,
 				status: Status::Online,
+				is_verified: true,
 				registered_at: current_block_number,
 				owner: owner,
 			};
@@ -894,7 +994,11 @@ pub mod pallet {
 				}
 				Ok::<(), DispatchError>(())
 			})?;
-
+			
+			// Persist identities (for later audits/liveness checks)
+			Libp2pMainIdentity::<T>::insert(node_id.clone(), (main_key_type, main_public_key));
+			Libp2pIpfsIdentity::<T>::insert(node_id.clone(), (ipfs_key_type, ipfs_public_key));
+			
 			Self::deposit_event(Event::NodeRegistered { node_id });
 			Ok(().into())
 		}
@@ -972,6 +1076,7 @@ pub mod pallet {
 				node_type,
 				ipfs_node_id,
 				status: Status::Online,
+				is_verified: true,
 				registered_at: current_block_number,
 				owner,
 			};
@@ -1162,6 +1267,54 @@ pub mod pallet {
 			Ok(().into())
 		}
 
+		/// Sudo call to unregister all nodes with is_verified = false
+		/// This will iterate through all registered nodes and unregister those that are not verified
+		#[pallet::call_index(17)]
+		#[pallet::weight((T::DbWeight::get().reads_writes(2, 1), Pays::No))]
+		pub fn sudo_unregister_unverified_nodes(
+			origin: OriginFor<T>,
+		) -> DispatchResultWithPostInfo {
+			// Ensure the caller is root (sudo)
+			ensure_root(origin)?;
+
+			let mut unregistered_count = 0u32;
+
+			// Unregister unverified coldkey nodes
+			let coldkey_nodes: Vec<_> = ColdkeyNodeRegistration::<T>::iter()
+				.filter_map(|(node_id, node_info_opt)| {
+					node_info_opt
+						.filter(|info| !info.is_verified)
+						.map(|_| node_id)
+				})
+				.collect();
+
+			for node_id in coldkey_nodes {
+				// Use the existing unregister logic
+				Self::do_unregister_main_node(node_id.clone());
+				unregistered_count += 1;
+			}
+
+			// Unregister unverified hotkey nodes
+			let hotkey_nodes: Vec<_> = NodeRegistration::<T>::iter()
+				.filter_map(|(node_id, node_info_opt)| {
+					node_info_opt
+						.filter(|info| !info.is_verified)
+						.map(|_| node_id)
+				})
+				.collect();
+
+			for node_id in hotkey_nodes {
+				// Use the existing unregister logic
+				Self::do_unregister_main_node(node_id);
+				unregistered_count += 1;
+			}
+
+			// Emit an event with the count of unregistered nodes
+			Self::deposit_event(Event::<T>::NodeUnregisteredBatch { count: unregistered_count });
+
+			Ok(().into())
+		}
+
 		#[pallet::call_index(14)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn submit_deregistration_report(
@@ -1252,6 +1405,169 @@ pub mod pallet {
             Ok(())
         }
 
+		#[pallet::call_index(18)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn verify_existing_node(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+			challenge_bytes: Vec<u8>,
+			main_key_type: Libp2pKeyType,
+			main_public_key: Vec<u8>,
+			main_sig: Vec<u8>,
+			ipfs_key_type: Libp2pKeyType,
+			ipfs_public_key: Vec<u8>,
+			ipfs_sig: Vec<u8>,
+			ipfs_id_hex: Vec<u8>,
+			node_id_hex: Vec<u8>,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+			
+			// Get the node information
+			let mut node_info = NodeRegistration::<T>::get(&node_id)
+				.and_then(|opt| Some(opt))
+				.ok_or(Error::<T>::NodeNotFound)?;
+			
+			// Check if node is already verified
+			ensure!(!node_info.is_verified, Error::<T>::NodeAlreadyVerified);
+			
+			// Verify that the caller owns this node
+			ensure!(node_info.owner == who, Error::<T>::Unauthorized);
+			
+			// --- Decode & check the challenge ---
+			let mut rdr = &challenge_bytes[..];
+			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
+				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
+			
+			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
+			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
+			ensure!(ch.account == who, Error::<T>::InvalidAccountId);
+			ensure!(ch.expires_at >= <frame_system::Pallet<T>>::block_number(), Error::<T>::ChallengeExpired);
+			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
+			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
+			ensure!(ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex), Error::<T>::ChallengeMismatch);
+			
+			let ch_hash = Self::blake256(&challenge_bytes);
+			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
+			
+			// --- Verify the two libp2p signatures ---
+			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
+			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
+			
+			// Verify signatures
+			ensure!(Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key), Error::<T>::InvalidSignature);
+			ensure!(Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key), Error::<T>::InvalidSignature);
+			
+			// Verify that public keys match the expected peer IDs
+			ensure!(
+				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
+				Error::<T>::PublicKeyMismatch
+			);
+			
+			ensure!(
+				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
+				Error::<T>::PublicKeyMismatch
+			);
+			
+			// Mark challenge used (replay protection)
+			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
+			
+			// Update the node to verified
+			node_info.is_verified = true;
+			NodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
+			
+			// Store the identities for future use (liveness checks, etc.)
+			Libp2pMainIdentity::<T>::insert(&node_id, (main_key_type, main_public_key.clone()));
+			Libp2pIpfsIdentity::<T>::insert(&node_id, (ipfs_key_type, ipfs_public_key.clone()));
+			
+			Self::deposit_event(Event::NodeVerified { 
+				node_id: node_id.clone(),
+				owner: who.clone(),
+			});
+			
+			Ok(().into())
+		}
+
+		#[pallet::call_index(19)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn verify_existing_coldkey_node(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+			challenge_bytes: Vec<u8>,
+			main_key_type: Libp2pKeyType,
+			main_public_key: Vec<u8>,
+			main_sig: Vec<u8>,
+			ipfs_key_type: Libp2pKeyType,
+			ipfs_public_key: Vec<u8>,
+			ipfs_sig: Vec<u8>,
+			ipfs_id_hex: Vec<u8>,
+			node_id_hex: Vec<u8>,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+			
+			// Get the coldkey node information
+			let mut node_info = ColdkeyNodeRegistration::<T>::get(&node_id)
+				.and_then(|opt| Some(opt))
+				.ok_or(Error::<T>::NodeNotFound)?;
+			
+			// Check if node is already verified
+			ensure!(!node_info.is_verified, Error::<T>::NodeAlreadyVerified);
+			
+			// Verify that the caller owns this node
+			ensure!(node_info.owner == who, Error::<T>::Unauthorized);
+			
+			// --- Decode & check the challenge ---
+			let mut rdr = &challenge_bytes[..];
+			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
+				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
+			
+			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
+			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
+			ensure!(ch.account == who, Error::<T>::InvalidAccountId);
+			ensure!(ch.expires_at >= <frame_system::Pallet<T>>::block_number(), Error::<T>::ChallengeExpired);
+			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
+			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
+			ensure!(ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex), Error::<T>::ChallengeMismatch);
+			
+			let ch_hash = Self::blake256(&challenge_bytes);
+			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
+			
+			// --- Verify the two libp2p signatures ---
+			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
+			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
+			
+			// Verify signatures
+			ensure!(Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key), Error::<T>::InvalidSignature);
+			ensure!(Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key), Error::<T>::InvalidSignature);
+			
+			// Verify that public keys match the expected peer IDs
+			ensure!(
+				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
+				Error::<T>::PublicKeyMismatch
+			);
+			
+			ensure!(
+				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
+				Error::<T>::PublicKeyMismatch
+			);
+			
+			// Mark challenge used (replay protection)
+			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
+			
+			// Update the node to verified
+			node_info.is_verified = true;
+			ColdkeyNodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
+			
+			// Store the identities for future use
+			Libp2pMainIdentity::<T>::insert(&node_id, (main_key_type, main_public_key.clone()));
+			Libp2pIpfsIdentity::<T>::insert(&node_id, (ipfs_key_type, ipfs_public_key.clone()));
+			
+			Self::deposit_event(Event::ColdkeyNodeVerified { 
+				node_id: node_id.clone(),
+				owner: who.clone(),
+			});
+			
+			Ok(().into())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -1735,6 +2051,54 @@ pub mod pallet {
 				return node_info.node_type == NodeType::StorageMiner && node_info.status == Status::Degraded;
 			}
 			false
+		}
+
+		fn blake256(data: &[u8]) -> H256 {
+			H256::from(blake2_256(data))
+		}
+
+		fn genesis_hash_bytes() -> [u8; 32] {
+			// block 0 hash
+			let zero_block: BlockNumberFor<T> = Zero::zero();
+			let h = <frame_system::Pallet<T>>::block_hash(zero_block);			
+			let mut out = [0u8; 32];
+			out.copy_from_slice(h.as_ref());
+			out
+		}
+
+		fn verify_ed25519(msg: &[u8], sig: &[u8], pk: &[u8]) -> bool {
+			if sig.len() != 64 || pk.len() != 32 { return false; }
+			sp_io::crypto::ed25519_verify(
+				&sp_core::ed25519::Signature::from_raw(
+					<[u8;64]>::try_from(sig).unwrap_or([0u8;64])
+				),
+				msg,
+				&sp_core::ed25519::Public::from_raw(
+					<[u8;32]>::try_from(pk).unwrap_or([0u8;32])
+				)
+			)
+		}
+
+		// Add this function to verify that a public key corresponds to a peer ID
+		fn verify_peer_id(public_key: &[u8], peer_id: &[u8], key_type: Libp2pKeyType) -> bool {
+			match key_type {
+				Libp2pKeyType::Ed25519 => {
+					// For Ed25519, the peer ID should be the multihash of the public key
+					// Format: \x00\x24\x08\x01\x12\x20 + public_key (32 bytes)
+					if peer_id.len() != 38 {
+						return false;
+					}
+					
+					let expected_prefix = [0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+					if &peer_id[0..6] != &expected_prefix {
+						return false;
+					}
+					
+					&peer_id[6..38] == public_key
+				},
+				// Add other key types as needed
+				_ => false,
+			}
 		}
 
 		/// Initialize fees for node types

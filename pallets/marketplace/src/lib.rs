@@ -623,6 +623,10 @@ pub mod pallet {
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
+            // Check if user has any credits
+            let user_credits = CreditsPallet::<T>::get_free_credits(&caller);
+            ensure!(user_credits > 0, Error::<T>::InsufficientFreeCredits);
+
             // Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxRequestsPerBlock::get();
 			let user_requests_count = UserRequestsCount::<T>::get(&caller);
