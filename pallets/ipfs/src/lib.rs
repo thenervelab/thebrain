@@ -991,6 +991,41 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// Unsigned transaction to clear all unpin requests for a validator node
+		#[pallet::call_index(16)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn clear_all_unpin_requests(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+			let node_info = node_info.unwrap();
+			// Check if the signer is the current selected validator of epoch
+			let current_validator = Self::select_validator()?;
+			ensure!(
+				main_account == current_validator,
+				Error::<T>::NotCurrentEpochValidator
+			);
+
+			// Clear all user-specific unpin requests
+			UserUnpinRequests::<T>::mutate(|requests| {
+				requests.clear();
+			});
+
+			// Clear the global unpin requests
+			UnpinRequests::<T>::kill();
+
+			Ok(().into())
+		}
+
 	}
 
 	impl<T: Config> Pallet<T>{
