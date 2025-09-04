@@ -1275,6 +1275,10 @@ pub mod pallet {
 		pub fn do_remove_metrics(node_id: Vec<u8>) {
 			NodeMetrics::<T>::remove(&node_id.clone());
 			BlockNumbers::<T>::remove(&node_id.clone());
+			TotalPinChecksPerEpoch::<T>::remove(&node_id.clone());
+			SuccessfulPinChecksPerEpoch::<T>::remove(&node_id.clone());
+			TotalPingChecksPerEpoch::<T>::remove(&node_id.clone());
+			SuccessfulPingChecksPerEpoch::<T>::remove(&node_id.clone());		
 		}
 
 		pub fn is_owner_in_uids(owner: &T::AccountId) -> bool {

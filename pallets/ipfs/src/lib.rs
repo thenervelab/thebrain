@@ -14,6 +14,8 @@ pub mod weights;
 pub use weights::*;
 pub use types::*;
 use sp_core::offchain::KeyTypeId;
+use pallet_utils::IpfsInfoProvider;
+use sp_std::vec::Vec;
 
 mod types;
 
@@ -183,12 +185,6 @@ pub mod pallet {
 		}
 
 		fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
-			// Check for consensus application every consensus period
-			let consensus_period = <T as pallet_registration::Config>::ConsensusPeriod::get();
-			if current_block % consensus_period == 0u32.into() {
-				Self::apply_deregistration_consensus();
-			}
-
 			// Clear entries every 10 blocks
 			if current_block % T::RequestsClearInterval::get().into() == 0u32.into() {
 				// Clear all entries; limit is u32::MAX to ensure we get them all
@@ -208,6 +204,15 @@ pub mod pallet {
 			// Remove MinerProfile entries with empty miner_profile_id
 			MinerProfile::<T>::iter().filter(|(_, profile_id)| profile_id.is_empty()).for_each(|(node_id, _)| {
 				MinerProfile::<T>::remove(&node_id);
+			});
+
+			MinerProfile::<T>::iter_keys().for_each(|node_id| {
+				let node_id_vec = node_id.to_vec();
+		
+				if RegistrationPallet::<T>::get_node_registration_info(node_id_vec.clone()).is_none() {
+					// Node is not registered anymore → remove its miner profile
+					Self::do_remove_miner_profile_info(node_id_vec);
+				}
 			});
 
 			// Get the current epoch validator and its start block
@@ -1087,17 +1092,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Retrieve all unassigned unpin requests for a specific validator
-		pub fn get_unassigned_unpin_requests_for_validator(
-			validator: T::AccountId,
-		) -> Vec<StorageUnpinRequest<T::AccountId>> {
-			let filtered: Vec<StorageUnpinRequest<T::AccountId>> = UserUnpinRequests::<T>::get()
-			.into_iter()
-			.filter(|r| r.selected_validator == validator)
-			.collect();
-			filtered
-		}
-
 		pub fn select_validator() -> Result<T::AccountId, Error<T>> {
 			// Get the current epoch validator from storage
 			let validator_info = CurrentEpochValidator::<T>::get();
@@ -1108,21 +1102,6 @@ pub mod pallet {
 	
 			Ok(validator)
 		}
-
-		// pub fn select_validator() -> Result<T::AccountId, Error<T>> {
-		// 	// Correct way to get active validators from staking pallet
-		// 	let validators = pallet_staking::Validators::<T>::iter()
-		// 		.map(|(validator, _prefs)| validator)
-		// 		.collect::<Vec<_>>();
-			
-		// 	ensure!(!validators.is_empty(), Error::<T>::NoValidatorsAvailable);
-		
-		// 	// Use current block number for pseudo-random selection
-		// 	let block_number = frame_system::Pallet::<T>::block_number();
-		// 	let validator_index = block_number.saturated_into::<usize>() % validators.len();
-			
-		// 	Ok(validators[validator_index].clone())
-		// }
 
 		pub fn fetch_ipfs_file_size(file_hash_vec: Vec<u8>) -> Result<u32, http::Error> {
 		
@@ -1905,86 +1884,6 @@ pub mod pallet {
 			MinerProfile::<T>::contains_key(miner_id)
 		}
 
-		fn apply_deregistration_consensus() {
-			use pallet_registration::TemporaryDeregistrationReports;
-			
-			// Collect all reports from all validators
-			let all_reports: Vec<(T::AccountId, Vec<pallet_registration::DeregistrationReport<BlockNumberFor<T>>>)> = 
-				TemporaryDeregistrationReports::<T>::iter().collect();
-			
-			// Get threshold from registration config
-			let threshold = <T as pallet_registration::Config>::ConsensusThreshold::get();
-		
-			// Group reports by node_id
-			let mut reports_by_node: sp_std::collections::btree_map::BTreeMap<
-				Vec<u8>, 
-				Vec<(T::AccountId, pallet_registration::DeregistrationReport<BlockNumberFor<T>>)>
-			> = sp_std::collections::btree_map::BTreeMap::new();
-			
-			for (validator_id, reports) in all_reports {
-				for report in reports {
-					reports_by_node
-						.entry(report.node_id.clone())
-						.or_insert_with(Vec::new)
-						.push((validator_id.clone(), report));
-				}
-			}
-		
-			for (node_id, reports) in reports_by_node {
-				if reports.is_empty() {
-					continue;
-				}
-		
-				let total_reports = reports.len() as u32;
-				if total_reports >= threshold {
-					// Count unique validators
-					let unique_validators: sp_std::collections::btree_set::BTreeSet<T::AccountId> = reports
-						.iter()
-						.map(|(validator_id, _)| validator_id.clone())
-						.collect();
-		
-					let agreeing_validators = unique_validators.len() as u32;
-		
-					log::info!(
-						"Node: {:?}, Total Reports: {}, Agreeing Validators: {}, Threshold: {}",
-						node_id,
-						total_reports,
-						agreeing_validators,
-						threshold
-					);
-		
-					if agreeing_validators >= threshold {
-						// Miner is not registered, clear metrics
-						// Convert Vec<u8> to BoundedVec
-						let bounded_node_id = match BoundedVec::try_from(node_id.clone()) {
-							Ok(bounded) => bounded,
-							Err(_) => {
-								log::error!("Node ID too large to convert to BoundedVec: {:?}", node_id);
-								continue; // Skip this node if conversion fails
-							}
-						};
-						MinerTotalFilesSize::<T>::insert(bounded_node_id.clone(), 0u128);
-						MinerTotalFilesPinned::<T>::insert(bounded_node_id.clone(), 0u32);
-						// Consensus reached, unregister the node
-						RegistrationPallet::<T>::do_unregister_main_node(node_id.clone());
-						
-						// Use proper event emission
-						pallet_registration::Pallet::<T>::deposit_event(
-							pallet_registration::Event::<T>::DeregistrationConsensusReached { 
-								node_id: node_id.clone() 
-							}
-						);
-					} else {
-						pallet_registration::Pallet::<T>::deposit_event(
-							pallet_registration::Event::<T>::DeregistrationConsensusFailed { 
-								node_id: node_id.clone() 
-							}
-						);
-					}
-				}
-			}
-		}
-
 		fn rotate_validator(
 			current_block: BlockNumberFor<T>,
 			current_validator: Option<T::AccountId>,
@@ -2039,7 +1938,34 @@ pub mod pallet {
 				epoch_start_block: current_block,
 			});
 
-			Ok(true) // Rotation occurred
+			Ok(true)
 		}
+
+		pub fn do_remove_miner_profile_info(node_id: Vec<u8>) {
+			// Convert node_id into bounded vec safely
+			if let Ok(bounded_node_id) = BoundedVec::<u8, ConstU32<MAX_NODE_ID_LENGTH>>::try_from(node_id.clone()) {
+				// Remove from MinerTotalFilesSize
+				MinerTotalFilesSize::<T>::remove(&bounded_node_id);
+	
+				// Remove from MinerTotalFilesPinned
+				MinerTotalFilesPinned::<T>::remove(&bounded_node_id);
+	
+				// Remove from MinerProfile
+				MinerProfile::<T>::remove(&bounded_node_id);
+
+				// Remove from ReputationPoints
+				let node_info = RegistrationPallet::<T>::get_node_registration_info(node_id.clone());	
+				if node_info.is_some() {
+					let node_info = node_info.unwrap();
+					ReputationPoints::<T>::remove(node_info.owner);
+				}
+			}
+		}
+	}
+}
+
+impl<T: Config> IpfsInfoProvider<T> for Pallet<T> {
+	fn remove_miner_profile_info(node_id: Vec<u8>) {
+		Self::do_remove_miner_profile_info(node_id);
 	}
 }

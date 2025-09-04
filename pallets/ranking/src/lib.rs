@@ -19,7 +19,6 @@ use frame_support::PalletId;
 use pallet_balances;
 #[cfg(feature = "std")]
 use scale_info::prelude::vec;
-use sp_io::hashing::blake2_128;
 use sp_runtime::{KeyTypeId, SaturatedConversion};
 pub use types::*;
 

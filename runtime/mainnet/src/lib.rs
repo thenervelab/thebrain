@@ -173,7 +173,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9118,
+	spec_version: 9119,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1173,6 +1173,7 @@ impl pallet_registration::Config for Runtime {
 	// Use Pallet instead of the crate name
 	type MetagraphInfo = pallet_metagraph::Pallet<Runtime>;
 	type MetricsInfo = pallet_execution_unit::Pallet<Runtime>;
+	type IpfsInfo = ipfs_pallet::Pallet<Runtime>;
 	type MinerStakeThreshold = ConstU32<0>;
 	type ChainDecimals = ConstU32<18>;
 	type PalletId = ResgisterPalletId;

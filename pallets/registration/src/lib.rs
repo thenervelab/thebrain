@@ -2,8 +2,6 @@
 pub use pallet::*;
 pub use types::*;
 
-mod migrations;
-pub use migrations::*;
 #[cfg(test)]
 mod mock;
 
@@ -41,14 +39,11 @@ pub mod pallet {
 		offchain::SendTransactionTypes,
 		pallet_prelude::*,
 	};
-	use crate::migrations::AddIsVerifiedField;
-	// Add this to avoid naming conflicts with the migration storage aliases
-	#[cfg(feature = "try-runtime")]
-	use migrations::{NodeRegistration as MigrationNodeRegistration, ColdkeyNodeRegistration as MigrationColdkeyNodeRegistration};
 	use scale_info::scale;
 	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_proxy::Pallet as ProxyPallet;
 	use pallet_utils::{MetagraphInfoProvider,MetricsInfoProvider};
+	use pallet_utils::IpfsInfoProvider;
 	use scale_info::prelude::*;
 	use sp_core::crypto::Ss58Codec;
 	use sp_runtime::traits::AccountIdConversion;
@@ -61,7 +56,6 @@ pub mod pallet {
 	use sp_std::collections::btree_map::BTreeMap;
 	use scale_info::prelude::string::String;
 	use sp_io::hashing::blake2_256;
-	use frame_support::traits::OnRuntimeUpgrade;
 
 	// Define a constant for token decimals (typically at the top of the file)
 	pub const DECIMALS: u32 = 18;
@@ -83,6 +77,7 @@ pub mod pallet {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 		type MetagraphInfo: MetagraphInfoProvider<Self>;
 		type MetricsInfo: MetricsInfoProvider<Self>;
+		type IpfsInfo: IpfsInfoProvider<Self>;
 		/// The minimum amount that must be staked by a miner
 		#[pallet::constant]
 		type MinerStakeThreshold: Get<u32>;
@@ -355,11 +350,7 @@ pub mod pallet {
 	}	
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-		fn on_runtime_upgrade() -> Weight {
-			AddIsVerifiedField::<T>::on_runtime_upgrade()
-		}
-	
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {	
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
 			// Initialize fees if not already set
 			if CurrentNodeTypeFee::<T>::iter().count() == 0 {
@@ -376,10 +367,10 @@ pub mod pallet {
 				});
 			}
 
-	        // let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
-			// if _n % consensus_period == 0u32.into() {
-			// 	Self::apply_deregistration_consensus();
-			// }
+	        let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
+			if _n % consensus_period == 0u32.into() {
+				Self::apply_deregistration_consensus();
+			}
 
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			let first_epoch_block = 38u32.into(); // hardcoded or derived
@@ -399,6 +390,8 @@ pub mod pallet {
 					.into_iter()
 					.for_each(|main_node_id| {
 						if ColdkeyNodeRegistration::<T>::get(&main_node_id).is_none() {
+							T::MetricsInfo::remove_metrics(main_node_id.clone());
+							T::IpfsInfo::remove_miner_profile_info(main_node_id.clone());
 							LinkedNodes::<T>::remove(&main_node_id);
 						}
 					});
@@ -2101,6 +2094,73 @@ pub mod pallet {
 			}
 		}
 
+		fn apply_deregistration_consensus() {			
+			// Collect all reports from all validators
+			let all_reports: Vec<(T::AccountId, Vec<DeregistrationReport<BlockNumberFor<T>>>)> = 
+				TemporaryDeregistrationReports::<T>::iter().collect();
+			
+			// Get threshold from registration config
+			let threshold = T::ConsensusThreshold::get();
+		
+			// Group reports by node_id
+			let mut reports_by_node: sp_std::collections::btree_map::BTreeMap<
+				Vec<u8>, 
+				Vec<(T::AccountId, DeregistrationReport<BlockNumberFor<T>>)>
+			> = sp_std::collections::btree_map::BTreeMap::new();
+			
+			for (validator_id, reports) in all_reports {
+				for report in reports {
+					reports_by_node
+						.entry(report.node_id.clone())
+						.or_insert_with(Vec::new)
+						.push((validator_id.clone(), report));
+				}
+			}
+		
+			for (node_id, reports) in reports_by_node {
+				if reports.is_empty() {
+					continue;
+				}
+		
+				let total_reports = reports.len() as u32	;
+				if total_reports >= threshold {
+					// Count unique validators
+					let unique_validators: sp_std::collections::btree_set::BTreeSet<T::AccountId> = reports
+						.iter()
+						.map(|(validator_id, _)| validator_id.clone())
+						.collect();
+		
+					let agreeing_validators = unique_validators.len() as u32;
+		
+					log::info!(
+						"Node: {:?}, Total Reports: {}, Agreeing Validators: {}, Threshold: {}",
+						node_id,
+						total_reports,
+						agreeing_validators,
+						threshold
+					);
+		
+					if agreeing_validators >= threshold {
+						// Consensus reached, unregister the node
+						Self::do_unregister_main_node(node_id.clone());
+						
+						// Use proper event emission
+						Self::deposit_event(
+							Event::<T>::DeregistrationConsensusReached { 
+								node_id: node_id.clone() 
+							}
+						);
+					} else {
+						Self::deposit_event(
+							Event::<T>::DeregistrationConsensusFailed { 
+								node_id: node_id.clone() 
+							}
+						);
+					}
+				}
+			}
+		}
+
 		/// Initialize fees for node types
 		fn initialize_node_type_fees() {
 			CurrentNodeTypeFee::<T>::insert(
@@ -2228,6 +2288,7 @@ pub mod pallet {
 				
 				// Remove metrics for the main node
 				T::MetricsInfo::remove_metrics(main_node_id.clone());
+				T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 				
 				// Remove the node from LinkedNodes if it exists
 				let main_node_linked_nodes = LinkedNodes::<T>::get(&main_node_id);
@@ -2257,6 +2318,7 @@ pub mod pallet {
 			ColdkeyNodeRegistration::<T>::remove(node_id.clone());
 			LinkedNodes::<T>::remove(node_id.clone());
 			T::MetricsInfo::remove_metrics(node_id.clone());
+			T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}
 
