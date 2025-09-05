@@ -139,7 +139,7 @@ pub mod pallet {
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
 			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-			let mut geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+			let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
 			for miner in all_miners {
 				if miner.node_type != NodeType::StorageMiner {

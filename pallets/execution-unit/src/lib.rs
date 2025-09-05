@@ -358,6 +358,15 @@ pub mod pallet {
 				Self::update_all_active_miners_reputation();
 			}
 
+			// Clean up NodeMetrics if miner_id is empty , will be removed in next upgrade
+			NodeMetrics::<T>::iter().for_each(|(node_id, mut metrics)| {
+				if metrics.miner_id.is_empty() {
+					log::warn!("Found empty miner_id for node_id: {:?}, fixing...", node_id);
+					metrics.miner_id = node_id.clone();
+					NodeMetrics::<T>::insert(&node_id, metrics);
+				}
+			});
+
 			Weight::zero()
 		}
 
@@ -509,6 +518,7 @@ pub mod pallet {
 			let metrics = NodeMetrics::<T>::get(&node_id).map_or_else(
 				create_default_metrics, // Create default metrics if none exist
 				|mut existing_metrics| {
+					existing_metrics.miner_id = node_id.clone();
 					// Update existing metrics
 					existing_metrics.bandwidth_mbps = system_info.network_bandwidth_mb_s;
 					// converting mbs into bytes
@@ -632,7 +642,7 @@ pub mod pallet {
 			if recent_downtime_hours != 0 && recent_downtime_hours != u32::MAX {
 				metrics.recent_downtime_hours = recent_downtime_hours;
 			}
-
+			metrics.miner_id = node_id.clone();
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
 
