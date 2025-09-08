@@ -213,19 +213,6 @@ impl NodeMetricsData {
         total_overall_pin_score = total_overall_pin_score + metrics.total_pin_checks;
         total_successfull_overall_pin_score = total_successfull_overall_pin_score + metrics.successful_pin_checks;
 
-        // Calculate storage proof score (main component)
-        let storage_proof_score = Self::calculate_storage_proof_score::<T>(
-            metrics, 
-            total_pin_checks, 
-            successful_pin_checks,
-            metrics.miner_id.clone(),
-        );
-
-        // Calculate ping score separately
-        let ping_score = Self::calculate_ping_score(
-            total_ping_checks,
-            successful_ping_checks,
-        );
 
         let overall_pin_score = Self::calculate_overall_pin_score::<T>(
             total_overall_pin_score,
@@ -254,26 +241,15 @@ impl NodeMetricsData {
             total
         };
         let file_size_score = Self::calculate_file_size_score::<T>(total_file_size);
-     
-        // Get reputation points and calculate modifier
-        // let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
-        // let reputation_modifier = Self::calculate_reputation_bonus(reputation_points);
-
-        // Calculate diversity score (unchanged)
-        let _diversity_score =
-            (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
         
-        // New base weight calculation: 60% storage proof, 10% ping score, overall_pin_score 5% 
         let base_weight = (
-            // storage_proof_score.saturating_mul(20) + ping_score.saturating_mul(10) + 
             overall_pin_score.saturating_mul(20) + file_size_score.saturating_mul(80))
         .saturating_div(100);
-        log::info!(
-            "Base weight: {}, Storage proof score: {}, Ping score: {}, Overall pin score: {}, File size score: {}",
-            base_weight, storage_proof_score, ping_score, overall_pin_score, file_size_score
-        );
+        // log::info!(
+        //     "Base weight: {}, Storage proof score: {}, Ping score: {}, Overall pin score: {}, File size score: {}",
+        //     base_weight, storage_proof_score, ping_score, overall_pin_score, file_size_score
+        // );
         
-        // Apply reputation modifier
         let final_weight = (base_weight)
             .max(1)
             .min(Self::MAX_SCORE as u64);
@@ -338,9 +314,9 @@ impl NodeMetricsData {
         file_size_bytes: u128,
     ) -> u64 {
         const MB: u128 = 1_048_576; // 1 MB in bytes
-        const MIN_SCORE: u64 = 1_000;   // Minimum score (10x increase)
-        const MAX_SCORE: u64 = 100_000; // Maximum score (10x increase)
-        const SCALE_FACTOR: u128 = 1_000_000; // Same scaling precision
+        const MIN_SCORE: u64 = 100;     // Minimum score (1x)
+        const MAX_SCORE: u64 = 10_000;  // Maximum score (100x)
+        const SCALE_FACTOR: u128 = 1_000_000; // Scaling precision
 
         if file_size_bytes == 0 {
             return MIN_SCORE;
@@ -354,15 +330,15 @@ impl NodeMetricsData {
         // Calculate percentage of total network storage (0-100% scaled by SCALE_FACTOR)
         let percentage_scaled = (file_size_bytes * SCALE_FACTOR) / total_size;
 
-        // Updated exponential scaling curve (1,000-100,000)
+        // Updated scoring curve (100-10,000)
         let score = if percentage_scaled < 1_000 {          // <0.1% of network
-            MIN_SCORE + percentage_scaled as u64           // 1,000-2,000 (10x)
+            MIN_SCORE + (percentage_scaled as u64 / 10)     // 100-200
         } else if percentage_scaled < 10_000 {             // 0.1%-1%
-            2_000 + (percentage_scaled as u64 * 2)         // 2,000-20,000 (10x)
+            200 + (percentage_scaled as u64 / 100) * 2     // 200-400
         } else if percentage_scaled < 100_000 {            // 1%-10%
-            20_000 + (percentage_scaled as u64 * 5)        // 20,000-70,000 (10x)
-        } else {                                          // >10%
-            70_000 + (percentage_scaled as u64 / 2)        // 70,000-120,000 (capped at 100k)
+            400 + (percentage_scaled as u64 / 1_000) * 10  // 400-1,400
+        } else {                                           // >10%
+            1_400 + (percentage_scaled as u64 / 10_000)    // 1,400-2,400 (capped at 10,000)
         };
 
         // Ensure we stay within bounds
