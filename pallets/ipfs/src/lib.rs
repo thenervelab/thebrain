@@ -1026,6 +1026,126 @@ pub mod pallet {
 			Ok(().into())
 		}
 
+		#[pallet::call_index(17)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn close_storage_requests(
+			origin: OriginFor<T>,
+			file_hashes: Vec<FileHash>,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check if the input is not empty
+			ensure!(!file_hashes.is_empty(), Error::<T>::InvalidInput);
+
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
+			ensure!(
+				user_requests_count + 1 <= max_requests_per_block, 
+				Error::<T>::TooManyRequests
+			);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(
+				&BoundedVec::truncate_from(node_info.node_id.clone()), 
+				user_requests_count + 1
+			);
+
+			for file_hash in file_hashes {
+				// Convert file hash to a consistent format for storage lookup
+				let file_hash_key = hex::encode(file_hash.clone());
+				let update_hash_vec: Vec<u8> = file_hash_key.into();
+
+				let update_hash: FileHash = BoundedVec::try_from(update_hash_vec)
+					.map_err(|_| Error::<T>::StorageOverflow)?;
+
+				// Remove the storage request
+				<UserStorageRequests<T>>::remove(
+					main_account.clone(), 
+					update_hash.clone()
+				);
+			}
+			
+			Ok(().into())
+		}
+
+		#[pallet::call_index(18)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn close_unpin_requests(
+			origin: OriginFor<T>,
+			file_hashes: Vec<FileHash>,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check if the input is not empty
+			ensure!(!file_hashes.is_empty(), Error::<T>::InvalidInput);
+
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
+			ensure!(
+				user_requests_count + 1 <= max_requests_per_block, 
+				Error::<T>::TooManyRequests
+			);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(
+				&BoundedVec::truncate_from(node_info.node_id.clone()), 
+				user_requests_count + 1
+			);
+
+			for file_hash in file_hashes {
+				// Convert file hash to a consistent format for storage lookup
+				let file_hash_key = hex::encode(file_hash.clone());
+				let update_hash_vec: Vec<u8> = file_hash_key.into();
+
+				let update_hash: FileHash = BoundedVec::try_from(update_hash_vec)
+					.map_err(|_| Error::<T>::StorageOverflow)?;
+
+				// Remove the specific file hash from UserUnpinRequests
+				UserUnpinRequests::<T>::mutate(|requests| {
+					if let Some(pos) = requests.iter().position(|req| req.file_hash == file_hash) {
+						requests.remove(pos);
+					}
+				});
+			}
+			
+			Ok(().into())
+		}
 	}
 
 	impl<T: Config> Pallet<T>{
