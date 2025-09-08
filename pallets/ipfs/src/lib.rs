@@ -974,6 +974,13 @@ pub mod pallet {
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
 
+			// Check if the signer is the current selected validator of the epoch
+			let current_validator = Self::select_validator()?;
+			ensure!(
+				main_account == current_validator,
+				Error::<T>::NotCurrentEpochValidator
+			);
+
 			// Clear all existing UserProfiles
 			for (account_id, _) in <UserProfile<T>>::iter() {
 				<UserProfile<T>>::remove(account_id);
@@ -1008,7 +1015,11 @@ pub mod pallet {
 			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 			let node_info = node_info.unwrap();
-			// Check if the signer is the current selected validator of epoch
+		
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check if the signer is the current selected validator of the epoch
 			let current_validator = Self::select_validator()?;
 			ensure!(
 				main_account == current_validator,
@@ -1051,6 +1062,13 @@ pub mod pallet {
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
 
+			// Check if the signer is the current selected validator of the epoch
+			let current_validator = Self::select_validator()?;
+			ensure!(
+				main_account == current_validator,
+				Error::<T>::NotCurrentEpochValidator
+			);
+
 			// Check if the input is not empty
 			ensure!(!file_hashes.is_empty(), Error::<T>::InvalidInput);
 
@@ -1077,10 +1095,11 @@ pub mod pallet {
 					.map_err(|_| Error::<T>::StorageOverflow)?;
 
 				// Remove the storage request
-				<UserStorageRequests<T>>::remove(
-					main_account.clone(), 
-					update_hash.clone()
-				);
+				let accounts = UserStorageRequests::<T>::iter_keys().collect::<Vec<_>>();
+                for (account, _) in accounts.into_iter().filter(|(_, h)| h == &update_hash) {
+                    <UserStorageRequests<T>>::remove(account, update_hash.clone());
+                }
+
 			}
 			
 			Ok(().into())
@@ -1110,6 +1129,13 @@ pub mod pallet {
 
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check if the signer is the current selected validator of the epoch
+			let current_validator = Self::select_validator()?;
+			ensure!(
+				main_account == current_validator,
+				Error::<T>::NotCurrentEpochValidator
+			);
 
 			// Check if the input is not empty
 			ensure!(!file_hashes.is_empty(), Error::<T>::InvalidInput);

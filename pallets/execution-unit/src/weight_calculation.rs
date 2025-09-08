@@ -10,10 +10,6 @@ impl NodeMetricsData {
     const MAX_SCORE: u32 = 65535; // 16-bit maximum
     const INTERNAL_SCALING: u32 = 1_000_000;
     const MIN_PIN_CHECKS: u32 = 1; // Minimum pin checks for valid scoring
-    // const SLASH_THRESHOLD: u32 = 1; // Number of failed storage proofs before slashing
-    // const REPUTATION_NEUTRAL: u32 = 1000; // Neutral reputation points
-    // const REPUTATION_BOOST_NEW: u32 = 1100; // Initial boost for new coldkeys
-    // const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024 ; // 1GB as max file size for scoring
 
     fn calculate_storage_proof_score<T: ipfs_pallet::Config>(
         metrics: &NodeMetricsData,
@@ -260,16 +256,17 @@ impl NodeMetricsData {
         let file_size_score = Self::calculate_file_size_score::<T>(total_file_size);
      
         // Get reputation points and calculate modifier
-        let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
-        let reputation_modifier = Self::calculate_reputation_bonus(reputation_points);
+        // let reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
+        // let reputation_modifier = Self::calculate_reputation_bonus(reputation_points);
 
         // Calculate diversity score (unchanged)
         let _diversity_score =
             (Self::calculate_diversity_score(metrics, geo_distribution) as u64).saturating_div(100);
         
         // New base weight calculation: 60% storage proof, 10% ping score, overall_pin_score 5% 
-        let base_weight = (storage_proof_score.saturating_mul(20) + ping_score.saturating_mul(10) + 
-                           overall_pin_score.saturating_mul(15) + file_size_score.saturating_mul(55))
+        let base_weight = (
+            // storage_proof_score.saturating_mul(20) + ping_score.saturating_mul(10) + 
+            overall_pin_score.saturating_mul(20) + file_size_score.saturating_mul(80))
         .saturating_div(100);
         log::info!(
             "Base weight: {}, Storage proof score: {}, Ping score: {}, Overall pin score: {}, File size score: {}",
@@ -278,7 +275,6 @@ impl NodeMetricsData {
         
         // Apply reputation modifier
         let final_weight = (base_weight)
-            .saturating_add(reputation_modifier) // modifier is now a u32 bonus
             .max(1)
             .min(Self::MAX_SCORE as u64);
 
