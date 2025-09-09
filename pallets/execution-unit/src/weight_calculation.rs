@@ -139,7 +139,7 @@ impl NodeMetricsData {
 
     fn calculate_reputation_bonus(reputation_points: u32) -> u64 {
         match reputation_points {
-            0 => 0,             // No bonus
+            0 => 0,              // No bonus
             1..=499 => 20,       // Small bonus
             500..=999 => 50,     // Medium bonus
             1000..=1499 => 100,  // Good bonus
@@ -245,10 +245,6 @@ impl NodeMetricsData {
         let base_weight = (
             overall_pin_score.saturating_mul(20) + file_size_score.saturating_mul(80))
         .saturating_div(100);
-        // log::info!(
-        //     "Base weight: {}, Storage proof score: {}, Ping score: {}, Overall pin score: {}, File size score: {}",
-        //     base_weight, storage_proof_score, ping_score, overall_pin_score, file_size_score
-        // );
         
         let final_weight = (base_weight)
             .max(1)
@@ -256,7 +252,7 @@ impl NodeMetricsData {
 
         let previous_rankings = pallet_rankings::Pallet::<T>::get_node_ranking(metrics.miner_id.clone());
 
-        // Blend with previous weight using integer arithmetic (10% new, 90% old) if previous ranking exists
+        // Blend with previous weight using integer arithmetic (30% new, 70% old) if previous ranking exists
         let updated_weight = match previous_rankings {
             Some(rankings) => {
                 // Ensure at least weight of 1 after blending
@@ -310,39 +306,58 @@ impl NodeMetricsData {
             .saturating_div(100)
     }
 
+
     fn calculate_file_size_score<T: ipfs_pallet::Config>(
         file_size_bytes: u128,
     ) -> u64 {
-        const MB: u128 = 1_048_576; // 1 MB in bytes
-        const MIN_SCORE: u64 = 100;     // Minimum score (1x)
-        const MAX_SCORE: u64 = 10_000;  // Maximum score (100x)
-        const SCALE_FACTOR: u128 = 1_000_000; // Scaling precision
+        const MIN_SCORE: u64 = 500;     // Baseline score for any storage
+        const MAX_SCORE: u64 = 60000;   // Aiming for a high max score to allow final weights up to 15k-20k+
+        const SCALE_FACTOR: u128 = 1_000_000; // 1,000,000 represents 100%
 
         if file_size_bytes == 0 {
+            return MIN_SCORE; // Even with 0 bytes, a baseline is given.
+        }
+
+        let total_network_storage = ipfs_pallet::Pallet::<T>::get_total_network_storage();
+        if total_network_storage == 0 {
             return MIN_SCORE;
         }
 
-        let total_size = ipfs_pallet::Pallet::<T>::get_total_network_storage();
-        if total_size == 0 {
-            return MIN_SCORE;
+        // Calculate percentage of total network storage (0-1_000_000 for 0% to 100%)
+        let percentage_scaled = (file_size_bytes * SCALE_FACTOR) / total_network_storage;
+
+        let score: u64;
+
+        // More granular piecewise function for smoother score curve
+        if percentage_scaled <= 1_000 { // 0% to 0.1% of network (0 - 1,000 PPM)
+            // From MIN_SCORE (500) to 1,000 (500 points increase over 0.1%)
+            score = MIN_SCORE + (percentage_scaled as u64 * 500) / 1_000;
+        } else if percentage_scaled <= 10_000 { // 0.1% to 1% of network (1,001 - 10,000 PPM)
+            // From 1,000 to 5,000 (4,000 points increase over 0.9%)
+            score = 1_000 + ((percentage_scaled - 1_000) as u64 * 4_000) / 9_000;
+        } else if percentage_scaled <= 100_000 { // 1% to 10% of network (10,001 - 100,000 PPM)
+            // From 5,000 to 15,000 (10,000 points increase over 9%)
+            score = 5_000 + ((percentage_scaled - 10_000) as u64 * 10_000) / 90_000;
+        } else if percentage_scaled <= 300_000 { // 10% to 30% of network (100,001 - 300,000 PPM)
+            // From 15,000 to 25,000 (10,000 points increase over 20%)
+            score = 15_000 + ((percentage_scaled - 100_000) as u64 * 10_000) / 200_000;
+        } else if percentage_scaled <= 500_000 { // 30% to 50% of network (300,001 - 500,000 PPM)
+            // From 25,000 to 35,000 (10,000 points increase over 20%)
+            score = 25_000 + ((percentage_scaled - 300_000) as u64 * 10_000) / 200_000;
+        } else if percentage_scaled <= 700_000 { // 50% to 70% of network (500,001 - 700,000 PPM)
+            // From 35,000 to 45,000 (10,000 points increase over 20%)
+            score = 35_000 + ((percentage_scaled - 500_000) as u64 * 10_000) / 200_000;
+        } else if percentage_scaled <= 850_000 { // 70% to 85% of network (700,001 - 850,000 PPM)
+            // From 45,000 to 52,500 (7,500 points increase over 15%)
+            score = 45_000 + ((percentage_scaled - 700_000) as u64 * 7_500) / 150_000;
+        } else { // 85% to 100% of network (850,001 - 1,000,000 PPM)
+            // From 52,500 to MAX_SCORE (60,000) (7,500 points increase over 15%)
+            score = 52_500 + ((percentage_scaled - 850_000) as u64 * 7_500) / 150_000;
         }
-
-        // Calculate percentage of total network storage (0-100% scaled by SCALE_FACTOR)
-        let percentage_scaled = (file_size_bytes * SCALE_FACTOR) / total_size;
-
-        // Updated scoring curve (100-10,000)
-        let score = if percentage_scaled < 1_000 {          // <0.1% of network
-            MIN_SCORE + (percentage_scaled as u64 / 10)     // 100-200
-        } else if percentage_scaled < 10_000 {             // 0.1%-1%
-            200 + (percentage_scaled as u64 / 100) * 2     // 200-400
-        } else if percentage_scaled < 100_000 {            // 1%-10%
-            400 + (percentage_scaled as u64 / 1_000) * 10  // 400-1,400
-        } else {                                           // >10%
-            1_400 + (percentage_scaled as u64 / 10_000)    // 1,400-2,400 (capped at 10,000)
-        };
-
-        // Ensure we stay within bounds
+ 
+        // Ensure we stay within the defined MIN_SCORE and MAX_SCORE
         score.max(MIN_SCORE).min(MAX_SCORE)
     }
+
 
 }
