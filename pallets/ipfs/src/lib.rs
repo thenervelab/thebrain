@@ -297,7 +297,9 @@ pub mod pallet {
 		UserIsBlacklisted,
 		InvalidAccountId,
 		NotCurrentEpochValidator,
-		FileSizeOverflow
+		FileSizeOverflow,
+		NotAuthorized,
+		StorageRequestFailed
 	}
 
 	// the file size where the key is encoded file hash
@@ -1172,6 +1174,93 @@ pub mod pallet {
 			
 			Ok(().into())
 		}
+
+		#[pallet::call_index(19)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn submit_storage_request_for_user(
+			origin: OriginFor<T>,
+			owner: T::AccountId,
+			file_inputs: Vec<FileInput>
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check if the signer is the current selected validator of the epoch
+			let current_validator = Self::select_validator()?;
+			ensure!(
+				main_account == current_validator,
+				Error::<T>::NotCurrentEpochValidator
+			);
+
+			// Process the storage request
+			Self::process_storage_request(owner, file_inputs, None)
+			.map_err(|e| {
+				log::error!("Failed to process storage request: {:?}", e);
+				Error::<T>::StorageRequestFailed
+			})?;
+		
+			Ok(())
+		}
+
+		#[pallet::call_index(20)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn submit_unpin_request_for_user(
+			origin: OriginFor<T>,
+			owner: T::AccountId,
+			file_hashes: Vec<FileHash>
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check if the signer is the current selected validator of the epoch
+			let current_validator = Self::select_validator()?;
+			ensure!(
+				main_account == current_validator,
+				Error::<T>::NotCurrentEpochValidator
+			);
+
+			for file_hash in file_hashes {
+				Self::process_unpin_request(file_hash, owner.clone())
+				.map_err(|e| {
+					log::error!("Failed to process storage request: {:?}", e);
+					Error::<T>::StorageRequestFailed
+				})?;
+			}
+
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T>{
@@ -1557,7 +1646,7 @@ pub mod pallet {
 					log::info!("Error making Request: {:?}", err);
 					sp_runtime::offchain::http::Error::IoError
 				})?;
-		
+
 			// Get the response
 			let response = pending
 				.try_wait(deadline)
@@ -1565,7 +1654,7 @@ pub mod pallet {
 					log::info!("Error getting Response: {:?}", err);
 					sp_runtime::offchain::http::Error::DeadlineReached
 				})??;
-		
+
 			if response.code != 200 {
 				log::info!("Unexpected status code: {}", response.code);
 				return Err(http::Error::Unknown);
@@ -1922,7 +2011,7 @@ pub mod pallet {
 					let created_at = request["created_at"].as_u64().unwrap_or(0) as u32;
 
 					let miner_ids_vec: Vec<Vec<u8>> = Vec::new();
-
+		
 					// Fetch file size
 					let file_size = match Self::fetch_ipfs_file_size(file_hash.to_vec()) {
 						Ok(size) => size,
