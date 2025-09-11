@@ -173,13 +173,13 @@ pub mod pallet {
 			let sub_account_count = SubAccount::<T>::iter()
 			.filter(|(_k, v)| v == &main)
 			.count() as u32;
-		
+			
 			ensure!(
 				sub_account_count < T::MaxSubAccountsLimit::get(),
 				Error::<T>::TooManySubAccounts
 			);
-
-		    // Only transfer if new sub-account's balance is below existential deposit
+		    
+			// Only transfer if new sub-account's balance is below existential deposit
 			let sub_account_balance = T::Currency::free_balance(&new_sub_account);
 			if sub_account_balance < T::ExistentialDeposit::get() {
 				T::Currency::transfer(

@@ -263,6 +263,16 @@ pub mod pallet {
 			new_validator: T::AccountId,
 			epoch_start_block: BlockNumberFor<T>,
 		},
+		/// Emitted when storage requests are closed by the validator
+		StorageRequestsClosed {
+			validator: T::AccountId,
+			file_hashes: Vec<FileHash>,
+		},
+		/// Emitted when unpin requests are closed by the validator
+		UnpinRequestsClosed {
+			validator: T::AccountId,
+			file_hashes: Vec<FileHash>,
+		},
 	}
 
 	#[pallet::error]
@@ -1088,7 +1098,7 @@ pub mod pallet {
 				user_requests_count + 1
 			);
 
-			for file_hash in file_hashes {
+			for file_hash in &file_hashes {
 				// Convert file hash to a consistent format for storage lookup
 				let file_hash_key = hex::encode(file_hash.clone());
 				let update_hash_vec: Vec<u8> = file_hash_key.into();
@@ -1101,8 +1111,13 @@ pub mod pallet {
                 for (account, _) in accounts.into_iter().filter(|(_, h)| h == &update_hash) {
                     <UserStorageRequests<T>>::remove(account, update_hash.clone());
                 }
-
 			}
+
+			// Emit event for closed storage requests
+			Self::deposit_event(Event::StorageRequestsClosed {
+				validator: main_account,
+				file_hashes: file_hashes,
+			});
 			
 			Ok(().into())
 		}
@@ -1156,7 +1171,7 @@ pub mod pallet {
 				user_requests_count + 1
 			);
 
-			for file_hash in file_hashes {
+			for file_hash in &file_hashes {
 				// Convert file hash to a consistent format for storage lookup
 				let file_hash_key = hex::encode(file_hash.clone());
 				let update_hash_vec: Vec<u8> = file_hash_key.into();
@@ -1166,11 +1181,17 @@ pub mod pallet {
 
 				// Remove the specific file hash from UserUnpinRequests
 				UserUnpinRequests::<T>::mutate(|requests| {
-					if let Some(pos) = requests.iter().position(|req| req.file_hash == file_hash) {
+					if let Some(pos) = requests.iter().position(|req| req.file_hash == *file_hash) {
 						requests.remove(pos);
 					}
 				});
 			}
+
+			// Emit event for closed storage requests
+			Self::deposit_event(Event::UnpinRequestsClosed {
+				validator: main_account,
+				file_hashes: file_hashes,
+			});
 			
 			Ok(().into())
 		}
