@@ -1181,7 +1181,7 @@ pub mod pallet {
 
 				// Remove the specific file hash from UserUnpinRequests
 				UserUnpinRequests::<T>::mutate(|requests| {
-					if let Some(pos) = requests.iter().position(|req| req.file_hash == *file_hash) {
+					if let Some(pos) = requests.iter().position(|req| req.file_hash == *update_hash) {
 						requests.remove(pos);
 					}
 				});
