@@ -360,8 +360,6 @@ fn test_skipped_checkpoint_nonce_fails() {
 	});
 }
 
-// ===== Unlock Flow Tests =====
-
 #[test]
 fn test_user_unlock_request() {
 	new_test_ext().execute_with(|| {
