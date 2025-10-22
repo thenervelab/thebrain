@@ -6,6 +6,11 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
+
+pub mod weights;
+
 use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
 	pallet_prelude::*,
@@ -20,10 +25,8 @@ use frame_support::{
 use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
 use sp_core::H256;
-use sp_runtime::traits::AtLeast32BitUnsigned;
-use sp_runtime::traits::Saturating;
-use sp_std::collections::btree_set::BTreeSet;
-use sp_std::prelude::*;
+use sp_runtime::traits::{AtLeast32BitUnsigned, Saturating};
+use sp_std::{collections::btree_set::BTreeSet, prelude::*};
 
 pub use pallet::*;
 
