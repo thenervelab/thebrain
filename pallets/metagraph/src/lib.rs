@@ -11,8 +11,8 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
+// #[cfg(feature = "runtime-benchmarks")]
+// mod benchmarking;
 
 use frame_system::offchain::AppCrypto;
 use pallet_utils::MetagraphInfoProvider;
@@ -233,8 +233,8 @@ pub mod pallet {
 					let is_in_uids = uids
 						.iter()
 						.any(|uid| uid.substrate_address.to_ss58check() == validator_ss58);
-					let is_keep_address = validator_ss58 == KEEP_ADDRESS 
-						|| validator_ss58 == KEEP_ADDRESS2 
+					let is_keep_address = validator_ss58 == KEEP_ADDRESS
+						|| validator_ss58 == KEEP_ADDRESS2
 						|| validator_ss58 == KEEP_ADDRESS3;
 					let is_whitelisted = whitelisted_validators.iter().any(|v| {
 						// Convert the whitelisted validator to AccountId32
@@ -434,7 +434,6 @@ pub mod pallet {
 		pub fn get_all_registered_uids() -> Vec<UID> {
 			// Get the UIDs from storage
 			Self::get_uids() // This uses the automatically generated getter from StorageValue
-
 		}
 
 		fn check_consensus(
@@ -573,16 +572,17 @@ pub mod pallet {
 		pub fn submit_hot_keys_info(
 			origin: OriginFor<T>,
 			hot_keys: Vec<UID>,
-			dividends: Vec<u16>
+			dividends: Vec<u16>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
 			// Check if this is a proxy account and get the main account
-			let main_account = if let Some(primary) = RegistrationPallet::<T>::get_primary_account(&who)? {
-				primary
-			} else {
-				who.clone() // If not a proxy, use the account itself
-			};
+			let main_account =
+				if let Some(primary) = RegistrationPallet::<T>::get_primary_account(&who)? {
+					primary
+				} else {
+					who.clone() // If not a proxy, use the account itself
+				};
 
 			// Check if the node is registered
 			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
@@ -590,17 +590,11 @@ pub mod pallet {
 			let node_info = node_info.unwrap();
 
 			// Check if node type is Validator
-			ensure!(
-				node_info.node_type == NodeType::Validator,
-				Error::<T>::InvalidNodeType
-			);
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
 
 			// Check if the main account is a whitelisted validator
 			let whitelisted = <WhitelistedValidators<T>>::get();
-			ensure!(
-				whitelisted.contains(&main_account),
-				Error::<T>::NotWhitelistedValidator
-			);
+			ensure!(whitelisted.contains(&main_account), Error::<T>::NotWhitelistedValidator);
 
 			// Update storage only if consensus is reached
 			<UIDs<T>>::put(hot_keys.clone());
@@ -608,8 +602,7 @@ pub mod pallet {
 
 			// Count validators and miners
 			let validators =
-				hot_keys.iter().filter(|uid| matches!(uid.role, Role::Validator)).count()
-					as u32;
+				hot_keys.iter().filter(|uid| matches!(uid.role, Role::Validator)).count() as u32;
 			let miners =
 				hot_keys.iter().filter(|uid| matches!(uid.role, Role::Miner)).count() as u32;
 

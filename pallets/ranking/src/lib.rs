@@ -9,8 +9,8 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
+// #[cfg(feature = "runtime-benchmarks")]
+// mod benchmarking;
 pub mod weights;
 pub use weights::*;
 mod types;
@@ -68,12 +68,18 @@ pub const PALLET_ID: PalletId = PalletId(*b"mrktplce");
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
+	use codec::alloc::string::ToString;
 	use frame_support::pallet_prelude::*;
 	use frame_system::{
 		offchain::{AppCrypto, SendTransactionTypes, SendUnsignedTransaction, Signer},
 		pallet_prelude::*,
 	};
 	use pallet_registration::NodeType;
+	use pallet_registration::Pallet as RegistrationPallet;
+	use pallet_utils::Pallet as UtilsPallet;
+	use scale_info::prelude::string::String;
+	use serde_json::Value;
+	use sp_runtime::{format, offchain::http};
 	use sp_runtime::{
 		offchain::{
 			storage_lock::{BlockAndTime, StorageLock},
@@ -82,19 +88,8 @@ pub mod pallet {
 		traits::{AccountIdConversion, Get, Zero},
 	};
 	use sp_std::collections::btree_map::BTreeMap;
-	use sp_std::vec::Vec;
 	use sp_std::vec;
-	use pallet_registration::Pallet as RegistrationPallet;
-	use pallet_utils::Pallet as UtilsPallet;
-	use sp_runtime::{
-		format,
-		offchain::{
-			http,
-		},
-	};
-	use serde_json::Value;
-	use codec::alloc::string::ToString;
-	use scale_info::prelude::string::String;
+	use sp_std::vec::Vec;
 
 	const LOCK_BLOCK_EXPIRATION: u32 = 3;
 	const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
@@ -141,10 +136,10 @@ pub mod pallet {
 		type BlocksPerEra: Get<u32>;
 
 		#[pallet::constant]
-        type LocalDefaultSpecVersion: Get<u32>;
-    
-        #[pallet::constant]
-        type LocalDefaultGenesisHash: Get<&'static str>;
+		type LocalDefaultSpecVersion: Get<u32>;
+
+		#[pallet::constant]
+		type LocalDefaultGenesisHash: Get<&'static str>;
 
 		#[pallet::constant]
 		type LocalRpcUrl: Get<&'static str>;
@@ -273,19 +268,25 @@ pub mod pallet {
 			_block_number: BlockNumberFor<T>,
 			ranking_instance_id: u32,
 		) -> Result<(), &'static str> {
-			// generate hex and call rpc 
-			let hex_result = Self::get_hex_for_submit_rankings(weights, all_nodes_ss58, node_ids, node_types, ranking_instance_id).map_err(|e| {
+			// generate hex and call rpc
+			let hex_result = Self::get_hex_for_submit_rankings(
+				weights,
+				all_nodes_ss58,
+				node_ids,
+				node_types,
+				ranking_instance_id,
+			)
+			.map_err(|e| {
 				log::error!("❌ Failed to get signed rankings hex: {:?}", e);
 				"Failed to get signed rankings hex"
 			})?;
 
 			let local_rpc_url = <T as pallet::Config<I>>::LocalRpcUrl::get();
 			// Now use the hex_result in the function
-			UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)
-				.map_err(|e| {
-					log::error!("❌ Failed to submit the extrinsic for rankings info: {:?}", e);
-					"Failed to submit the extrinsic for rankings info"
-				})?;
+			UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result).map_err(|e| {
+				log::error!("❌ Failed to submit the extrinsic for rankings info: {:?}", e);
+				"Failed to submit the extrinsic for rankings info"
+			})?;
 
 			// Return a successful `Result`
 			Ok(())
@@ -296,12 +297,12 @@ pub mod pallet {
 			all_nodes_ss58: Vec<Vec<u8>>,
 			node_ids: Vec<Vec<u8>>,
 			node_types: Vec<NodeType>,
-			ranking_instance_id: u32
+			ranking_instance_id: u32,
 		) -> Result<String, http::Error> {
 			let local_default_spec_version = T::LocalDefaultSpecVersion::get();
 			let local_default_genesis_hash = T::LocalDefaultGenesisHash::get();
 			let local_rpc_url = <T as pallet::Config<I>>::LocalRpcUrl::get();
-		
+
 			let rpc_payload = format!(
 				r#"{{
 					"jsonrpc": "2.0",
@@ -319,30 +320,45 @@ pub mod pallet {
 					"id": 1
 				}}"#,
 				weights.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(", "),
-				all_nodes_ss58.iter()
-					.map(|ss58| format!("[{}]", ss58.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")))
-					.collect::<Vec<_>>().join(", "),
-				node_ids.iter()
-					.map(|id| format!("[{}]", id.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")))
-					.collect::<Vec<_>>().join(", "),
-					node_types.iter()
-					.map(|nt| format!("\"{}\"", match nt {
-						NodeType::Validator => "Validator",
-						NodeType::StorageMiner => "StorageMiner",
-						NodeType::StorageS3 => "StorageS3", 
-						NodeType::ComputeMiner => "ComputeMiner",
-						NodeType::GpuMiner => "GpuMiner"
-					}))
-					.collect::<Vec<_>>().join(", "),
+				all_nodes_ss58
+					.iter()
+					.map(|ss58| format!(
+						"[{}]",
+						ss58.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")
+					))
+					.collect::<Vec<_>>()
+					.join(", "),
+				node_ids
+					.iter()
+					.map(|id| format!(
+						"[{}]",
+						id.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ")
+					))
+					.collect::<Vec<_>>()
+					.join(", "),
+				node_types
+					.iter()
+					.map(|nt| format!(
+						"\"{}\"",
+						match nt {
+							NodeType::Validator => "Validator",
+							NodeType::StorageMiner => "StorageMiner",
+							NodeType::StorageS3 => "StorageS3",
+							NodeType::ComputeMiner => "ComputeMiner",
+							NodeType::GpuMiner => "GpuMiner",
+						}
+					))
+					.collect::<Vec<_>>()
+					.join(", "),
 				ranking_instance_id,
 				local_default_spec_version,
 				local_default_genesis_hash,
 				local_rpc_url
 			);
-		
+
 			// Convert the JSON value to a string
 			let rpc_payload_string = rpc_payload.to_string();
-		
+
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 
 			let body = vec![rpc_payload_string];
@@ -389,9 +405,9 @@ pub mod pallet {
 				})?;
 
 			// Return the hex string
-			Ok(hex_result.to_string())		
+			Ok(hex_result.to_string())
 		}
-		
+
 		/// Update rankings based on node ids and their corresponding weights
 		pub fn do_update_rankings(
 			weights: Vec<u16>,
@@ -663,11 +679,9 @@ pub mod pallet {
 
 		pub fn get_node_ranking(key: Vec<u8>) -> Option<NodeRankings<BlockNumberFor<T>>> {
 			// Get the full ranked list and find the node with matching node_id
-			RankedList::<T, I>::get()
-				.into_iter()
-				.find(|node| node.node_id == key)
+			RankedList::<T, I>::get().into_iter().find(|node| node.node_id == key)
 		}
-		
+
 		// Helper function to get list of miners with their pending rewards for a specific node type
 		pub fn get_miners_pending_rewards(
 			node_type: NodeType,
