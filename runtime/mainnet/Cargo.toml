@@ -195,6 +195,7 @@ runtime-benchmarks = [
     "pallet-hotfix-sufficients/runtime-benchmarks",
 
     # Hippius
+    "pallet-alpha-bridge/runtime-benchmarks",
 
     "xcm-builder/runtime-benchmarks",
 ]

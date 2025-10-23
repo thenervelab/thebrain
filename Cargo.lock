@@ -6611,7 +6611,6 @@ dependencies = [
  "log",
  "pallet-balances",
  "pallet-ip",
- "pallet-marketplace",
  "pallet-timestamp",
  "parity-scale-codec",
  "scale-info",
