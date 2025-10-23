@@ -11,6 +11,7 @@ mod benchmarking;
 
 pub mod weights;
 
+use crate::weights::WeightInfo;
 use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
 	pallet_prelude::*,
@@ -107,6 +108,9 @@ pub mod pallet {
 			+ Copy
 			+ TryFrom<BalanceOf<Self>>
 			+ Into<<Self as pallet_balances::Config>::Balance>;
+
+		/// Weight information for extrinsics in this pallet.
+		type WeightInfo: WeightInfo;
 	}
 
 	/// Tracks which deposit IDs have been fully processed (prevents replay attacks)
@@ -292,10 +296,10 @@ pub mod pallet {
 		/// * `deposits` - Vector of deposit proposals
 		/// * `checkpoint_nonce` - Bittensor checkpoint nonce (must be sequential)
 		#[pallet::call_index(0)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::propose_deposits(deposits.len() as u32))]
 		pub fn propose_deposits(
 			origin: OriginFor<T>,
-			deposits: Vec<DepositProposal<T::AccountId>>, // TODO use BoundedVec?
+			deposits: Vec<DepositProposal<T::AccountId>>,
 			checkpoint_nonce: u64,
 		) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
@@ -365,7 +369,7 @@ pub mod pallet {
 		/// * `deposit_id` - The deposit ID to vote on
 		/// * `approve` - True to approve, false to deny
 		#[pallet::call_index(1)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_deposit())]
 		pub fn attest_deposit(
 			origin: OriginFor<T>,
 			deposit_id: DepositId,
@@ -423,7 +427,7 @@ pub mod pallet {
 		/// * `amount` - Amount of halpha to burn
 		/// * `bittensor_coldkey` - Destination address on Bittensor chain
 		#[pallet::call_index(2)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::request_unlock())]
 		pub fn request_unlock(
 			origin: OriginFor<T>,
 			amount: u128,
@@ -473,7 +477,7 @@ pub mod pallet {
 		/// * `burn_id` - The burn ID to vote on
 		/// * `approve` - True to approve, false to deny
 		#[pallet::call_index(3)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_unlock())]
 		pub fn attest_unlock(
 			origin: OriginFor<T>,
 			burn_id: BurnId,
@@ -532,7 +536,7 @@ pub mod pallet {
 		/// * `origin` - Can be any signed account
 		/// * `deposit_id` - The deposit ID to expire
 		#[pallet::call_index(4)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::expire_pending_deposit())]
 		pub fn expire_pending_deposit(
 			origin: OriginFor<T>,
 			deposit_id: DepositId,
@@ -565,7 +569,7 @@ pub mod pallet {
 		/// * `origin` - Can be any signed account
 		/// * `burn_id` - The burn ID to expire
 		#[pallet::call_index(5)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::expire_pending_unlock())]
 		pub fn expire_pending_unlock(origin: OriginFor<T>, burn_id: BurnId) -> DispatchResult {
 			ensure_signed(origin)?;
 
@@ -601,7 +605,7 @@ pub mod pallet {
 		/// * `origin` - Must be root
 		/// * `guardian` - Account to add as guardian
 		#[pallet::call_index(6)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::add_guardian(Guardians::<T>::get().len() as u32))]
 		pub fn add_guardian(origin: OriginFor<T>, guardian: T::AccountId) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -619,7 +623,7 @@ pub mod pallet {
 		/// * `origin` - Must be root
 		/// * `guardian` - Account to remove from guardians
 		#[pallet::call_index(7)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::remove_guardian(Guardians::<T>::get().len() as u32))]
 		pub fn remove_guardian(origin: OriginFor<T>, guardian: T::AccountId) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -652,7 +656,7 @@ pub mod pallet {
 		/// * `origin` - Must be root
 		/// * `threshold` - Minimum number of approve votes needed
 		#[pallet::call_index(8)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_approve_threshold())]
 		pub fn set_approve_threshold(origin: OriginFor<T>, threshold: u16) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -673,7 +677,7 @@ pub mod pallet {
 		/// * `origin` - Must be root
 		/// * `threshold` - Minimum number of deny votes needed
 		#[pallet::call_index(9)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_deny_threshold())]
 		pub fn set_deny_threshold(origin: OriginFor<T>, threshold: u16) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -694,7 +698,7 @@ pub mod pallet {
 		/// * `origin` - Must be root
 		/// * `paused` - True to pause, false to unpause
 		#[pallet::call_index(10)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_paused())]
 		pub fn set_paused(origin: OriginFor<T>, paused: bool) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -710,7 +714,7 @@ pub mod pallet {
 		/// * `origin` - Must be root
 		/// * `cap` - Maximum total halpha that can be minted
 		#[pallet::call_index(11)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_global_mint_cap())]
 		pub fn set_global_mint_cap(origin: OriginFor<T>, cap: u128) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -729,7 +733,7 @@ pub mod pallet {
 		/// * `origin` - Must be root
 		/// * `blocks` - Number of blocks before proposals expire
 		#[pallet::call_index(12)]
-		#[pallet::weight(Weight::from_parts(10_000, 0))]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_signature_ttl())]
 		pub fn set_signature_ttl(
 			origin: OriginFor<T>,
 			blocks: BlockNumberFor<T>,

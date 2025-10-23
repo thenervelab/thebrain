@@ -87,6 +87,7 @@ impl pallet_alpha_bridge::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type Balance = Balance;
 	type PalletId = AlphaBridgePalletId;
+	type WeightInfo = ();
 }
 
 // Test accounts
