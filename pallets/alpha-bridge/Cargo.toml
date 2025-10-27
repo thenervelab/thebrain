@@ -29,7 +29,7 @@ sp-io = { workspace = true, default-features = false }
 sp-runtime = { workspace = true, default-features = false }
 pallet-timestamp = { workspace = true, default-features = false }
 pallet-ip = { workspace = true, default-features = false }
-sp-keyring = { workspace = true, default-features = false }
+sp-keyring = { workspace = true }
 
 [features]
 default = ["std"]
