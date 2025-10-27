@@ -1788,6 +1788,8 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
+type Migrations = (pallet_alpha_bridge::migrations::v1::MigrationToV1<Runtime>,);
+
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;
 /// A Block signed with a Justification
@@ -1821,7 +1823,7 @@ pub type Executive = frame_executive::Executive<
 	frame_system::ChainContext<Runtime>,
 	Runtime,
 	AllPalletsWithSystem,
-	// migrations::MigrateSessionKeys<Runtime>,
+	Migrations,
 >;
 
 impl fp_self_contained::SelfContainedCall for RuntimeCall {

@@ -11,6 +11,8 @@ mod benchmarking;
 
 pub mod weights;
 
+pub mod migrations;
+
 use crate::weights::WeightInfo;
 use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
@@ -19,7 +21,7 @@ use frame_support::{
 	traits::{
 		fungible::Mutate,
 		tokens::{Fortitude, Precision, Preservation},
-		Currency, ExistenceRequirement,
+		Currency, ExistenceRequirement, StorageVersion,
 	},
 	PalletId,
 };
@@ -30,6 +32,9 @@ use sp_runtime::traits::{AtLeast32BitUnsigned, Saturating};
 use sp_std::{collections::btree_set::BTreeSet, prelude::*};
 
 pub use pallet::*;
+
+/// The current storage version
+const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -91,6 +96,7 @@ pub mod pallet {
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
+	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
