@@ -1,24 +1,6 @@
 // Migration from V0 to V1
 //
 // This migration removes all old storage items from the previous bridge implementation
-// and transitions to the new guardian-based voting system.
-//
-// Old storage items removed:
-// - ProcessedEvents: Map of processed event proofs
-// - PendingMints: Map of pending mint requests with operator confirmations
-// - PendingBurns: Map of pending burn requests with operator confirmations
-// - Authorities: List of authorized operator accounts
-// - MinRequiredSignatures: Minimum signatures required for operations
-//
-// New storage items (initialized empty, configured via governance after migration):
-// - ProcessedDeposits: Map of processed deposit IDs
-// - PendingDeposits: Map of pending deposit proposals with guardian votes
-// - PendingUnlocks: Map of pending unlock requests with guardian votes
-// - Guardians: List of authorized guardian accounts
-// - ApproveThreshold: Minimum approvals needed
-// - DenyThreshold: Minimum denials needed
-// - And other configuration storage items
-
 extern crate alloc;
 
 use crate::{Config, Pallet};
@@ -37,24 +19,19 @@ const LOG_TARGET: &str = "runtime::alpha-bridge::migration::v1";
 
 // Storage aliases for old V0 storage items that need to be removed
 #[storage_alias]
-type ProcessedEvents<T: Config> = StorageMap<
-	Pallet<T>,
-	Blake2_128Concat,
-	Vec<u8>, // proof (block_hash, event_index)
-	bool,
-	ValueQuery,
->;
+type ProcessedEvents<T: Config> =
+	StorageMap<Pallet<T>, Blake2_128Concat, Vec<u8>, bool, ValueQuery>;
 
 #[storage_alias]
 type PendingMints<T: Config> = StorageMap<
 	Pallet<T>,
 	Blake2_128Concat,
-	Vec<u8>, // proof
+	Vec<u8>,
 	(
 		<T as frame_system::Config>::AccountId,
 		u128,
 		BTreeSet<<T as frame_system::Config>::AccountId>,
-	), // (user, amount, confirmations)
+	),
 	OptionQuery,
 >;
 
@@ -62,13 +39,13 @@ type PendingMints<T: Config> = StorageMap<
 type PendingBurns<T: Config> = StorageMap<
 	Pallet<T>,
 	Blake2_128Concat,
-	u128, // nonce
+	u128,
 	(
-		<T as frame_system::Config>::AccountId,           // user
-		u128,                                             // amount
-		<T as frame_system::Config>::AccountId,           // bittensor_coldkey
-		BTreeSet<<T as frame_system::Config>::AccountId>, // confirmations
-		Option<(Vec<u8>, Vec<u8>)>,                       // (bittensor_block_hash, extrinsic_id)
+		<T as frame_system::Config>::AccountId,
+		u128,
+		<T as frame_system::Config>::AccountId,
+		BTreeSet<<T as frame_system::Config>::AccountId>,
+		Option<(Vec<u8>, Vec<u8>)>,
 	),
 	OptionQuery,
 >;
@@ -104,7 +81,6 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for UncheckedMigrationToV1<T> {
 			min_sigs_exists
 		);
 
-		// Return counts for post-upgrade verification
 		Ok(Vec::new())
 	}
 
@@ -161,11 +137,9 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for UncheckedMigrationToV1<T> {
 	}
 }
 
-/// Versioned migration from V0 to V1
-/// This wraps the unchecked migration with automatic version management
 pub type MigrationToV1<T> = frame_support::migrations::VersionedMigration<
-	0, // From version
-	1, // To version
+	0, // The migration will only execute when the on-chain storage version is 0
+	1, // The on-chain storage version will be set to 1 after the migration is complete
 	UncheckedMigrationToV1<T>,
 	Pallet<T>,
 	<T as frame_system::Config>::DbWeight,
