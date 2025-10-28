@@ -39,8 +39,8 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
+// #[cfg(feature = "runtime-benchmarks")]
+// mod benchmarking;
 
 pub mod weights;
 pub use weights::WeightInfo;
@@ -48,15 +48,15 @@ pub use weights::WeightInfo;
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use frame_support::traits::ExistenceRequirement;
 	use frame_support::traits::Currency;
+	use frame_support::traits::ExistenceRequirement;
 	use frame_support::traits::ReservableCurrency;
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
 
 	type BalanceOf<T> =
-	<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
+		<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
@@ -87,12 +87,12 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-        /// A sub account has been added
-        SubAccountAdded { main: T::AccountId, sub: T::AccountId, role: Role },
-        /// A sub account has been removed
-        SubAccountRemoved { main: T::AccountId, sub: T::AccountId },
-        /// A sub account's role has been updated
-        SubAccountRoleUpdated { main: T::AccountId, sub: T::AccountId, new_role: Role },
+		/// A sub account has been added
+		SubAccountAdded { main: T::AccountId, sub: T::AccountId, role: Role },
+		/// A sub account has been removed
+		SubAccountRemoved { main: T::AccountId, sub: T::AccountId },
+		/// A sub account's role has been updated
+		SubAccountRoleUpdated { main: T::AccountId, sub: T::AccountId, new_role: Role },
 	}
 
 	/// Role types for sub-accounts
@@ -161,7 +161,7 @@ pub mod pallet {
 
 			// Check if the sender has permission to add a sub account
 			Self::is_sub_account(sender.clone(), main.clone())?;
-		
+
 			// Check that the sub account wasn't added before
 			ensure!(
 				!SubAccount::<T>::contains_key(new_sub_account.clone()),
@@ -170,15 +170,14 @@ pub mod pallet {
 
 			ensure!(main != new_sub_account, Error::<T>::CannotBeOwnSubAccount);
 
-			let sub_account_count = SubAccount::<T>::iter()
-			.filter(|(_k, v)| v == &main)
-			.count() as u32;
-			
+			let sub_account_count =
+				SubAccount::<T>::iter().filter(|(_k, v)| v == &main).count() as u32;
+
 			ensure!(
 				sub_account_count < T::MaxSubAccountsLimit::get(),
 				Error::<T>::TooManySubAccounts
 			);
-		    
+
 			// Only transfer if new sub-account's balance is below existential deposit
 			let sub_account_balance = T::Currency::free_balance(&new_sub_account);
 			if sub_account_balance < T::ExistentialDeposit::get() {
@@ -192,13 +191,9 @@ pub mod pallet {
 
 			SubAccountRole::<T>::insert(new_sub_account.clone(), role.clone());
 			SubAccount::<T>::insert(new_sub_account.clone(), main.clone());
-			
-            // Emit an event
-            Self::deposit_event(Event::SubAccountAdded { 
-                main, 
-                sub: new_sub_account,
-                role,
-            });
+
+			// Emit an event
+			Self::deposit_event(Event::SubAccountAdded { main, sub: new_sub_account, role });
 
 			Ok(().into())
 		}
@@ -247,47 +242,42 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-
 		/// Update the role of a sub-account
-        ///
-        /// The origin must be Signed and the sender should have access to 'main'
-        ///
-        /// Parameters:
-        /// - `main`: The main account that owns the sub-account
-        /// - `sub_account`: The sub-account to update
-        /// - `new_role`: The new role to assign
-        ///
-        /// Emits `SubAccountRoleUpdated` event when successful.
-        #[pallet::call_index(2)]
-        pub fn update_sub_account_role(
-            origin: OriginFor<T>,
-            main: T::AccountId,
-            sub_account: T::AccountId,
-            new_role: Role,
-        ) -> DispatchResultWithPostInfo {
-            let sender = ensure_signed(origin)?;
+		///
+		/// The origin must be Signed and the sender should have access to 'main'
+		///
+		/// Parameters:
+		/// - `main`: The main account that owns the sub-account
+		/// - `sub_account`: The sub-account to update
+		/// - `new_role`: The new role to assign
+		///
+		/// Emits `SubAccountRoleUpdated` event when successful.
+		#[pallet::call_index(2)]
+		pub fn update_sub_account_role(
+			origin: OriginFor<T>,
+			main: T::AccountId,
+			sub_account: T::AccountId,
+			new_role: Role,
+		) -> DispatchResultWithPostInfo {
+			let sender = ensure_signed(origin)?;
 
-            // Check permissions
-            Self::is_sub_account(sender, main.clone())?;
+			// Check permissions
+			Self::is_sub_account(sender, main.clone())?;
 
-            // Ensure the sub account exists and belongs to the main account
-            ensure!(
-                SubAccount::<T>::get(&sub_account) == Some(main.clone()),
-                Error::<T>::NotAllowed
-            );
+			// Ensure the sub account exists and belongs to the main account
+			ensure!(
+				SubAccount::<T>::get(&sub_account) == Some(main.clone()),
+				Error::<T>::NotAllowed
+			);
 
-            // Update the role
-            SubAccountRole::<T>::insert(sub_account.clone(), new_role.clone());
+			// Update the role
+			SubAccountRole::<T>::insert(sub_account.clone(), new_role.clone());
 
-            // Emit an event
-            Self::deposit_event(Event::SubAccountRoleUpdated {
-                main,
-                sub: sub_account,
-                new_role,
-            });
+			// Emit an event
+			Self::deposit_event(Event::SubAccountRoleUpdated { main, sub: sub_account, new_role });
 
-            Ok(().into())
-        }
+			Ok(().into())
+		}
 	}
 
 	impl<T: Config> SubAccounts<T::AccountId> for Pallet<T> {
@@ -333,7 +323,6 @@ pub mod pallet {
 				.map(|role| matches!(role, Role::UploadDelete))
 				.unwrap_or(false)
 		}
-		
 	}
 
 	impl<T: Config> ChargeFees<T::AccountId> for Pallet<T> {

@@ -37,6 +37,7 @@ members = [
     "precompiles/notifications",
     "evm-tracer",
 ]
+exclude = ["pallets/benchmarking"]
 
 resolver = "2"
 

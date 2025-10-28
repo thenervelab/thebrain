@@ -1130,6 +1130,7 @@ impl pallet_alpha_bridge::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Balance = Balance;
 	type PalletId = AlphaPalletId;
+	type WeightInfo = pallet_alpha_bridge::weights::SubstrateWeight<Runtime>;
 }
 
 parameter_types! {
@@ -1368,11 +1369,11 @@ impl pallet_execution_unit::Config for Runtime {
 	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 	type ConsensusPeriod = ConsensusPeriod;
-    type ConsensusThreshold = ConsensusThreshold;
-	type ConsensusSimilarityThreshold = ConstU32<85>; 
+	type ConsensusThreshold = ConsensusThreshold;
+	type ConsensusSimilarityThreshold = ConstU32<85>;
 	type EpochDuration = ConstU32<100>; // epoch pin checks clear duration
 	type ReputationUpdateInterval = ConstU32<15>;
-}  
+}
 
 impl pallet_offences::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
@@ -1500,7 +1501,7 @@ impl pallet_child_bounties::Config for Runtime {
 
 parameter_types! {
 	pub const SubAccountStringLimit: u32 = 300;
-	pub const MaxSubAccountsLimit: u32 = 50;	
+	pub const MaxSubAccountsLimit: u32 = 50;
 }
 
 impl pallet_subaccount::Config for Runtime {
@@ -1787,6 +1788,8 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
+type Migrations = (pallet_alpha_bridge::migrations::v1::MigrationToV1<Runtime>,);
+
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;
 /// A Block signed with a Justification
@@ -1820,7 +1823,7 @@ pub type Executive = frame_executive::Executive<
 	frame_system::ChainContext<Runtime>,
 	Runtime,
 	AllPalletsWithSystem,
-	// migrations::MigrateSessionKeys<Runtime>,
+	Migrations,
 >;
 
 impl fp_self_contained::SelfContainedCall for RuntimeCall {
@@ -2368,11 +2371,12 @@ extern crate frame_benchmarking;
 
 #[cfg(feature = "runtime-benchmarks")]
 mod benches {
-	define_benchmarks!(
+	frame_benchmarking::define_benchmarks!(
 		[frame_benchmarking, BaselineBench::<Runtime>]
 		[frame_system, SystemBench::<Runtime>]
 		[pallet_balances, Balances]
 		[pallet_timestamp, Timestamp]
+		[pallet_alpha_bridge, AlphaBridge]
 	);
 }
 
@@ -3439,10 +3443,13 @@ impl_runtime_apis! {
 			Vec<frame_benchmarking::BenchmarkList>,
 			Vec<frame_support::traits::StorageInfo>,
 		) {
-			use frame_benchmarking::{Benchmarking, BenchmarkList};
+			use frame_benchmarking::{baseline, Benchmarking, BenchmarkList};
 			use frame_support::traits::StorageInfoTrait;
+			use frame_system_benchmarking::Pallet as SystemBench;
+			use baseline::Pallet as BaselineBench;
 
 			let mut list = Vec::<BenchmarkList>::new();
+			list_benchmarks!(list, extra);
 
 			let storage_info = AllPalletsWithSystem::storage_info();
 
@@ -3454,6 +3461,9 @@ impl_runtime_apis! {
 		) -> Result<Vec<frame_benchmarking::BenchmarkBatch>, sp_runtime::RuntimeString> {
 			use frame_benchmarking::{baseline, Benchmarking, BenchmarkBatch};
 			use sp_storage::TrackedStorageKey;
+			use frame_system_benchmarking::Pallet as SystemBench;
+			use baseline::Pallet as BaselineBench;
+
 			impl frame_system_benchmarking::Config for Runtime {}
 			impl baseline::Config for Runtime {}
 
@@ -3462,6 +3472,7 @@ impl_runtime_apis! {
 
 			let mut batches = Vec::<BenchmarkBatch>::new();
 			let params = (&config, &whitelist);
+			add_benchmarks!(params, batches);
 
 			Ok(batches)
 		}

@@ -9,8 +9,8 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
+// #[cfg(feature = "runtime-benchmarks")]
+// mod benchmarking;
 pub mod weights;
 pub use weights::*;
 mod types;
@@ -357,9 +357,7 @@ pub mod pallet {
 			// Ensure the caller is an authority
 			ensure_root(origin)?;
 
-			AlphaBalances::<T>::mutate(&user_to_credit, |credits| {
-				*credits += alpha_amount
-			});
+			AlphaBalances::<T>::mutate(&user_to_credit, |credits| *credits += alpha_amount);
 
 			// Increase the user's credits
 			FreeCredits::<T>::mutate(&user_to_credit, |credits| {
