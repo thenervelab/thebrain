@@ -365,28 +365,26 @@ fn test_user_unlock_request() {
 	new_test_ext().execute_with(|| {
 		let initial_balance = Balances::free_balance(&user1());
 
-		assert_ok!(AlphaBridge::<Test>::request_unlock(
-			RuntimeOrigin::signed(user1()),
-			1000,
-			user1() // bittensor coldkey
-		));
+		assert_ok!(AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000));
 
 		// Check that balance was locked (transferred to escrow)
 		assert_eq!(Balances::free_balance(&user1()), initial_balance - 1000);
 
+		// Get the burn_id that was generated
+		let burn_id = {
+			// There should be exactly one pending unlock
+			let pending: Vec<_> = crate::PendingUnlocks::<Test>::iter().collect();
+			assert_eq!(pending.len(), 1);
+			pending[0].0
+		};
+
 		// Check event
 		System::assert_has_event(
-			Event::UnlockRequested {
-				burn_id: 0,
-				requester: user1(),
-				amount: 1000,
-				bittensor_coldkey: user1(),
-			}
-			.into(),
+			Event::UnlockRequested { burn_id, requester: user1(), amount: 1000 }.into(),
 		);
 
 		// Check that unlock is pending
-		assert!(crate::PendingUnlocks::<Test>::contains_key(0));
+		assert!(crate::PendingUnlocks::<Test>::contains_key(burn_id));
 	});
 }
 
@@ -394,13 +392,10 @@ fn test_user_unlock_request() {
 fn test_unlock_request_with_insufficient_balance_fails() {
 	new_test_ext().execute_with(|| {
 		let balance = Balances::free_balance(&user1());
+		let amount = (balance + 1000).try_into().unwrap();
 
 		assert_noop!(
-			AlphaBridge::<Test>::request_unlock(
-				RuntimeOrigin::signed(user1()),
-				balance + 1000,
-				user1()
-			),
+			AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), amount),
 			sp_runtime::TokenError::FundsUnavailable
 		);
 	});
@@ -411,28 +406,29 @@ fn test_unlock_approval_with_threshold_votes() {
 	new_test_ext().execute_with(|| {
 		let initial_balance = Balances::free_balance(&user1());
 
-		assert_ok!(AlphaBridge::<Test>::request_unlock(
-			RuntimeOrigin::signed(user1()),
-			1000,
-			user1()
-		));
+		assert_ok!(AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000));
+
+		// Get the burn_id that was generated
+		let burn_id = {
+			let pending: Vec<_> = crate::PendingUnlocks::<Test>::iter().collect();
+			assert_eq!(pending.len(), 1);
+			pending[0].0
+		};
 
 		// Approve with threshold (2 votes)
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(alice()), 0, true));
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(bob()), 0, true));
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(
+			RuntimeOrigin::signed(alice()),
+			burn_id,
+			true
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(bob()), burn_id, true));
 
 		// Check that unlock was approved (balance burned from escrow, not restored to user)
 		assert_eq!(Balances::free_balance(&user1()), initial_balance - 1000);
 
 		// Check event
 		System::assert_has_event(
-			Event::UnlockApproved {
-				burn_id: 0,
-				requester: user1(),
-				amount: 1000,
-				bittensor_coldkey: user1(),
-			}
-			.into(),
+			Event::UnlockApproved { burn_id, requester: user1(), amount: 1000 }.into(),
 		);
 	});
 }
@@ -442,22 +438,33 @@ fn test_unlock_denial_with_threshold_votes() {
 	new_test_ext().execute_with(|| {
 		let initial_balance = Balances::free_balance(&user1());
 
-		assert_ok!(AlphaBridge::<Test>::request_unlock(
-			RuntimeOrigin::signed(user1()),
-			1000,
-			user1()
-		));
+		assert_ok!(AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000));
+
+		// Get the burn_id that was generated
+		let burn_id = {
+			let pending: Vec<_> = crate::PendingUnlocks::<Test>::iter().collect();
+			assert_eq!(pending.len(), 1);
+			pending[0].0
+		};
 
 		// Deny with threshold (2 votes)
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(alice()), 0, false));
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(bob()), 0, false));
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(
+			RuntimeOrigin::signed(alice()),
+			burn_id,
+			false
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(
+			RuntimeOrigin::signed(bob()),
+			burn_id,
+			false
+		));
 
 		// Check that balance was restored
 		assert_eq!(Balances::free_balance(&user1()), initial_balance);
 
 		// Check event
 		System::assert_has_event(
-			Event::UnlockDenied { burn_id: 0, requester: user1(), amount: 1000 }.into(),
+			Event::UnlockDenied { burn_id, requester: user1(), amount: 1000 }.into(),
 		);
 	});
 }
@@ -465,14 +472,16 @@ fn test_unlock_denial_with_threshold_votes() {
 #[test]
 fn test_unlock_attestation_by_non_guardian_fails() {
 	new_test_ext().execute_with(|| {
-		assert_ok!(AlphaBridge::<Test>::request_unlock(
-			RuntimeOrigin::signed(user1()),
-			1000,
-			user1()
-		));
+		assert_ok!(AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000));
+
+		let burn_id = {
+			let pending: Vec<_> = crate::PendingUnlocks::<Test>::iter().collect();
+			assert_eq!(pending.len(), 1);
+			pending[0].0
+		};
 
 		assert_noop!(
-			AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(user2()), 0, true),
+			AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(user2()), burn_id, true),
 			Error::<Test>::NotGuardian
 		);
 	});
@@ -483,17 +492,23 @@ fn test_double_voting_on_unlock_fails() {
 	new_test_ext().execute_with(|| {
 		crate::ApproveThreshold::<Test>::put(3);
 
-		assert_ok!(AlphaBridge::<Test>::request_unlock(
-			RuntimeOrigin::signed(user1()),
-			1000,
-			user1()
-		));
+		assert_ok!(AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000));
 
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(alice()), 0, true));
+		let burn_id = {
+			let pending: Vec<_> = crate::PendingUnlocks::<Test>::iter().collect();
+			assert_eq!(pending.len(), 1);
+			pending[0].0
+		};
+
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(
+			RuntimeOrigin::signed(alice()),
+			burn_id,
+			true
+		));
 
 		// Try to vote again
 		assert_noop!(
-			AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(alice()), 0, true),
+			AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(alice()), burn_id, true),
 			Error::<Test>::AlreadyVoted
 		);
 	});
@@ -505,7 +520,7 @@ fn test_unlock_while_paused_fails() {
 		crate::Paused::<Test>::put(true);
 
 		assert_noop!(
-			AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000, user1()),
+			AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000),
 			Error::<Test>::BridgePaused
 		);
 	});
@@ -550,11 +565,13 @@ fn test_unlock_expiration_after_ttl() {
 		crate::SignatureTTLBlocks::<Test>::put(10);
 		let initial_balance = Balances::free_balance(&user1());
 
-		assert_ok!(AlphaBridge::<Test>::request_unlock(
-			RuntimeOrigin::signed(user1()),
-			1000,
-			user1()
-		));
+		assert_ok!(AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000));
+
+		let burn_id = {
+			let pending: Vec<_> = crate::PendingUnlocks::<Test>::iter().collect();
+			assert_eq!(pending.len(), 1);
+			pending[0].0
+		};
 
 		// Balance should be locked (transferred to escrow)
 		assert_eq!(Balances::free_balance(&user1()), initial_balance - 1000);
@@ -563,13 +580,16 @@ fn test_unlock_expiration_after_ttl() {
 		run_to_block(15);
 
 		// Anyone can expire
-		assert_ok!(AlphaBridge::<Test>::expire_pending_unlock(RuntimeOrigin::signed(user2()), 0));
+		assert_ok!(AlphaBridge::<Test>::expire_pending_unlock(
+			RuntimeOrigin::signed(user2()),
+			burn_id
+		));
 
 		// Check that balance was restored
 		assert_eq!(Balances::free_balance(&user1()), initial_balance);
 
 		// Check event
-		System::assert_has_event(Event::UnlockExpired { burn_id: 0 }.into());
+		System::assert_has_event(Event::UnlockExpired { burn_id }.into());
 	});
 }
 
@@ -836,24 +856,30 @@ fn test_full_unlock_cycle() {
 		let initial_balance = Balances::free_balance(&user1());
 
 		// 1. Request unlock
-		assert_ok!(AlphaBridge::<Test>::request_unlock(
-			RuntimeOrigin::signed(user1()),
-			1000,
-			user1()
-		));
+		assert_ok!(AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000));
+
+		let burn_id = {
+			let pending: Vec<_> = crate::PendingUnlocks::<Test>::iter().collect();
+			assert_eq!(pending.len(), 1);
+			pending[0].0
+		};
 
 		// Verify balance locked
 		assert_eq!(Balances::free_balance(&user1()), initial_balance - 1000);
 
 		// 2. Attest to reach threshold
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(alice()), 0, true));
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(bob()), 0, true));
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(
+			RuntimeOrigin::signed(alice()),
+			burn_id,
+			true
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(bob()), burn_id, true));
 
 		// 3. Verify burning occurred (balance stays locked, burned from escrow)
 		assert_eq!(Balances::free_balance(&user1()), initial_balance - 1000);
 
 		// 4. Verify unlock is no longer pending
-		assert!(!crate::PendingUnlocks::<Test>::contains_key(0));
+		assert!(!crate::PendingUnlocks::<Test>::contains_key(burn_id));
 	});
 }
 
@@ -898,18 +924,28 @@ fn test_denied_unlock_restores_funds() {
 
 		let initial_balance = Balances::free_balance(&user1());
 
-		assert_ok!(AlphaBridge::<Test>::request_unlock(
-			RuntimeOrigin::signed(user1()),
-			1000,
-			user1()
-		));
+		assert_ok!(AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), 1000));
+
+		let burn_id = {
+			let pending: Vec<_> = crate::PendingUnlocks::<Test>::iter().collect();
+			assert_eq!(pending.len(), 1);
+			pending[0].0
+		};
 
 		// Balance locked
 		assert_eq!(Balances::free_balance(&user1()), initial_balance - 1000);
 
 		// Deny
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(alice()), 0, false));
-		assert_ok!(AlphaBridge::<Test>::attest_unlock(RuntimeOrigin::signed(bob()), 0, false));
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(
+			RuntimeOrigin::signed(alice()),
+			burn_id,
+			false
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_unlock(
+			RuntimeOrigin::signed(bob()),
+			burn_id,
+			false
+		));
 
 		// Verify funds restored
 		assert_eq!(Balances::free_balance(&user1()), initial_balance);
