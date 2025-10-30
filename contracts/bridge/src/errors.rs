@@ -1,5 +1,6 @@
-use ink::prelude::string::String;
+use ink::prelude::{format, string::String};
 
+#[allow(clippy::cast_possible_truncation)]
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 pub enum Error {

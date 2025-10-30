@@ -23,6 +23,7 @@ impl StakeInfo {
 	}
 }
 
+#[allow(clippy::cast_possible_truncation)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 pub enum SubtensorError {
