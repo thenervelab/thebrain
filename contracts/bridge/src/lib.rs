@@ -30,7 +30,7 @@ impl ink::env::Environment for SubtensorEnvironment {
 mod bridge {
 	use super::*;
 	use ink::env::hash::{Blake2x256, CryptoHash, HashOutput};
-	use ink::prelude::{boxed::Box, vec::Vec};
+	use ink::prelude::{boxed::Box, vec, vec::Vec};
 	use ink::storage::Mapping;
 
 	#[ink(storage)]
@@ -248,7 +248,7 @@ mod bridge {
 			checkpoint_nonce: CheckpointNonce,
 		) -> Result<(), Error> {
 			self.ensure_not_paused()?;
-			self.ensure_guardian()?; // CRITICAL: Only guardians can propose
+			self.ensure_guardian()?;
 
 			// Validate sequential checkpoint nonce
 			let expected_nonce =
@@ -299,7 +299,7 @@ mod bridge {
 			self.env().emit_event(BurnsProposed {
 				checkpoint_nonce,
 				proposer: caller,
-				burns_count: burns.len() as u32,
+				burns_count: u32::try_from(burns.len()).map_err(|_| Error::Overflow)?,
 			});
 
 			Ok(())
@@ -400,7 +400,7 @@ mod bridge {
 			checkpoint_nonce: CheckpointNonce,
 		) -> Result<(), Error> {
 			self.ensure_not_paused()?;
-			self.ensure_guardian()?; // CRITICAL: Only guardians can propose
+			self.ensure_guardian()?;
 
 			// Validate sequential checkpoint nonce
 			let expected_nonce =
@@ -470,7 +470,7 @@ mod bridge {
 			self.env().emit_event(RefundsProposed {
 				checkpoint_nonce,
 				proposer: caller,
-				refunds_count: refunds.len() as u32,
+				refunds_count: u32::try_from(refunds.len()).map_err(|_| Error::Overflow)?,
 			});
 
 			Ok(())
@@ -562,7 +562,8 @@ mod bridge {
 				return Err(Error::TooManyGuardians);
 			}
 
-			let guardians_count = guardians.len() as u16;
+			let guardians_count =
+				u16::try_from(guardians.len()).map_err(|_| Error::TooManyGuardians)?;
 			if deny_threshold >= approve_threshold {
 				return Err(Error::InvalidThresholds);
 			}
