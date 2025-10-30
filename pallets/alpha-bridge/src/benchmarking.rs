@@ -35,7 +35,7 @@ fn setup_guardians<T: Config>(count: u32) -> Vec<T::AccountId> {
 }
 
 /// Create a unique deposit ID from recipient and amount
-fn create_deposit_id(recipient: &[u8], amount: u128, nonce: u32) -> H256 {
+fn create_deposit_id(recipient: &[u8], amount: u64, nonce: u32) -> H256 {
 	let mut data = Vec::new();
 	data.extend_from_slice(recipient);
 	data.extend_from_slice(&amount.to_le_bytes());
@@ -46,7 +46,7 @@ fn create_deposit_id(recipient: &[u8], amount: u128, nonce: u32) -> H256 {
 /// Setup a pending deposit proposal
 fn setup_pending_deposit<T: Config>(
 	recipient: T::AccountId,
-	amount: u128,
+	amount: u64,
 ) -> (DepositId, DepositRecord<T::AccountId, BlockNumberFor<T>>) {
 	let deposit_id = create_deposit_id(recipient.encode().as_slice(), amount, 0);
 	let record = DepositRecord {
@@ -64,10 +64,10 @@ fn setup_pending_deposit<T: Config>(
 /// Setup a pending unlock request with escrowed funds
 fn setup_pending_unlock<T: Config>(
 	requester: T::AccountId,
-	amount: u128,
+	amount: u64,
 ) -> (BurnId, UnlockRecord<T::AccountId, BlockNumberFor<T>>) {
-	let burn_id = NextBurnId::<T>::get();
-	NextBurnId::<T>::put(burn_id.saturating_add(1));
+	// Generate burn_id using the same logic as the pallet
+	let burn_id = Pallet::<T>::generate_burn_id(&requester, amount);
 
 	// Transfer funds to pallet escrow
 	let balance_value: BalanceOf<T> =
@@ -84,7 +84,6 @@ fn setup_pending_unlock<T: Config>(
 	let record = UnlockRecord {
 		requester: requester.clone(),
 		amount,
-		bittensor_coldkey: account("coldkey", 0, SEED),
 		approve_votes: Default::default(),
 		deny_votes: Default::default(),
 		requested_at_block: frame_system::Pallet::<T>::block_number(),
@@ -190,15 +189,13 @@ mod benchmarks {
 		setup_guardians::<T>(3);
 		Paused::<T>::put(false);
 		let requester = create_funded_user::<T>(0, 10000);
-		let amount = 500u128;
-		let bittensor_coldkey: T::AccountId = account("coldkey", 0, SEED);
+		let amount = 500u64;
 
 		#[extrinsic_call]
-		request_unlock(RawOrigin::Signed(requester.clone()), amount, bittensor_coldkey.clone());
+		request_unlock(RawOrigin::Signed(requester.clone()), amount);
 
-		// Verify unlock request was created
-		let burn_id = 0u128; // First burn ID
-		assert!(PendingUnlocks::<T>::contains_key(burn_id));
+		// Verify unlock request was created (check that there's a pending unlock)
+		assert!(PendingUnlocks::<T>::iter().count() == 1);
 	}
 
 	#[benchmark]
