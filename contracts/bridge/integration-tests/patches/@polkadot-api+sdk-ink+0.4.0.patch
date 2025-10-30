@@ -1,0 +1,20 @@
+diff --git a/node_modules/@polkadot-api/sdk-ink/dist/esm/provider.mjs b/node_modules/@polkadot-api/sdk-ink/dist/esm/provider.mjs
+index de705ca..3ed49cd 100644
+--- a/node_modules/@polkadot-api/sdk-ink/dist/esm/provider.mjs
++++ b/node_modules/@polkadot-api/sdk-ink/dist/esm/provider.mjs
+@@ -63,9 +63,12 @@ const contractsProvider = (typedApi, atBest) => {
+       ...payload
+     }),
+     txInstantiateWithCode: (payload) => typedApi.tx.Contracts.instantiate_with_code({
+-      salt: defaultSalt,
+-      storage_deposit_limit: void 0,
+-      ...payload
++      value: payload.value ?? 0n,
++      gas_limit: payload.gas_limit,
++      storage_deposit_limit: payload.storage_deposit_limit ?? null,
++      code: payload.code,
++      data: payload.data,
++      salt: payload.salt ?? defaultSalt
+     })
+   };
+ };
