@@ -625,6 +625,20 @@ mod bridge {
 			Ok(())
 		}
 
+		/// Replace contract code with new implementation
+		/// Only callable by contract owner
+		#[ink(message)]
+		pub fn set_code(&mut self, code_hash: Hash) -> Result<(), Error> {
+			self.ensure_owner()?;
+
+			self.env().set_code_hash(&code_hash).map_err(|_| Error::CodeUpgradeFailed)?;
+
+			self.env()
+				.emit_event(CodeUpgraded { code_hash, upgraded_by: self.env().caller() });
+
+			Ok(())
+		}
+
 		/// Get the contract's current hotkey
 		#[ink(message)]
 		pub fn contract_hotkey(&self) -> AccountId {

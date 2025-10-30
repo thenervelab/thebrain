@@ -109,3 +109,9 @@ pub struct ContractHotkeyUpdated {
 	pub new_hotkey: ink::primitives::AccountId,
 	pub updated_by: ink::primitives::AccountId,
 }
+
+#[ink::event]
+pub struct CodeUpgraded {
+	pub code_hash: ink::primitives::Hash,
+	pub upgraded_by: ink::primitives::AccountId,
+}

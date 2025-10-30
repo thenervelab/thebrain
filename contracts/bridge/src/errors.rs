@@ -41,6 +41,7 @@ pub enum Error {
 	StakeQueryFailed,
 	TransferFailed,
 	StakeConsolidationFailed,
+	CodeUpgradeFailed,
 }
 
 impl From<Error> for String {
