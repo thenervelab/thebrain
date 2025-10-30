@@ -1,0 +1,15 @@
+{
+  "version": 0,
+  "descriptorPath": ".papi/descriptors",
+  "entries": {
+    "devnet": {
+      "wsUrl": "ws://localhost:9944",
+      "metadata": ".papi/metadata/devnet.scale",
+      "genesis": "0x0b7a4e32f233cd38e2ae50342b5441158005d58d65ffdfb1db1ae259d533610d",
+      "codeHash": "0xf6ef93bff7d1bb81104aa52132f4dcf588579f927883b41824d8569fd3f3a2a5"
+    }
+  },
+  "ink": {
+    "bridge": ".papi/contracts/bridge.json"
+  }
+}

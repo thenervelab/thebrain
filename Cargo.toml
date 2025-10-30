@@ -17,6 +17,7 @@ members = [
     "client/evm-tracing",
     "client/rpc/*",
     "client/rpc-core/*",
+	"contracts/*",
     "node",
     "runtime/mainnet",
     "pallets/*",

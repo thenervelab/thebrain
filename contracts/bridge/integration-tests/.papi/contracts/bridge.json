@@ -1,0 +1,3790 @@
+{
+  "source": {
+    "hash": "0xa19cdf5d32b4cd99ba9fd47a289cae8afba8dfb3e46efc35d8334f04f6915586",
+    "language": "ink! 5.1.1",
+    "compiler": "rustc 1.85.0",
+    "build_info": {
+      "build_mode": "Release",
+      "cargo_contract_version": "5.0.3",
+      "rust_toolchain": "stable-x86_64-unknown-linux-gnu",
+      "wasm_opt_settings": {
+        "keep_debug_symbols": false,
+        "optimization_passes": "Z"
+      }
+    }
+  },
+  "contract": {
+    "name": "bridge",
+    "version": "0.1.0",
+    "authors": [
+      "Francisco Silva <francisco@taostats.io>"
+    ]
+  },
+  "image": null,
+  "spec": {
+    "constructors": [
+      {
+        "args": [
+          {
+            "label": "owner",
+            "type": {
+              "displayName": [
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "label": "chain_id",
+            "type": {
+              "displayName": [
+                "ChainId"
+              ],
+              "type": 3
+            }
+          },
+          {
+            "label": "hotkey",
+            "type": {
+              "displayName": [
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          "Creates a new bridge contract instance",
+          "",
+          "Initializes the bridge with default configuration:",
+          "- Empty guardian set (use set_guardians_and_thresholds to configure)",
+          "- Signature TTL: 100 blocks",
+          "- Minimum deposit: 1,000,000,000 rao (1 Alpha)",
+          "- Max deposits per user: 25",
+          "- Bridge is unpaused",
+          "",
+          "# Arguments",
+          "* `owner` - Contract owner with admin privileges",
+          "* `chain_id` - Identifier for the Bittensor chain (used in deposit ID generation)",
+          "* `hotkey` - Contract's hotkey for stake consolidation"
+        ],
+        "label": "new",
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink_primitives",
+            "ConstructorResult"
+          ],
+          "type": 37
+        },
+        "selector": "0x9bae9d5e"
+      }
+    ],
+    "docs": [],
+    "environment": {
+      "accountId": {
+        "displayName": [
+          "AccountId"
+        ],
+        "type": 0
+      },
+      "balance": {
+        "displayName": [
+          "Balance"
+        ],
+        "type": 4
+      },
+      "blockNumber": {
+        "displayName": [
+          "BlockNumber"
+        ],
+        "type": 23
+      },
+      "chainExtension": {
+        "displayName": [
+          "ChainExtension"
+        ],
+        "type": 63
+      },
+      "hash": {
+        "displayName": [
+          "Hash"
+        ],
+        "type": 6
+      },
+      "maxEventTopics": 4,
+      "staticBufferSize": 16384,
+      "timestamp": {
+        "displayName": [
+          "Timestamp"
+        ],
+        "type": 4
+      }
+    },
+    "events": [
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "chain_id",
+            "type": {
+              "displayName": [
+                "ChainId"
+              ],
+              "type": 3
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "escrow_contract",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "deposit_nonce",
+            "type": {
+              "displayName": [
+                "DepositNonce"
+              ],
+              "type": 4
+            }
+          },
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "sender",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 4
+            }
+          },
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when a deposit is successfully locked on Bittensor",
+          "",
+          "**Guardian Action Required**: Monitor this event on Bittensor chain.",
+          "When seen, create a DepositProposal for the Hippius pallet with:",
+          "- id: deposit_id from this event",
+          "- recipient: sender from this event",
+          "- amount: amount from this event"
+        ],
+        "label": "DepositMade",
+        "module_path": "bridge::events",
+        "signature_topic": "0xa79d4e23a06aa58e749f469e2f797fe80176135f9f17412a09cf1a3c4ec05db5"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "burn_id",
+            "type": {
+              "displayName": [
+                "BurnId"
+              ],
+              "type": 6
+            }
+          },
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "recipient",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 4
+            }
+          }
+        ],
+        "docs": [],
+        "label": "Released",
+        "module_path": "bridge::events",
+        "signature_topic": "0x35ea8d6a76206a125499df5621072526b8be17512c8744dbc5b35edd35dafdd2"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          },
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "recipient",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 4
+            }
+          }
+        ],
+        "docs": [],
+        "label": "Refunded",
+        "module_path": "bridge::events",
+        "signature_topic": "0x61217fd15f7cb93d5023c3d84d5ae547af926188de6b4649d4a92679a60f9ca5"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "checkpoint_nonce",
+            "type": {
+              "displayName": [
+                "CheckpointNonce"
+              ],
+              "type": 4
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "proposer",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "burns_count",
+            "type": {
+              "displayName": [
+                "u32"
+              ],
+              "type": 23
+            }
+          }
+        ],
+        "docs": [],
+        "label": "BurnsProposed",
+        "module_path": "bridge::events",
+        "signature_topic": "0xefc52d4dfae013d2e9e7d4095b0692ab97f388b3711fb7efdeeeeda5ed6b85d4"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "burn_id",
+            "type": {
+              "displayName": [
+                "BurnId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "docs": [],
+        "label": "BurnDenied",
+        "module_path": "bridge::events",
+        "signature_topic": "0x25ea0c87e85a10daa7cced176b18ebc1fd9deb1a4c9961e74bda58c133f96418"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "burn_id",
+            "type": {
+              "displayName": [
+                "BurnId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "docs": [],
+        "label": "BurnExpired",
+        "module_path": "bridge::events",
+        "signature_topic": "0x32cd3cc0fe76dd7fc01dc3bf69c4035655d9661362e667be8afae21286a958d6"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "checkpoint_nonce",
+            "type": {
+              "displayName": [
+                "CheckpointNonce"
+              ],
+              "type": 4
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "proposer",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "refunds_count",
+            "type": {
+              "displayName": [
+                "u32"
+              ],
+              "type": 23
+            }
+          }
+        ],
+        "docs": [],
+        "label": "RefundsProposed",
+        "module_path": "bridge::events",
+        "signature_topic": "0x834f220b263d31d8aedb2c00373423ef2e3d833cae02cc21163742b996c0a085"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "docs": [],
+        "label": "RefundDenied",
+        "module_path": "bridge::events",
+        "signature_topic": "0x85784ce211378ca750630a855be5d7f3bf92177da038a37408aaa2bd84ca699f"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "docs": [],
+        "label": "RefundExpired",
+        "module_path": "bridge::events",
+        "signature_topic": "0x4b8e9219d8fc9ca13172366ed59ab36945e47ab8a3cc5439454063c95908afb8"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "guardians",
+            "type": {
+              "displayName": [
+                "Vec"
+              ],
+              "type": 22
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "approve_threshold",
+            "type": {
+              "displayName": [
+                "u16"
+              ],
+              "type": 3
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "deny_threshold",
+            "type": {
+              "displayName": [
+                "u16"
+              ],
+              "type": 3
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "updated_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [],
+        "label": "GuardiansUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0xab790fc5c5c96dd6609f7f53fab8cc83319e2026ba2afb9b415c97cb75247ea8"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "paused_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [],
+        "label": "Paused",
+        "module_path": "bridge::events",
+        "signature_topic": "0x9bf6cab4dfed2a2092aba7b4bbbfbb1be94ddeab1ba64146e8f0576d5e45741f"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "unpaused_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [],
+        "label": "Unpaused",
+        "module_path": "bridge::events",
+        "signature_topic": "0xa458d4a471e9b31292ec531673221945fad4d9e8e8eb5ad00393dded115c03a3"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "old_owner",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "new_owner",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [],
+        "label": "OwnerUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0x2e06d4b1969eccaeac7bcdc197a41cda5f6026de097a1b19d385f06fb8950921"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "old_hotkey",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "new_hotkey",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "updated_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [],
+        "label": "ContractHotkeyUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0x6cc54e660ff69cc11e0ef186bbbfca068b3fcb0b36ca0b1ca4bc5977f2637c43"
+      }
+    ],
+    "lang_error": {
+      "displayName": [
+        "ink",
+        "LangError"
+      ],
+      "type": 38
+    },
+    "messages": [
+      {
+        "args": [
+          {
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 4
+            }
+          },
+          {
+            "label": "hotkey",
+            "type": {
+              "displayName": [
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "label": "netuid",
+            "type": {
+              "displayName": [
+                "NetUid"
+              ],
+              "type": 39
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Locks Alpha tokens on Bittensor to be bridged to Hippius",
+          "",
+          " Users call this function to deposit Alpha stake into the bridge contract.",
+          " The locked stake will be available for minting as hAlpha on Hippius after guardian approval.",
+          "",
+          " The caller MUST have added this contract as a proxy on Bittensor via the",
+          " Subtensor pallet's add_proxy extrinsic."
+        ],
+        "label": "lock",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 40
+        },
+        "selector": "0xbbaa6540"
+      },
+      {
+        "args": [
+          {
+            "label": "burns",
+            "type": {
+              "displayName": [
+                "Vec"
+              ],
+              "type": 43
+            }
+          },
+          {
+            "label": "checkpoint_nonce",
+            "type": {
+              "displayName": [
+                "CheckpointNonce"
+              ],
+              "type": 4
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Proposes burns from Hippius for releasing locked stake",
+          "",
+          " Guardians monitor Hippius UnlockApproved events and create burn proposals.",
+          " The checkpoint must have sequential nonce (last_burns_checkpoint_nonce + 1).",
+          " The proposing guardian's vote is automatically counted as an approval.",
+          " Other guardians then attest via attest_release().",
+          "",
+          " # Security",
+          " - Only guardians can propose burns",
+          " - Checkpoint nonces must be sequential",
+          " - Each burn is stored and voted on individually"
+        ],
+        "label": "propose_releases",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0x2592f344"
+      },
+      {
+        "args": [
+          {
+            "label": "burn_id",
+            "type": {
+              "displayName": [
+                "BurnId"
+              ],
+              "type": 6
+            }
+          },
+          {
+            "label": "approve",
+            "type": {
+              "displayName": [
+                "bool"
+              ],
+              "type": 11
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Guardian attests (votes on) a pending burn",
+          "",
+          " Guardians review individual burns and vote to approve or deny.",
+          " When approve_threshold is reached and within TTL, the burn is automatically finalized."
+        ],
+        "label": "attest_release",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0x1b68503f"
+      },
+      {
+        "args": [
+          {
+            "label": "burn_id",
+            "type": {
+              "displayName": [
+                "BurnId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Expires a burn that exceeded its TTL",
+          "",
+          " Anyone can call this to clean up stale burn proposals that did not reach",
+          " consensus within signature_ttl_blocks."
+        ],
+        "label": "expire_release",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0x6fce115e"
+      },
+      {
+        "args": [
+          {
+            "label": "refunds",
+            "type": {
+              "displayName": [
+                "Vec"
+              ],
+              "type": 47
+            }
+          },
+          {
+            "label": "checkpoint_nonce",
+            "type": {
+              "displayName": [
+                "CheckpointNonce"
+              ],
+              "type": 4
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Proposes refunds for deposits that were denied on Hippius",
+          "",
+          " # Guardian Workflow",
+          " 1. Monitor Hippius chain for `BridgeDenied` events",
+          " 2. Collect denied deposit_ids from events",
+          " 3. For each denied deposit, fetch deposit metadata from Bittensor contract",
+          " 4. Create RefundItem with deposit_id, original sender, and amount",
+          " 5. Call this function with the refund proposals",
+          " 6. Other guardians attest the refund via attest_refund()",
+          " 7. When threshold reached, refunds are executed automatically",
+          "",
+          " # Arguments",
+          " * `refunds` - Vector of refund items (denied deposits to refund)",
+          " * `checkpoint_nonce` - Sequential nonce for checkpoint ordering",
+          "",
+          " # Security",
+          " - Only guardians can propose refunds",
+          " - Checkpoint nonces must be sequential",
+          " - Each refund is stored and voted on individually",
+          " - **Refund recipient MUST match original deposit sender**",
+          " - **Refund amount MUST match full locked amount (no partial refunds)**"
+        ],
+        "label": "propose_refunds",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0xd97ab6bb"
+      },
+      {
+        "args": [
+          {
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          },
+          {
+            "label": "approve",
+            "type": {
+              "displayName": [
+                "bool"
+              ],
+              "type": 11
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Guardian attests (votes on) a pending refund",
+          "",
+          " Guardians review individual refunds and vote to approve or deny.",
+          " When approve_threshold is reached and within TTL, the refund is automatically finalized."
+        ],
+        "label": "attest_refund",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0x5c79af4e"
+      },
+      {
+        "args": [
+          {
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Expires a refund that exceeded its TTL",
+          "",
+          " Anyone can call this to clean up stale refund proposals that did not reach",
+          " consensus within signature_ttl_blocks."
+        ],
+        "label": "expire_refund",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0x86367cc5"
+      },
+      {
+        "args": [
+          {
+            "label": "guardians",
+            "type": {
+              "displayName": [
+                "Vec"
+              ],
+              "type": 22
+            }
+          },
+          {
+            "label": "approve_threshold",
+            "type": {
+              "displayName": [
+                "u16"
+              ],
+              "type": 3
+            }
+          },
+          {
+            "label": "deny_threshold",
+            "type": {
+              "displayName": [
+                "u16"
+              ],
+              "type": 3
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Configures the guardian set and voting thresholds (owner only)",
+          "",
+          " Sets the list of authorized guardians and the number of votes required",
+          " to approve or deny proposals. Validates that deny_threshold < approve_threshold",
+          " and approve_threshold <= guardian_count."
+        ],
+        "label": "set_guardians_and_thresholds",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0xcb53dd62"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "pause",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0x81e0c604"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "unpause",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0x67616649"
+      },
+      {
+        "args": [
+          {
+            "label": "new_owner",
+            "type": {
+              "displayName": [
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "default": false,
+        "docs": [],
+        "label": "update_owner",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0x22a8dc8f"
+      },
+      {
+        "args": [
+          {
+            "label": "hotkey",
+            "type": {
+              "displayName": [
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Set the contract's hotkey (admin only)",
+          " All deposited stake will be consolidated to this hotkey"
+        ],
+        "label": "set_contract_hotkey",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 45
+        },
+        "selector": "0xbc05399e"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [
+          " Get the contract's current hotkey"
+        ],
+        "label": "contract_hotkey",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 49
+        },
+        "selector": "0x7c847b08"
+      },
+      {
+        "args": [
+          {
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [],
+        "label": "get_locked_amount",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 50
+        },
+        "selector": "0xac35abb3"
+      },
+      {
+        "args": [
+          {
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [],
+        "label": "is_processed",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 52
+        },
+        "selector": "0x5953d998"
+      },
+      {
+        "args": [
+          {
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [],
+        "label": "is_denied",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 52
+        },
+        "selector": "0xb173829d"
+      },
+      {
+        "args": [
+          {
+            "label": "user",
+            "type": {
+              "displayName": [
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "default": false,
+        "docs": [],
+        "label": "get_user_deposits",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 53
+        },
+        "selector": "0xcb824993"
+      },
+      {
+        "args": [
+          {
+            "label": "burn_id",
+            "type": {
+              "displayName": [
+                "BurnId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [],
+        "label": "get_pending_burn",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 54
+        },
+        "selector": "0xc1ffc908"
+      },
+      {
+        "args": [
+          {
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [],
+        "label": "get_pending_refund",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 56
+        },
+        "selector": "0xcbd09c0e"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "owner",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 49
+        },
+        "selector": "0xfeaea4fa"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "chain_id",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 58
+        },
+        "selector": "0xffe9f9cf"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "next_deposit_nonce",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 59
+        },
+        "selector": "0xfd648c34"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "last_burns_checkpoint_nonce",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 59
+        },
+        "selector": "0x937cf37c"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "last_refunds_checkpoint_nonce",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 59
+        },
+        "selector": "0x8cbc4bda"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "guardians",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 60
+        },
+        "selector": "0x12d70020"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "approve_threshold",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 58
+        },
+        "selector": "0x8cd59c44"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "deny_threshold",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 58
+        },
+        "selector": "0x17238879"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "is_paused",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 52
+        },
+        "selector": "0xfa7d505b"
+      },
+      {
+        "args": [
+          {
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Get deposit metadata for a given deposit ID"
+        ],
+        "label": "get_deposit_metadata",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 61
+        },
+        "selector": "0xefccb143"
+      },
+      {
+        "args": [
+          {
+            "label": "burn_id",
+            "type": {
+              "displayName": [
+                "BurnId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Check if a burn ID has a pending approval"
+        ],
+        "label": "has_pending_burn",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 52
+        },
+        "selector": "0x5c5702da"
+      },
+      {
+        "args": [
+          {
+            "label": "deposit_id",
+            "type": {
+              "displayName": [
+                "DepositId"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Check if a deposit ID has a pending refund"
+        ],
+        "label": "has_pending_refund",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 52
+        },
+        "selector": "0x143eaf84"
+      }
+    ]
+  },
+  "storage": {
+    "root": {
+      "layout": {
+        "struct": {
+          "fields": [
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 0
+                }
+              },
+              "name": "owner"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 3
+                }
+              },
+              "name": "chain_id"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 4
+                }
+              },
+              "name": "next_deposit_nonce"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 4
+                }
+              },
+              "name": "last_burns_checkpoint_nonce"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 4
+                }
+              },
+              "name": "last_refunds_checkpoint_nonce"
+            },
+            {
+              "layout": {
+                "root": {
+                  "layout": {
+                    "leaf": {
+                      "key": "0xdea95769",
+                      "ty": 4
+                    }
+                  },
+                  "root_key": "0xdea95769",
+                  "ty": 5
+                }
+              },
+              "name": "locked"
+            },
+            {
+              "layout": {
+                "root": {
+                  "layout": {
+                    "leaf": {
+                      "key": "0x6f262d03",
+                      "ty": 11
+                    }
+                  },
+                  "root_key": "0x6f262d03",
+                  "ty": 12
+                }
+              },
+              "name": "processed_deposits"
+            },
+            {
+              "layout": {
+                "root": {
+                  "layout": {
+                    "leaf": {
+                      "key": "0xecb6bf46",
+                      "ty": 11
+                    }
+                  },
+                  "root_key": "0xecb6bf46",
+                  "ty": 15
+                }
+              },
+              "name": "denied_deposits"
+            },
+            {
+              "layout": {
+                "root": {
+                  "layout": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x853b879f",
+                              "ty": 0
+                            }
+                          },
+                          "name": "sender"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x853b879f",
+                              "ty": 0
+                            }
+                          },
+                          "name": "hotkey"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x853b879f",
+                              "ty": 3
+                            }
+                          },
+                          "name": "netuid"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x853b879f",
+                              "ty": 4
+                            }
+                          },
+                          "name": "amount"
+                        }
+                      ],
+                      "name": "DepositMetadata"
+                    }
+                  },
+                  "root_key": "0x853b879f",
+                  "ty": 18
+                }
+              },
+              "name": "deposit_metadata"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 22
+                }
+              },
+              "name": "guardians"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 3
+                }
+              },
+              "name": "approve_threshold"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 3
+                }
+              },
+              "name": "deny_threshold"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 23
+                }
+              },
+              "name": "signature_ttl_blocks"
+            },
+            {
+              "layout": {
+                "root": {
+                  "layout": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x89afc2f6",
+                              "ty": 6
+                            }
+                          },
+                          "name": "burn_id"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x89afc2f6",
+                              "ty": 0
+                            }
+                          },
+                          "name": "recipient"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x89afc2f6",
+                              "ty": 0
+                            }
+                          },
+                          "name": "hotkey"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x89afc2f6",
+                              "ty": 3
+                            }
+                          },
+                          "name": "netuid"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x89afc2f6",
+                              "ty": 4
+                            }
+                          },
+                          "name": "amount"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x89afc2f6",
+                              "ty": 22
+                            }
+                          },
+                          "name": "approves"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x89afc2f6",
+                              "ty": 22
+                            }
+                          },
+                          "name": "denies"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x89afc2f6",
+                              "ty": 23
+                            }
+                          },
+                          "name": "proposed_at"
+                        }
+                      ],
+                      "name": "PendingBurn"
+                    }
+                  },
+                  "root_key": "0x89afc2f6",
+                  "ty": 24
+                }
+              },
+              "name": "pending_burns"
+            },
+            {
+              "layout": {
+                "root": {
+                  "layout": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xaa3eb858",
+                              "ty": 6
+                            }
+                          },
+                          "name": "deposit_id"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xaa3eb858",
+                              "ty": 0
+                            }
+                          },
+                          "name": "recipient"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xaa3eb858",
+                              "ty": 4
+                            }
+                          },
+                          "name": "amount"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xaa3eb858",
+                              "ty": 22
+                            }
+                          },
+                          "name": "approves"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xaa3eb858",
+                              "ty": 22
+                            }
+                          },
+                          "name": "denies"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xaa3eb858",
+                              "ty": 23
+                            }
+                          },
+                          "name": "proposed_at"
+                        }
+                      ],
+                      "name": "PendingRefund"
+                    }
+                  },
+                  "root_key": "0xaa3eb858",
+                  "ty": 28
+                }
+              },
+              "name": "pending_refunds"
+            },
+            {
+              "layout": {
+                "root": {
+                  "layout": {
+                    "leaf": {
+                      "key": "0x14295bfd",
+                      "ty": 32
+                    }
+                  },
+                  "root_key": "0x14295bfd",
+                  "ty": 33
+                }
+              },
+              "name": "user_deposits"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 4
+                }
+              },
+              "name": "min_deposit_amount"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 23
+                }
+              },
+              "name": "max_deposits_per_user"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 0
+                }
+              },
+              "name": "contract_hotkey"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 11
+                }
+              },
+              "name": "paused"
+            }
+          ],
+          "name": "Bridge"
+        }
+      },
+      "root_key": "0x00000000",
+      "ty": 36
+    }
+  },
+  "types": [
+    {
+      "id": 0,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "type": 1,
+                "typeName": "[u8; 32]"
+              }
+            ]
+          }
+        },
+        "path": [
+          "ink_primitives",
+          "types",
+          "AccountId"
+        ]
+      }
+    },
+    {
+      "id": 1,
+      "type": {
+        "def": {
+          "array": {
+            "len": 32,
+            "type": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": {
+        "def": {
+          "primitive": "u8"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": {
+        "def": {
+          "primitive": "u16"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": {
+        "def": {
+          "primitive": "u64"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "K",
+            "type": 6
+          },
+          {
+            "name": "V",
+            "type": 4
+          },
+          {
+            "name": "KeyType",
+            "type": 7
+          }
+        ],
+        "path": [
+          "ink_storage",
+          "lazy",
+          "mapping",
+          "Mapping"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "type": 1,
+                "typeName": "[u8; 32]"
+              }
+            ]
+          }
+        },
+        "path": [
+          "ink_primitives",
+          "types",
+          "Hash"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "L",
+            "type": 8
+          },
+          {
+            "name": "R",
+            "type": 9
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ResolverKey"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "AutoKey"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "ParentKey",
+            "type": 10
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "type": {
+        "def": {
+          "tuple": []
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": {
+        "def": {
+          "primitive": "bool"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "K",
+            "type": 6
+          },
+          {
+            "name": "V",
+            "type": 11
+          },
+          {
+            "name": "KeyType",
+            "type": 13
+          }
+        ],
+        "path": [
+          "ink_storage",
+          "lazy",
+          "mapping",
+          "Mapping"
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "L",
+            "type": 8
+          },
+          {
+            "name": "R",
+            "type": 14
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ResolverKey"
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "ParentKey",
+            "type": 10
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "K",
+            "type": 6
+          },
+          {
+            "name": "V",
+            "type": 11
+          },
+          {
+            "name": "KeyType",
+            "type": 16
+          }
+        ],
+        "path": [
+          "ink_storage",
+          "lazy",
+          "mapping",
+          "Mapping"
+        ]
+      }
+    },
+    {
+      "id": 16,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "L",
+            "type": 8
+          },
+          {
+            "name": "R",
+            "type": 17
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ResolverKey"
+        ]
+      }
+    },
+    {
+      "id": 17,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "ParentKey",
+            "type": 10
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
+        ]
+      }
+    },
+    {
+      "id": 18,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "K",
+            "type": 6
+          },
+          {
+            "name": "V",
+            "type": 19
+          },
+          {
+            "name": "KeyType",
+            "type": 20
+          }
+        ],
+        "path": [
+          "ink_storage",
+          "lazy",
+          "mapping",
+          "Mapping"
+        ]
+      }
+    },
+    {
+      "id": 19,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "name": "sender",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "hotkey",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "netuid",
+                "type": 3,
+                "typeName": "u16"
+              },
+              {
+                "name": "amount",
+                "type": 4,
+                "typeName": "Balance"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "DepositMetadata"
+        ]
+      }
+    },
+    {
+      "id": 20,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "L",
+            "type": 8
+          },
+          {
+            "name": "R",
+            "type": 21
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ResolverKey"
+        ]
+      }
+    },
+    {
+      "id": 21,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "ParentKey",
+            "type": 10
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
+        ]
+      }
+    },
+    {
+      "id": 22,
+      "type": {
+        "def": {
+          "sequence": {
+            "type": 0
+          }
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": {
+        "def": {
+          "primitive": "u32"
+        }
+      }
+    },
+    {
+      "id": 24,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "K",
+            "type": 6
+          },
+          {
+            "name": "V",
+            "type": 25
+          },
+          {
+            "name": "KeyType",
+            "type": 26
+          }
+        ],
+        "path": [
+          "ink_storage",
+          "lazy",
+          "mapping",
+          "Mapping"
+        ]
+      }
+    },
+    {
+      "id": 25,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "name": "burn_id",
+                "type": 6,
+                "typeName": "BurnId"
+              },
+              {
+                "name": "recipient",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "hotkey",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "netuid",
+                "type": 3,
+                "typeName": "u16"
+              },
+              {
+                "name": "amount",
+                "type": 4,
+                "typeName": "Balance"
+              },
+              {
+                "name": "approves",
+                "type": 22,
+                "typeName": "Vec<ink::primitives::AccountId>"
+              },
+              {
+                "name": "denies",
+                "type": 22,
+                "typeName": "Vec<ink::primitives::AccountId>"
+              },
+              {
+                "name": "proposed_at",
+                "type": 23,
+                "typeName": "BlockNumber"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "PendingBurn"
+        ]
+      }
+    },
+    {
+      "id": 26,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "L",
+            "type": 8
+          },
+          {
+            "name": "R",
+            "type": 27
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ResolverKey"
+        ]
+      }
+    },
+    {
+      "id": 27,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "ParentKey",
+            "type": 10
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
+        ]
+      }
+    },
+    {
+      "id": 28,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "K",
+            "type": 6
+          },
+          {
+            "name": "V",
+            "type": 29
+          },
+          {
+            "name": "KeyType",
+            "type": 30
+          }
+        ],
+        "path": [
+          "ink_storage",
+          "lazy",
+          "mapping",
+          "Mapping"
+        ]
+      }
+    },
+    {
+      "id": 29,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "name": "deposit_id",
+                "type": 6,
+                "typeName": "DepositId"
+              },
+              {
+                "name": "recipient",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "amount",
+                "type": 4,
+                "typeName": "Balance"
+              },
+              {
+                "name": "approves",
+                "type": 22,
+                "typeName": "Vec<ink::primitives::AccountId>"
+              },
+              {
+                "name": "denies",
+                "type": 22,
+                "typeName": "Vec<ink::primitives::AccountId>"
+              },
+              {
+                "name": "proposed_at",
+                "type": 23,
+                "typeName": "BlockNumber"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "PendingRefund"
+        ]
+      }
+    },
+    {
+      "id": 30,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "L",
+            "type": 8
+          },
+          {
+            "name": "R",
+            "type": 31
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ResolverKey"
+        ]
+      }
+    },
+    {
+      "id": 31,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "ParentKey",
+            "type": 10
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
+        ]
+      }
+    },
+    {
+      "id": 32,
+      "type": {
+        "def": {
+          "sequence": {
+            "type": 6
+          }
+        }
+      }
+    },
+    {
+      "id": 33,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "K",
+            "type": 0
+          },
+          {
+            "name": "V",
+            "type": 32
+          },
+          {
+            "name": "KeyType",
+            "type": 34
+          }
+        ],
+        "path": [
+          "ink_storage",
+          "lazy",
+          "mapping",
+          "Mapping"
+        ]
+      }
+    },
+    {
+      "id": 34,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "L",
+            "type": 8
+          },
+          {
+            "name": "R",
+            "type": 35
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ResolverKey"
+        ]
+      }
+    },
+    {
+      "id": 35,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "ParentKey",
+            "type": 10
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
+        ]
+      }
+    },
+    {
+      "id": 36,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "name": "owner",
+                "type": 0,
+                "typeName": "<AccountId as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<2918230364u32, ()>,>>::Type"
+              },
+              {
+                "name": "chain_id",
+                "type": 3,
+                "typeName": "<ChainId as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<375957688u32, ()>,>>::Type"
+              },
+              {
+                "name": "next_deposit_nonce",
+                "type": 4,
+                "typeName": "<DepositNonce as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<4139309743u32, ()>,>>::Type"
+              },
+              {
+                "name": "last_burns_checkpoint_nonce",
+                "type": 4,
+                "typeName": "<CheckpointNonce as::ink::storage::traits::AutoStorableHint<::ink\n::storage::traits::ManualKey<3428873982u32, ()>,>>::Type"
+              },
+              {
+                "name": "last_refunds_checkpoint_nonce",
+                "type": 4,
+                "typeName": "<CheckpointNonce as::ink::storage::traits::AutoStorableHint<::ink\n::storage::traits::ManualKey<35110692u32, ()>,>>::Type"
+              },
+              {
+                "name": "locked",
+                "type": 5,
+                "typeName": "<Mapping<DepositId, Balance> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<1767352798u32,\n()>,>>::Type"
+              },
+              {
+                "name": "processed_deposits",
+                "type": 12,
+                "typeName": "<Mapping<DepositId, bool> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<53290607u32, ()\n>,>>::Type"
+              },
+              {
+                "name": "denied_deposits",
+                "type": 15,
+                "typeName": "<Mapping<DepositId, bool> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<1186969324u32,\n()>,>>::Type"
+              },
+              {
+                "name": "deposit_metadata",
+                "type": 18,
+                "typeName": "<Mapping<DepositId, DepositMetadata> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<2676439941u32,\n()>,>>::Type"
+              },
+              {
+                "name": "guardians",
+                "type": 22,
+                "typeName": "<Vec<AccountId> as::ink::storage::traits::AutoStorableHint<::\nink::storage::traits::ManualKey<1404589629u32, ()>,>>::Type"
+              },
+              {
+                "name": "approve_threshold",
+                "type": 3,
+                "typeName": "<u16 as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<4624968u32, ()>,>>::Type"
+              },
+              {
+                "name": "deny_threshold",
+                "type": 3,
+                "typeName": "<u16 as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<331418468u32, ()>,>>::Type"
+              },
+              {
+                "name": "signature_ttl_blocks",
+                "type": 23,
+                "typeName": "<u32 as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<1348377679u32, ()>,>>::Type"
+              },
+              {
+                "name": "pending_burns",
+                "type": 24,
+                "typeName": "<Mapping<BurnId, PendingBurn> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<4139954057u32,\n()>,>>::Type"
+              },
+              {
+                "name": "pending_refunds",
+                "type": 28,
+                "typeName": "<Mapping<DepositId, PendingRefund> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<1488469674u32,\n()>,>>::Type"
+              },
+              {
+                "name": "user_deposits",
+                "type": 33,
+                "typeName": "<Mapping<AccountId, Vec<DepositId>> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<4250609940u32,\n()>,>>::Type"
+              },
+              {
+                "name": "min_deposit_amount",
+                "type": 4,
+                "typeName": "<Balance as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<4033132534u32, ()>,>>::Type"
+              },
+              {
+                "name": "max_deposits_per_user",
+                "type": 23,
+                "typeName": "<u32 as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<2799222312u32, ()>,>>::Type"
+              },
+              {
+                "name": "contract_hotkey",
+                "type": 0,
+                "typeName": "<AccountId as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<2857426005u32, ()>,>>::Type"
+              },
+              {
+                "name": "paused",
+                "type": 11,
+                "typeName": "<bool as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<1000293823u32, ()>,>>::Type"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "bridge",
+          "Bridge"
+        ]
+      }
+    },
+    {
+      "id": 37,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 10
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 10
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 38,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "index": 1,
+                "name": "CouldNotReadInput"
+              }
+            ]
+          }
+        },
+        "path": [
+          "ink_primitives",
+          "LangError"
+        ]
+      }
+    },
+    {
+      "id": 39,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "type": 3,
+                "typeName": "u16"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "runtime",
+          "NetUid"
+        ]
+      }
+    },
+    {
+      "id": 40,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 41
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 41
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 41,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 6
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 42
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 6
+          },
+          {
+            "name": "E",
+            "type": 42
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 42,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "Unauthorized"
+              },
+              {
+                "index": 1,
+                "name": "NotGuardian"
+              },
+              {
+                "index": 2,
+                "name": "AlreadyAttestedBurn"
+              },
+              {
+                "index": 3,
+                "name": "AlreadyAttestedRefund"
+              },
+              {
+                "index": 4,
+                "name": "InsufficientStake"
+              },
+              {
+                "index": 5,
+                "name": "TransferNotVerified"
+              },
+              {
+                "index": 6,
+                "name": "AmountTooSmall"
+              },
+              {
+                "index": 7,
+                "name": "InvalidHotkey"
+              },
+              {
+                "index": 8,
+                "name": "InvalidNonce"
+              },
+              {
+                "index": 9,
+                "name": "TooManyDeposits"
+              },
+              {
+                "index": 10,
+                "name": "InvalidCheckpointNonce"
+              },
+              {
+                "index": 11,
+                "name": "InvalidThresholds"
+              },
+              {
+                "index": 12,
+                "name": "TooManyGuardians"
+              },
+              {
+                "index": 13,
+                "name": "InvalidRefundRecipient"
+              },
+              {
+                "index": 14,
+                "name": "InvalidRefundAmount"
+              },
+              {
+                "index": 15,
+                "name": "BridgePaused"
+              },
+              {
+                "index": 16,
+                "name": "AlreadyProcessed"
+              },
+              {
+                "index": 17,
+                "name": "DepositAlreadyDenied"
+              },
+              {
+                "index": 18,
+                "name": "CheckpointNotFound"
+              },
+              {
+                "index": 19,
+                "name": "CheckpointExpired"
+              },
+              {
+                "index": 20,
+                "name": "CheckpointNotExpired"
+              },
+              {
+                "index": 21,
+                "name": "Overflow"
+              },
+              {
+                "index": 22,
+                "name": "RuntimeCallFailed"
+              },
+              {
+                "index": 23,
+                "name": "StakeQueryFailed"
+              },
+              {
+                "index": 24,
+                "name": "TransferFailed"
+              },
+              {
+                "index": 25,
+                "name": "StakeConsolidationFailed"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "errors",
+          "Error"
+        ]
+      }
+    },
+    {
+      "id": 43,
+      "type": {
+        "def": {
+          "sequence": {
+            "type": 44
+          }
+        }
+      }
+    },
+    {
+      "id": 44,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "name": "burn_id",
+                "type": 6,
+                "typeName": "BurnId"
+              },
+              {
+                "name": "recipient",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "hotkey",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "netuid",
+                "type": 3,
+                "typeName": "u16"
+              },
+              {
+                "name": "amount",
+                "type": 4,
+                "typeName": "Balance"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "CanonicalBurn"
+        ]
+      }
+    },
+    {
+      "id": 45,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 46
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 46
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 46,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 10
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 42
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 10
+          },
+          {
+            "name": "E",
+            "type": 42
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 47,
+      "type": {
+        "def": {
+          "sequence": {
+            "type": 48
+          }
+        }
+      }
+    },
+    {
+      "id": 48,
+      "type": {
+        "def": {
+          "composite": {
+            "fields": [
+              {
+                "name": "deposit_id",
+                "type": 6,
+                "typeName": "DepositId"
+              },
+              {
+                "name": "recipient",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "amount",
+                "type": 4,
+                "typeName": "Balance"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "RefundItem"
+        ]
+      }
+    },
+    {
+      "id": 49,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 0
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 0
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 50,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 51
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 51
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 51,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "None"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 4
+                  }
+                ],
+                "index": 1,
+                "name": "Some"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 4
+          }
+        ],
+        "path": [
+          "Option"
+        ]
+      }
+    },
+    {
+      "id": 52,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 11
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 11
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 53,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 32
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 32
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 54,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 55
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 55
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 55,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "None"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 25
+                  }
+                ],
+                "index": 1,
+                "name": "Some"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 25
+          }
+        ],
+        "path": [
+          "Option"
+        ]
+      }
+    },
+    {
+      "id": 56,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 57
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 57
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 57,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "None"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 29
+                  }
+                ],
+                "index": 1,
+                "name": "Some"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 29
+          }
+        ],
+        "path": [
+          "Option"
+        ]
+      }
+    },
+    {
+      "id": 58,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 3
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 3
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 59,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 4
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 4
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 60,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 22
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 22
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 61,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 62
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 38
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 62
+          },
+          {
+            "name": "E",
+            "type": 38
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 62,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "None"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 19
+                  }
+                ],
+                "index": 1,
+                "name": "Some"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 19
+          }
+        ],
+        "path": [
+          "Option"
+        ]
+      }
+    },
+    {
+      "id": 63,
+      "type": {
+        "def": {
+          "variant": {}
+        },
+        "path": [
+          "bridge",
+          "chain_extension",
+          "SubtensorExtension"
+        ]
+      }
+    }
+  ],
+  "version": 5
+}
