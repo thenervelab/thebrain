@@ -2307,8 +2307,8 @@ pub mod pallet {
 				// Remove the node registration
 				NodeRegistration::<T>::remove(&node_id);
 
-				// Remove metrics for the main node
-				T::MetricsInfo::remove_metrics(main_node_id.clone());
+				// Remove metrics for the node
+				T::MetricsInfo::remove_metrics(node_id.clone());
 				T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 
 				// Remove the node from LinkedNodes if it exists
