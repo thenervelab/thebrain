@@ -1185,7 +1185,7 @@ impl pallet_registration::Config for Runtime {
 	type GpuMinerInitialFee = GpuMinerInitialFee;
 	type BlocksPerDay = BlocksPerDay;
 	type ProxyTypeCompatType = ProxyType;
-	type NodeCooldownPeriod = ConstU64<100>;
+	type NodeCooldownPeriod = ConstU64<500>;
 	type MaxDeregRequestsPerPeriod = ConstU32<20>;
 	type ConsensusThreshold = ConsensusThreshold;
 	type ConsensusPeriod = ConsensusPeriod;
