@@ -240,6 +240,10 @@ pub mod pallet {
 	pub type Libp2pIpfsIdentity<T: Config> =
 		StorageMap<_, Blake2_128Concat, Vec<u8>, (Libp2pKeyType, Vec<u8>), OptionQuery>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn is_deregistration_enabled)]
+	pub type DeregistrationEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -302,6 +306,10 @@ pub mod pallet {
 		ColdkeyNodeVerified {
 			node_id: Vec<u8>,
 			owner: T::AccountId,
+		},
+		/// Emitted when the de-registration status is changed
+		DeregistrationStatusChanged {
+			enabled: bool,
 		},
 	}
 
@@ -1325,6 +1333,9 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
+			// Check if de-registration is enabled
+			ensure!(Self::is_deregistration_enabled(), Error::<T>::NodeTypeDisabled);
+
 			// Check if this is a proxy account and get the main account
 			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
 				primary
@@ -1593,6 +1604,25 @@ pub mod pallet {
 
 			Ok(().into())
 		}
+
+		/// Toggle the de-registration switch (root only)
+		#[pallet::call_index(20)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn set_deregistration_enabled(
+			origin: OriginFor<T>,
+			enabled: bool,
+		) -> DispatchResult {
+			// Only root can call this function
+			ensure_root(origin)?;
+
+			// Update the de-registration enabled state
+			DeregistrationEnabled::<T>::put(enabled);
+
+			// Emit an event
+			Self::deposit_event(Event::DeregistrationStatusChanged { enabled });
+
+			Ok(())
+		}		
 	}
 
 	impl<T: Config> Pallet<T> {
