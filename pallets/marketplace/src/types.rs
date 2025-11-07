@@ -48,7 +48,6 @@ where
     }
 }
 
-
 #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub struct Plan<Hash> {
     pub id: Hash, // Unique identifier for the plan
@@ -58,6 +57,8 @@ pub struct Plan<Hash> {
     pub is_suspended: bool,
     pub price: u128,
     pub name: Vec<u8>,
+    pub is_storage_plan: bool,
+    pub storage_limit: Option<u128>,
 }
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo)]
@@ -80,7 +81,7 @@ where
     pub cdn_location_id: Option<u32>,           // Optional CDN location ID
     pub active: bool,                           // Subscription activity status
     pub last_charged_at: BlockNumberFor<T>,
-    pub selected_image_name: Vec<u8>,           // Name of the selected image
+    pub selected_image_name: Option<Vec<u8>>,           // Name of the selected image
     pub _phantom: PhantomData<T>,               // Placeholder for generic type
 }
 

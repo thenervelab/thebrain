@@ -642,7 +642,7 @@ pub mod pallet {
 				}
 			}
 
-			Self::deposit_event(Event::MintedAccountCredits { who, amount: free + amount });
+			Self::deposit_event(Event::MintedAccountCredits { who, amount });
 
 			Ok(())
 		}
