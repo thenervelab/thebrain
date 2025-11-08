@@ -1195,65 +1195,24 @@ pub mod pallet {
 		pub fn calculate_uptime_and_recent_downtime(
 			miner_node_id: Vec<u8>, // Key for the storage map
 		) -> Option<(u32, u32, u32, u32)> {
-			// Fetch the stored block numbers
-			let block_numbers = BlockNumbers::<T>::get(&miner_node_id)?;
+			let node_info = RegistrationPallet::<T>::get_node_registration_info(miner_node_id)?;
 
-			if block_numbers.is_empty() {
-				return None; // No blocks recorded
-			}
+			let current_block = <frame_system::Pallet<T>>::block_number();
+			let block_time_secs = Self::block_time() as u64;
 
-			// Since we only store the last block number, take the last element and clone to get owned value
-			let last_block = block_numbers.last()?.clone().try_into().ok()?; // Convert BlockNumberFor<T> to u32
-			
-			// Get the current block number
-			let current_block = <frame_system::Pallet<T>>::block_number().saturated_into::<u32>();
+			let elapsed_blocks = current_block.saturating_sub(node_info.registered_at);
+			let elapsed_seconds = elapsed_blocks
+				.saturated_into::<u64>()
+				.saturating_mul(block_time_secs);
 
-			// Fetch the block time
-			let block_time: u32 = Self::block_time();
-
-			let mut uptime_seconds = 0u32;
-			let mut total_uptime_seconds = 0u32;
-			let mut recent_downtime_seconds = 0u32;
-			let mut consecutive_reliable_days = 0u32;
-
-			// Calculate the block difference
-			let block_diff = current_block.saturating_sub(last_block);
-			let check_intetrval = <T as pallet::Config>::BlockCheckInterval::get();
-			// If the last block is within 300 blocks (since updates happen every 300 blocks)
-			if block_diff <= check_intetrval {
-				// Assume the node was up for the entire period since the last recorded block
-				uptime_seconds = block_diff * block_time;
-				total_uptime_seconds = uptime_seconds;
-
-				// Calculate consecutive reliable days
-				let total_uptime_days = uptime_seconds / 86400; // 86400 seconds = 1 day
-				consecutive_reliable_days = total_uptime_days;
-			} else {
-				// If the difference is more than 300 blocks, assume the node was only up at the last recorded block
-				// and has been down since the next expected update (last_block + 300)
-				uptime_seconds = block_time; // Uptime only for the recorded block
-				total_uptime_seconds = uptime_seconds;
-
-				// Calculate downtime from (last_block + 300) to current_block
-				let downtime_blocks = block_diff.saturating_sub(300);
-				recent_downtime_seconds = downtime_blocks * block_time;
-
-				// No consecutive reliable days since the node missed an update
-				consecutive_reliable_days = 0;
-			}
-
-			// Convert recent downtime seconds to hours
-			let recent_downtime_hours = recent_downtime_seconds / 3600;
-
-			// Convert uptime to minutes
-			let uptime_minutes = uptime_seconds / 60;
-			let total_uptime_minutes = total_uptime_seconds / 60;
+			let uptime_minutes = (elapsed_seconds / 60).min(u32::MAX as u64) as u32;
+			let consecutive_reliable_days = (elapsed_seconds / 86_400).min(u32::MAX as u64) as u32;
 
 			Some((
 				uptime_minutes,
-				total_uptime_minutes,
+				uptime_minutes,
 				consecutive_reliable_days,
-				recent_downtime_hours,
+				0,
 			))
 		}
 
