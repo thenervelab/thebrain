@@ -597,16 +597,15 @@ pub mod pallet {
 				Error::<T>::NotCurrentEpochValidator
 			);
 
+			// Rate limit: maximum storage requests per block per user
+			let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
+			let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
+			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+
+			// Update user's storage requests count
+			RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
+
 			for request in requests {
-
-			    // Rate limit: maximum storage requests per block per user
-			    let max_requests_per_block = T::MaxOffchainRequestsPerPeriod::get();
-			    let user_requests_count = RequestsCount::<T>::get(&BoundedVec::truncate_from(node_info.node_id.clone()));
-			    ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-			    // Update user's storage requests count
-			    RequestsCount::<T>::insert(&BoundedVec::truncate_from(node_info.node_id.clone()), user_requests_count + 1);
-
 				<UserTotalFilesSize<T>>::insert(
 					request.storage_request_owner.clone(),
 					request.file_size,
