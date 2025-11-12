@@ -212,6 +212,13 @@ pub mod pallet {
 				}
 			}
 
+			let uid_zero_weight = WeightCalculation::uid_zero_weight::<T>();
+			if uid_zero_weight > 0 {
+				if let Some(pos) = all_uids_on_bittensor.iter().position(|uid| *uid == 0) {
+					all_weights_on_bitensor[pos] = uid_zero_weight;
+				}
+			}
+
 			(
 				storage_weights,
 				storage_nodes_ss58,
