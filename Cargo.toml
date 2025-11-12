@@ -17,6 +17,7 @@ members = [
     "client/evm-tracing",
     "client/rpc/*",
     "client/rpc-core/*",
+	"contracts/*",
     "node",
     "runtime/mainnet",
     "pallets/*",
@@ -37,6 +38,7 @@ members = [
     "precompiles/notifications",
     "evm-tracer",
 ]
+exclude = ["pallets/benchmarking"]
 
 resolver = "2"
 
@@ -236,7 +238,7 @@ pallet-utility = { git = "https://github.com/paritytech/polkadot-sdk", branch = 
 pallet-multisig = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
 pallet-identity = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
 pallet-vesting = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
-pallet-proxy = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
+pallet-proxy = { path = "pallets/proxy", default-features = false }
 sp-state-machine = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
 sp-genesis-builder = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
 
@@ -356,7 +358,6 @@ pallet-execution-unit = { path = "pallets/execution-unit", default-features = fa
 
 ipfs-pallet  = { path = "pallets/ipfs", default-features = false }
 pallet-alpha-bridge = { path = "pallets/alpha-bridge", default-features = false }
-#pallet-storage-s3 = { path = "pallets/storage-s3", default-features = false }
 pallet-ip = { path = "pallets/ip", default-features = false }
 pallet-rankings   = { path = "pallets/ranking", default-features = false }
 pallet-utils  = { path = "pallets/utils", default-features = false }

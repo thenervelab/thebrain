@@ -167,13 +167,14 @@ pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
 		c: PRIMARY_PROBABILITY,
 		allowed_slots: sp_consensus_babe::AllowedSlots::PrimaryAndSecondaryPlainSlots,
 	};
+
 /// This runtime version.
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9043,
+	spec_version: 9129,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -562,7 +563,7 @@ parameter_types! {
 	// storage and compute grace periods
 	pub const StorageGracePeriod: u32 = 0;
 	pub const ComputeGracePeriod: u32 = 0;
-	pub const MaxRequestsPerBlock: u32 = 15;
+	pub const MaxRequestsPerBlock: u32 = 5;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1098,8 +1099,6 @@ impl pallet_metagraph::Config for Runtime {
 	type DividendsStorageKey = FinneyDividendsStorageKey;
 	type UidsSubmissionInterval = UidsSubmissionInterval;
 	type AuthorityId = pallet_metagraph::crypto::TestAuthId;
-	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
-	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 }
 
 parameter_types! {
@@ -1121,6 +1120,7 @@ impl ipfs_pallet::Config for Runtime {
 	type PinPinningInterval = PinPinningInterval;
 	type MaxOffchainRequestsPerPeriod = MaxOffchainRequestsPerPeriod;
 	type RequestsClearInterval = RequestsClearInterval;
+	type EpochPeriod = ConstU64<100>;
 }
 
 parameter_types! {
@@ -1131,6 +1131,8 @@ impl pallet_alpha_bridge::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Balance = Balance;
 	type PalletId = AlphaPalletId;
+	type Currency = Balances;
+	type WeightInfo = pallet_alpha_bridge::weights::SubstrateWeight<Runtime>;
 }
 
 parameter_types! {
@@ -1166,6 +1168,7 @@ parameter_types! {
 	pub const ValidatorInitialFee: Balance = 200_000_000_000; // 200 tokens
 	pub const ComputeMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
 	pub const GpuMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
+	pub const ReportRequestsClearInterval : u32 = 1000;
 }
 
 impl pallet_registration::Config for Runtime {
@@ -1173,6 +1176,7 @@ impl pallet_registration::Config for Runtime {
 	// Use Pallet instead of the crate name
 	type MetagraphInfo = pallet_metagraph::Pallet<Runtime>;
 	type MetricsInfo = pallet_execution_unit::Pallet<Runtime>;
+	type IpfsInfo = ipfs_pallet::Pallet<Runtime>;
 	type MinerStakeThreshold = ConstU32<0>;
 	type ChainDecimals = ConstU32<18>;
 	type PalletId = ResgisterPalletId;
@@ -1183,7 +1187,12 @@ impl pallet_registration::Config for Runtime {
 	type GpuMinerInitialFee = GpuMinerInitialFee;
 	type BlocksPerDay = BlocksPerDay;
 	type ProxyTypeCompatType = ProxyType;
-	type NodeCooldownPeriod = ConstU64<100>;
+	type NodeCooldownPeriod = ConstU64<500>;
+	type MaxDeregRequestsPerPeriod = ConstU32<20>;
+	type ConsensusThreshold = ConsensusThreshold;
+	type ConsensusPeriod = ConsensusPeriod;
+	type EpochDuration = ConstU32<100>; // epoch pin checks clear duration
+	type ReportRequestsClearInterval = ReportRequestsClearInterval;
 }
 
 parameter_types! {
@@ -1339,6 +1348,7 @@ parameter_types! {
 	pub const IpfsServiceUrl: &'static str = "http://localhost:3000";
 	pub const LocalDefaultGenesisHash: &'static str = "0x28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9";
 	pub const ConsensusPeriod: BlockNumber = 10;
+	pub const ConsensusThreshold: u32 = 2;
 	// pub const EpochDuration: u32 = 10;
 }
 
@@ -1361,10 +1371,11 @@ impl pallet_execution_unit::Config for Runtime {
 	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 	type ConsensusPeriod = ConsensusPeriod;
-    type ConsensusThreshold = ConstU32<2>;
-	type ConsensusSimilarityThreshold = ConstU32<85>; 
-	type EpochDuration = ConstU32<1200>;
-} 
+	type ConsensusThreshold = ConsensusThreshold;
+	type ConsensusSimilarityThreshold = ConstU32<85>;
+	type EpochDuration = ConstU32<100>; // epoch pin checks clear duration
+	type ReputationUpdateInterval = ConstU32<15>;
+}
 
 impl pallet_offences::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
@@ -1492,7 +1503,7 @@ impl pallet_child_bounties::Config for Runtime {
 
 parameter_types! {
 	pub const SubAccountStringLimit: u32 = 300;
-	pub const MaxSubAccountsLimit: u32 = 50;	
+	pub const MaxSubAccountsLimit: u32 = 50;
 }
 
 impl pallet_subaccount::Config for Runtime {
@@ -1500,6 +1511,8 @@ impl pallet_subaccount::Config for Runtime {
 	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
 	type StringLimit = SubAccountStringLimit;
 	type MaxSubAccountsLimit = MaxSubAccountsLimit;
+	type ExistentialDeposit = ExistentialDeposit;
+	type Currency = Balances;
 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
 }
 
@@ -1541,10 +1554,6 @@ impl pallet_tx_pause::Config for Runtime {
 	type MaxNameLen = ConstU32<256>;
 	type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
 }
-
-// impl pallet_storage_s3::Config for Runtime {
-// 	type RuntimeEvent = RuntimeEvent;
-// }
 
 parameter_types! {
 	pub const BasicDeposit: Balance = deposit(0, 100);
@@ -1681,6 +1690,7 @@ impl pallet_proxy::Config for Runtime {
 	type CallHasher = BlakeTwo256;
 	type AnnouncementDepositBase = AnnouncementDepositBase;
 	type AnnouncementDepositFactor = AnnouncementDepositFactor;
+	type ExistentialDeposit = ExistentialDeposit;
 }
 
 // Create the runtime by composing the FRAME pallets that were previously configured.
@@ -1749,7 +1759,6 @@ construct_runtime!(
 		Credits: pallet_credits = 65,
 		// Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69,
-		// Storage: pallet_storage_s3 = 72,
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
 		IpfsPallet: ipfs_pallet = 75
@@ -1780,6 +1789,8 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 			.expect("Encoded extrinsic is always valid")
 	}
 }
+
+type Migrations = (pallet_alpha_bridge::migrations::v1::MigrationToV1<Runtime>,);
 
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;
@@ -1814,7 +1825,7 @@ pub type Executive = frame_executive::Executive<
 	frame_system::ChainContext<Runtime>,
 	Runtime,
 	AllPalletsWithSystem,
-	// migrations::MigrateSessionKeys<Runtime>,
+	Migrations,
 >;
 
 impl fp_self_contained::SelfContainedCall for RuntimeCall {
@@ -2362,11 +2373,12 @@ extern crate frame_benchmarking;
 
 #[cfg(feature = "runtime-benchmarks")]
 mod benches {
-	define_benchmarks!(
+	frame_benchmarking::define_benchmarks!(
 		[frame_benchmarking, BaselineBench::<Runtime>]
 		[frame_system, SystemBench::<Runtime>]
 		[pallet_balances, Balances]
 		[pallet_timestamp, Timestamp]
+		[pallet_alpha_bridge, AlphaBridge]
 	);
 }
 
@@ -3201,14 +3213,6 @@ impl_runtime_apis! {
 			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(miner_id)
 		}
 
-		// fn get_bucket_size( bucket_name: Vec<u8>) -> u128{
-		// 	<pallet_storage_s3::Pallet<Runtime>>::get_bucket_size(bucket_name)
-		// }
-
-		// fn get_user_bandwidth( account_id: AccountId32) -> u128{
-		// 	<pallet_storage_s3::Pallet<Runtime>>::get_user_bandwidth(account_id)
-		// }
-
 		fn get_free_credits_rpc(account: Option<AccountId32>) -> Vec<(AccountId32, u128)>{
 			<pallet_credits::Pallet<Runtime>>::get_free_credits_rpc(account)
 		}
@@ -3286,10 +3290,6 @@ impl_runtime_apis! {
 				None => None,
 			}
 		}
-
-		// fn get_total_bucket_size( account_id: AccountId32) -> u128{
-		// 	<pallet_storage_s3::Pallet<Runtime>>::get_total_bucket_size(account_id)
-		// }
 
 		fn get_total_distributed_rewards_by_node_type(node_type: rpc_primitives_node_metrics::NodeType) -> u128 {
 			// Convert RPC NodeType to Pallet NodeType
@@ -3370,16 +3370,6 @@ impl_runtime_apis! {
 			.collect()
 		}
 
-		// fn get_user_buckets(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserBucket> {
-		// 	<pallet_storage_s3::Pallet<Runtime>>::get_user_buckets(account)
-		// 	.into_iter()
-		// 	.map(|bucket| rpc_primitives_node_metrics::UserBucket {
-		// 		bucket_name: bucket.bucket_name.clone(),
-		// 		bucket_size: bucket.bucket_size.clone(),
-		// 	})
-		// 	.collect()
-		// }
-
 		// fn get_user_vms(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserVmDetails<AccountId32, u32, [u8; 32]>> {
 		// 	Compute::get_user_vms(account)
 		// 	.into_iter()
@@ -3455,10 +3445,13 @@ impl_runtime_apis! {
 			Vec<frame_benchmarking::BenchmarkList>,
 			Vec<frame_support::traits::StorageInfo>,
 		) {
-			use frame_benchmarking::{Benchmarking, BenchmarkList};
+			use frame_benchmarking::{baseline, Benchmarking, BenchmarkList};
 			use frame_support::traits::StorageInfoTrait;
+			use frame_system_benchmarking::Pallet as SystemBench;
+			use baseline::Pallet as BaselineBench;
 
 			let mut list = Vec::<BenchmarkList>::new();
+			list_benchmarks!(list, extra);
 
 			let storage_info = AllPalletsWithSystem::storage_info();
 
@@ -3470,6 +3463,9 @@ impl_runtime_apis! {
 		) -> Result<Vec<frame_benchmarking::BenchmarkBatch>, sp_runtime::RuntimeString> {
 			use frame_benchmarking::{baseline, Benchmarking, BenchmarkBatch};
 			use sp_storage::TrackedStorageKey;
+			use frame_system_benchmarking::Pallet as SystemBench;
+			use baseline::Pallet as BaselineBench;
+
 			impl frame_system_benchmarking::Config for Runtime {}
 			impl baseline::Config for Runtime {}
 
@@ -3478,6 +3474,7 @@ impl_runtime_apis! {
 
 			let mut batches = Vec::<BenchmarkBatch>::new();
 			let params = (&config, &whitelist);
+			add_benchmarks!(params, batches);
 
 			Ok(batches)
 		}

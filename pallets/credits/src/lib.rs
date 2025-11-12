@@ -9,8 +9,8 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
+// #[cfg(feature = "runtime-benchmarks")]
+// mod benchmarking;
 pub mod weights;
 pub use weights::*;
 mod types;
@@ -144,8 +144,8 @@ pub mod pallet {
 	pub type TotalCreditsPurchased<T> = StorageValue<_, u128, ValueQuery>;
 
 	#[pallet::storage]
-	#[pallet::getter(fn total_locked_alpha)]
-	pub type TotalLockedAlpha<T> = StorageValue<_, u128, ValueQuery>;
+	pub type AlphaBalances<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
 
 	// Define separate storage for free credits.
 	#[pallet::storage]
@@ -174,11 +174,6 @@ pub mod pallet {
 		Vec<LockedCredit<T::AccountId, BlockNumberFor<T>>>,
 		ValueQuery,
 	>;
-
-	// Storage for unique ID counter
-	#[pallet::storage]
-	#[pallet::getter(fn next_locked_credit_id)]
-	pub(super) type NextLockedCreditId<T: Config> = StorageValue<_, u64, ValueQuery>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -329,23 +324,6 @@ pub mod pallet {
 			})
 		}
 
-		/// Mint credits (only callable by authority accounts)
-		#[pallet::call_index(2)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn mint(
-			origin: OriginFor<T>,
-			who: T::AccountId,
-			amount: u128,
-			code: Option<Vec<u8>>,
-		) -> DispatchResult {
-			// Ensure the caller is an authority
-			let authority = ensure_signed(origin)?;
-			Self::ensure_is_authority(&authority)?;
-
-			// Call the helper function
-			Self::do_mint(who, amount, code)
-		}
-
 		/// Burn credits (only callable by authority accounts)
 		#[pallet::call_index(3)]
 		#[pallet::weight((0, Pays::No))]
@@ -379,11 +357,7 @@ pub mod pallet {
 			// Ensure the caller is an authority
 			ensure_root(origin)?;
 
-			// Decrease the alpha balance of the sudo key
-			let current_alpha_balance = TotalLockedAlpha::<T>::get();
-			ensure!(current_alpha_balance >= alpha_amount, Error::<T>::InsufficientAlphaBalance);
-
-			TotalLockedAlpha::<T>::set(current_alpha_balance - alpha_amount);
+			AlphaBalances::<T>::mutate(&user_to_credit, |credits| *credits += alpha_amount);
 
 			// Increase the user's credits
 			FreeCredits::<T>::mutate(&user_to_credit, |credits| {
@@ -668,19 +642,10 @@ pub mod pallet {
 				}
 			}
 
-			Self::deposit_event(Event::MintedAccountCredits { who, amount: free + amount });
+			Self::deposit_event(Event::MintedAccountCredits { who, amount });
 
 			Ok(())
 		}
-
-		// /// Helper function to generate a unique ID
-		// fn generate_unique_id() -> u64 {
-		//     // Increment and retrieve the next unique ID from storage
-		//     NextLockedCreditId::<T>::mutate(|id| {
-		//         *id += 1;
-		//         *id
-		//     })
-		// }
 
 		/// Helper function to get the free credits of an account.
 		pub fn get_free_credits(account: &T::AccountId) -> u128 {

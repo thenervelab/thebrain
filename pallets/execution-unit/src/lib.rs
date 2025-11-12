@@ -55,16 +55,13 @@ pub mod pallet {
 	use crate::weights::WeightInfo;
 	use scale_codec::alloc::string::ToString;
 	use scale_info::prelude::string::String;
-	// use ipfs_pallet::{FileHash, MAX_NODE_ID_LENGTH};
-	// use ipfs_pallet::MinerProfileItem;
 	use frame_support::{pallet_prelude::*, traits::Randomness};
 	use frame_system::{
 		offchain::{
-			AppCrypto, SendTransactionTypes, SendUnsignedTransaction, Signer, SigningTypes,
+			AppCrypto, SendTransactionTypes,
 		},
 		pallet_prelude::*,
 	};
-	// use ipfs_pallet::Pallet as IpfsPallet;
 	use num_traits::float::FloatCore;
 	use pallet_babe::RandomnessFromOneEpochAgo;
 	use pallet_metagraph::UIDs;
@@ -77,7 +74,6 @@ pub mod pallet {
 		format,
 		offchain::{
 			http,
-			// storage_lock::{BlockAndTime, StorageLock},
 			Duration,
 		},
 		traits::Zero,
@@ -85,16 +81,9 @@ pub mod pallet {
 	};
 	use sp_std::prelude::*;
 	use sp_runtime::Saturating;
-	// use pallet_registration::NodeInfo;
 	use serde_json::Value;
-	// use pallet_rankings::Pallet as RankingsPallet;
-	// use ipfs_pallet::MinerPinRequest;
-	// use ipfs_pallet::StorageRequest;
-	// use ipfs_pallet::UserProfile;
-	use sp_std::collections::btree_map::BTreeMap;
-	// use ipfs_pallet::StorageUnpinRequest;
-
-	// const STORAGE_KEY: &[u8] = b"execution-unit::last-run";
+	use pallet_registration::pallet::ColdkeyNodeRegistration;
+	use pallet_registration::pallet::NodeRegistration;
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + 
@@ -107,7 +96,7 @@ pub mod pallet {
 					  pallet_credits::Config + 
 					  ipfs_pallet::Config + 
 					  pallet_balances::Config +
-					  pallet_rankings::Config 
+					  pallet_rankings::Config
 		{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
@@ -169,6 +158,10 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type EpochDuration: Get<u32>;
+
+		/// The block interval at which to update miner reputations
+		#[pallet::constant]
+		type ReputationUpdateInterval: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -236,15 +229,6 @@ pub mod pallet {
 		StorageMap<_, Blake2_128Concat, Vec<u8>, NodeMetricsData, OptionQuery>;
 
 	#[pallet::storage]
-	pub(super) type DowntimeStatus<T: Config> =
-		StorageValue<_, Vec<OfflineStatus<BlockNumberFor<T>>>, ValueQuery>;
-
-	#[pallet::storage]
-	#[pallet::getter(fn benchmark_results)]
-	pub(super) type BenchmarkResults<T: Config> =
-		StorageMap<_, Blake2_128Concat, Vec<u8>, BenchmarkResult<BlockNumberFor<T>>, ValueQuery>;
-
-	#[pallet::storage]
 	#[pallet::getter(fn purge_deregistered_nodes_enabled)]
 	pub type PurgeDeregisteredNodesEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
@@ -289,6 +273,14 @@ pub mod pallet {
 	pub type SuccessfulPinChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
+	#[pallet::getter(fn total_ping_checks_per_epoch)]
+	pub type TotalPingChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn successful_ping_checks_per_epoch)]
+	pub type SuccessfulPingChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+
+	#[pallet::storage]
 	#[pallet::getter(fn hardware_requests_last_block)]
 	pub type HardwareRequestsLastBlock<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, BlockNumberFor<T>, ValueQuery>;
 
@@ -327,18 +319,53 @@ pub mod pallet {
 				Self::purge_nodes_if_deregistered_on_bittensor();
 			}
 
-
-			let consensus_period = T::ConsensusPeriod::get();
+			let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
             if _n % consensus_period == 0u32.into() {
                 Self::apply_consensus();
             }
 
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
-			if _n % epoch_clear_interval.into() == 0u32.into() {
+			let first_epoch_block = 38u32.into(); // hardcoded or derived
+
+			if (_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
 				// Clear per-epoch pin stats for all miners
-				TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
-				SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let _ = TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let _ = SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let _ = TotalPingChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 			}
+
+			// Clean up NodeMetrics if not registered
+			for (node_id, _) in NodeMetrics::<T>::iter() {
+				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
+					|| NodeRegistration::<T>::contains_key(&node_id);
+				if !is_registered {
+					NodeMetrics::<T>::remove(&node_id);
+				}
+			}
+
+			// Clean up BlockNumbers if node not registered
+			for (node_id, _) in BlockNumbers::<T>::iter() {
+				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
+					|| NodeRegistration::<T>::contains_key(&node_id);
+				if !is_registered {
+					BlockNumbers::<T>::remove(&node_id);
+				}
+			}
+
+			let reputation_update_interval = T::ReputationUpdateInterval::get();
+			if _n % reputation_update_interval.into() == 0u32.into() {
+				Self::update_all_active_miners_reputation();
+			}
+
+			// Clean up NodeMetrics if miner_id is empty , will be removed in next upgrade
+			NodeMetrics::<T>::iter().for_each(|(node_id, mut metrics)| {
+				if metrics.miner_id.is_empty() {
+					log::warn!("Found empty miner_id for node_id: {:?}, fixing...", node_id);
+					metrics.miner_id = node_id.clone();
+					NodeMetrics::<T>::insert(&node_id, metrics);
+				}
+			});
 
 			Weight::zero()
 		}
@@ -491,6 +518,7 @@ pub mod pallet {
 			let metrics = NodeMetrics::<T>::get(&node_id).map_or_else(
 				create_default_metrics, // Create default metrics if none exist
 				|mut existing_metrics| {
+					existing_metrics.miner_id = node_id.clone();
 					// Update existing metrics
 					existing_metrics.bandwidth_mbps = system_info.network_bandwidth_mb_s;
 					// converting mbs into bytes
@@ -614,7 +642,7 @@ pub mod pallet {
 			if recent_downtime_hours != 0 && recent_downtime_hours != u32::MAX {
 				metrics.recent_downtime_hours = recent_downtime_hours;
 			}
-
+			metrics.miner_id = node_id.clone();
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
 
@@ -648,15 +676,22 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(2)]
-		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		#[pallet::weight((0, Pays::No))]
 		pub fn update_pin_check_metrics(
 			origin: OriginFor<T>,
 			miners_metrics: Vec<MinerPinMetrics>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
-		
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = ipfs_pallet::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone() // If not a proxy, use the account itself
+			};
+
 			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 		
 			// Unwrap safely after checking it's Some
@@ -669,7 +704,7 @@ pub mod pallet {
 			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(node_info.node_id.clone());
 			ensure!(
-				user_requests_count + miners_metrics.len() as u32 <= max_requests_per_block,
+				user_requests_count + 1u32 <= max_requests_per_block,
 				Error::<T>::TooManyRequests
 			);
 			
@@ -685,6 +720,7 @@ pub mod pallet {
 			RequestsCount::<T>::insert(node_info.node_id.clone(), user_requests_count + miners_metrics.len() as u32);
 		
             for miner in miners_metrics {
+				log::info!("submitting miner id {}", String::from_utf8_lossy(&miner.node_id));
                 TemporaryPinReports::<T>::insert(&miner.node_id, &who, miner.clone());
             }
 		
@@ -1159,65 +1195,24 @@ pub mod pallet {
 		pub fn calculate_uptime_and_recent_downtime(
 			miner_node_id: Vec<u8>, // Key for the storage map
 		) -> Option<(u32, u32, u32, u32)> {
-			// Fetch the stored block numbers
-			let block_numbers = BlockNumbers::<T>::get(&miner_node_id)?;
+			let node_info = RegistrationPallet::<T>::get_node_registration_info(miner_node_id)?;
 
-			if block_numbers.is_empty() {
-				return None; // No blocks recorded
-			}
+			let current_block = <frame_system::Pallet<T>>::block_number();
+			let block_time_secs = Self::block_time() as u64;
 
-			// Since we only store the last block number, take the last element and clone to get owned value
-			let last_block = block_numbers.last()?.clone().try_into().ok()?; // Convert BlockNumberFor<T> to u32
-			
-			// Get the current block number
-			let current_block = <frame_system::Pallet<T>>::block_number().saturated_into::<u32>();
+			let elapsed_blocks = current_block.saturating_sub(node_info.registered_at);
+			let elapsed_seconds = elapsed_blocks
+				.saturated_into::<u64>()
+				.saturating_mul(block_time_secs);
 
-			// Fetch the block time
-			let block_time: u32 = Self::block_time();
-
-			let mut uptime_seconds = 0u32;
-			let mut total_uptime_seconds = 0u32;
-			let mut recent_downtime_seconds = 0u32;
-			let mut consecutive_reliable_days = 0u32;
-
-			// Calculate the block difference
-			let block_diff = current_block.saturating_sub(last_block);
-			let check_intetrval = <T as pallet::Config>::BlockCheckInterval::get();
-			// If the last block is within 300 blocks (since updates happen every 300 blocks)
-			if block_diff <= check_intetrval {
-				// Assume the node was up for the entire period since the last recorded block
-				uptime_seconds = block_diff * block_time;
-				total_uptime_seconds = uptime_seconds;
-
-				// Calculate consecutive reliable days
-				let total_uptime_days = uptime_seconds / 86400; // 86400 seconds = 1 day
-				consecutive_reliable_days = total_uptime_days;
-			} else {
-				// If the difference is more than 300 blocks, assume the node was only up at the last recorded block
-				// and has been down since the next expected update (last_block + 300)
-				uptime_seconds = block_time; // Uptime only for the recorded block
-				total_uptime_seconds = uptime_seconds;
-
-				// Calculate downtime from (last_block + 300) to current_block
-				let downtime_blocks = block_diff.saturating_sub(300);
-				recent_downtime_seconds = downtime_blocks * block_time;
-
-				// No consecutive reliable days since the node missed an update
-				consecutive_reliable_days = 0;
-			}
-
-			// Convert recent downtime seconds to hours
-			let recent_downtime_hours = recent_downtime_seconds / 3600;
-
-			// Convert uptime to minutes
-			let uptime_minutes = uptime_seconds / 60;
-			let total_uptime_minutes = total_uptime_seconds / 60;
+			let uptime_minutes = (elapsed_seconds / 60).min(u32::MAX as u64) as u32;
+			let consecutive_reliable_days = (elapsed_seconds / 86_400).min(u32::MAX as u64) as u32;
 
 			Some((
 				uptime_minutes,
-				total_uptime_minutes,
+				uptime_minutes,
 				consecutive_reliable_days,
-				recent_downtime_hours,
+				0,
 			))
 		}
 
@@ -1249,6 +1244,10 @@ pub mod pallet {
 		pub fn do_remove_metrics(node_id: Vec<u8>) {
 			NodeMetrics::<T>::remove(&node_id.clone());
 			BlockNumbers::<T>::remove(&node_id.clone());
+			TotalPinChecksPerEpoch::<T>::remove(&node_id.clone());
+			SuccessfulPinChecksPerEpoch::<T>::remove(&node_id.clone());
+			TotalPingChecksPerEpoch::<T>::remove(&node_id.clone());
+			SuccessfulPingChecksPerEpoch::<T>::remove(&node_id.clone());		
 		}
 
 		pub fn is_owner_in_uids(owner: &T::AccountId) -> bool {
@@ -1258,9 +1257,11 @@ pub mod pallet {
 				let account = AccountId32::new(account_bytes);
 				let owner_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
 					.to_ss58check();
+				log::info!("is_owner_in_uids : Checking owner SS58: {}", owner_ss58);
 				// Check if validator is in UIDs or matches the keep address
 				let is_in_uids =
 					uids.iter().any(|uid| uid.substrate_address.to_ss58check() == owner_ss58);
+
 				return is_in_uids;
 			}
 			false
@@ -1657,7 +1658,7 @@ pub mod pallet {
 			let all_miners: Vec<Vec<u8>> = TemporaryPinReports::<T>::iter_keys()
 				.map(|(miner_id, _)| miner_id)
 				.collect::<Vec<_>>();
-			let threshold = T::ConsensusThreshold::get();
+			let threshold = <T as pallet::Config>::ConsensusThreshold::get();
 		
 			for miner_id in all_miners {
 				let reports: Vec<MinerPinMetrics> = TemporaryPinReports::<T>::iter_prefix(&miner_id)
@@ -1669,7 +1670,7 @@ pub mod pallet {
 				}
 				let total_reports = reports.len() as u32;
 				if total_reports >= threshold {
-					let similarity_percentage = T::ConsensusSimilarityThreshold::get(); // e.g., 85 for 85%
+					let similarity_percentage = <T as pallet::Config>::ConsensusSimilarityThreshold::get(); // e.g., 85 for 85%
 		
 					// Calculate sums for averaging
 					let mut total_pin_checks_sum = 0u64;
@@ -1744,10 +1745,22 @@ pub mod pallet {
 						// Update total pin checks per epoch
 						let total_pin = TotalPinChecksPerEpoch::<T>::get(&miner_id);
 						TotalPinChecksPerEpoch::<T>::insert(&miner_id, total_pin + avg_total_pin_checks);
+						
+						// Update total ping checks per epoch
+						let total_ping = TotalPingChecksPerEpoch::<T>::get(&miner_id);
+						TotalPingChecksPerEpoch::<T>::insert(&miner_id, total_ping + 1);
 
 						// Update successful pin checks per epoch
 						let successful_pin = SuccessfulPinChecksPerEpoch::<T>::get(&miner_id);
 						SuccessfulPinChecksPerEpoch::<T>::insert(&miner_id, successful_pin + avg_successful_pin_checks);
+
+						// if there is any successful pin check means miner is online 
+						let successful_ping = SuccessfulPingChecksPerEpoch::<T>::get(&miner_id);
+						if avg_successful_pin_checks > 0 {
+							SuccessfulPingChecksPerEpoch::<T>::insert(&miner_id, successful_ping + 1);
+						}else{
+							SuccessfulPingChecksPerEpoch::<T>::insert(&miner_id, successful_ping);
+						}
 
 						Self::deposit_event(Event::ConsensusReached {
 							miner_id: miner_id.clone(),
@@ -1760,6 +1773,86 @@ pub mod pallet {
 		
 					// Clear temporary reports for this miner
 					TemporaryPinReports::<T>::remove_prefix(&miner_id, None);
+				}
+			}
+		}
+
+		// Update reputation points (called externally by pallet logic)
+		fn update_reputation_points(
+			metrics: &NodeMetricsData,
+			coldkey: &T::AccountId,		
+		) -> u32 {
+			const MIN_PIN_CHECKS: u32 = 1; // Minimum pin checks for valid scoring
+			const SLASH_THRESHOLD: u32 = 1; // Number of failed storage proofs before slashing
+			let mut reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
+	
+			let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(metrics.miner_id.clone());
+			// calculate total pin checks per epoch
+			let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.clone().into_iter().fold(
+				(0u32, 0u32),
+				|(total, successful), node_id| {
+					let total_epoch = Self::total_pin_checks_per_epoch(&node_id);
+					let success_epoch = Self::successful_pin_checks_per_epoch(&node_id);
+			
+					(
+						total.saturating_add(total_epoch),
+						successful.saturating_add(success_epoch),
+					)
+				},
+			);
+
+			total_pin_checks = total_pin_checks + Self::total_pin_checks_per_epoch(&metrics.miner_id);
+			successful_pin_checks = successful_pin_checks + Self::successful_pin_checks_per_epoch(&metrics.miner_id);
+
+			// Increase points for successful storage proofs
+			if total_pin_checks >= MIN_PIN_CHECKS {
+				let success_rate = (successful_pin_checks * 100) / total_pin_checks;
+				if success_rate >= 95 {
+					reputation_points = reputation_points.saturating_add(50); // +50 for high success
+				} else if success_rate >= 80 {
+					reputation_points = reputation_points.saturating_add(20); // +20 for good success
+				}
+			}
+		
+			// Slash points for failed storage proofs
+			let failed_count = total_pin_checks - successful_pin_checks;
+			if failed_count >= SLASH_THRESHOLD {
+				reputation_points = reputation_points.saturating_mul(9).saturating_div(10); // 10% slash
+			}
+		
+			// Slash points for significant downtime
+			if metrics.recent_downtime_hours > 24 {
+				reputation_points = reputation_points.saturating_mul(8).saturating_div(10); // 20% slash
+			}
+		
+			// Slash points for false capacity claims
+			if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size
+				|| (metrics.ipfs_storage_max > 0
+					&& metrics.current_storage_bytes < metrics.ipfs_storage_max / 20)
+			{
+				reputation_points = reputation_points.saturating_mul(5).saturating_div(10); // 50% slash
+			}
+		
+			// Cap reputation points
+			reputation_points = reputation_points.min(3000).max(100);
+	
+			// Store updated points
+			let _ = ipfs_pallet::Pallet::<T>::set_reputation_points(coldkey, reputation_points);
+			reputation_points
+		}	
+		
+		// Function to update reputation points for all active miners
+		fn update_all_active_miners_reputation() {
+			// Get all active miners
+			let active_miners = pallet_registration::Pallet::<T>::get_all_coldkey_active_nodes();
+			
+			// Iterate through each miner
+			for miner in active_miners.iter() {
+				// Get node
+				//  metrics for this miner
+				if let Some(metrics) = Self::get_node_metrics(miner.node_id.clone()) {
+					// Update reputation points if metrics exist
+					Self::update_reputation_points(&metrics, &miner.owner);
 				}
 			}
 		}

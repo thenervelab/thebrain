@@ -69,7 +69,10 @@ impl SubstrateCli for Cli {
 
 	fn load_spec(&self, id: &str) -> Result<Box<dyn sc_service::ChainSpec>, String> {
 		Ok(match id {
-			"" | "dev" | "local" => Box::new(chainspec::mainnet::local_mainnet_config(
+			"" | "local" => Box::new(chainspec::mainnet::local_mainnet_config(
+				hippius_primitives::MAINNET_LOCAL_CHAIN_ID,
+			)?),
+			"dev" => Box::new(chainspec::mainnet::hippius_testnet_config(
 				hippius_primitives::MAINNET_LOCAL_CHAIN_ID,
 			)?),
 			// generates the spec for benchmarking.
@@ -83,7 +86,6 @@ impl SubstrateCli for Cli {
 			"hippius-mainnet" => Box::new(chainspec::mainnet::ChainSpec::from_json_bytes(
 				&include_bytes!("../../chainspecs/mainnet/hippius-mainnet.json")[..],
 			)?),
-
 			path => Box::new(chainspec::mainnet::ChainSpec::from_json_file(
 				std::path::PathBuf::from(path),
 			)?),

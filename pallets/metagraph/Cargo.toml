@@ -26,7 +26,6 @@ pallet-session = { workspace = true }
 pallet-staking = { workspace = true }
 pallet-utils = { default-features = false, workspace = true }
 pallet-registration = { default-features = false, workspace = true }
-serde_json = { workspace = true }
 
 # Substrate
 frame-support = { default-features = false, workspace = true }

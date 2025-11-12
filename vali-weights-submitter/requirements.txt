@@ -1,0 +1,5 @@
+bittensor>=9.10.0
+substrate-interface>=1.7.0,<2.0.0
+pyyaml>=6.0
+numpy>=1.21.0
+typing-extensions>=4.0.0

@@ -2,8 +2,6 @@ use serde::Deserialize;
 use scale_info::TypeInfo;
 use codec::{Encode, Decode};
 use sp_runtime::RuntimeDebug;
-use sp_core::crypto::AccountId32;
-use sp_core::sr25519;
 
 #[derive(Deserialize)]
 pub struct SubmitWeightsParams {
@@ -135,28 +133,3 @@ pub enum NodeType {
 	ComputeMiner,
 	GpuMiner,
 }
-
-#[derive(Deserialize, Clone, Encode, Decode, RuntimeDebug, TypeInfo, PartialEq)]
-pub enum Role {
-    Validator,
-    Miner,
-    None,
-}
-
-#[derive(Deserialize, Clone, Encode, Decode, RuntimeDebug, TypeInfo, PartialEq)]
-pub struct UID {
-    pub address: sr25519::Public,
-    pub id: u16,
-    pub role: Role,
-    pub substrate_address: AccountId32,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct SubmitHotKeysParams {
-    pub hot_keys: Vec<UID>,
-    pub dividends: Vec<u16>,
-    pub default_spec_version: u32,
-    pub default_genesis_hash: String,
-    pub local_rpc_url: String,
-}
-

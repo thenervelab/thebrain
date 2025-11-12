@@ -1,0 +1,55 @@
+# Configuration for Bittensor Weight Submitter
+# Subnet 75 configuration
+
+# Bittensor Configuration
+bittensor:
+  subnet_id: 75
+  rpc_endpoint: "ws://127.0.0.1:9945"
+  chain_endpoint: "finney"  # Use testnet for testing, or "finney" for mainnet
+  
+# Hippius Chain Configuration  
+hippius:
+  rpc_endpoint: "ws://127.0.0.1:9944"
+  ranking_storage_key: "rankingStorage.rankedList"
+  
+# Wallet Configuration
+
+wallet:
+  # Option 1: Use local wallet (set use_ss58_address to false)
+  name: "default"
+  hotkey: "default"
+  path: "~/.bittensor/wallets/"
+  
+  # Option 2: Use SS58 address directly (set use_ss58_address to true)
+  use_ss58_address: true
+  ss58_address: "YOUR VALI SS58 ADDRESS"
+  
+  # Option 3: Use mnemonic phrase (set use_mnemonic to true)
+  use_mnemonic: true  # Set to true to use mnemonic phrase
+  # mnemonic: "your twelve word mnemonic phrase here"  # Set via environment variable instead
+  #mnemonic_path: "m/44'/354'/0'/0'/0'"  # Bittensor derivation path
+  
+# Weight Submission Configuration
+weights:
+  version_key: 0
+  wait_for_inclusion: true
+  wait_for_finalization: false
+  period: 8
+  # Block interval configuration
+  block_interval: 101  # Submit every 101 blocks (100 block intervals)
+  block_check_interval: 12  # Check block every 12 seconds
+  use_modulo_timing: true  # Use modulo arithmetic for consistent submission timing
+  
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  # Weight logging options
+  log_all_weights: true  # Set to false to only log summary, not individual weights
+  max_weights_to_log: 0  # Maximum number of individual weights to log (0 = log all)
+  
+# Network Configuration
+network:
+  timeout: 30
+  retry_attempts: 3
+  retry_delay: 5

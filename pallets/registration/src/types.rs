@@ -2,6 +2,7 @@ use codec::{Decode, Encode};
 use pallet_utils::Role;
 use scale_info::TypeInfo;
 use sp_std::prelude::*;
+use sp_core::H256;
 
 // This will store info related storage request
 #[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
@@ -12,6 +13,14 @@ pub struct NodeInfo<BlockNumber, AccountId> {
 	pub status: Status,
 	pub registered_at: BlockNumber,
 	pub owner: AccountId,
+    pub is_verified: bool,  // New field with default value false
+}
+
+// DeregistrationReport with created_at field
+#[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
+pub struct DeregistrationReport<BlockNumberFor> {
+    pub node_id: Vec<u8>,
+    pub created_at: BlockNumberFor, // Block number when the report was created
 }
 
 #[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
@@ -42,4 +51,22 @@ pub enum Status {
 	Offline,
 }
 
+#[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, scale_info::TypeInfo, Debug)]
+pub enum Libp2pKeyType { Ed25519 /* , Secp256k1 (optional later) */ }
 
+#[derive(Encode, Decode, Clone, PartialEq, Eq, scale_info::TypeInfo, Debug)]
+pub struct RegisterChallenge<AccountId, BlockNumber> {
+    /// Exactly 24 bytes (e.g. b"HIPPIUS::REGISTER::v1")
+    pub domain: [u8; 24],
+    /// Chain binding (prevents cross-chain replay)
+    pub genesis_hash: [u8; 32],
+    /// Must equal `owner` used in the call
+    pub account: AccountId,
+    /// Bind to specific ids
+    pub node_id_hash: H256,
+    pub ipfs_peer_id_hash: H256,
+    /// Context + TTL
+    pub block_number: BlockNumber,
+    pub nonce: [u8; 32],
+    pub expires_at: BlockNumber,
+}

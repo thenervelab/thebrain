@@ -11,8 +11,8 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
+// #[cfg(feature = "runtime-benchmarks")]
+// mod benchmarking;
 
 use frame_system::offchain::AppCrypto;
 use pallet_utils::MetagraphInfoProvider;
@@ -75,7 +75,6 @@ pub mod pallet {
 	use pallet_utils::Pallet as UtilsPallet;
 	use sp_core::crypto::Ss58Codec;
 	use sp_runtime::AccountId32;
-	use sp_std::vec;
 	use sp_runtime::{
 		offchain::{
 			http,
@@ -89,12 +88,7 @@ pub mod pallet {
 		Perbill, SaturatedConversion,
 	};
 	use sp_std::{collections::btree_map::BTreeMap, vec::Vec};
-	use sp_runtime::format;
-	use serde_json::Value;
-	use codec::alloc::string::ToString;
-	use scale_info::prelude::string::String;
-	use serde_json::json;
-	
+
 	const LOCK_BLOCK_EXPIRATION: u32 = 3;
 	const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
 
@@ -124,12 +118,6 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type UidsSubmissionInterval: Get<u32>; // Add this line for the new constant
-
-		#[pallet::constant]
-        type LocalDefaultGenesisHash: Get<&'static str>;
-
-		#[pallet::constant]
-		type LocalDefaultSpecVersion: Get<&'static str>;
 	}
 
 	#[pallet::pallet]
@@ -163,11 +151,6 @@ pub mod pallet {
 		i32,          // Trust points (negative values for penalties)
 		ValueQuery,
 	>;
-
-	#[pallet::storage]
-	#[pallet::getter(fn finalized_blocks)]
-	pub type FinalizedBlocks<T: Config> =
-		StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, bool, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn get_stored_dividends)]
@@ -220,37 +203,10 @@ pub mod pallet {
 		DecodingError,
 		ValidatorAlreadyWhitelisted,
 		ValidatorNotWhitelisted,
+		NotWhitelistedValidator,
+		NodeNotRegistered,
 		InvalidNodeType,
-		NodeNotRegistered
 	}
-
-	// /// Validate unsigned call to this module.
-	// ///
-	// /// By default unsigned transactions are disallowed, but implementing the validator
-	// /// here we make sure that some particular calls (the ones produced by offchain worker)
-	// /// are being whitelisted and marked as valid.
-	// #[pallet::validate_unsigned]
-	// impl<T: Config> ValidateUnsigned for Pallet<T> {
-	// 	type Call = Call<T>;
-
-	// 	fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-	// 		match call {
-	// 			Call::submit_hot_keys { hot_keys, signature: _, dividends } => {
-	// 				ValidTransaction::with_tag_prefix("MetagraphOffchain")
-	// 					.priority(TransactionPriority::max_value())
-	// 					.and_provides((
-	// 						"submit_hot_keys",
-	// 						hot_keys.len() as u64,
-	// 						dividends.len() as u64,
-	// 					))
-	// 					.longevity(5)
-	// 					.propagate(true)
-	// 					.build()
-	// 			},
-	// 			_ => InvalidTransaction::Call.into(),
-	// 		}
-	// 	}
-	// }
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -277,8 +233,8 @@ pub mod pallet {
 					let is_in_uids = uids
 						.iter()
 						.any(|uid| uid.substrate_address.to_ss58check() == validator_ss58);
-					let is_keep_address = validator_ss58 == KEEP_ADDRESS 
-						|| validator_ss58 == KEEP_ADDRESS2 
+					let is_keep_address = validator_ss58 == KEEP_ADDRESS
+						|| validator_ss58 == KEEP_ADDRESS2
 						|| validator_ss58 == KEEP_ADDRESS3;
 					let is_whitelisted = whitelisted_validators.iter().any(|v| {
 						// Convert the whitelisted validator to AccountId32
@@ -394,27 +350,43 @@ pub mod pallet {
 								match (uids_result, dividends_result) {
 									(Ok(mut uids), Ok(dividends)) => {
 										uids = hotkeys::update_uids_with_roles(uids, &dividends);
-										
-										// Call fn to get Signed Hex
-										match Self::get_hex_for_submit_hot_keys(uids, dividends) {
-											Ok(hex_result) => {
-												let local_rpc_url = <T as pallet_utils::Config>::LocalRpcUrl::get();
-												// Now use the hex_result in the function
-												match UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result) {
-													Ok(_) => {
-														log::info!("✅ Successfully submitted the signed extrinsic for submit uids info");
-													},
-													Err(e) => {
-														log::error!("❌ Failed to submit the extrinsic for submit uids: {:?}", e);
-													}
-												}
-											},
-											Err(e) => {
-												log::error!("❌ Failed to get signed weight hex: {:?}", e);
-											}
+
+										let signer = Signer::<T,  <T as pallet::Config>::AuthorityId>::all_accounts();
+
+										if !signer.can_sign() {
+											log::warn!(
+												"No accounts available for signing in signer."
+											);
+											return;
 										}
-											
-										log::info!("✅ Successfully submitted the signed extrinsic for submit uids info");
+
+										// let results = signer.send_unsigned_transaction(
+										// 	|account| UIDsPayload {
+										// 		uids: uids.clone(),
+										// 		public: account.public.clone(),
+										// 		dividends: dividends.clone(),
+										// 		_marker: PhantomData,
+										// 	},
+										// 	|payload, signature| Call::submit_hot_keys {
+										// 		hot_keys: payload.uids,
+										// 		dividends: payload.dividends,
+										// 		signature,
+										// 	},
+										// );
+
+										// for (account, result) in results {
+										// 	match result {
+										// 		Ok(_) => log::info!(
+										// 			"[{:?}] Successfully submitted UIDs",
+										// 			account.id
+										// 		),
+										// 		Err(e) => log::error!(
+										// 			"[{:?}] Failed to submit UIDs: {:?}",
+										// 			account.id,
+										// 			e
+										// 		),
+										// 	}
+										// }
 									},
 									(Err(e), _) => log::error!("Error fetching UIDs: {:?}", e),
 									(_, Err(e)) => log::error!("Error fetching dividends: {:?}", e),
@@ -432,114 +404,6 @@ pub mod pallet {
 
 	// Add this helper function in your pallet implementation
 	impl<T: Config> Pallet<T> {
-		/// Converts UID to a JSON string
-		fn uid_vec_to_json_string(uids: &[UID]) -> String {
-			let json_uids: Vec<serde_json::Value> = uids.iter().map(|uid| {
-				let address_hex = format!("0x{}", hex::encode(uid.address.encode()));
-				let substrate_address_hex = format!("0x{}", hex::encode(uid.substrate_address.encode()));
-				json!({
-					"address": address_hex,
-					"id": uid.id,
-					"role": match uid.role {
-						Role::Validator => "Validator",
-						Role::Miner => "Miner",
-						Role::None => "None",
-					},
-					"substrate_address": substrate_address_hex,
-				})
-			}).collect();
-	
-			serde_json::to_string(&json_uids).unwrap_or_default()
-		}
-		
-		/// Fetches the hex string for submit_hot_keys extrinsic
-		pub fn get_hex_for_submit_hot_keys(
-			hot_keys: Vec<UID>,
-			dividends: Vec<u16>,
-		) -> Result<String, http::Error> {
-			let local_default_spec_version = <T as pallet::Config>::LocalDefaultSpecVersion::get();
-			let local_default_genesis_hash = <T as pallet::Config>::LocalDefaultGenesisHash::get();
-			let local_rpc_url = <T as pallet_utils::Config>::LocalRpcUrl::get();
-	
-			// Convert dividends to a comma-separated string
-			let dividends_string = dividends
-				.iter()
-				.map(|&d| d.to_string())
-				.collect::<Vec<_>>()
-				.join(", ");
-	
-			let rpc_payload = format!(
-				r#"{{
-					"jsonrpc": "2.0",
-					"method": "submit_hot_keys",
-					"params": [{{
-						"hot_keys": {},
-						"dividends": [{}],
-						"default_spec_version": {},
-						"default_genesis_hash": "{}",
-						"local_rpc_url": "{}"
-					}}],
-					"id": 1
-				}}"#,
-				Self::uid_vec_to_json_string(&hot_keys),
-				dividends_string,
-				local_default_spec_version,
-				local_default_genesis_hash,
-				local_rpc_url
-			);
-	
-			// Convert the JSON value to a string
-			let rpc_payload_string = rpc_payload.to_string();
-	
-			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
-	
-			let body = vec![rpc_payload_string];
-			let request = sp_runtime::offchain::http::Request::post(&local_rpc_url, body);
-	
-			let pending = request
-				.add_header("Content-Type", "application/json")
-				.deadline(deadline)
-				.send()
-				.map_err(|err| {
-					log::error!("❌ Error making Request: {:?}", err);
-					sp_runtime::offchain::http::Error::IoError
-				})?;
-	
-			let response = pending.try_wait(deadline).map_err(|err| {
-				log::error!("❌ Error getting Response: {:?}", err);
-				sp_runtime::offchain::http::Error::DeadlineReached
-			})??;
-	
-			if response.code != 200 {
-				log::error!("❌ RPC call failed with status code: {}", response.code);
-				return Err(http::Error::Unknown);
-			}
-	
-			let body = response.body().collect::<Vec<u8>>();
-			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-				log::error!("❌ Response body is not valid UTF-8");
-				http::Error::Unknown
-			})?;
-	
-			// Parse the JSON response
-			let json_response: Value = serde_json::from_str(body_str).map_err(|_| {
-				log::error!("❌ Failed to parse JSON response");
-				http::Error::Unknown
-			})?;
-	
-			// Extract the hex string from the result field
-			let hex_result = json_response
-				.get("result")
-				.and_then(Value::as_str)
-				.ok_or_else(|| {
-					log::error!("❌ 'result' field not found in response");
-					http::Error::Unknown
-				})?;
-	
-			// Return the hex string
-			Ok(hex_result.to_string())
-		}
-
 		/// Add a validator to the whitelist
 		pub fn add_whitelisted_validator(validator: T::AccountId) -> DispatchResult {
 			WhitelistedValidators::<T>::try_mutate(|whitelist| {
@@ -568,6 +432,7 @@ pub mod pallet {
 
 		/// Get all UIDs from storage
 		pub fn get_all_registered_uids() -> Vec<UID> {
+			// Get the UIDs from storage
 			Self::get_uids() // This uses the automatically generated getter from StorageValue
 		}
 
@@ -704,60 +569,50 @@ pub mod pallet {
 		// submits hotkeys fetched from tao to our local storage
 		#[pallet::call_index(0)]
 		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-		pub fn submit_hot_keys(
+		pub fn submit_hot_keys_info(
 			origin: OriginFor<T>,
 			hot_keys: Vec<UID>,
-			dividends: Vec<u16>
+			dividends: Vec<u16>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
-			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&who);
-			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+			// Check if this is a proxy account and get the main account
+			let main_account =
+				if let Some(primary) = RegistrationPallet::<T>::get_primary_account(&who)? {
+					primary
+				} else {
+					who.clone() // If not a proxy, use the account itself
+				};
 
-			// Unwrap safely after checking it's Some
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
 			let node_info = node_info.unwrap();
 
-			// Check if the node type is Validator
+			// Check if node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
 
-			let current_block = <frame_system::Pallet<T>>::block_number();
+			// Check if the main account is a whitelisted validator
+			let whitelisted = <WhitelistedValidators<T>>::get();
+			ensure!(whitelisted.contains(&main_account), Error::<T>::NotWhitelistedValidator);
 
-			// Get validator account from signature
-			let authorities = <pallet_babe::Pallet<T>>::authorities();
-			let validator_key = &authorities[0].0;
-			let validator_account = T::AccountId::decode(&mut &validator_key.encode()[..])
-				.map_err(|_| Error::<T>::DecodingError)?;
+			// Update storage only if consensus is reached
+			<UIDs<T>>::put(hot_keys.clone());
+			StoredDividends::<T>::put(dividends);
 
-			// Store submission
-			ValidatorSubmissions::<T>::mutate(current_block, |submissions| {
-				submissions.insert(validator_account.clone(), hot_keys.clone());
+			// Count validators and miners
+			let validators =
+				hot_keys.iter().filter(|uid| matches!(uid.role, Role::Validator)).count() as u32;
+			let miners =
+				hot_keys.iter().filter(|uid| matches!(uid.role, Role::Miner)).count() as u32;
+
+			// Emit events
+			Self::deposit_event(Event::HotKeysUpdated {
+				count: hot_keys.len() as u32,
+				validators,
+				miners,
 			});
-
-			// Check consensus
-			let submissions = Self::validator_submissions(current_block);
-			if Self::check_consensus(&submissions, &hot_keys) {
-				// Update storage only if consensus is reached
-				<UIDs<T>>::put(hot_keys.clone());
-				StoredDividends::<T>::put(dividends);
-				// Mark block as finalized
-				FinalizedBlocks::<T>::insert(current_block, true);
-
-				// Count validators and miners
-				let validators =
-					hot_keys.iter().filter(|uid| matches!(uid.role, Role::Validator)).count()
-						as u32;
-				let miners =
-					hot_keys.iter().filter(|uid| matches!(uid.role, Role::Miner)).count() as u32;
-
-				// Emit events
-				Self::deposit_event(Event::HotKeysUpdated {
-					count: hot_keys.len() as u32,
-					validators,
-					miners,
-				});
-				Self::deposit_event(Event::StorageUpdated { uids_count: hot_keys.len() as u32 });
-			}
+			Self::deposit_event(Event::StorageUpdated { uids_count: hot_keys.len() as u32 });
 
 			Ok(().into())
 		}

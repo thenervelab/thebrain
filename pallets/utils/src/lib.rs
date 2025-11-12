@@ -169,6 +169,10 @@ pub trait MetricsInfoProvider<T: frame_system::Config> {
     fn remove_metrics(node_id: Vec<u8>);
 }
 
+pub trait IpfsInfoProvider<T: frame_system::Config> {
+    fn remove_miner_profile_info(node_id: Vec<u8>);
+}
+
 use codec::{Decode, Encode};
 use scale_info::TypeInfo;
 use sp_core::sr25519;

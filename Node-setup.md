@@ -104,3 +104,69 @@ cargo build --release
 
 # Start Node
 ./target/release/hippius-node 
+```
+
+
+### 🐳 Docker Quick Start
+
+> **Note:**  
+> - Ensure the `hippius-node` binary is present in the project root **before** building any Docker image.  
+> - Double-check that the keystore path and network file path are correct for your setup **before running** the container.
+
+
+## Pull Image from GitHub Container Registry
+
+You can pull the pre-built hippius-node image directly from GitHub Container Registry (GHCR):
+
+### Pull the latest image
+docker pull ghcr.io/thenervelab/thebrain/hippius-node:latest
+
+### Optionally, pull a specific version using the SHA tag (replace <SHA> with the desired tag)
+docker pull ghcr.io/thenervelab/thebrain/hippius-node:<SHA>
+
+## Build and run Image Locally
+
+```bash
+# Build Validator Docker Image
+docker build -t hippius-node .
+
+# Set permissions for data directory
+sudo chown -R $USER:$USER /opt/hippius/data
+chmod -R 777 /opt/hippius/data
+```
+
+### Run as Validator Node
+
+```bash
+
+# Run Validator Node in Docker
+docker run -d --name hippius-validator \
+  --user 1000:1000 \
+  -p 30333:30333 -p 9933:9933 -p 9944:9944 -p 9615:9615 \
+  -v /opt/hippius/data:/data \
+  -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
+  hippius-node \
+  --validator \                       
+  --rpc-methods=Unsafe \              
+  --name="hippius-testnet-validator" \   
+  --bootnodes=/ip4/91.134.72.142/tcp/30333/ws/p2p/12D3KooWRJdyfLdhPzyQrUHKWdEooNPsNFWRTfCS8tDSeysPDxVR
+```
+
+#### Miner Node
+
+```bash
+# Build Miner Docker Image
+docker build -t hippius-miner .
+
+# Set permissions for data directory
+sudo chown -R $USER:$USER /opt/hippius/data
+chmod -R 777 /opt/hippius/data
+
+# Run Miner Node in Docker
+docker run -d --name hippius-miner \
+  --user 1000:1000 \
+  -p 30333:30333 -p 9933:9933 -p 9944:9944 -p 9615:9615 \
+  -v /opt/hippius/data:/data \
+  -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
+  hippius-node
+```
