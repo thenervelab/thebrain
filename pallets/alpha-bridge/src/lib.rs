@@ -42,7 +42,8 @@ const DOMAIN_BURN: &[u8] = b"HIPPIUS-BURN-v1";
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-
+	use frame_support::traits::ReservableCurrency;
+	use sp_runtime::traits::CheckedSub;
 	pub type DepositId = H256;
 
 	pub type BurnId = H256;
@@ -114,6 +115,9 @@ pub mod pallet {
 
 		/// Weight information for extrinsics in this pallet.
 		type WeightInfo: WeightInfo;
+
+		/// The currency mechanism.
+		type Currency: ReservableCurrency<Self::AccountId>;
 	}
 
 	/// Tracks which deposit IDs have been fully processed (prevents replay attacks)
@@ -278,6 +282,8 @@ pub mod pallet {
 		DepositMintFailed,
 		/// Escrow account does not hold enough balance (critical: indicates tampering or bug)
 		EscrowBalanceInsufficient,
+		/// Arithmetic underflow
+		ArithmeticUnderflow,
 	}
 
 	#[pallet::call]
@@ -807,9 +813,30 @@ pub mod pallet {
 				ensure!(new_total <= mint_cap, Error::<T>::GlobalMintCapExceeded);
 
 				let balance_amount = Self::amount_to_balance(amount)?;
-				pallet_balances::Pallet::<T>::mint_into(&recipient, balance_amount)
-					.map_err(|_| Error::<T>::DepositMintFailed)?;
 
+				// Ensure the recipient has at least the existential deposit
+				let ed = T::Currency::minimum_balance();
+				let recipient_balance = T::Currency::free_balance(&recipient);
+				let mut mint_amount = balance_amount;
+
+				// If the recipient doesn't have enough for ED, transfer from bridge account to cover it
+				if recipient_balance < ed {
+					let shortfall = ed - recipient_balance;
+					let bridge_account = Self::account_id();
+					T::Currency::transfer(
+						&bridge_account,
+						&recipient,
+						shortfall,
+						frame_support::traits::ExistenceRequirement::KeepAlive,
+					)?;
+					// Convert shortfall to the correct balance type before subtraction
+					let shortfall_balance = Self::amount_to_balance(shortfall.try_into().map_err(|_| Error::<T>::AmountConversionFailed)?)?;
+					mint_amount = balance_amount.checked_sub(&shortfall_balance).ok_or(Error::<T>::ArithmeticUnderflow)?;
+				}
+				
+				// Mint the adjusted amount
+				pallet_balances::Pallet::<T>::mint_into(&recipient, mint_amount)
+					.map_err(|_| Error::<T>::DepositMintFailed)?;
 				*total = new_total;
 				Ok(())
 			})?;
