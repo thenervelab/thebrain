@@ -30,7 +30,6 @@ sp-io = { default-features = false, workspace = true }
 pallet-staking = { workspace = true }
 pallet-utils = { default-features = false, workspace = true }
 pallet-registration = {default-features = false, workspace = true }
-pallet-rankings = { default-features = false, workspace = true }
 pallet-proxy = { workspace = true }
 
 serde = { default-features = false, workspace = true }
@@ -56,7 +55,6 @@ std = [
 	"pallet-staking/std",
 	"pallet-utils/std",
 	"pallet-registration/std",
-	"pallet-rankings/std",
 	"serde/std",
 	"pallet-proxy/std"
 ]

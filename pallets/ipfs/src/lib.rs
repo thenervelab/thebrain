@@ -107,7 +107,7 @@ pub mod pallet {
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + SendTransactionTypes<Call<Self>> +  pallet_staking::Config + 
-						pallet_registration::Config + pallet_rankings::Config + pallet_utils::Config + pallet_proxy::Config{
+						pallet_registration::Config + pallet_utils::Config + pallet_proxy::Config{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		#[pallet::constant]
