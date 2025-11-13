@@ -154,34 +154,34 @@ pub mod pallet {
 					&miner.node_id,
 				);
 
-				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
-				if let Some(reg_block) = registration_block {
-					let blocks_since_registration =
-						current_block_number.saturating_sub(reg_block);
-					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
-						// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
-						weight = ((weight as u64) * 20 / 100).max(1) as u32;
-					}
-				} else {
-					// If no registration block is found, assume invalid or unregistered miner
-					weight = 1; // Set to minimal non-zero weight
-					log::info!(
-						"No registration block found for miner: {:?}. Weight set to 1.",
-						String::from_utf8_lossy(&miner.node_id)
-					);
-				}
+				// // Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
+				// if let Some(reg_block) = registration_block {
+				// 	let blocks_since_registration =
+				// 		current_block_number.saturating_sub(reg_block);
+				// 	if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
+				// 		// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
+				// 		weight = ((weight as u64) * 20 / 100).max(1) as u32;
+				// 	}
+				// } else {
+				// 	// If no registration block is found, assume invalid or unregistered miner
+				// 	weight = 1; // Set to minimal non-zero weight
+				// 	log::info!(
+				// 		"No registration block found for miner: {:?}. Weight set to 1.",
+				// 		String::from_utf8_lossy(&miner.node_id)
+				// 	);
+				// }
 
-				let buffer = 3000u32;
-				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-				if let Some(blocks) = blocks_online {
-					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number - last_block;
-						if difference > buffer.into() {
-							// Ensure buffer is of the correct type
-							weight = 0; // Accumulate weight
-						}
-					}
-				}
+				// let buffer = 3000u32;
+				// let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+				// if let Some(blocks) = blocks_online {
+				// 	if let Some(&last_block) = blocks.last() {
+				// 		let difference = current_block_number - last_block;
+				// 		if difference > buffer.into() {
+				// 			// Ensure buffer is of the correct type
+				// 			weight = 0; // Accumulate weight
+				// 		}
+				// 	}
+				// }
 
 				storage_weights.push(weight as u16);
 				

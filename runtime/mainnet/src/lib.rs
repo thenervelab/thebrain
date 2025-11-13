@@ -174,7 +174,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9137,
+	spec_version: 9145,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1146,7 +1146,7 @@ impl pallet_ip::Config for Runtime {
 
 parameter_types! {
 	pub const VersionKeyStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555d8cb0c0627a5cd77797c62415dbef9624b00";
-	pub const BittensorCallSubmission : u32 = 100;
+	pub const BittensorCallSubmission : u32 = 20;
 	pub const DefaultGenesisHash: &'static str = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03";
 }
 
