@@ -132,7 +132,41 @@ pub mod pallet {
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
 			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
 
-			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+			let uid_zero = 0;
+			if !all_uids_on_bittensor.contains(&uid_zero) {
+				all_uids_on_bittensor.push(uid_zero);
+				// Initialize with 0 weight, we'll update it later
+				all_weights_on_bitensor.push(0);
+			}
+			
+			let uid_zero_weight = WeightCalculation::uid_zero_weight::<T>();
+			// Update Bittensor UIDs
+			for uid in uids.iter() {
+				if uid.id == uid_zero {
+					let miner_ss58 =
+					AccountId32::new(uid.substrate_address.encode().try_into().unwrap_or_default())
+						.to_ss58check();
+						let validator_account = match T::AccountId::decode(&mut &uid.substrate_address.encode()[..]) {
+							Ok(account) => {
+								let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&account);
+								if let Some(info) = node_info {
+									storage_miners_node_id.push(info.node_id.clone());
+								} else {
+									storage_miners_node_id.push(Vec::new());
+								}
+								// Use account here if needed
+							},
+							Err(e) => {
+								log::error!("❌ Error decoding validator account: {:?}", e);
+								continue;
+							},
+						};
+					storage_weights.push(uid_zero_weight);
+					storage_nodes_ss58.push(miner_ss58.clone().into());
+					storage_miners_node_types.push(NodeType::Validator);
+				}
+			}
+
 
 			for miner in all_miners {
 				if miner.node_type != NodeType::StorageMiner {
@@ -154,34 +188,34 @@ pub mod pallet {
 					&miner.node_id,
 				);
 
-				// // Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
-				// if let Some(reg_block) = registration_block {
-				// 	let blocks_since_registration =
-				// 		current_block_number.saturating_sub(reg_block);
-				// 	if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
-				// 		// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
-				// 		weight = ((weight as u64) * 20 / 100).max(1) as u32;
-				// 	}
-				// } else {
-				// 	// If no registration block is found, assume invalid or unregistered miner
-				// 	weight = 1; // Set to minimal non-zero weight
-				// 	log::info!(
-				// 		"No registration block found for miner: {:?}. Weight set to 1.",
-				// 		String::from_utf8_lossy(&miner.node_id)
-				// 	);
-				// }
+				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
+				if let Some(reg_block) = registration_block {
+					let blocks_since_registration =
+						current_block_number.saturating_sub(reg_block);
+					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
+						// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
+						weight = ((weight as u64) * 20 / 100).max(1) as u32;
+					}
+				} else {
+					// If no registration block is found, assume invalid or unregistered miner
+					weight = 1; // Set to minimal non-zero weight
+					log::info!(
+						"No registration block found for miner: {:?}. Weight set to 1.",
+						String::from_utf8_lossy(&miner.node_id)
+					);
+				}
 
-				// let buffer = 3000u32;
-				// let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-				// if let Some(blocks) = blocks_online {
-				// 	if let Some(&last_block) = blocks.last() {
-				// 		let difference = current_block_number - last_block;
-				// 		if difference > buffer.into() {
-				// 			// Ensure buffer is of the correct type
-				// 			weight = 0; // Accumulate weight
-				// 		}
-				// 	}
-				// }
+				let buffer = 3000u32;
+				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
+				if let Some(blocks) = blocks_online {
+					if let Some(&last_block) = blocks.last() {
+						let difference = current_block_number - last_block;
+						if difference > buffer.into() {
+							// Ensure buffer is of the correct type
+							weight = 0; // Accumulate weight
+						}
+					}
+				}
 
 				storage_weights.push(weight as u16);
 				
@@ -199,13 +233,6 @@ pub mod pallet {
 						all_weights_on_bitensor.push(*storage_weights.last().unwrap_or(&0) as u16);
 						// Use the last calculated weight
 					}
-				}
-			}
-
-			let uid_zero_weight = WeightCalculation::uid_zero_weight::<T>();
-			if uid_zero_weight > 0 {
-				if let Some(pos) = all_uids_on_bittensor.iter().position(|uid| *uid == 0) {
-					all_weights_on_bitensor[pos] = uid_zero_weight;
 				}
 			}
 
