@@ -159,6 +159,12 @@ pub mod pallet {
 	pub type CurrentLockPeriod<T: Config> =
 		StorageValue<_, LockPeriod<BlockNumberFor<T>>, OptionQuery>;
 
+	// Storage for the alpha price
+	#[pallet::storage]
+	#[pallet::getter(fn alpha_price)]
+	pub type AlphaPrice<T: Config> =
+			StorageValue<_, u128, ValueQuery>;
+
 	// Storage for the current active lock period
 	#[pallet::storage]
 	#[pallet::getter(fn min_lock_amount)]
@@ -205,6 +211,10 @@ pub mod pallet {
 			account_id: T::AccountId,
 			id: u64,
 			tx_hash: Vec<u8>,
+		},
+		AlphaPriceSet {
+			price: u128,
+			who: T::AccountId,
 		},
 		MinLockAmountSet {
 			amount: u128,
@@ -613,6 +623,28 @@ pub mod pallet {
 
 			// Deposit an event
 			Self::deposit_event(Event::MinLockAmountSet { amount, who: authority });
+
+			Ok(())
+		}
+
+		/// Set the alpha price (only callable by authorized accounts)
+		#[pallet::call_index(13)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn set_alpha_price(origin: OriginFor<T>, price: u128) -> DispatchResult {
+			let authority = ensure_signed(origin)?;
+			Self::ensure_is_authority(&authority)?;
+
+			let current_price = AlphaPrice::<T>::get();
+
+			let new_price = if current_price == 0 {
+				price
+			} else {
+				current_price.saturating_add(price) / 2
+			};
+
+			AlphaPrice::<T>::put(new_price);
+
+			Self::deposit_event(Event::AlphaPriceSet { price: new_price, who: authority });
 
 			Ok(())
 		}

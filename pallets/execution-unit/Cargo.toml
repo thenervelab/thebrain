@@ -36,6 +36,7 @@ sp-debug-derive = { default-features = false, workspace = true }
 serde_json = { workspace = true }
 ipfs-pallet = { workspace = true, default-features = false }
 pallet-marketplace = { workspace = true, default-features = false }
+sp-arithmetic = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
 
 [features]
 default = ["std"]
@@ -47,6 +48,7 @@ std = [
     "frame-benchmarking/std",
     "sp-std/std",
     "sp-runtime/std",
+    "sp-arithmetic/std",
     "sp-core/std",
     "sp-io/std",
     "pallet-timestamp/std",
