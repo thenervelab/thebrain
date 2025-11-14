@@ -556,7 +556,6 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			files_input: Vec<FileInput>,
             miner_ids: Option<Vec<Vec<u8>>>,
-            owner: T::AccountId
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
 
@@ -581,22 +580,14 @@ pub mod pallet {
                 Error::<T>::NodeTypeDisabled
             );
 
-            // Check if this is a proxy account and get the main account
-			let main_account = if let Some(primary) = ipfs_pallet::Pallet::<T>::get_primary_account(&caller)? {
-				primary
-			} else {
-				caller.clone()
-			};
-
-			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
-			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
-
-			// Unwrap safely after checking it's Some
-			let node_info = node_info.unwrap();
-
-			// Check if the node type is Validator
-			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+            // Check if the account is a sub-account, and if so, use the main account
+            let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
+                Ok(main) => {
+                    ensure!(<pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::can_upload(caller.clone()), Error::<T>::OperationNotAllowed);
+                    main
+                },
+                Err(_) => caller.clone(), // If not a sub-account, use the original account
+            };
             
             // Check if a specific miner is requested and charge an additional fee
             if miner_ids.is_some() {
@@ -640,7 +631,6 @@ pub mod pallet {
         pub fn storage_unpin_request(
             origin: OriginFor<T>,
             file_hash: FileHash,
-            owner: T::AccountId
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
@@ -659,37 +649,22 @@ pub mod pallet {
                 Error::<T>::StorageOperationsDisabled
             );
 
-            // Check if user has any credits
-            let user_credits = CreditsPallet::<T>::get_free_credits(&caller);
-            ensure!(user_credits > 0, Error::<T>::InsufficientFreeCredits);
-
-            // Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxRequestsPerBlock::get();
-			let user_requests_count = UserRequestsCount::<T>::get(&caller);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-            // Check if storage operations are enabled
-            ensure!(
-                Self::is_storage_operations_enabled(),
-                Error::<T>::StorageOperationsDisabled
-            );
-
-            // Check if the StorageMiner node type is disabled
-            ensure!(
-                !RegistrationPallet::<T>::is_node_type_disabled(NodeType::StorageMiner),
-                Error::<T>::NodeTypeDisabled
-            );
-
-            // Check if this is a proxy account and get the main account
-			let main_account = if let Some(primary) = ipfs_pallet::Pallet::<T>::get_primary_account(&caller)? {
-				primary
-			} else {
-				caller.clone()
-			};
+            // Check if the account is a sub-account, and if so, use the main account
+            let owner = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
+                Ok(main) => {
+                    ensure!(<pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::can_delete(caller.clone()), Error::<T>::OperationNotAllowed);
+                    main
+                },
+                Err(_) => caller.clone(), // If not a sub-account, use the original account
+            };
 
             // Convert file hash to a hex-encoded string
             let file_hash_encoded = hex::encode(file_hash.clone());
             let encoded_file_hash: Vec<u8> = file_hash_encoded.clone().into();
+
+            // Get storage request by file hash
+            // let requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_by_hash(owner.clone(), encoded_file_hash.clone());
+            // ensure!(requested_storage.is_some(), Error::<T>::StorageRequestNotFound);
 
             let _ = ipfs_pallet::Pallet::<T>::process_unpin_request(file_hash.clone(), owner.clone())?;
 
