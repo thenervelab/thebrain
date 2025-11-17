@@ -288,6 +288,20 @@ describe("Bridge Contract Integration", () => {
 			bobDepositId = toBinary(depositEvent.deposit_id);
 			expect(depositEvent.amount).toBe(bobDepositAmount);
 
+			const depositIdByNonce = await contract.query("get_deposit_id_by_nonce", {
+				origin: context.accounts.alice.address,
+				data: {
+					deposit_nonce: depositEvent.deposit_nonce,
+				},
+			});
+
+			expect(depositIdByNonce.success).toBe(true);
+			if (depositIdByNonce.success) {
+				expect(toBinary(depositIdByNonce.value.response?.asHex() || '0x').toString()).toBe(
+					toBinary(bobDepositId).toString(),
+				);
+			}
+
 			const lockedQuery = await contract.query("get_locked_amount", {
 				origin: context.accounts.alice.address,
 				data: {
@@ -361,6 +375,21 @@ describe("Bridge Contract Integration", () => {
 			expect(result.success).toBe(false);
 			if (!result.success) {
 				expect(result.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("returns none for an unknown deposit nonce", async () => {
+			const unknownNonce = 9_999_999n;
+			const result = await contract.query("get_deposit_id_by_nonce", {
+				origin: context.accounts.alice.address,
+				data: {
+					deposit_nonce: unknownNonce,
+				},
+			});
+
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.value.response).toBeUndefined();
 			}
 		});
 	});
