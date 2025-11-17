@@ -88,6 +88,7 @@ impl pallet_alpha_bridge::Config for Test {
 	type Balance = Balance;
 	type PalletId = AlphaBridgePalletId;
 	type WeightInfo = ();
+	type Currency = Balances;
 }
 
 // Test accounts
