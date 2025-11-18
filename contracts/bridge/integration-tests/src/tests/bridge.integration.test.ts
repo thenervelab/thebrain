@@ -399,6 +399,24 @@ describe("Bridge Contract Integration", () => {
 			}
 		});
 
+		it("rejects deposits with invalid netuid", async () => {
+			const invalidNetuid = netuid + 1;
+
+			const result = await contract.query("lock", {
+				origin: context.accounts.charlie.address,
+				data: {
+					amount: MIN_DEPOSIT,
+					hotkey: charlieHotkey.address,
+					netuid: invalidNetuid,
+				},
+			});
+
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				expect(result.value.type).toBe("FlagReverted");
+			}
+		});
+
 		it("returns none for an unknown deposit nonce", async () => {
 			const unknownNonce = 9_999_999n;
 			const result = await contract.query("get_deposit_id_by_nonce", {
