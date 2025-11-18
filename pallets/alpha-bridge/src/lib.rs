@@ -11,8 +11,6 @@ mod benchmarking;
 
 pub mod weights;
 
-pub mod migrations;
-
 use crate::weights::WeightInfo;
 use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
@@ -54,6 +52,14 @@ pub mod pallet {
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 	pub struct DepositProposal<AccountId> {
 		pub id: DepositId,
+		pub recipient: AccountId,
+		pub amount: u64,
+	}
+
+	/// Record of an expired deposit that needs to be refunded on the other chain
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	pub struct ExpiredDeposit<AccountId> {
+		pub deposit_id: DepositId,
 		pub recipient: AccountId,
 		pub amount: u64,
 	}
@@ -193,6 +199,22 @@ pub mod pallet {
 	#[pallet::getter(fn next_burn_nonce)]
 	pub type NextBurnNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
 
+	/// Nonce for generating unique keys for expired deposits
+	#[pallet::storage]
+	#[pallet::getter(fn next_expired_deposit_nonce)]
+	pub type NextExpiredDepositNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+	/// Tracks expired deposits that need to be refunded on the other chain
+	#[pallet::storage]
+	#[pallet::getter(fn expired_deposits)]
+	pub type ExpiredDeposits<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		u64,
+		ExpiredDeposit<T::AccountId>,
+		OptionQuery,
+	>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -204,8 +226,6 @@ pub mod pallet {
 		BridgeMinted { deposit_id: DepositId, recipient: T::AccountId, amount: u64 },
 		/// Deposit denied by guardians
 		BridgeDenied { deposit_id: DepositId, recipient: T::AccountId, amount: u64 },
-		/// Deposit proposal expired due to timeout
-		DepositExpired { deposit_id: DepositId },
 		/// User requested unlock (burn halpha to receive alpha on Bittensor)
 		UnlockRequested { burn_id: BurnId, requester: T::AccountId, amount: u64 },
 		/// Guardian voted on an unlock request
@@ -230,6 +250,12 @@ pub mod pallet {
 		GuardianAdded { guardian: T::AccountId },
 		/// Guardian removed from the set
 		GuardianRemoved { guardian: T::AccountId },
+		/// Deposit proposal expired due to timeout
+		DepositExpired { 
+			deposit_id: DepositId, 
+			recipient: T::AccountId,
+			amount: u64 
+		},
 	}
 
 	#[pallet::error]
@@ -530,23 +556,40 @@ pub mod pallet {
 			deposit_id: DepositId,
 		) -> DispatchResult {
 			ensure_signed(origin)?;
-
-			let record =
-				PendingDeposits::<T>::get(deposit_id).ok_or(Error::<T>::DepositNotPending)?;
-
-			ensure!(record.status == VoteStatus::Pending, Error::<T>::DepositAlreadyFinalized);
+		
+			let record = PendingDeposits::<T>::get(deposit_id)
+				.ok_or(Error::<T>::DepositNotPending)?;
+		
+			ensure!(
+				record.status == VoteStatus::Pending,
+				Error::<T>::DepositAlreadyFinalized
+			);
 
 			ensure!(
 				Self::is_proposal_expired(record.proposed_at_block),
 				Error::<T>::ProposalNotExpired
 			);
-
+		
+			let nonce = NextExpiredDepositNonce::<T>::get();
+			NextExpiredDepositNonce::<T>::put(nonce + 1);
+			
+			let expired_deposit = ExpiredDeposit {
+				deposit_id,
+				recipient: record.recipient.clone(),
+				amount: record.amount,
+			};
+			
+			ExpiredDeposits::<T>::insert(nonce, expired_deposit);
+		
 			PendingDeposits::<T>::remove(deposit_id);
-
 			ProcessedDeposits::<T>::insert(deposit_id, true);
-
-			Self::deposit_event(Event::DepositExpired { deposit_id });
-
+		
+			Self::deposit_event(Event::DepositExpired { 
+				deposit_id,
+				recipient: record.recipient,
+				amount: record.amount,
+			});
+		
 			Ok(())
 		}
 
