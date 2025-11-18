@@ -121,6 +121,10 @@ mod bridge {
 		) -> Result<DepositId, Error> {
 			self.ensure_not_paused()?;
 
+			if netuid.as_u16() != self.chain_id {
+				return Err(Error::InvalidNetUid);
+			}
+
 			if amount < self.min_deposit_amount {
 				return Err(Error::AmountTooSmall);
 			}
