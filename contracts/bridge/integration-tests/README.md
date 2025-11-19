@@ -32,7 +32,6 @@ The tests orchestrate subnet registration, validator setup, guardian workflows, 
 
 ## Environment Variables
 - `CONTRACTS_NODE_URL`: override the websocket endpoint (`ws://127.0.0.1:9944` by default).
-- `BRIDGE_CHAIN_ID`: optional override for the constructor `chain_id` (defaults to `1`).
 
 ## Repo Hygiene
 - Test fixtures persist the deployed contract address in `.contract-address`—delete this file to force a redeploy after rebuilding the WASM.

@@ -215,7 +215,7 @@ export class TestSetup {
         }
     }
 
-    async createTestContext(): Promise<TestContext> {
+    async createTestContext(chainId: number): Promise<TestContext> {
         const api = await this.getApi();
         const { accounts, guardians, contractHotkey } = this.createTestAccounts();
         const contractSdk = createInkSdk(api, contracts.bridge);
@@ -228,7 +228,6 @@ export class TestSetup {
             contractHotkey,
         };
 
-        const chainId = Number(process.env.BRIDGE_CHAIN_ID ?? 1);
         const contractAddress = await this.deployContract(api, accounts.alice, contractHotkey, chainId);
         context.contractAddress = contractAddress;
 
@@ -236,9 +235,9 @@ export class TestSetup {
     }
 }
 
-export async function setupTestEnvironment(): Promise<TestContext> {
+export async function setupTestEnvironment(chainId: number): Promise<TestContext> {
     const setup = TestSetup.getInstance();
-    return await setup.createTestContext();
+    return await setup.createTestContext(chainId);
 }
 
 export async function cleanupTestEnvironment(): Promise<void> {

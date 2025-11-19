@@ -18,6 +18,7 @@ pub enum Error {
 	AmountTooSmall,
 	InvalidHotkey,
 	InvalidNonce,
+	InvalidNetUid,
 	TooManyDeposits,
 	InvalidCheckpointNonce,
 	InvalidThresholds,

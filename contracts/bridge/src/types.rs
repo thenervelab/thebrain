@@ -11,12 +11,7 @@ pub type BurnId = Hash;
 pub type BlockNumber = u32;
 
 /// Domain separator for deposit ID generation (prevents hash collision)
-pub const DOMAIN_DEPOSIT: &[u8] = b"HIPPIUS_DEPOSIT";
-/// Domain separator for burn ID generation (prevents hash collision)
-pub const DOMAIN_BURN: &[u8] = b"HIPPIUS_BURN";
-/// Domain separator for checkpoint verification (prevents hash collision)
-pub const DOMAIN_CHECKPOINT: &[u8] = b"HIPPIUS_CHECKPOINT";
-
+pub const DOMAIN_DEPOSIT: &[u8] = b"HIPPIUS_DEPOSIT-V1";
 /// Maximum number of guardians allowed in the guardian set
 pub const MAX_GUARDIANS: usize = 10; // TODO: adjust as needed
 /// Tolerance for stake transfer verification (10 rao)
