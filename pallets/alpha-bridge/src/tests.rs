@@ -392,7 +392,7 @@ fn test_user_unlock_request() {
 fn test_unlock_request_with_insufficient_balance_fails() {
 	new_test_ext().execute_with(|| {
 		let balance = Balances::free_balance(&user1());
-		let amount = (balance + 1000).try_into().unwrap();
+		let amount = balance + 1000;
 
 		assert_noop!(
 			AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), amount),
@@ -551,7 +551,9 @@ fn test_deposit_expiration_after_ttl() {
 		));
 
 		// Check event
-		System::assert_has_event(Event::DepositExpired { deposit_id }.into());
+		System::assert_has_event(
+			Event::DepositExpired { deposit_id, recipient: user1(), amount: 1000 }.into(),
+		);
 
 		// Check that deposit is no longer pending
 		assert!(!crate::PendingDeposits::<Test>::contains_key(deposit_id));

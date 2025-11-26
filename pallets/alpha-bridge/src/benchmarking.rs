@@ -35,7 +35,7 @@ fn setup_guardians<T: Config>(count: u32) -> Vec<T::AccountId> {
 }
 
 /// Create a unique deposit ID from recipient and amount
-fn create_deposit_id(recipient: &[u8], amount: u64, nonce: u32) -> H256 {
+fn create_deposit_id(recipient: &[u8], amount: u128, nonce: u32) -> H256 {
 	let mut data = Vec::new();
 	data.extend_from_slice(recipient);
 	data.extend_from_slice(&amount.to_le_bytes());
@@ -46,7 +46,7 @@ fn create_deposit_id(recipient: &[u8], amount: u64, nonce: u32) -> H256 {
 /// Setup a pending deposit proposal
 fn setup_pending_deposit<T: Config>(
 	recipient: T::AccountId,
-	amount: u64,
+	amount: u128,
 ) -> (DepositId, DepositRecord<T::AccountId, BlockNumberFor<T>>) {
 	let deposit_id = create_deposit_id(recipient.encode().as_slice(), amount, 0);
 	let record = DepositRecord {
@@ -64,7 +64,7 @@ fn setup_pending_deposit<T: Config>(
 /// Setup a pending unlock request with escrowed funds
 fn setup_pending_unlock<T: Config>(
 	requester: T::AccountId,
-	amount: u64,
+	amount: u128,
 ) -> (BurnId, UnlockRecord<T::AccountId, BlockNumberFor<T>>) {
 	// Generate burn_id using the same logic as the pallet
 	let burn_id = Pallet::<T>::generate_burn_id(&requester, amount);

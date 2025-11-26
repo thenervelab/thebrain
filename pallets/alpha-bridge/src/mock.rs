@@ -157,7 +157,7 @@ pub fn run_to_block(n: u64) {
 // Helper function to create a test deposit proposal with unique ID
 pub fn create_deposit_proposal(
 	recipient: AccountId,
-	amount: u64,
+	amount: u128,
 ) -> pallet_alpha_bridge::DepositProposal<AccountId> {
 	use sp_core::Hasher;
 	use sp_runtime::traits::BlakeTwo256;
