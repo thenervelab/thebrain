@@ -987,7 +987,7 @@ mod bridge {
 				burn_id,
 				recipient: accounts.charlie,
 				hotkey: accounts.eve,
-				netuid: NetUid::from(1u16),
+				netuid: 1u16,
 				amount: 42,
 			};
 
