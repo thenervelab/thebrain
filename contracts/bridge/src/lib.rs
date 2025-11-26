@@ -52,6 +52,7 @@ mod bridge {
 		signature_ttl_blocks: u32,
 
 		pending_burns: Mapping<BurnId, PendingBurn>,
+		processed_burns: Mapping<BurnId, bool>,
 		pending_refunds: Mapping<DepositId, PendingRefund>,
 
 		user_deposits: Mapping<AccountId, Vec<DepositId>>,
@@ -96,6 +97,7 @@ mod bridge {
 				deny_threshold: 0,
 				signature_ttl_blocks: 100,
 				pending_burns: Mapping::default(),
+				processed_burns: Mapping::default(),
 				pending_refunds: Mapping::default(),
 				user_deposits: Mapping::default(),
 				min_deposit_amount: 1_000_000_000,
@@ -272,8 +274,10 @@ mod bridge {
 			for burn in burns.iter() {
 				let burn_id = burn.burn_id;
 
-				// Check not already pending
-				if self.pending_burns.contains(burn_id) {
+				// Check not already pending or already finalized
+				if self.pending_burns.contains(burn_id)
+					|| self.processed_burns.get(burn_id).unwrap_or(false)
+				{
 					return Err(Error::AlreadyProcessed);
 				}
 
@@ -807,6 +811,8 @@ mod bridge {
 				)
 				.map_err(|_| Error::TransferFailed)?;
 
+			// Mark burn as processed to prevent double releases
+			self.processed_burns.insert(burn_id, &true);
 			// Remove from pending
 			self.pending_burns.remove(burn_id);
 
@@ -959,6 +965,34 @@ mod bridge {
 
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
 			assert_eq!(bridge.update_owner(accounts.charlie), Err(Error::Unauthorized));
+		}
+
+		#[ink::test]
+		fn cannot_propose_already_processed_burn() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Configure a single guardian so propose_releases can be called.
+			let guardians = vec![accounts.bob];
+			assert!(bridge.set_guardians_and_thresholds(guardians.clone(), 1, 0).is_ok());
+
+			// Guardian is the caller.
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+
+			// Simulate a burn that has already been finalized.
+			let burn_id: BurnId = Default::default();
+			bridge.processed_burns.insert(burn_id, &true);
+
+			let burn = CanonicalBurn {
+				burn_id,
+				recipient: accounts.charlie,
+				hotkey: accounts.eve,
+				netuid: NetUid::from(1u16),
+				amount: 42,
+			};
+
+			let result = bridge.propose_releases(vec![burn], 1);
+			assert_eq!(result, Err(Error::AlreadyProcessed));
 		}
 	}
 }
