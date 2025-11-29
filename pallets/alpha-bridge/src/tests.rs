@@ -880,6 +880,15 @@ fn test_full_unlock_cycle() {
 
 		// 4. Verify unlock is no longer pending
 		assert!(!crate::PendingUnlocks::<Test>::contains_key(burn_id));
+
+		// 5. Verify burn was enqueued in ordered burn queue
+		let burn_nonce =
+			crate::BurnNonceById::<Test>::get(burn_id).expect("burn nonce must exist for burn_id");
+		let queue_item =
+			crate::BurnQueue::<Test>::get(burn_nonce).expect("burn queue item should exist");
+		assert_eq!(queue_item.burn_id, burn_id);
+		assert_eq!(queue_item.requester, user1());
+		assert_eq!(queue_item.amount, 1000);
 	});
 }
 

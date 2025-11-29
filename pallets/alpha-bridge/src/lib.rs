@@ -98,6 +98,15 @@ pub mod pallet {
 		pub status: VoteStatus,
 	}
 
+	/// Item in the burn queue for ordered processing of approved unlocks
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
+	#[scale_info(skip_type_params(T))]
+	pub struct BurnQueueItem<AccountId> {
+		pub burn_id: BurnId,
+		pub requester: AccountId,
+		pub amount: u64,
+	}
+
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
 	#[pallet::storage_version(STORAGE_VERSION)]
@@ -310,6 +319,8 @@ pub mod pallet {
 		EscrowBalanceInsufficient,
 		/// Arithmetic underflow
 		ArithmeticUnderflow,
+		/// Burn nonce mapping missing for approved unlock (invariant violation)
+		BurnNonceNotFound,
 	}
 
 	#[pallet::call]
@@ -833,7 +844,12 @@ pub mod pallet {
 			data.extend_from_slice(&amount.to_le_bytes());
 			data.extend_from_slice(&nonce.to_le_bytes());
 
-			H256::from(sp_core::hashing::blake2_256(&data))
+			let burn_id = H256::from(sp_core::hashing::blake2_256(&data));
+
+			// Record mapping from burn ID to its nonce for ordered processing
+			BurnNonceById::<T>::insert(burn_id, nonce);
+
+			burn_id
 		}
 
 		/// Convert a raw amount into the runtime's balance type.
@@ -936,6 +952,19 @@ pub mod pallet {
 			TotalMintedByBridge::<T>::mutate(|total| {
 				*total = total.saturating_sub(record.amount as u128);
 			});
+
+			// Enqueue approved burn for ordered off-chain processing
+			let burn_nonce =
+				BurnNonceById::<T>::get(burn_id).ok_or(Error::<T>::BurnNonceNotFound)?;
+
+			BurnQueue::<T>::insert(
+				burn_nonce,
+				BurnQueueItem {
+					burn_id,
+					requester: record.requester.clone(),
+					amount: record.amount,
+				},
+			);
 
 			PendingUnlocks::<T>::remove(burn_id);
 
