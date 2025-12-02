@@ -453,6 +453,11 @@ pub mod pallet {
 				}
 			}
 
+			// Every 1000 blocks, deregister nodes that have no metrics and are registered for more than 1000 blocks
+			if _n % 1000u32.into() == 0u32.into() {
+				Self::deregister_nodes_without_metrics(_n);
+			}
+
 			// GC used challenges (keep it light)
 			UsedChallenges::<T>::iter()
 				.filter(|(_, until)| *until <= _n)
@@ -2439,6 +2444,65 @@ pub mod pallet {
 						Self::do_unregister_main_node(node_id.clone());
 					}
 				}
+			}
+		}
+
+		/// Deregister nodes that have no metrics and have been registered for more than 1000 blocks
+		fn deregister_nodes_without_metrics(current_block: BlockNumberFor<T>) {
+			let blocks_threshold: BlockNumberFor<T> = 1000u32.into();
+
+			// Check ColdkeyNodeRegistration
+			let coldkey_nodes_to_deregister: Vec<Vec<u8>> = ColdkeyNodeRegistration::<T>::iter()
+				.filter_map(|(node_id, node_info_opt)| {
+					if let Some(node_info) = node_info_opt {
+						// Check if node has no metrics
+						if !T::MetricsInfo::has_metrics(node_id.clone()) {
+							// Check if registered for more than 1000 blocks
+							let blocks_since_registration =
+								current_block.saturating_sub(node_info.registered_at);
+							if blocks_since_registration > blocks_threshold {
+								return Some(node_id);
+							}
+						}
+					}
+					None
+				})
+				.collect();
+
+			// Deregister coldkey nodes without metrics
+			for node_id in coldkey_nodes_to_deregister {
+				log::info!(
+					"Deregistering coldkey node without metrics: {:?}",
+					String::from_utf8_lossy(&node_id)
+				);
+				Self::do_unregister_main_node(node_id);
+			}
+
+			// Check NodeRegistration (hotkey nodes)
+			let hotkey_nodes_to_deregister: Vec<Vec<u8>> = NodeRegistration::<T>::iter()
+				.filter_map(|(node_id, node_info_opt)| {
+					if let Some(node_info) = node_info_opt {
+						// Check if node has no metrics
+						if !T::MetricsInfo::has_metrics(node_id.clone()) {
+							// Check if registered for more than 1000 blocks
+							let blocks_since_registration =
+								current_block.saturating_sub(node_info.registered_at);
+							if blocks_since_registration > blocks_threshold {
+								return Some(node_id);
+							}
+						}
+					}
+					None
+				})
+				.collect();
+
+			// Deregister hotkey nodes without metrics
+			for node_id in hotkey_nodes_to_deregister {
+				log::info!(
+					"Deregistering hotkey node without metrics: {:?}",
+					String::from_utf8_lossy(&node_id)
+				);
+				Self::do_unregister_node(node_id);
 			}
 		}
 	}
