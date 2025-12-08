@@ -243,9 +243,18 @@ pub mod pallet {
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
 		/// Batch of deposits proposed by a guardian
-		DepositsProposed { deposit_ids: Vec<DepositId>, proposer: T::AccountId },
+		DepositsProposed { 
+			deposit_ids: Vec<DepositId>, 
+			recipients: Vec<T::AccountId>,
+			proposer: T::AccountId 
+		},
 		/// Guardian voted on a deposit proposal
-		DepositAttested { deposit_id: DepositId, guardian: T::AccountId, approved: bool },
+		DepositAttested { 
+			deposit_id: DepositId, 
+		recipient: T::AccountId,
+		guardian: T::AccountId, 
+		approved: bool 
+		},
 		/// Deposit approved and halpha minted to recipient
 		BridgeMinted { deposit_id: DepositId, recipient: T::AccountId, amount: u128 },
 		/// Deposit denied by guardians
@@ -280,6 +289,8 @@ pub mod pallet {
 			recipient: T::AccountId,
 			amount: u128 
 		},
+		/// All storage has been reset to default values
+		StorageReset,
 	}
 
 	#[pallet::error]
@@ -422,9 +433,14 @@ pub mod pallet {
 				}
 			}
 
+			let recipients: Vec<_> = deposits.iter().map(|d| d.recipient.clone()).collect();
 			LastCheckpointNonce::<T>::put(checkpoint_nonce);
 
-			Self::deposit_event(Event::DepositsProposed { deposit_ids, proposer: guardian });
+			Self::deposit_event(Event::DepositsProposed { 
+				deposit_ids, 
+				recipients,
+				proposer: guardian 
+			});
 
 			Ok(())
 		}
@@ -467,7 +483,13 @@ pub mod pallet {
 				record.deny_votes.insert(guardian.clone());
 			}
 
-			Self::deposit_event(Event::DepositAttested { deposit_id, guardian, approved: approve });
+			let recipient = record.recipient.clone();
+			Self::deposit_event(Event::DepositAttested { 
+				deposit_id, 
+				recipient,
+				guardian, 
+				approved: approve 
+			});
 
 			let vote_status =
 				Self::check_vote_thresholds(record.approve_votes.len(), record.deny_votes.len());
@@ -817,6 +839,38 @@ pub mod pallet {
 
 			SignatureTTLBlocks::<T>::put(blocks);
 			Self::deposit_event(Event::SignatureTTLUpdated { new_ttl: blocks });
+
+			Ok(())
+		}
+
+		/// Reset all storage in the pallet to default values (sudo/root only)
+		/// WARNING: This will clear all pending deposits, unlocks, and other state
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		#[pallet::call_index(13)]
+		#[pallet::weight(T::DbWeight::get().writes(12))]
+		pub fn reset_storage(origin: OriginFor<T>) -> DispatchResult {
+			let guardian = ensure_signed(origin)?;
+
+			// Clear all storage items
+			ProcessedDeposits::<T>::remove_all(None);
+			LastCheckpointNonce::<T>::kill();
+			TotalMintedByBridge::<T>::kill();
+
+			PendingDeposits::<T>::remove_all(None);
+			PendingUnlocks::<T>::remove_all(None);
+			BurnNonceById::<T>::remove_all(None);
+			BurnQueue::<T>::remove_all(None);
+			NextBurnNonce::<T>::kill();
+			NextExpiredDepositNonce::<T>::kill();
+			ExpiredDeposits::<T>::remove_all(None);
+
+			// Set default values
+			NextBurnNonce::<T>::put(0);
+			NextExpiredDepositNonce::<T>::put(0);
+
+			Self::deposit_event(Event::<T>::StorageReset);
 
 			Ok(())
 		}
