@@ -3,11 +3,13 @@ import { Binary, TxEvent, TxFinalized } from "polkadot-api";
 import { Observable } from "rxjs";
 import { randomBytes, createHash } from "crypto";
 import {
-	setupTestEnvironment,
+	TestSetup,
 	cleanupTestEnvironment,
 	type TestContext,
 	type ContractSdk,
 } from "../setup";
+import { createInkSdk } from "@polkadot-api/sdk-ink";
+import { devnet, contracts } from "@polkadot-api/descriptors";
 import {
 	addContractAsProxy,
 	createHotkey,
@@ -30,7 +32,6 @@ import {
 	moveStake,
 } from "../utils/stake-helpers";
 
-const CHAIN_ID = Number(process.env.BRIDGE_CHAIN_ID ?? 1);
 const MIN_DEPOSIT = 1_000_000_000n;
 const SIGNATURE_TTL_BLOCKS = 100;
 
@@ -111,30 +112,50 @@ describe("Bridge Contract Integration", () => {
 	let eveDepositAmount: bigint = 0n;
 
 	beforeAll(async () => {
-		context = await setupTestEnvironment();
-		contract = context.contractSdk.getContract(context.contractAddress!);
+		// Setup API and accounts (without deploying contract yet)
+		const setup = TestSetup.getInstance();
+		const api = await setup.getApi();
+		const { accounts, guardians, contractHotkey } = setup.createTestAccounts();
 
-		aliceHotkey = createHotkey(context.accounts.alice.derivePath);
-		bobHotkey = createHotkey(context.accounts.bob.derivePath);
-		charlieHotkey = createHotkey(context.accounts.charlie.derivePath);
-		daveHotkey = createHotkey(context.accounts.dave.derivePath);
-		eveHotkey = createHotkey(context.accounts.eve.derivePath);
+		// Create hotkeys
+		aliceHotkey = createHotkey(accounts.alice.derivePath);
+		bobHotkey = createHotkey(accounts.bob.derivePath);
+		charlieHotkey = createHotkey(accounts.charlie.derivePath);
+		daveHotkey = createHotkey(accounts.dave.derivePath);
+		eveHotkey = createHotkey(accounts.eve.derivePath);
 
 		// Fund hotkeys for fees
-		await fundAccount(context.api, aliceHotkey.address, taoToRao(50), context.accounts.alice.signer);
-		await fundAccount(context.api, bobHotkey.address, taoToRao(10), context.accounts.alice.signer);
-		await fundAccount(context.api, charlieHotkey.address, taoToRao(10), context.accounts.alice.signer);
-		await fundAccount(context.api, daveHotkey.address, taoToRao(10), context.accounts.alice.signer);
-		await fundAccount(context.api, eveHotkey.address, taoToRao(10), context.accounts.alice.signer);
+		await fundAccount(api, aliceHotkey.address, taoToRao(50), accounts.alice.signer);
+		await fundAccount(api, bobHotkey.address, taoToRao(10), accounts.alice.signer);
+		await fundAccount(api, charlieHotkey.address, taoToRao(10), accounts.alice.signer);
+		await fundAccount(api, daveHotkey.address, taoToRao(10), accounts.alice.signer);
+		await fundAccount(api, eveHotkey.address, taoToRao(10), accounts.alice.signer);
+
+		// Register subnet FIRST to get netuid
+		netuid = await registerSubnet(api, aliceHotkey.address, accounts.alice.signer);
+		await elevateRegistrationLimits(api, netuid, 32, 32, accounts.alice.signer);
+		await waitForBlocks(api, 1);
+
+		// Deploy contract with chain_id = netuid
+		const contractAddress = await setup.deployContract(api, accounts.alice, contractHotkey, netuid);
 
 		// Fund contract account and contract hotkey for transaction fees
-		await fundAccount(context.api, context.contractAddress!, taoToRao(25), context.accounts.alice.signer);
-		await fundAccount(context.api, context.contractHotkey.address, taoToRao(25), context.accounts.alice.signer);
+		await fundAccount(api, contractAddress, taoToRao(25), accounts.alice.signer);
+		await fundAccount(api, contractHotkey.address, taoToRao(25), accounts.alice.signer);
 
-		// Register subnet and validators
-		netuid = await registerSubnet(context.api, aliceHotkey.address, context.accounts.alice.signer);
-		await elevateRegistrationLimits(context.api, netuid, 32, 32, context.accounts.alice.signer);
-		await waitForBlocks(context.api, 1);
+		// Create contract SDK and context
+		const contractSdk = createInkSdk(api, contracts.bridge);
+		context = {
+			api,
+			contractSdk,
+			accounts,
+			guardians,
+			contractHotkey,
+			contractAddress,
+		};
+		contract = contractSdk.getContract(contractAddress);
+
+		// Register validators
 
 		await registerValidator(context.api, netuid, aliceHotkey.address, context.accounts.alice.signer, taoToRao(400));
 		await registerValidator(context.api, netuid, bobHotkey.address, context.accounts.bob.signer, taoToRao(200));
@@ -193,7 +214,7 @@ describe("Bridge Contract Integration", () => {
 			});
 			expect(chainIdResult.success).toBe(true);
 			if (chainIdResult.success) {
-				expect(Number(chainIdResult.value.response)).toBe(CHAIN_ID);
+				expect(Number(chainIdResult.value.response)).toBe(netuid);
 			}
 
 			const pausedResult = await contract.query("is_paused", {
@@ -288,6 +309,20 @@ describe("Bridge Contract Integration", () => {
 			bobDepositId = toBinary(depositEvent.deposit_id);
 			expect(depositEvent.amount).toBe(bobDepositAmount);
 
+			const depositIdByNonce = await contract.query("get_deposit_id_by_nonce", {
+				origin: context.accounts.alice.address,
+				data: {
+					deposit_nonce: depositEvent.deposit_nonce,
+				},
+			});
+
+			expect(depositIdByNonce.success).toBe(true);
+			if (depositIdByNonce.success) {
+				expect(toBinary(depositIdByNonce.value.response?.asHex() || '0x').toString()).toBe(
+					toBinary(bobDepositId).toString(),
+				);
+			}
+
 			const lockedQuery = await contract.query("get_locked_amount", {
 				origin: context.accounts.alice.address,
 				data: {
@@ -361,6 +396,39 @@ describe("Bridge Contract Integration", () => {
 			expect(result.success).toBe(false);
 			if (!result.success) {
 				expect(result.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects deposits with invalid netuid", async () => {
+			const invalidNetuid = netuid + 1;
+
+			const result = await contract.query("lock", {
+				origin: context.accounts.charlie.address,
+				data: {
+					amount: MIN_DEPOSIT,
+					hotkey: charlieHotkey.address,
+					netuid: invalidNetuid,
+				},
+			});
+
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				expect(result.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("returns none for an unknown deposit nonce", async () => {
+			const unknownNonce = 9_999_999n;
+			const result = await contract.query("get_deposit_id_by_nonce", {
+				origin: context.accounts.alice.address,
+				data: {
+					deposit_nonce: unknownNonce,
+				},
+			});
+
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.value.response).toBeUndefined();
 			}
 		});
 	});

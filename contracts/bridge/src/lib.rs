@@ -60,6 +60,8 @@ mod bridge {
 
 		contract_hotkey: AccountId,
 		paused: bool,
+
+		nonce_to_deposit_id: Mapping<DepositNonce, DepositId>,
 	}
 
 	impl Bridge {
@@ -99,6 +101,7 @@ mod bridge {
 				min_deposit_amount: 1_000_000_000,
 				max_deposits_per_user: 25,
 				paused: false,
+				nonce_to_deposit_id: Mapping::default(),
 			}
 		}
 
@@ -117,6 +120,10 @@ mod bridge {
 			netuid: NetUid,
 		) -> Result<DepositId, Error> {
 			self.ensure_not_paused()?;
+
+			if netuid.as_u16() != self.chain_id {
+				return Err(Error::InvalidNetUid);
+			}
 
 			if amount < self.min_deposit_amount {
 				return Err(Error::AmountTooSmall);
@@ -214,6 +221,7 @@ mod bridge {
 			// Store deposit metadata for refunds
 			let metadata = DepositMetadata { sender, hotkey, netuid: netuid.as_u16(), amount };
 			self.deposit_metadata.insert(deposit_id, &metadata);
+			self.nonce_to_deposit_id.insert(deposit_nonce, &deposit_id);
 
 			user_deposits.push(deposit_id);
 			self.user_deposits.insert(sender, &user_deposits);
@@ -673,6 +681,12 @@ mod bridge {
 		#[ink(message)]
 		pub fn get_pending_refund(&self, deposit_id: DepositId) -> Option<PendingRefund> {
 			self.pending_refunds.get(deposit_id)
+		}
+
+		/// Resolve a deposit ID from its nonce
+		#[ink(message)]
+		pub fn get_deposit_id_by_nonce(&self, deposit_nonce: DepositNonce) -> Option<DepositId> {
+			self.nonce_to_deposit_id.get(deposit_nonce)
 		}
 
 		#[ink(message)]

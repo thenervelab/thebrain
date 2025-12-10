@@ -1,3 +1,4 @@
+// account id : 5EYCAe5ZJvQbPTyizLm1fmLdGTjVkFEzGSywNsZUmNFfR4XA
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(test)]
@@ -10,8 +11,7 @@ mod tests;
 mod benchmarking;
 
 pub mod weights;
-
-pub mod migrations;
+mod migration;
 
 use crate::weights::WeightInfo;
 use codec::{Decode, Encode, MaxEncodedLen};
@@ -21,20 +21,21 @@ use frame_support::{
 	traits::{
 		fungible::Mutate,
 		tokens::{Fortitude, Precision, Preservation},
-		Currency, ExistenceRequirement, StorageVersion,
+		Currency, ExistenceRequirement, GetStorageVersion, StorageVersion,
 	},
 	PalletId,
+	weights::Weight,
 };
 use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
 use sp_core::H256;
-use sp_runtime::traits::{AtLeast32BitUnsigned, Saturating};
+use sp_runtime::traits::{AtLeast32BitUnsigned, Saturating, SaturatedConversion};
 use sp_std::{collections::btree_set::BTreeSet, prelude::*};
 
 pub use pallet::*;
 
 /// The current storage version
-const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
 /// Domain separator for burn ID generation
 const DOMAIN_BURN: &[u8] = b"HIPPIUS-BURN-v1";
@@ -42,6 +43,7 @@ const DOMAIN_BURN: &[u8] = b"HIPPIUS-BURN-v1";
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
+	use crate::migration;
 	use frame_support::traits::ReservableCurrency;
 	use sp_runtime::traits::CheckedSub;
 	pub type DepositId = H256;
@@ -55,7 +57,15 @@ pub mod pallet {
 	pub struct DepositProposal<AccountId> {
 		pub id: DepositId,
 		pub recipient: AccountId,
-		pub amount: u64,
+		pub amount: u128,
+	}
+
+	/// Record of an expired deposit that needs to be refunded on the other chain
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	pub struct ExpiredDeposit<AccountId> {
+		pub deposit_id: DepositId,
+		pub recipient: AccountId,
+		pub amount: u128,
 	}
 
 	/// Status of a vote (deposit or unlock)
@@ -73,7 +83,7 @@ pub mod pallet {
 	#[scale_info(skip_type_params(T))]
 	pub struct DepositRecord<AccountId, BlockNumber> {
 		pub recipient: AccountId,
-		pub amount: u64,
+		pub amount: u128,
 		pub approve_votes: BTreeSet<AccountId>,
 		pub deny_votes: BTreeSet<AccountId>,
 		pub proposed_at_block: BlockNumber,
@@ -85,11 +95,20 @@ pub mod pallet {
 	#[scale_info(skip_type_params(T))]
 	pub struct UnlockRecord<AccountId, BlockNumber> {
 		pub requester: AccountId,
-		pub amount: u64,
+		pub amount: u128,
 		pub approve_votes: BTreeSet<AccountId>,
 		pub deny_votes: BTreeSet<AccountId>,
 		pub requested_at_block: BlockNumber,
 		pub status: VoteStatus,
+	}
+
+	/// Item in the burn queue for ordered processing of approved unlocks
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
+	#[scale_info(skip_type_params(T))]
+	pub struct BurnQueueItem<AccountId> {
+		pub burn_id: BurnId,
+		pub requester: AccountId,
+		pub amount: u128,
 	}
 
 	#[pallet::pallet]
@@ -188,32 +207,66 @@ pub mod pallet {
 		OptionQuery,
 	>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn burn_nonce_by_id)]
+	pub type BurnNonceById<T: Config> =
+		StorageMap<_, Blake2_128Concat, BurnId, u64, OptionQuery>;
+
+	
+	#[pallet::storage]
+	#[pallet::getter(fn burn_queue)]
+	pub type BurnQueue<T: Config> =
+		StorageMap<_, Blake2_128Concat, u64, BurnQueueItem<T::AccountId>, OptionQuery>;
+
 	/// Nonce used for generating unique burn IDs via hashing
 	#[pallet::storage]
 	#[pallet::getter(fn next_burn_nonce)]
 	pub type NextBurnNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
 
+	/// Nonce for generating unique keys for expired deposits
+	#[pallet::storage]
+	#[pallet::getter(fn next_expired_deposit_nonce)]
+	pub type NextExpiredDepositNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+	/// Tracks expired deposits that need to be refunded on the other chain
+	#[pallet::storage]
+	#[pallet::getter(fn expired_deposits)]
+	pub type ExpiredDeposits<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		u64,
+		ExpiredDeposit<T::AccountId>,
+		OptionQuery,
+	>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
 		/// Batch of deposits proposed by a guardian
-		DepositsProposed { deposit_ids: Vec<DepositId>, proposer: T::AccountId },
+		DepositsProposed { 
+			deposit_ids: Vec<DepositId>, 
+			recipients: Vec<T::AccountId>,
+			proposer: T::AccountId 
+		},
 		/// Guardian voted on a deposit proposal
-		DepositAttested { deposit_id: DepositId, guardian: T::AccountId, approved: bool },
+		DepositAttested { 
+			deposit_id: DepositId, 
+		recipient: T::AccountId,
+		guardian: T::AccountId, 
+		approved: bool 
+		},
 		/// Deposit approved and halpha minted to recipient
-		BridgeMinted { deposit_id: DepositId, recipient: T::AccountId, amount: u64 },
+		BridgeMinted { deposit_id: DepositId, recipient: T::AccountId, amount: u128 },
 		/// Deposit denied by guardians
-		BridgeDenied { deposit_id: DepositId, recipient: T::AccountId, amount: u64 },
-		/// Deposit proposal expired due to timeout
-		DepositExpired { deposit_id: DepositId },
+		BridgeDenied { deposit_id: DepositId, recipient: T::AccountId, amount: u128 },
 		/// User requested unlock (burn halpha to receive alpha on Bittensor)
-		UnlockRequested { burn_id: BurnId, requester: T::AccountId, amount: u64 },
+		UnlockRequested { burn_id: BurnId, requester: T::AccountId, amount: u128 },
 		/// Guardian voted on an unlock request
 		UnlockAttested { burn_id: BurnId, guardian: T::AccountId, approved: bool },
 		/// Unlock approved and halpha burned
-		UnlockApproved { burn_id: BurnId, requester: T::AccountId, amount: u64 },
+		UnlockApproved { burn_id: BurnId, requester: T::AccountId, amount: u128 },
 		/// Unlock denied and funds restored to user
-		UnlockDenied { burn_id: BurnId, requester: T::AccountId, amount: u64 },
+		UnlockDenied { burn_id: BurnId, requester: T::AccountId, amount: u128 },
 		/// Unlock request expired and funds restored
 		UnlockExpired { burn_id: BurnId },
 		/// Bridge pause state changed
@@ -230,6 +283,14 @@ pub mod pallet {
 		GuardianAdded { guardian: T::AccountId },
 		/// Guardian removed from the set
 		GuardianRemoved { guardian: T::AccountId },
+		/// Deposit proposal expired due to timeout
+		DepositExpired { 
+			deposit_id: DepositId, 
+			recipient: T::AccountId,
+			amount: u128 
+		},
+		/// All storage has been reset to default values
+		StorageReset,
 	}
 
 	#[pallet::error]
@@ -284,6 +345,24 @@ pub mod pallet {
 		EscrowBalanceInsufficient,
 		/// Arithmetic underflow
 		ArithmeticUnderflow,
+		/// Burn nonce mapping missing for approved unlock (invariant violation)
+		BurnNonceNotFound,
+	}
+
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_runtime_upgrade() -> Weight {
+			let on_chain = Self::on_chain_storage_version();
+			let mut weight = Weight::zero();
+
+			if on_chain < STORAGE_VERSION {
+				weight = weight.saturating_add(migration::migrate_to_v2::<T>());
+				STORAGE_VERSION.put::<Self>();
+				weight = weight.saturating_add(T::DbWeight::get().writes(1));
+			}
+
+			weight
+		}
 	}
 
 	#[pallet::call]
@@ -354,9 +433,14 @@ pub mod pallet {
 				}
 			}
 
+			let recipients: Vec<_> = deposits.iter().map(|d| d.recipient.clone()).collect();
 			LastCheckpointNonce::<T>::put(checkpoint_nonce);
 
-			Self::deposit_event(Event::DepositsProposed { deposit_ids, proposer: guardian });
+			Self::deposit_event(Event::DepositsProposed { 
+				deposit_ids, 
+				recipients,
+				proposer: guardian 
+			});
 
 			Ok(())
 		}
@@ -399,7 +483,13 @@ pub mod pallet {
 				record.deny_votes.insert(guardian.clone());
 			}
 
-			Self::deposit_event(Event::DepositAttested { deposit_id, guardian, approved: approve });
+			let recipient = record.recipient.clone();
+			Self::deposit_event(Event::DepositAttested { 
+				deposit_id, 
+				recipient,
+				guardian, 
+				approved: approve 
+			});
 
 			let vote_status =
 				Self::check_vote_thresholds(record.approve_votes.len(), record.deny_votes.len());
@@ -426,7 +516,7 @@ pub mod pallet {
 		/// * `amount` - Amount of halpha to burn
 		#[pallet::call_index(2)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::request_unlock())]
-		pub fn request_unlock(origin: OriginFor<T>, amount: u64) -> DispatchResult {
+		pub fn request_unlock(origin: OriginFor<T>, amount: u128) -> DispatchResult {
 			let requester = ensure_signed(origin)?;
 			Self::ensure_not_paused()?;
 
@@ -530,23 +620,40 @@ pub mod pallet {
 			deposit_id: DepositId,
 		) -> DispatchResult {
 			ensure_signed(origin)?;
-
-			let record =
-				PendingDeposits::<T>::get(deposit_id).ok_or(Error::<T>::DepositNotPending)?;
-
-			ensure!(record.status == VoteStatus::Pending, Error::<T>::DepositAlreadyFinalized);
+		
+			let record = PendingDeposits::<T>::get(deposit_id)
+				.ok_or(Error::<T>::DepositNotPending)?;
+		
+			ensure!(
+				record.status == VoteStatus::Pending,
+				Error::<T>::DepositAlreadyFinalized
+			);
 
 			ensure!(
 				Self::is_proposal_expired(record.proposed_at_block),
 				Error::<T>::ProposalNotExpired
 			);
-
+		
+			let nonce = NextExpiredDepositNonce::<T>::get();
+			NextExpiredDepositNonce::<T>::put(nonce + 1);
+			
+			let expired_deposit = ExpiredDeposit {
+				deposit_id,
+				recipient: record.recipient.clone(),
+				amount: record.amount,
+			};
+			
+			ExpiredDeposits::<T>::insert(nonce, expired_deposit);
+		
 			PendingDeposits::<T>::remove(deposit_id);
-
 			ProcessedDeposits::<T>::insert(deposit_id, true);
-
-			Self::deposit_event(Event::DepositExpired { deposit_id });
-
+		
+			Self::deposit_event(Event::DepositExpired { 
+				deposit_id,
+				recipient: record.recipient,
+				amount: record.amount,
+			});
+		
 			Ok(())
 		}
 
@@ -735,6 +842,38 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		/// Reset all storage in the pallet to default values (sudo/root only)
+		/// WARNING: This will clear all pending deposits, unlocks, and other state
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		#[pallet::call_index(13)]
+		#[pallet::weight(T::DbWeight::get().writes(12))]
+		pub fn reset_storage(origin: OriginFor<T>) -> DispatchResult {
+			let guardian = ensure_signed(origin)?;
+
+			// Clear all storage items
+			ProcessedDeposits::<T>::remove_all(None);
+			LastCheckpointNonce::<T>::kill();
+			TotalMintedByBridge::<T>::kill();
+
+			PendingDeposits::<T>::remove_all(None);
+			PendingUnlocks::<T>::remove_all(None);
+			BurnNonceById::<T>::remove_all(None);
+			BurnQueue::<T>::remove_all(None);
+			NextBurnNonce::<T>::kill();
+			NextExpiredDepositNonce::<T>::kill();
+			ExpiredDeposits::<T>::remove_all(None);
+
+			// Set default values
+			NextBurnNonce::<T>::put(0);
+			NextExpiredDepositNonce::<T>::put(0);
+
+			Self::deposit_event(Event::<T>::StorageReset);
+
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -761,12 +900,11 @@ pub mod pallet {
 		}
 
 		/// Check if minting the specified amount would exceed the global mint cap
-		pub fn check_mint_cap(amount: u64) -> DispatchResult {
+		pub fn check_mint_cap(amount: u128) -> DispatchResult {
 			let total_minted = TotalMintedByBridge::<T>::get();
 			let mint_cap = GlobalMintCap::<T>::get();
-			let amount_u128 = amount as u128;
 			ensure!(
-				total_minted.saturating_add(amount_u128) <= mint_cap,
+				total_minted.saturating_add(amount) <= mint_cap,
 				Error::<T>::GlobalMintCapExceeded
 			);
 			Ok(())
@@ -780,7 +918,7 @@ pub mod pallet {
 		}
 
 		/// Generate a unique burn ID by hashing account, amount, and nonce
-		pub fn generate_burn_id(account: &T::AccountId, amount: u64) -> BurnId {
+		pub fn generate_burn_id(account: &T::AccountId, amount: u128) -> BurnId {
 			let nonce = NextBurnNonce::<T>::get();
 			NextBurnNonce::<T>::put(nonce.saturating_add(1));
 
@@ -790,11 +928,16 @@ pub mod pallet {
 			data.extend_from_slice(&amount.to_le_bytes());
 			data.extend_from_slice(&nonce.to_le_bytes());
 
-			H256::from(sp_core::hashing::blake2_256(&data))
+			let burn_id = H256::from(sp_core::hashing::blake2_256(&data));
+
+			// Record mapping from burn ID to its nonce for ordered processing
+			BurnNonceById::<T>::insert(burn_id, nonce);
+
+			burn_id
 		}
 
 		/// Convert a raw amount into the runtime's balance type.
-		pub fn amount_to_balance(amount: u64) -> Result<BalanceOf<T>, DispatchError> {
+		pub fn amount_to_balance(amount: u128) -> Result<BalanceOf<T>, DispatchError> {
 			amount.try_into().map_err(|_| Error::<T>::AmountConversionFailed.into())
 		}
 
@@ -808,8 +951,7 @@ pub mod pallet {
 
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
-				let amount_u128 = amount as u128;
-				let new_total = total.saturating_add(amount_u128);
+				let new_total = total.saturating_add(amount);
 				ensure!(new_total <= mint_cap, Error::<T>::GlobalMintCapExceeded);
 
 				let balance_amount = Self::amount_to_balance(amount)?;
@@ -820,18 +962,23 @@ pub mod pallet {
 				let mut mint_amount = balance_amount;
 
 				// If the recipient doesn't have enough for ED, transfer from bridge account to cover it
-				if recipient_balance < ed {
-					let shortfall = ed - recipient_balance;
+				let ed_u128: u128 = ed.saturated_into();
+
+				if recipient_balance < ed && amount < ed_u128 {
+					let shortfall = ed.saturating_sub(recipient_balance);
 					let bridge_account = Self::account_id();
 					T::Currency::transfer(
 						&bridge_account,
 						&recipient,
 						shortfall,
 						frame_support::traits::ExistenceRequirement::KeepAlive,
-					)?;
-					// Convert shortfall to the correct balance type before subtraction
-					let shortfall_balance = Self::amount_to_balance(shortfall.try_into().map_err(|_| Error::<T>::AmountConversionFailed)?)?;
-					mint_amount = balance_amount.checked_sub(&shortfall_balance).ok_or(Error::<T>::ArithmeticUnderflow)?;
+					)
+					.map_err(|_| Error::<T>::DepositMintFailed)?;
+					let shortfall_u128: u128 = shortfall.saturated_into();
+					let shortfall_balance = Self::amount_to_balance(shortfall_u128)?;
+					mint_amount = mint_amount
+						.checked_sub(&shortfall_balance)
+						.ok_or(Error::<T>::DepositMintFailed)?;
 				}
 				
 				// Mint the adjusted amount
@@ -891,8 +1038,21 @@ pub mod pallet {
 			.map_err(|_| Error::<T>::EscrowBalanceInsufficient)?;
 
 			TotalMintedByBridge::<T>::mutate(|total| {
-				*total = total.saturating_sub(record.amount as u128);
+				*total = total.saturating_sub(record.amount);
 			});
+
+			// Enqueue approved burn for ordered off-chain processing
+			let burn_nonce =
+				BurnNonceById::<T>::get(burn_id).ok_or(Error::<T>::BurnNonceNotFound)?;
+
+			BurnQueue::<T>::insert(
+				burn_nonce,
+				BurnQueueItem {
+					burn_id,
+					requester: record.requester.clone(),
+					amount: record.amount,
+				},
+			);
 
 			PendingUnlocks::<T>::remove(burn_id);
 

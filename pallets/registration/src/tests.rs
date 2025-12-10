@@ -21,3 +21,7 @@ fn correct_error_for_none_value() {
 		);
 	});
 }
+// add feild and update register fns 
+// add migration and set false to existing nodes 
+// add a fn to verify code signature for existing nodes 
+// add a sudo fn to deregister unverified nodes via sudo call

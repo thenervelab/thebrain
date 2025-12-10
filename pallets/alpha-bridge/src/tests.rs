@@ -392,7 +392,7 @@ fn test_user_unlock_request() {
 fn test_unlock_request_with_insufficient_balance_fails() {
 	new_test_ext().execute_with(|| {
 		let balance = Balances::free_balance(&user1());
-		let amount = (balance + 1000).try_into().unwrap();
+		let amount = balance + 1000;
 
 		assert_noop!(
 			AlphaBridge::<Test>::request_unlock(RuntimeOrigin::signed(user1()), amount),
@@ -551,7 +551,9 @@ fn test_deposit_expiration_after_ttl() {
 		));
 
 		// Check event
-		System::assert_has_event(Event::DepositExpired { deposit_id }.into());
+		System::assert_has_event(
+			Event::DepositExpired { deposit_id, recipient: user1(), amount: 1000 }.into(),
+		);
 
 		// Check that deposit is no longer pending
 		assert!(!crate::PendingDeposits::<Test>::contains_key(deposit_id));
@@ -880,6 +882,15 @@ fn test_full_unlock_cycle() {
 
 		// 4. Verify unlock is no longer pending
 		assert!(!crate::PendingUnlocks::<Test>::contains_key(burn_id));
+
+		// 5. Verify burn was enqueued in ordered burn queue
+		let burn_nonce =
+			crate::BurnNonceById::<Test>::get(burn_id).expect("burn nonce must exist for burn_id");
+		let queue_item =
+			crate::BurnQueue::<Test>::get(burn_nonce).expect("burn queue item should exist");
+		assert_eq!(queue_item.burn_id, burn_id);
+		assert_eq!(queue_item.requester, user1());
+		assert_eq!(queue_item.amount, 1000);
 	});
 }
 
