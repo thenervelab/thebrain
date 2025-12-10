@@ -312,6 +312,7 @@ pub mod pallet {
 		StorageRequestFailed
 	}
 
+
 	// the file size where the key is encoded file hash
 	#[pallet::storage]
 	#[pallet::getter(fn user_total_files_size)]
@@ -325,6 +326,11 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn miner_total_files_pinned)]
 	pub type MinerTotalFilesPinned<T: Config> = StorageMap<_, Blake2_128Concat, BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, u32>;
+
+	// Tracks bandwidth usage per miner, where the key is the miner's node ID
+	#[pallet::storage]
+	#[pallet::getter(fn miner_bandwidth_usage)]
+	pub type MinerBandwidthUsage<T: Config> = StorageMap<_, Blake2_128Concat, BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, u128>;
 
 	// Saves the owners request to store the file, with AccountId and FileHash as keys
 	#[pallet::storage]
@@ -1121,7 +1127,99 @@ pub mod pallet {
 			Ok(().into())
 		}
 
+		/// Update miner metrics including bandwidth, total files size, and total files pinned
+		/// 
+		/// This function allows the current epoch validator to update multiple metrics for multiple miners
+		/// in a single transaction. It accepts a vector of tuples where each tuple contains a miner's
+		/// node ID and their corresponding metrics.
 		#[pallet::call_index(18)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn update_miner_metrics(
+			origin: OriginFor<T>,
+			updates: Vec<(BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>, MinerMetrics<MAX_NODE_ID_LENGTH>)>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check if the signer is the current selected validator of the epoch
+			let current_validator = Self::select_validator()?;
+			ensure!(
+				main_account == current_validator,
+				Error::<T>::NotCurrentEpochValidator
+			);
+
+			// Update metrics for each miner
+			for (miner_id, metrics) in updates {
+				<MinerBandwidthUsage<T>>::insert(&miner_id, metrics.bandwidth);
+				<MinerTotalFilesSize<T>>::insert(&miner_id, metrics.total_files_size);
+				<MinerTotalFilesPinned<T>>::insert(&miner_id, metrics.total_files_pinned);
+			}
+
+			Ok(())
+		}
+
+		/// Update file sizes for multiple users
+		/// 
+		/// This function allows the current epoch validator to update file sizes for multiple users
+		/// in a single transaction. It accepts a vector of tuples where each tuple contains a user's
+		/// account ID and their corresponding file size.
+		#[pallet::call_index(19)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		pub fn update_user_file_sizes(
+			origin: OriginFor<T>,
+			updates: Vec<(T::AccountId, u128)>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Check if this is a proxy account and get the main account
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			// Check if the node is registered
+			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
+			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
+
+			// Unwrap safely after checking it's Some
+			let node_info = node_info.unwrap();
+
+			// Check if the node type is Validator
+			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
+
+			// Check if the signer is the current selected validator of the epoch
+			let current_validator = Self::select_validator()?;
+			ensure!(
+				main_account == current_validator,
+				Error::<T>::NotCurrentEpochValidator
+			);
+
+			// Update file sizes for each user
+			for (account_id, size) in updates {
+				<UserTotalFilesSize<T>>::insert(&account_id, size);
+			}
+
+			Ok(())
+		}
+
+		#[pallet::call_index(20)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn close_unpin_requests(
 			origin: OriginFor<T>,
@@ -1195,7 +1293,7 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		#[pallet::call_index(19)]
+		#[pallet::call_index(21)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn submit_storage_request_for_user(
 			origin: OriginFor<T>,
@@ -1238,7 +1336,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(20)]
+		#[pallet::call_index(22)]
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn submit_unpin_request_for_user(
 			origin: OriginFor<T>,

@@ -141,3 +141,11 @@ pub struct RebalanceRequestItem {
     pub node_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
     pub miner_profile_id: BoundedVec<u8, ConstU32<MAX_NODE_ID_LENGTH>>,
 }
+
+// Miner metrics structure
+#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+pub struct MinerMetrics<const N: u32> {
+	pub bandwidth: u128,
+	pub total_files_size: u128,
+	pub total_files_pinned: u32,
+}
