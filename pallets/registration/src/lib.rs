@@ -9,6 +9,7 @@ mod mock;
 mod tests;
 
 mod types;
+pub mod migrations;
 
 // #[cfg(feature = "runtime-benchmarks")]
 // mod benchmarking;
@@ -124,6 +125,7 @@ pub mod pallet {
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
+	#[pallet::storage_version(crate::migrations::STORAGE_VERSION_1)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::storage]
@@ -356,6 +358,10 @@ pub mod pallet {
 		TooManyUnverifiedNodes,
 		NodeAlreadyVerified,
 		Unauthorized,
+		/// Code signature verification failed
+		InvalidCodeSignature,
+		/// Code public key is required
+		CodePublicKeyRequired,
 	}
 
 	#[pallet::hooks]
@@ -482,6 +488,7 @@ pub mod pallet {
 			node_type: NodeType,
 			node_id: Vec<u8>,
 			ipfs_node_id: Option<Vec<u8>>,
+			code_public_key: Option<Vec<u8>>,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
 
@@ -511,6 +518,8 @@ pub mod pallet {
 				ipfs_node_id,
 				status: Status::Online,
 				is_verified: true,
+				code_signature_verified: true, // Force registered nodes are trusted
+				code_public_key,
 				registered_at: current_block_number,
 				owner,
 			};
@@ -539,6 +548,9 @@ pub mod pallet {
 			challenge_bytes: Vec<u8>,
 			ipfs_id_hex: Vec<u8>,
 			node_id_hex: Vec<u8>,
+			code_hash: Vec<u8>,
+			code_signature: Vec<u8>,
+			code_public_key: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
@@ -591,6 +603,16 @@ pub mod pallet {
 
 			// Mark challenge used (replay protection)
 			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
+
+			// --- Verify code signature for register_node_with_coldkey ---
+			ensure!(!code_public_key.is_empty(), Error::<T>::CodePublicKeyRequired);
+			ensure!(code_public_key.len() == 32, Error::<T>::CodePublicKeyRequired);
+			
+			// Verify the code signature
+			ensure!(
+				Self::verify_code_signature(&code_hash, &code_signature, &code_public_key),
+				Error::<T>::InvalidCodeSignature
+			);
 
 			// Check if the account is banned
 			ensure!(!Self::is_account_banned(&owner), Error::<T>::AccountBanned);
@@ -733,6 +755,8 @@ pub mod pallet {
 				ipfs_node_id,
 				status: Status::Online,
 				is_verified: true,
+				code_signature_verified: true,
+				code_public_key: Some(code_public_key.clone()),
 				registered_at: current_block_number,
 				owner,
 			};
@@ -766,6 +790,9 @@ pub mod pallet {
 			challenge_bytes: Vec<u8>,
 			ipfs_id_hex: Vec<u8>,
 			node_id_hex: Vec<u8>,
+			code_hash: Vec<u8>,
+			code_signature: Vec<u8>,
+			code_public_key: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
@@ -818,6 +845,16 @@ pub mod pallet {
 
 			// Mark challenge used (replay protection)
 			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
+
+			// --- Verify code signature for register_node_with_hotkey ---
+			ensure!(!code_public_key.is_empty(), Error::<T>::CodePublicKeyRequired);
+			ensure!(code_public_key.len() == 32, Error::<T>::CodePublicKeyRequired);
+			
+			// Verify the code signature
+			ensure!(
+				Self::verify_code_signature(&code_hash, &code_signature, &code_public_key),
+				Error::<T>::InvalidCodeSignature
+			);
 
 			// Check if the account is banned
 			ensure!(!Self::is_account_banned(&owner), Error::<T>::AccountBanned);
@@ -990,6 +1027,8 @@ pub mod pallet {
 				ipfs_node_id,
 				status: Status::Online,
 				is_verified: true,
+				code_signature_verified: true,
+				code_public_key: Some(code_public_key.clone()),
 				registered_at: current_block_number,
 				owner,
 			};
@@ -1066,6 +1105,7 @@ pub mod pallet {
 			node_type: NodeType,
 			node_id: Vec<u8>,
 			ipfs_node_id: Option<Vec<u8>>,
+			code_public_key: Option<Vec<u8>>,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
 
@@ -1096,6 +1136,8 @@ pub mod pallet {
 				ipfs_node_id,
 				status: Status::Online,
 				is_verified: true,
+				code_signature_verified: true, // Force registered nodes are trusted
+				code_public_key,
 				registered_at: current_block_number,
 				owner,
 			};
@@ -1286,6 +1328,35 @@ pub mod pallet {
 			Ok(().into())
 		}
 
+		/// Sudo call to deregister a specific node without checking code signature verification
+		/// This allows root to remove any node regardless of its verification status
+		#[pallet::call_index(18)]
+		#[pallet::weight((T::DbWeight::get().reads_writes(2, 1), Pays::No))]
+		pub fn sudo_deregister_node_without_verification(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+		) -> DispatchResultWithPostInfo {
+			// Ensure the caller is root (sudo)
+			ensure_root(origin)?;
+
+			// Check if the node exists in either registration map
+			let node_exists = ColdkeyNodeRegistration::<T>::contains_key(&node_id) || 
+				NodeRegistration::<T>::contains_key(&node_id);
+			ensure!(node_exists, Error::<T>::NodeNotRegistered);
+
+			// Unregister the node without checking code signature verification
+			if ColdkeyNodeRegistration::<T>::contains_key(&node_id) {
+				Self::do_unregister_main_node(node_id.clone());
+			} else {
+				Self::do_unregister_node(node_id.clone());
+			}
+
+			// Emit an event for the deregistration
+			Self::deposit_event(Event::NodeUnregistered { node_id });
+
+			Ok(().into())
+		}
+
 		/// Sudo call to unregister all nodes with is_verified = false
 		/// This will iterate through all registered nodes and unregister those that are not verified
 		#[pallet::call_index(17)]
@@ -1422,194 +1493,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(18)]
-		#[pallet::weight((10_000, Pays::No))]
-		pub fn verify_existing_node(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-			challenge_bytes: Vec<u8>,
-			main_key_type: Libp2pKeyType,
-			main_public_key: Vec<u8>,
-			main_sig: Vec<u8>,
-			ipfs_key_type: Libp2pKeyType,
-			ipfs_public_key: Vec<u8>,
-			ipfs_sig: Vec<u8>,
-			ipfs_id_hex: Vec<u8>,
-			node_id_hex: Vec<u8>,
-		) -> DispatchResultWithPostInfo {
-			let who = ensure_signed(origin)?;
-
-			// Get the node information
-			let mut node_info = NodeRegistration::<T>::get(&node_id)
-				.and_then(|opt| Some(opt))
-				.ok_or(Error::<T>::NodeNotFound)?;
-
-			// Check if node is already verified
-			ensure!(!node_info.is_verified, Error::<T>::NodeAlreadyVerified);
-
-			// Verify that the caller owns this node
-			ensure!(node_info.owner == who, Error::<T>::Unauthorized);
-
-			// --- Decode & check the challenge ---
-			let mut rdr = &challenge_bytes[..];
-			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
-				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
-
-			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
-			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
-			ensure!(ch.account == who, Error::<T>::InvalidAccountId);
-			ensure!(
-				ch.expires_at >= <frame_system::Pallet<T>>::block_number(),
-				Error::<T>::ChallengeExpired
-			);
-			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
-			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
-			ensure!(
-				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
-				Error::<T>::ChallengeMismatch
-			);
-
-			let ch_hash = Self::blake256(&challenge_bytes);
-			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
-
-			// --- Verify the two libp2p signatures ---
-			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-
-			// Verify signatures
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key),
-				Error::<T>::InvalidSignature
-			);
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key),
-				Error::<T>::InvalidSignature
-			);
-
-			// Verify that public keys match the expected peer IDs
-			ensure!(
-				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			ensure!(
-				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			// Mark challenge used (replay protection)
-			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
-
-			// Update the node to verified
-			node_info.is_verified = true;
-			NodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
-
-			// Store the identities for future use (liveness checks, etc.)
-			Libp2pMainIdentity::<T>::insert(&node_id, (main_key_type, main_public_key.clone()));
-			Libp2pIpfsIdentity::<T>::insert(&node_id, (ipfs_key_type, ipfs_public_key.clone()));
-
-			Self::deposit_event(Event::NodeVerified {
-				node_id: node_id.clone(),
-				owner: who.clone(),
-			});
-
-			Ok(().into())
-		}
-
-		#[pallet::call_index(19)]
-		#[pallet::weight((10_000, Pays::No))]
-		pub fn verify_existing_coldkey_node(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-			challenge_bytes: Vec<u8>,
-			main_key_type: Libp2pKeyType,
-			main_public_key: Vec<u8>,
-			main_sig: Vec<u8>,
-			ipfs_key_type: Libp2pKeyType,
-			ipfs_public_key: Vec<u8>,
-			ipfs_sig: Vec<u8>,
-			ipfs_id_hex: Vec<u8>,
-			node_id_hex: Vec<u8>,
-		) -> DispatchResultWithPostInfo {
-			let who = ensure_signed(origin)?;
-
-			// Get the coldkey node information
-			let mut node_info = ColdkeyNodeRegistration::<T>::get(&node_id)
-				.and_then(|opt| Some(opt))
-				.ok_or(Error::<T>::NodeNotFound)?;
-
-			// Check if node is already verified
-			ensure!(!node_info.is_verified, Error::<T>::NodeAlreadyVerified);
-
-			// Verify that the caller owns this node
-			ensure!(node_info.owner == who, Error::<T>::Unauthorized);
-
-			// --- Decode & check the challenge ---
-			let mut rdr = &challenge_bytes[..];
-			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
-				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
-
-			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
-			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
-			ensure!(ch.account == who, Error::<T>::InvalidAccountId);
-			ensure!(
-				ch.expires_at >= <frame_system::Pallet<T>>::block_number(),
-				Error::<T>::ChallengeExpired
-			);
-			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
-			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
-			ensure!(
-				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
-				Error::<T>::ChallengeMismatch
-			);
-
-			let ch_hash = Self::blake256(&challenge_bytes);
-			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
-
-			// --- Verify the two libp2p signatures ---
-			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-
-			// Verify signatures
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key),
-				Error::<T>::InvalidSignature
-			);
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key),
-				Error::<T>::InvalidSignature
-			);
-
-			// Verify that public keys match the expected peer IDs
-			ensure!(
-				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			ensure!(
-				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			// Mark challenge used (replay protection)
-			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
-
-			// Update the node to verified
-			node_info.is_verified = true;
-			ColdkeyNodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
-
-			// Store the identities for future use
-			Libp2pMainIdentity::<T>::insert(&node_id, (main_key_type, main_public_key.clone()));
-			Libp2pIpfsIdentity::<T>::insert(&node_id, (ipfs_key_type, ipfs_public_key.clone()));
-
-			Self::deposit_event(Event::ColdkeyNodeVerified {
-				node_id: node_id.clone(),
-				owner: who.clone(),
-			});
-
-			Ok(().into())
-		}
-
 		/// Toggle the de-registration switch (root only)
 		#[pallet::call_index(20)]
 		#[pallet::weight((10_000, Pays::No))]
@@ -1627,6 +1510,71 @@ pub mod pallet {
 			Self::deposit_event(Event::DeregistrationStatusChanged { enabled });
 
 			Ok(())
+		}
+
+		/// Verify code signature for an existing node (for nodes that were migrated)
+		/// This allows legacy nodes to prove their code signature after migration
+		#[pallet::call_index(21)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn verify_code_signature_for_existing_node(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+			code_hash: Vec<u8>,
+			code_signature: Vec<u8>,
+			code_public_key: Vec<u8>,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			// Try to get node from ColdkeyNodeRegistration first
+			let mut is_coldkey_node = false;
+			let mut node_info_opt = ColdkeyNodeRegistration::<T>::get(&node_id);
+			
+			if node_info_opt.is_none() {
+				// Try NodeRegistration (hotkey nodes)
+				node_info_opt = NodeRegistration::<T>::get(&node_id);
+			} else {
+				is_coldkey_node = true;
+			}
+
+			// Get the node information
+			let mut node_info = node_info_opt.ok_or(Error::<T>::NodeNotFound)?;
+
+			// Verify that the caller owns this node
+			ensure!(node_info.owner == who, Error::<T>::Unauthorized);
+
+			// Check if node already has code signature verified
+			ensure!(!node_info.code_signature_verified, Error::<T>::NodeAlreadyVerified);
+
+			// Verify the code signature parameters
+			ensure!(!code_public_key.is_empty(), Error::<T>::CodePublicKeyRequired);
+			ensure!(code_public_key.len() == 32, Error::<T>::CodePublicKeyRequired);
+
+			// Verify the code signature
+			ensure!(
+				Self::verify_code_signature(&code_hash, &code_signature, &code_public_key),
+				Error::<T>::InvalidCodeSignature
+			);
+
+			// Update the node with verified code signature
+			node_info.code_signature_verified = true;
+			node_info.code_public_key = Some(code_public_key);
+
+			// Save back to the appropriate storage
+			if is_coldkey_node {
+				ColdkeyNodeRegistration::<T>::insert(&node_id, Some(node_info));
+				Self::deposit_event(Event::ColdkeyNodeVerified {
+					node_id: node_id.clone(),
+					owner: who.clone(),
+				});
+			} else {
+				NodeRegistration::<T>::insert(&node_id, Some(node_info));
+				Self::deposit_event(Event::NodeVerified {
+					node_id: node_id.clone(),
+					owner: who.clone(),
+				});
+			}
+
+			Ok(().into())
 		}		
 	}
 
@@ -2120,18 +2068,28 @@ pub mod pallet {
 			out
 		}
 
-		fn verify_ed25519(msg: &[u8], sig: &[u8], pk: &[u8]) -> bool {
-			if sig.len() != 64 || pk.len() != 32 {
-				return false;
-			}
-			sp_io::crypto::ed25519_verify(
-				&sp_core::ed25519::Signature::from_raw(
-					<[u8; 64]>::try_from(sig).unwrap_or([0u8; 64]),
-				),
-				msg,
-				&sp_core::ed25519::Public::from_raw(<[u8; 32]>::try_from(pk).unwrap_or([0u8; 32])),
-			)
+	fn verify_ed25519(msg: &[u8], sig: &[u8], pk: &[u8]) -> bool {
+		if sig.len() != 64 || pk.len() != 32 {
+			return false;
 		}
+		sp_io::crypto::ed25519_verify(
+			&sp_core::ed25519::Signature::from_raw(
+				<[u8; 64]>::try_from(sig).unwrap_or([0u8; 64]),
+			),
+			msg,
+			&sp_core::ed25519::Public::from_raw(<[u8; 32]>::try_from(pk).unwrap_or([0u8; 32])),
+		)
+	}
+
+	/// Verify code signature (binary/executable signature)
+	/// This verifies that the node software is signed by the provided public key
+	fn verify_code_signature(
+		code_hash: &[u8],
+		signature: &[u8],
+		public_key: &[u8],
+	) -> bool {
+		Self::verify_ed25519(code_hash, signature, public_key)
+	}
 
 		// Add this function to verify that a public key corresponds to a peer ID
 		fn verify_peer_id(public_key: &[u8], peer_id: &[u8], key_type: Libp2pKeyType) -> bool {

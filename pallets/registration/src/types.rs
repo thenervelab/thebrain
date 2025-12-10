@@ -13,7 +13,9 @@ pub struct NodeInfo<BlockNumber, AccountId> {
 	pub status: Status,
 	pub registered_at: BlockNumber,
 	pub owner: AccountId,
-    pub is_verified: bool,  // New field with default value false
+    pub is_verified: bool,  // Libp2p identity verification status
+    pub code_signature_verified: bool,  // Code/binary signature verification status
+    pub code_public_key: Option<Vec<u8>>,  // Public key used for code signature
 }
 
 // DeregistrationReport with created_at field
