@@ -77,7 +77,6 @@ pub mod pallet {
     use num_traits::float::FloatCore;
     use pallet_rankings::Pallet as RankingsPallet;
     use pallet_subaccount::traits::SubAccounts;
-    // use pallet_compute::ComputeRequestStatus;
     use pallet_credits::AlphaBalances;
     use pallet_credits::TotalCreditsPurchased;
     use frame_system::offchain::SendTransactionTypes;
@@ -105,9 +104,7 @@ pub mod pallet {
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
                 Self::handle_storage_ipfs_charging(current_block);
-                Self::handle_storage_subscription_charging(current_block);
-                // Self::handle_storage_s3_subscription_charging(current_block);
-                // Self::handle_compute_subscription_charging(current_block);
+                Self::handle_all_subscription_charging(current_block);
             }
 
             // Return some weight (adjust based on actual implementation)
@@ -122,11 +119,10 @@ pub mod pallet {
                     ipfs_pallet::Config +
                     pallet_balances::Config + 
                     pallet_notifications::Config +
-                    // pallet_compute::Config +
                     // pallet_storage_s3::Config +
                     pallet_rankings::Config +
                     pallet_subaccount::Config +
-                    // pallet_rankings::Config<pallet_rankings::Instance2> +
+                    pallet_rankings::Config<pallet_rankings::Instance2> +
                     pallet_rankings::Config<pallet_rankings::Instance3> +
                     // pallet_rankings::Config<pallet_rankings::Instance4> +
                     // pallet_rankings::Config<pallet_rankings::Instance5> +
@@ -209,10 +205,6 @@ pub mod pallet {
     >;
 
     #[pallet::storage]
-    #[pallet::getter(fn registry_cid_delete_requests)]
-    pub(super) type RegistryCidDeleteRequests<T: Config> = StorageValue<_, Vec<Vec<u8>>, ValueQuery>;
-
-    #[pallet::storage]
     #[pallet::getter(fn user_plan_subscription)]
     pub(super) type UserPlanSubscriptions<T: Config> = StorageMap<
         _,
@@ -222,14 +214,24 @@ pub mod pallet {
         OptionQuery,
     >;
 
+    #[pallet::storage]
+    #[pallet::getter(fn user_all_subscription_plans)]
+    pub(super) type UserAllSubscriptionPlans<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Vec<UserPlanSubscription<T>>,
+        ValueQuery,
+    >;
+
     // Storage for OS Disk Image URLs
 	#[pallet::storage]
 	#[pallet::getter(fn os_disk_image_urls)]
 	pub type OSDiskImageUrls<T: Config> = StorageMap<
 		_, 
 		Blake2_128Concat, 
-		Vec<u8>, // OS Name (e.g., "ubuntu", "fedora")
-		ImageDetails, // URL for the OS disk image
+		Vec<u8>,
+		ImageDetails,
 	>;
 
     // Map for batches identified by a unique ID
@@ -454,40 +456,6 @@ pub mod pallet {
     
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-        /// Enable backup for a user's subscription from marketplace pallet
-        #[pallet::call_index(0)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn enable_vms_backup(
-            origin: OriginFor<T>,
-        ) -> DispatchResult {
-            // Ensure the caller is signed
-            let account_id = ensure_signed(origin)?;
-
-            // Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxRequestsPerBlock::get();
-			let user_requests_count = UserRequestsCount::<T>::get(&account_id);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-			// Update user's storage requests count
-			UserRequestsCount::<T>::insert(&account_id, user_requests_count + 1);
-
-            // Check if the account is a sub-account, and if so, use the main account
-            let main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(account_id.clone()) {
-                Ok(main) => main,
-                Err(_) => account_id.clone(), // If not a sub-account, use the original account
-            };
-
-            // Call the marketplace pallet's enable_backup function
-            Self::enable_backup(main_account.clone())?;
-
-            // Emit an event in the backup pallet
-            Self::deposit_event(Event::BackupEnabled { 
-                caller: account_id,
-                account: main_account 
-            });
-
-            Ok(())
-        }
 
         // /// Disable backup for a user's subscription
         // #[pallet::call_index(1)]
@@ -711,12 +679,9 @@ pub mod pallet {
             plan_name: Vec<u8>,
             plan_description: Vec<u8>,
             plan_technical_description: Vec<u8>,
-            // miner_id: Option<Vec<u8>>,
             price: u128,
-            name: Vec<u8>,
             is_storage_plan: bool,
             storage_limit: Option<u128>,
-            // created_date: Vec<u8>,
         ) -> DispatchResult {
             // Ensure the caller is sudo
             ensure_root(origin)?;
@@ -732,7 +697,6 @@ pub mod pallet {
                 plan_technical_description,
                 is_suspended: false, 
                 price,
-                name,
                 is_storage_plan,
                 storage_limit,
             };
@@ -743,98 +707,123 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Purchase a plan (storage or compute) using points
+        /// Purchase one or more plans using points
         #[pallet::call_index(7)]
         #[pallet::weight((0, Pays::No))]
         pub fn purchase_plan(
             origin: OriginFor<T>,
-            plan_id: T::Hash,
-            location_id: Option<u32>,
-            selected_image_name: Option<Vec<u8>>,
-            cloud_init_cid: Option<Vec<u8>>,
+            plan_ids: Vec<T::Hash>,
+            location_ids: Option<Vec<Option<u32>>>,
+            selected_image_names: Vec<Option<Vec<u8>>>,
+            cloud_init_cids: Option<Vec<Option<Vec<u8>>>>,
             pay_for: Option<T::AccountId>,
-            miner_id: Option<Vec<u8>>
+            miner_ids: Option<Vec<Option<Vec<u8>>>>
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
             // Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxRequestsPerBlock::get();
-			let user_requests_count = UserRequestsCount::<T>::get(&caller);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-            
-            // Check if a specific miner is requested and charge an additional fee
-            if miner_id.is_some() {
-                // Define a fixed fee for requesting a specific miner
-                let specific_miner_fee = Self::specific_miner_request_fee();
-                
-                // Ensure the payer has sufficient balance
-                ensure!(
-                    <pallet_balances::Pallet<T>>::free_balance(&caller) >= specific_miner_fee,
-                    Error::<T>::InsufficientBalance
-                );
+            let max_requests_per_block = T::MaxRequestsPerBlock::get();
+            let user_requests_count = UserRequestsCount::<T>::get(&caller);
+            ensure!(
+                user_requests_count + (plan_ids.len() as u32) <= max_requests_per_block,
+                Error::<T>::TooManyRequests
+            );
+            UserRequestsCount::<T>::insert(&caller, user_requests_count + (plan_ids.len() as u32));
 
-                // Charge the specific miner request fee
-                <pallet_balances::Pallet<T>>::transfer(
-                    &caller.clone(), 
-                    &Self::account_id(), 
-                    specific_miner_fee, 
-                    ExistenceRequirement::AllowDeath
-                )?;
-            }
-            
-            // Check if the caller is a sub-account, and if so, use the main account
-            let caller_main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(caller.clone()) {
-                Ok(main) => main,
-                Err(_) => caller.clone(), // If not a sub-account, use the original account
-            };
-
-            // Determine the owner of the plan
+            // Determine the account that will own the subscription
             let owner = match pay_for {
-                Some(specified_owner) => {
-                    // If a specific owner is provided, check if it's a sub-account
-                    match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(specified_owner.clone()) {
-                        Ok(main) => main,
-                        Err(_) => specified_owner.clone(), // If not a sub-account, use the original account
-                    }
-
+                Some(account) => {
+                    // If a specific account is provided, verify they are a sub-account of the caller
+                    ensure!(
+                        <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::is_sub_account(caller.clone(), account.clone()).is_ok(),
+                        Error::<T>::NotAuthorized
+                    );
+                    account
                 },
-                None => caller_main_account.clone(),
+                None => caller.clone(),
             };
 
-            let plan = Plans::<T>::get(plan_id.clone());
-            ensure!(plan.is_some(), Error::<T>::PlanNotFound);
-            let plan = plan.unwrap();
-            ensure!(plan.is_suspended == false, Error::<T>::PlanSuspended);
+            // Initialize default values for optional parameters
+            let location_ids = location_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
+            let cloud_init_cids = cloud_init_cids.unwrap_or_else(|| vec![None; plan_ids.len()]);
+            let miner_ids = miner_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
 
-            // if plan.is_storage_plan {
-                let result = Self::do_purchase_storage_plan(
-                    owner.clone(),
-                    plan_id,
-                    miner_id
-                )?;
-            // }
-            // else {
-            //     let result = Self::do_purchase_compute_plan(
-            //         owner.clone(),
-            //         plan_id,
-            //         location_id,
-            //         selected_image_name.clone(),
-            //         cloud_init_cid.clone(),
-            //         miner_id
-            //     )?;
-            // }
+            // Track successful purchases
+            let mut successful_purchases = Vec::new();
+            let mut errors: Vec<(T::Hash, DispatchError)> = Vec::new();
 
-            // Emit an event for the plan purchase
-            Self::deposit_event(Event::PlanPurchased {
-                caller,
-                owner,
-                plan_id,
-                location_id,
-                selected_image_name,
-                cloud_init_cid,
-            });
+            // Process each plan purchase
+            for (i, &plan_id) in plan_ids.iter().enumerate() {
+                // Get plan details
+                let plan = match Plans::<T>::get(&plan_id) {
+                    Some(p) => p,
+                    None => {
+                        errors.push((plan_id, Error::<T>::PlanNotFound.into()));
+                        continue;
+                    }
+                };
 
-            Ok(result)
+                // Check if plan is suspended
+                if plan.is_suspended {
+                    errors.push((plan_id, Error::<T>::PlanSuspended.into()));
+                    continue;
+                }
+
+                // Process the purchase based on plan type
+                let result = if plan.is_storage_plan {
+                    // Handle storage plan purchase
+                    Self::do_purchase_storage_plan(
+                        owner.clone(),
+                        plan_id,
+                        miner_ids[i].clone()
+                    )
+                } else {
+                    // For compute plans, image name is required
+                    let image_name = match selected_image_names[i].clone() {
+                        Some(name) => name,
+                        None => {
+                            errors.push((plan_id, Error::<T>::InvalidImageSelection.into()));
+                            continue;
+                        }
+                    };
+                    // Handle compute plan purchase
+                    Self::do_purchase_compute_plan(
+                        owner.clone(),
+                        plan_id,
+                        location_ids[i],
+                        image_name,
+                        cloud_init_cids[i].clone(),
+                        miner_ids[i].clone()
+                    )
+                };
+
+                match result {
+                    Ok(_) => {
+                        successful_purchases.push(plan_id);
+                        // Emit event for successful purchase
+                        Self::deposit_event(Event::PlanPurchased {
+                            caller: caller.clone(),
+                            owner: owner.clone(),
+                            plan_id,
+                            location_id: location_ids[i],
+                            selected_image_name: selected_image_names[i].clone(),
+                            cloud_init_cid: cloud_init_cids[i].clone(),
+                        });
+                    },
+                    Err(e) => {
+                        errors.push((plan_id, e));
+                    }
+                }
+            }
+
+            // If all purchases failed, return the first error
+            if successful_purchases.is_empty() && !errors.is_empty() {
+                return Err(errors[0].1);
+            }
+
+            // If we had any successful purchases, we consider the call successful
+            // even if some individual purchases failed
+            Ok(())
         }
 
         /// Sudo function to set the price per GB for storage
@@ -1128,107 +1117,104 @@ pub mod pallet {
                 _phantom: PhantomData,
             };
         
-            // Store subscription
-            UserPlanSubscriptions::<T>::insert(&who, subscription);
+            // Get existing subscriptions or create a new vector if none exist
+            let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+
+            // Add the new subscription
+            subscriptions.push(subscription);
+
+            // Save the updated subscriptions list
+            UserAllSubscriptionPlans::<T>::insert(&who, subscriptions);
 
             Ok(())
         }
 
-        // fn do_purchase_compute_plan(
-        //     who: T::AccountId,
-        //     plan_id: T::Hash,
-        //     location_id: Option<u32>,
-        //     selected_image_name: Vec<u8>,
-        //     cloud_init_cid: Option<Vec<u8>>,
-        //     miner_id: Option<Vec<u8>>
-        // ) -> DispatchResult {
-        //     // Check if the ComputeMiner node type is disabled
-        //     ensure!(
-        //         !RegistrationPallet::<T>::is_node_type_disabled(NodeType::ComputeMiner),
-        //         Error::<T>::NodeTypeDisabled
-        //     );
+        fn do_purchase_compute_plan(
+            who: T::AccountId,
+            plan_id: T::Hash,
+            location_id: Option<u32>,
+            selected_image_name: Vec<u8>,
+            cloud_init_cid: Option<Vec<u8>>,
+            miner_id: Option<Vec<u8>>
+        ) -> DispatchResult {
+            // Check if the ComputeMiner node type is disabled
+            ensure!(
+                !RegistrationPallet::<T>::is_node_type_disabled(NodeType::ComputeMiner),
+                Error::<T>::NodeTypeDisabled
+            );
 
-        //     let pay_upfront: Option<u128> = None;
-        //     // Check if plan exists
-        //     let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
+            let pay_upfront: Option<u128> = None;
+            // Check if plan exists
+            let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
-        //     ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
+            ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
-        //     // Check if the selected image name exists in OSDiskImageUrls storage
-        //     ensure!(
-        //         Self::os_disk_image_urls(selected_image_name.clone()).is_some(), 
-        //         Error::<T>::InvalidImageSelection
-        //     );
+            // Check if the selected image name exists in OSDiskImageUrls storage
+            ensure!(
+                Self::os_disk_image_urls(selected_image_name.clone()).is_some(), 
+                Error::<T>::InvalidImageSelection
+            );
 
-        //     let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
+            let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
 
-        //     // Convert marketplace ImageMetadata to compute pallet ImageMetadata
-        //     let compute_image_metadata = pallet_compute::ImageMetadata {
-        //         name: selected_image_name.clone(),
-        //         image_url: image_url.url,
-        //     };
-
-        //     // Determine the price (using the price from the plan)
-        //     let mut plan_price_native = plan.price;
+            // Determine the price (using the price from the plan)
+            let mut plan_price_native = plan.price;
                 
-        //     if let Some(upfront_months) = pay_upfront {
-        //         plan_price_native = plan_price_native.saturating_mul(upfront_months);
-        //     }
+            if let Some(upfront_months) = pay_upfront {
+                plan_price_native = plan_price_native.saturating_mul(upfront_months);
+            }
         
-        //     // Check user's native token balance 
-        //     let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
-        //     ensure!(user_free_credits >= plan_price_native, Error::<T>::InsufficientFreeCredits);
+            // Check user's native token balance 
+            let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
+            ensure!(user_free_credits >= plan_price_native, Error::<T>::InsufficientFreeCredits);
         
-        //     // Validate location if specified
-        //     if let Some(location_id) = location_id {
-        //         ensure!(CdnLocations::<T>::contains_key(location_id), Error::<T>::LocationNotFound);
-        //     }
+            // Validate location if specified
+            if let Some(location_id) = location_id {
+                ensure!(CdnLocations::<T>::contains_key(location_id), Error::<T>::LocationNotFound);
+            }
         
-        //     // Generate new subscription ID
-        //     let subscription_id = NextSubscriptionId::<T>::mutate(|id| {
-        //         let current_id = *id;
-        //         *id = id.saturating_add(1);
-        //         current_id
-        //     });
+            // Generate new subscription ID
+            let subscription_id = NextSubscriptionId::<T>::mutate(|id| {
+                let current_id = *id;
+                *id = id.saturating_add(1);
+                current_id
+            });
 
-        //     let _ = Self::consume_credits(who.clone(), plan_price_native,
-        //     Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
+            let _ = Self::consume_credits(who.clone(), plan_price_native,
+            Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
                     
-        //     // Record transaction
-        //     Self::record_credits_transaction(
-        //         &who,
-        //         NativeTransactionType::Subscription,
-        //         (plan_price_native).into(),
-        //     )?;
+            // Record transaction
+            Self::record_credits_transaction(
+                &who,
+                NativeTransactionType::Subscription,
+                (plan_price_native).into(),
+            )?;
 
-        //     let current_block_number = <frame_system::Pallet<T>>::block_number();
+            let current_block_number = <frame_system::Pallet<T>>::block_number();
 			
-        //     // Create subscription (simplified due to removed plan_type)
-        //     let subscription = UserPlanSubscription {
-        //         id: subscription_id,
-        //         owner: who.clone(),
-        //         package: plan.clone(),
-        //         cdn_location_id: location_id,
-        //         active: true,
-        //         last_charged_at: current_block_number,
-        //         selected_image_name,
-        //         _phantom: PhantomData,
-        //     };
+            // Create subscription (simplified due to removed plan_type)
+            let subscription = UserPlanSubscription {
+                id: subscription_id,
+                owner: who.clone(),
+                package: plan.clone(),
+                cdn_location_id: location_id,
+                active: true,
+                last_charged_at: current_block_number,
+                selected_image_name : Some(selected_image_name),
+                _phantom: PhantomData,
+            };
         
-        //     // Store subscription
-        //     UserPlanSubscriptions::<T>::insert(&who, subscription);
+            // Get existing subscriptions or create a new vector if none exist
+            let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
 
-        //     pallet_compute::Pallet::<T>::create_compute_request(
-        //         who.clone(),
-        //         plan.plan_technical_description.clone(),
-        //         plan_id,
-        //         compute_image_metadata,
-        //         cloud_init_cid,
-        //         miner_id
-        //     )?;
+            // Add the new subscription
+            subscriptions.push(subscription);
 
-        //     Ok(())
-        // }
+            // Save the updated subscriptions list
+            UserAllSubscriptionPlans::<T>::insert(&who, subscriptions);
+
+            Ok(())
+        }
 
         fn record_credits_transaction(
             who: &T::AccountId,
@@ -1259,135 +1245,131 @@ pub mod pallet {
             Ok(())
         }
 
-        fn handle_storage_subscription_charging(current_block: BlockNumberFor<T>) {
-            // Get all active storage subscriptions
-            let storage_subscriptions = UserPlanSubscriptions::<T>::iter()
-                .filter(|(_, sub)| {
-                    sub.active && 
-                    sub.package.is_storage_plan
-                })
-                .collect::<Vec<_>>();
-        
-            for (account_id, mut subscription) in storage_subscriptions {
-                // Check if the time difference is greater than 1 hour
-                let block_difference = current_block.saturating_sub(subscription.last_charged_at);
-                if block_difference > T::BlocksPerHour::get().into() {
-                    let charge_amount = subscription.package.price;
-                    let user_free_credits = CreditsPallet::<T>::get_free_credits(&account_id);
-        
-                    if user_free_credits >= charge_amount {
-                        // Charge the user
+        /// Unified function to handle all subscription charging (storage + compute) in single iteration
+        fn handle_all_subscription_charging(current_block: BlockNumberFor<T>) {
+            // Iterate through all users with subscriptions once
+            for (account_id, subscriptions) in UserAllSubscriptionPlans::<T>::iter() {
+                // Filter only active subscriptions
+                let active_subs: Vec<_> = subscriptions.iter()
+                    .filter(|sub| sub.active)
+                    .collect();
+                
+                if active_subs.is_empty() {
+                    continue;
+                }
+
+                // Separate storage and compute subscriptions that need charging
+                let mut storage_subs_to_charge = Vec::new();
+                let mut compute_subs_to_charge = Vec::new();
+                let mut earliest_last_charged = current_block;
+
+                for sub in active_subs {
+                    let block_difference = current_block.saturating_sub(sub.last_charged_at);
+                    
+                    // Track earliest last_charged_at for grace period calculation
+                    if sub.last_charged_at < earliest_last_charged {
+                        earliest_last_charged = sub.last_charged_at;
+                    }
+
+                    if block_difference > T::BlocksPerHour::get().into() {
+                        if sub.package.is_storage_plan {
+                            storage_subs_to_charge.push(sub.clone());
+                        } else {
+                            compute_subs_to_charge.push(sub.clone());
+                        }
+                    }
+                }
+
+                // If no subscriptions need charging, continue
+                if storage_subs_to_charge.is_empty() && compute_subs_to_charge.is_empty() {
+                    continue;
+                }
+
+                // Calculate total charge amounts
+                let mut total_storage_charge = 0u128;
+                let mut total_compute_charge = 0u128;
+
+                for sub in &storage_subs_to_charge {
+                    total_storage_charge = total_storage_charge.saturating_add(sub.package.price);
+                }
+
+                for sub in &compute_subs_to_charge {
+                    let price_per_block = sub.package.price;
+                    let charge_amount = price_per_block * (T::BlocksPerHour::get() as u128);
+                    total_compute_charge = total_compute_charge.saturating_add(charge_amount);
+                }
+
+                let total_charge = total_storage_charge.saturating_add(total_compute_charge);
+                let user_free_credits = CreditsPallet::<T>::get_free_credits(&account_id);
+
+                if user_free_credits >= total_charge {
+                    // User has enough credits, charge them
+                    
+                    // Charge for storage subscriptions
+                    if total_storage_charge > 0 {
                         let _ = Self::consume_credits(
                             account_id.clone(), 
-                            charge_amount,
+                            total_storage_charge,
                             Self::account_id().clone(), 
                             pallet_rankings::Pallet::<T>::account_id().clone()
                         );
-        
-                        // Record transaction
+
                         let _ = Self::record_credits_transaction(
                             &account_id,
                             NativeTransactionType::Subscription,
-                            charge_amount.into(),
+                            total_storage_charge.into(),
                         );
-        
-                        // Update subscription
-                        subscription.last_charged_at = current_block;
-                        UserPlanSubscriptions::<T>::insert(&account_id, subscription);
-                    } else {
-                        // Handle insufficient credits
-                        if Self::is_storage_subscription_in_grace_period(subscription.last_charged_at, current_block) {
-                            // Still within grace period
-                            // You might want to add specific grace period handling here
-                        } else {
-                            // Cancel subscription if no credits
-                            let _ = Self::do_cancel_storage_subscription(&account_id);
+                    }
+
+                    // Charge for compute subscriptions
+                    if total_compute_charge > 0 {
+                        let _ = Self::consume_credits(
+                            account_id.clone(), 
+                            total_compute_charge,
+                            Self::account_id().clone(), 
+                            pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone()
+                        );
+
+                        let _ = Self::record_credits_transaction(
+                            &account_id,
+                            NativeTransactionType::Subscription,
+                            total_compute_charge.into(),
+                        );
+                    }
+
+                    // Update all charged subscriptions
+                    UserAllSubscriptionPlans::<T>::mutate(&account_id, |subs| {
+                        for sub in subs.iter_mut() {
+                            if sub.active {
+                                let block_diff = current_block.saturating_sub(sub.last_charged_at);
+                                if block_diff > T::BlocksPerHour::get().into() {
+                                    sub.last_charged_at = current_block;
+                                }
+                            }
                         }
+                    });
+                } else {
+                    // Insufficient credits - check grace period using storage grace period
+                    if Self::is_storage_subscription_in_grace_period(earliest_last_charged, current_block) {
+                        // Still within grace period, do nothing
+                    } else {
+                        // Grace period expired, cancel ALL subscriptions
+                        let _ = Self::do_cancel_all_subscriptions(&account_id);
                     }
                 }
             }
         }
         
-        // // charging logic for compute
-        // fn handle_compute_subscription_charging(current_block: BlockNumberFor<T>) {
-        //     // Retrieve all fulfilled compute requests
-        //     let compute_subscriptions = Self::get_active_compute_subscriptions();
-        //     for (account_id, mut subscription) in compute_subscriptions {
-        //         // Check if the time difference is greater than 1 hour
-        //         let block_difference = current_block.saturating_sub(subscription.last_charged_at);
-        //         if block_difference > T::BlocksPerHour::get().into() {
-
-        //             // only charge if the request is fulfilled by assigned minner 
-        //             let minner_compute_request = pallet_compute::Pallet::<T>::get_miner_compute_request(
-        //                 account_id.clone(),
-        //                 subscription.package.id
-        //             );
-        //             if minner_compute_request.is_some() {
-        //                 let compute_request = minner_compute_request.unwrap();
-        //                 if compute_request.fullfilled {
-        //                     // charge the user for the compute requests for blocks in an hour 
-        //                     let price_per_block = &subscription.package.price;
-        //                     let user_free_credits = CreditsPallet::<T>::get_free_credits(&account_id);
-
-        //                     // total blocks in an hour
-        //                     let charge_amount = price_per_block * ( T::BlocksPerHour::get() as u128);
-                        
-        //                     if user_free_credits >= charge_amount {
-        //                         // Decrease user credits
-        //                         let _ = Self::consume_credits(account_id.clone(), charge_amount,
-        //                             Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
-
-        //                         // Record transaction
-        //                         let _ = Self::record_credits_transaction(
-        //                             &account_id,
-        //                             NativeTransactionType::Subscription,
-        //                             charge_amount.into(),
-        //                         );
-
-        //                         // Update the storage (Gbs Used , Last Charged at) for this subscription
-        //                         subscription.last_charged_at = current_block;
-        //                         UserPlanSubscriptions::<T>::insert(&account_id, subscription.clone());
-
-        //                         let compute_request = pallet_compute::Pallet::<T>::get_compute_request_by_id(compute_request.request_id);
-
-        //                         if compute_request.unwrap().status == ComputeRequestStatus::Stopped {
-        //                             let _ = pallet_compute::Pallet::<T>::add_miner_compute_boot_request(
-        //                                 account_id.clone(),
-        //                                 subscription.package.id
-        //                             );
-        //                         }
-        //                     } else {
-        //                         if Self::is_compute_request_in_grace_period(subscription.last_charged_at, current_block) {
-        //                             // Still within grace period
-        //                             // Check if a stop request exists before creating one
-        //                             if !pallet_compute::Pallet::<T>::compute_stop_request_exists(&account_id, &subscription.package.id) {
-        //                                 let _ = pallet_compute::Pallet::<T>::add_miner_compute_stop_request(
-        //                                     account_id.clone(),
-        //                                     subscription.package.id
-        //                                 );
-        //                             }
-        //                         } else {
-        //                             // Cancel subscription if no credits
-        //                             let _ = Self::do_cancel_subscription(&account_id);
-        //                         }
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
-
         // charges users that does purchased plan but using s3 or ipfs stroage
         fn handle_storage_ipfs_charging(current_block: BlockNumberFor<T>) {
             // Get all users who requested storage
             let all_users_who_requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_users();
             for user in all_users_who_requested_storage {
-                // Check if user has an active storage plan subscription
-                if let Some(subscription) = UserPlanSubscriptions::<T>::get(&user) {
-                    if subscription.active && subscription.package.is_storage_plan {
-                        // Skip charging this user as they have an active storage plan
-                        continue;
-                    }
+                // Check if user has any active storage plan subscription
+                let subscriptions = UserAllSubscriptionPlans::<T>::get(&user);
+                if !subscriptions.is_empty() && subscriptions.iter().any(|sub| sub.active && sub.package.is_storage_plan) {
+                    // Skip charging this user as they have an active storage plan
+                    continue;
                 }
 
                 // Check if the time difference is greater than 1 hour
@@ -1446,8 +1428,6 @@ pub mod pallet {
                             // remove user storage request and unpin
                             let _ = ipfs_pallet::Pallet::<T>::clear_user_storage_and_add_to_unpin_requests(user.clone());
 
-                            // request to delete all backups of user
-                            Self::move_user_to_backup_delete_requests(&user);
                             Self::remove_storage_last_charged_at(&user);
                         }
                     }
@@ -1560,9 +1540,11 @@ pub mod pallet {
 
         /// Retrieve active compute subscriptions specifically
         fn get_active_compute_subscriptions() -> Vec<(T::AccountId, UserPlanSubscription<T>)> {
-            UserPlanSubscriptions::<T>::iter()
-                .filter(|(_, subscription)| {
-                    subscription.active 
+            UserAllSubscriptionPlans::<T>::iter()
+                .flat_map(|(account_id, subscriptions)| {
+                    subscriptions.into_iter()
+                        .filter(|sub| sub.active && !sub.package.is_storage_plan)
+                        .map(move |sub| (account_id.clone(), sub))
                 })
                 .collect()
         }
@@ -1583,99 +1565,77 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Update the last charged block for a user's subscription
-        pub fn update_user_subscription_last_charged_at(
-            account: &T::AccountId, 
-            block_number: BlockNumberFor<T>
-        ) -> DispatchResult {
-            // Retrieve the existing subscription
-            UserPlanSubscriptions::<T>::try_mutate(account, |subscription_opt| {
-                // Check if subscription exists
-                if let Some(subscription) = subscription_opt {
-                    // Update the last_charged_at field
-                    subscription.last_charged_at = block_number;
+        /// Cancel a user's subscription
+        fn do_cancel_storage_subscription(account_id: &T::AccountId) -> DispatchResult {
+            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
+                let original_len = subscriptions.len();
+                // Filter out storage plans
+                *subscriptions = subscriptions
+                    .iter()
+                    .filter(|sub| !sub.package.is_storage_plan)
+                    .cloned()
+                    .collect();
+        
+                if subscriptions.is_empty() {
+                    // If no subscriptions left, we could clear it if needed
+                    // But since we're already setting it to an empty vector, we might not need to
+                }
+        
+                // Emit event if any storage plans were removed
+                if subscriptions.len() < original_len {
+                    Self::deposit_event(Event::StorageSubscriptionCancelled {
+                        who: account_id.clone(),
+                    });
                     Ok(())
                 } else {
-                    // Return a dispatch error if no subscription exists
-                    Err(DispatchError::Other("No subscription found for user".into()))
+                    Err(Error::<T>::NoActiveSubscription.into())
+                }
+            })
+        }
+        
+        fn do_cancel_subscription(account_id: &T::AccountId) -> DispatchResult {
+            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
+                let original_len = subscriptions.len();
+                // Keep only storage plans
+                *subscriptions = subscriptions
+                    .iter()
+                    .filter(|sub| sub.package.is_storage_plan)
+                    .cloned()
+                    .collect();
+        
+                // Emit event if any non-storage plans were removed
+                if subscriptions.len() < original_len {
+                    Self::deposit_event(Event::StorageSubscriptionCancelled {
+                        who: account_id.clone(),
+                    });
+                    Ok(())
+                } else {
+                    Err(Error::<T>::NoActiveSubscription.into())
                 }
             })
         }
 
-        /// Cancel a user's subscription
-        fn do_cancel_storage_subscription(account_id: &T::AccountId) -> DispatchResult {
-            // Retrieve the current subscription
-            let subscription = UserPlanSubscriptions::<T>::get(account_id)
-                .ok_or(Error::<T>::NoActiveSubscription)?;
-
-            // Remove the subscription from storage
-            UserPlanSubscriptions::<T>::remove(account_id);
-
-            // Emit an event about subscription cancellation
-            Self::deposit_event(Event::StorageSubscriptionCancelled {
-                who: account_id.clone(),
-            });
-
-            Ok(())
-        }
+        /// Cancel ALL subscriptions for a user (both storage and compute)
+        fn do_cancel_all_subscriptions(account_id: &T::AccountId) -> DispatchResult {
+            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
+                let had_subscriptions = !subscriptions.is_empty();
+                
+                // Clear all subscriptions
+                subscriptions.clear();
         
-        // /// Cancel a user's subscription
-        // fn do_cancel_subscription(account_id: &T::AccountId) -> DispatchResult {
-        //     // Retrieve the current subscription
-        //     let subscription = UserPlanSubscriptions::<T>::get(account_id)
-        //         .ok_or(Error::<T>::NoActiveSubscription)?;
-
-        //     // Remove the subscription from storage
-        //     UserPlanSubscriptions::<T>::remove(account_id);
-
-        //     // Delete associated miner compute request
-        //     let _ = pallet_compute::Pallet::<T>::add_delete_miner_compute_request(
-        //         subscription.package.id, 
-        //         account_id.clone()
-        //     );
-
-        //     // Emit an event about subscription cancellation
-        //     Self::deposit_event(Event::SubscriptionCancelled {
-        //         who: account_id.clone(),
-        //     });
-
-        //     Ok(())
-        // }
-
-        // /// Disable backup for a user's subscription
-        // pub fn disable_backup(
-        //     account_id: T::AccountId,
-        // ) -> DispatchResult {
-        //     // Retrieve the user's subscription
-        //     let subscription = UserPlanSubscriptions::<T>::get(&account_id)
-        //         .ok_or(Error::<T>::SubscriptionNotFound)?;
-
-        //     // Ensure the caller is the subscription owner
-        //     ensure!(subscription.owner == account_id, Error::<T>::NotSubscriptionOwner);
-
-        //     // Remove user from backup enabled users list
-        //     BackupEnabledUsers::<T>::mutate(|users| {
-        //         // Find and remove the user if present
-        //         if let Some(index) = users.iter().position(|id| id == &account_id) {
-        //             users.remove(index);
-        //         }
-        //     });
-
-        //     Ok(())
-        // }
-
-        /// Move a user from BackupEnabledUsers to BackupDeleteRequests
-        fn move_user_to_backup_delete_requests(user_id: &T::AccountId) {
-            // Remove the user from BackupEnabledUsers
-            BackupEnabledUsers::<T>::mutate(|enabled_users| {
-                enabled_users.retain(|user| user != user_id);
-            });
-
-            BackupDeleteRequests::<T>::mutate(|delete_requests| {
-                if !delete_requests.contains(user_id) {
-                    delete_requests.push(user_id.clone());
+                if had_subscriptions {
+                    // Emit events for both types being cancelled
+                    Self::deposit_event(Event::StorageSubscriptionCancelled {
+                        who: account_id.clone(),
+                    });
+                    Self::deposit_event(Event::ComputeSubscriptionCancelled {
+                        who: account_id.clone(),
+                    });
+                    Ok(())
+                } else {
+                    Err(Error::<T>::NoActiveSubscription.into())
                 }
-            });
+            })
         }
 
         /// Helper function to remove the last charged timestamp for a user
@@ -1689,42 +1649,6 @@ pub mod pallet {
             BackupDeleteRequests::<T>::mutate(|delete_requests| {
                 delete_requests.retain(|user| user != user_id);
             });
-        }
-
-        /// Enable backup for a user's subscription
-        pub fn enable_backup(
-            account_id: T::AccountId,
-        ) -> DispatchResult {
-            // Retrieve the user's subscription
-            let subscription = UserPlanSubscriptions::<T>::get(&account_id)
-                .ok_or(Error::<T>::SubscriptionNotFound)?;
-
-            // Ensure the caller is the subscription owner
-            ensure!(subscription.owner == account_id, Error::<T>::NotSubscriptionOwner);
-
-            // Add user to backup enabled users list
-            BackupEnabledUsers::<T>::try_mutate(|users| -> DispatchResult {
-                // Check if user is already in the list
-                ensure!(!users.contains(&account_id), Error::<T>::BackupAlreadyEnabled);
-                
-                // Attempt to add the user
-                users.push(account_id.clone());
-                
-                // Return Ok(()) to satisfy the DispatchResult
-                Ok(())
-            })?;
-
-            Ok(())
-        }        
-
-        /// Remove a specific file hash from the registry CID delete request
-        pub fn remove_cid_delete_request(file_hash: Vec<u8>) -> DispatchResult {
-            RegistryCidDeleteRequests::<T>::mutate(|cid_delete_requests| {
-                // Remove all instances of the file hash
-                cid_delete_requests.retain(|hash| *hash != file_hash);
-            });
-
-            Ok(())
         }
 
         /// Helper function to get the configured compute grace period

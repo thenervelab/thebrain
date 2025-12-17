@@ -1632,7 +1632,7 @@ pub mod pallet {
 		}
 
 		/// Helper function to check if an owner already has a registered node
-		fn is_owner_node_registered(owner: &T::AccountId) -> bool {
+		pub fn is_owner_node_registered(owner: &T::AccountId) -> bool {
 			// Check both ColdkeyNodeRegistration and NodeRegistration storage maps
 			ColdkeyNodeRegistration::<T>::iter()
 				.any(|(_, node_info)| node_info.map_or(false, |info| info.owner == *owner))

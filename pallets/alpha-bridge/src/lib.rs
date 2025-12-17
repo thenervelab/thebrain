@@ -851,7 +851,7 @@ pub mod pallet {
 		#[pallet::call_index(13)]
 		#[pallet::weight(T::DbWeight::get().writes(12))]
 		pub fn reset_storage(origin: OriginFor<T>) -> DispatchResult {
-			let guardian = ensure_signed(origin)?;
+			let _guardian = ensure_signed(origin)?;
 
 			// Clear all storage items
 			ProcessedDeposits::<T>::remove_all(None);

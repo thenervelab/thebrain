@@ -168,30 +168,30 @@ pub mod pallet {
 		UserAlreadyHasSpace,
 	}
 
-	#[pallet::hooks]
-	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-		fn on_initialize(_block_number: BlockNumberFor<T>) -> Weight {
-			// Retrieve the current list of CID delete requests
-			let cid_delete_requests =
-				pallet_marketplace::Pallet::<T>::registry_cid_delete_requests();
+	// #[pallet::hooks]
+	// impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+	// 	fn on_initialize(_block_number: BlockNumberFor<T>) -> Weight {
+	// 		// Retrieve the current list of CID delete requests
+	// 		let cid_delete_requests =
+	// 			pallet_marketplace::Pallet::<T>::registry_cid_delete_requests();
 
-			// Process each CID delete request
-			for cid in cid_delete_requests.clone() {
-				// Attempt to delete CID-related entries in container registry
-				if let Err(e) = Self::delete_all_cid_related_entries(cid.clone()) {
-					log::error!(
-						"Failed to delete CID-related entries for CID: {:?}. Error: {:?}",
-						cid,
-						e
-					);
-				}
-				let _ = pallet_marketplace::Pallet::<T>::remove_cid_delete_request(cid);
-			}
+	// 		// Process each CID delete request
+	// 		for cid in cid_delete_requests.clone() {
+	// 			// Attempt to delete CID-related entries in container registry
+	// 			if let Err(e) = Self::delete_all_cid_related_entries(cid.clone()) {
+	// 				log::error!(
+	// 					"Failed to delete CID-related entries for CID: {:?}. Error: {:?}",
+	// 					cid,
+	// 					e
+	// 				);
+	// 			}
+	// 			let _ = pallet_marketplace::Pallet::<T>::remove_cid_delete_request(cid);
+	// 		}
 
-			// Return a small weight for the initialization
-			Weight::from_parts(10_000, 0)
-		}
-	}
+	// 		// Return a small weight for the initialization
+	// 		Weight::from_parts(10_000, 0)
+	// 	}
+	// }
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {

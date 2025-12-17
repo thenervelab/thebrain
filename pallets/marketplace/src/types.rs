@@ -56,7 +56,6 @@ pub struct Plan<Hash> {
     pub plan_technical_description: Vec<u8>, // JSON with technical details
     pub is_suspended: bool,
     pub price: u128,
-    pub name: Vec<u8>,
     pub is_storage_plan: bool,
     pub storage_limit: Option<u128>,
 }
@@ -119,3 +118,7 @@ pub struct Batch<AccountId, BlockNumberFor> {
     pub is_frozen: bool,         // Freezes Alpha distribution, not credit use
     pub release_time: BlockNumberFor, // When Alpha can be distributed
 }
+
+// charge and update all plans at once 
+// only vali should be able to purchase on users behalf 
+// also if users sub account is passed we should get his main account
