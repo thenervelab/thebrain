@@ -98,6 +98,7 @@ ipfs-pallet = { workspace = true }
 pallet-alpha-bridge = { workspace = true }
 pallet-utils = { workspace = true }
 pallet-registration = { workspace = true }
+pallet-arion = { workspace = true }
 pallet-execution-unit = { workspace = true }
 pallet-metagraph = { workspace = true }
 pallet-bittensor = { workspace = true }
