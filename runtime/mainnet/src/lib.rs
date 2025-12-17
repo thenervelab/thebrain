@@ -1351,15 +1351,18 @@ impl pallet_rankings::Config for Runtime {
 }
 
 // // Add a second ranking pallet implementation
-// impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
-//     type RuntimeEvent = RuntimeEvent;
-//     type PalletId = SecondRankingPalletId;
-//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
-// 	type InstanceID = RankingsInstanceId2;
-// 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
-// 	type BlocksPerEra = BlocksPerEra;
-// }
+impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type PalletId = SecondRankingPalletId;
+	type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
+	type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
+	type InstanceID = RankingsInstanceId2;
+	type AuthorityId = pallet_rankings::crypto::TestAuthId;
+	type BlocksPerEra = BlocksPerEra;
+	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
+	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
+	type LocalRpcUrl = LocalRpcUrl;
+}
 
 // Add a Third ranking pallet implementation
 impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
@@ -1840,7 +1843,7 @@ construct_runtime!(
 		AccountProfile: pallet_account_profile = 60,
 		Utils: pallet_utils = 62,
 		RankingStorage: pallet_rankings =63,
-		// RankingCompute: pallet_rankings::<Instance2> = 68,
+		RankingCompute: pallet_rankings::<Instance2> = 68,
 		RankingValidators: pallet_rankings::<Instance3> = 70,
 		// RankingGpu: pallet_rankings::<Instance4> = 71,
 		// RankingS3: pallet_rankings::<Instance5> = 77,
