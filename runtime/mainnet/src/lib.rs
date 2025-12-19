@@ -98,13 +98,22 @@ parameter_types! {
     pub const UnbondingPeriodBlocks: BlockNumber = 100_800; // ~7 days at 6s/block
 }
 
+pub struct ArionAdminMembers;
+impl frame_support::traits::SortedMembers<AccountId> for ArionAdminMembers {
+	fn sorted_members() -> Vec<AccountId> {
+		let account = AccountId32::from_ss58check("5CP9wzk9G3kMdJmNyAsWGWVWDQE7Goe1dUvKtMv51EoXs563")
+			.expect("Invalid SS58 address");
+		vec![account]
+	}
+}
+
 // Implement Arion pallet configuration
 impl pallet_arion::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
-    type ArionAdminOrigin = EnsureRoot<AccountId>;
-    type MapAuthorityOrigin = EnsureRoot<AccountId>;
-    type StatsAuthorityOrigin = EnsureRoot<AccountId>;
-    type WeightAuthorityOrigin = EnsureRoot<AccountId>;
+	type ArionAdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type MapAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+    type StatsAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+    type WeightAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
     type DepositCurrency = Balances;
     type FamilyRegistry = ();
     type ProxyVerifier = ();
@@ -223,7 +232,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9163,
+	spec_version: 9164,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
