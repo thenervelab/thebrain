@@ -115,8 +115,8 @@ impl pallet_arion::Config for Runtime {
     type StatsAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
     type WeightAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
     type DepositCurrency = Balances;
-    type FamilyRegistry = ();
-    type ProxyVerifier = ();
+    type FamilyRegistry = pallet_registration::Pallet<Runtime>;
+    type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
     type EnforceRegisteredMinersInMap = ConstBool<false>;
     type MaxMiners = MaxMiners;
     type MaxEndpointLen = MaxEndpointLen;
@@ -124,7 +124,7 @@ impl pallet_arion::Config for Runtime {
     type MaxStatsUpdates = MaxStatsUpdates;
     type MaxFamilies = ConstU32<100>;
     type MaxChildrenTotal = ConstU32<1000>;
-    type MaxChildrenPerFamily = ConstU32<10>;
+    type MaxChildrenPerFamily = ConstU32<32>;
     type BaseChildDeposit = BaseChildDeposit;
     type GlobalDepositHalvingPeriodBlocks = GlobalDepositHalvingPeriodBlocks;
     type UnregisterCooldownBlocks = UnregisterCooldownBlocks;
