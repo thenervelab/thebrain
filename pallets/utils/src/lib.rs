@@ -167,6 +167,7 @@ pub trait MetagraphInfoProvider<T: frame_system::Config> {
 
 pub trait MetricsInfoProvider<T: frame_system::Config> {
     fn remove_metrics(node_id: Vec<u8>);
+    fn has_metrics(node_id: Vec<u8>) -> bool;
 }
 
 pub trait IpfsInfoProvider<T: frame_system::Config> {

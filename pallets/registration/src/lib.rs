@@ -453,6 +453,11 @@ pub mod pallet {
 				}
 			}
 
+			// Every 1000 blocks, deregister nodes that have no metrics and are registered for more than 1000 blocks
+			if _n % 1000u32.into() == 0u32.into() {
+				Self::deregister_nodes_without_metrics(_n);
+			}
+
 			// GC used challenges (keep it light)
 			UsedChallenges::<T>::iter()
 				.filter(|(_, until)| *until <= _n)

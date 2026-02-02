@@ -312,8 +312,6 @@ pub mod pallet {
 				});
 			}
 
-			Self::handle_incorrect_registration(_n);
-
 			// Only purge if the feature is enabled
 			if Self::purge_deregistered_nodes_enabled() {
 				Self::purge_nodes_if_deregistered_on_bittensor();
@@ -334,6 +332,8 @@ pub mod pallet {
 				let _ = TotalPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 			}
+
+			Self::handle_incorrect_registration(_n);
 
 			// Clean up NodeMetrics if not registered
 			for (node_id, _) in NodeMetrics::<T>::iter() {
@@ -357,15 +357,6 @@ pub mod pallet {
 			if _n % reputation_update_interval.into() == 0u32.into() {
 				Self::update_all_active_miners_reputation();
 			}
-
-			// Clean up NodeMetrics if miner_id is empty , will be removed in next upgrade
-			NodeMetrics::<T>::iter().for_each(|(node_id, mut metrics)| {
-				if metrics.miner_id.is_empty() {
-					log::warn!("Found empty miner_id for node_id: {:?}, fixing...", node_id);
-					metrics.miner_id = node_id.clone();
-					NodeMetrics::<T>::insert(&node_id, metrics);
-				}
-			});
 
 			Weight::zero()
 		}
@@ -1302,12 +1293,22 @@ pub mod pallet {
 					if current_block_number - miner.registered_at > 36u32.into() {
 						let blocks_online = Self::block_numbers(miner.node_id.clone());
 
-						if let Some(blocks) = blocks_online {
-							if let Some(&last_block) = blocks.last() {
-								let difference = current_block_number - last_block;
-								// Check if the difference exceeds 500 for deregistration
-								if difference > 1500u32.into() {
-									// Call your deregistration logic here
+						match blocks_online {
+							Some(blocks) => {
+								if let Some(&last_block) = blocks.last() {
+									let difference = current_block_number - last_block;
+									// Check if the difference exceeds 1500 for deregistration
+									if difference > 1500u32.into() {
+										// Call your deregistration logic here
+										Self::unregister_and_remove_metrics(miner.node_id.clone());
+									}
+								}
+							},
+							None => {
+								// Miner has never submitted any blocks - check if registered long enough
+								// If registered for more than 1500 blocks without any submission, deregister
+								let blocks_since_registration = current_block_number - miner.registered_at;
+								if blocks_since_registration > 1500u32.into() {
 									Self::unregister_and_remove_metrics(miner.node_id.clone());
 								}
 							}
@@ -1863,5 +1864,9 @@ pub mod pallet {
 impl<T: Config> MetricsInfoProvider<T> for Pallet<T> {
 	fn remove_metrics(node_id: Vec<u8>) {
 		Self::do_remove_metrics(node_id);
+	}
+
+	fn has_metrics(node_id: Vec<u8>) -> bool {
+		NodeMetrics::<T>::contains_key(&node_id)
 	}
 }
