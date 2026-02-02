@@ -1261,16 +1261,19 @@ impl pallet_rankings::Config for Runtime {
 	type LocalRpcUrl = LocalRpcUrl;
 }
 
-// // Add a second ranking pallet implementation
-// impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
-//     type RuntimeEvent = RuntimeEvent;
-//     type PalletId = SecondRankingPalletId;
-//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
-// 	type InstanceID = RankingsInstanceId2;
-// 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
-// 	type BlocksPerEra = BlocksPerEra;
-// }
+// Add a second ranking pallet implementation
+impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type PalletId = SecondRankingPalletId;
+	type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
+	type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
+	type InstanceID = RankingsInstanceId2;
+	type AuthorityId = pallet_rankings::crypto::TestAuthId;
+	type BlocksPerEra = BlocksPerEra;
+	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
+	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
+	type LocalRpcUrl = LocalRpcUrl;
+}
 
 // Add a Third ranking pallet implementation
 impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
