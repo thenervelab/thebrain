@@ -60,7 +60,7 @@ use pallet_tx_pause::RuntimeCallNameOf;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use precompiles::HipiusPrecompiles;
 // use scale_info::TypeInfo;
-use frame_support::traits::ExistenceRequirement;
+use frame_support::traits::{ConstU32, KeyOwnerProofSystem, ConstBool};
 use serde::{Deserialize, Serialize};
 use sp_api::impl_runtime_apis;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata, H160, H256, U256};
@@ -87,6 +87,73 @@ use sp_runtime::{
 	RuntimeDebug,
 };
 use sp_std::{prelude::*, vec::Vec};
+
+
+// Arion pallet configuration
+parameter_types! {
+    pub const ArionPalletId: PalletId = PalletId(*b"py/arion");
+    pub const BaseChildDeposit: Balance = 10 * DOLLAR;
+    pub const GlobalDepositHalvingPeriodBlocks: BlockNumber = 14_400; // ~24 hours at 6s/block
+    pub const UnregisterCooldownBlocks: BlockNumber = 7200; // ~12 hours at 6s/block
+    pub const UnbondingPeriodBlocks: BlockNumber = 100_800; // ~7 days at 6s/block
+}
+
+pub struct ArionAdminMembers;
+impl frame_support::traits::SortedMembers<AccountId> for ArionAdminMembers {
+	fn sorted_members() -> Vec<AccountId> {
+		let account = AccountId32::from_ss58check("5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g")
+			.expect("Invalid SS58 address");
+		vec![account]
+	}
+}
+
+// Implement Arion pallet configuration
+impl pallet_arion::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+	type ArionAdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type MapAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+    type StatsAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+    type WeightAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type AttestationAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type MaxContentHashLen = ConstU32<32>;
+	type AttestationRetentionBuckets = ConstU32<168>;
+	type WeightInfo = pallet_arion::weights::SubstrateWeight<Runtime>;
+	type MaxAttestations = ConstU32<1000>;
+	type MaxShardHashLen = ConstU32<100>;
+	type MaxWardenPubkeyLen = ConstU32<100>;
+	type MaxSignatureLen = ConstU32<100>;
+	type MaxMerkleProofLen = ConstU32<100>;
+	type MaxWardenIdLen = ConstU32<100>;
+    type DepositCurrency = Balances;
+    type FamilyRegistry = pallet_registration::Pallet<Runtime>;
+    type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
+    type EnforceRegisteredMinersInMap = ConstBool<false>;
+    type MaxMiners = MaxMiners;
+    type MaxEndpointLen = MaxEndpointLen;
+    type MaxHttpAddrLen = MaxHttpAddrLen;
+    type MaxStatsUpdates = MaxStatsUpdates;
+    type MaxFamilies = ConstU32<100>;
+    type MaxChildrenTotal = ConstU32<1000>;
+    type MaxChildrenPerFamily = ConstU32<35>;
+    type BaseChildDeposit = BaseChildDeposit;
+    type GlobalDepositHalvingPeriodBlocks = GlobalDepositHalvingPeriodBlocks;
+    type UnregisterCooldownBlocks = UnregisterCooldownBlocks;
+    type UnbondingPeriodBlocks = UnbondingPeriodBlocks;
+    type MaxNodeWeightUpdates = MaxNodeWeightUpdates;
+    type MaxNodeWeight = MaxNodeWeight;
+    type MaxFamilyWeight = MaxFamilyWeight;
+    type FamilyTopN = FamilyTopN;
+    type FamilyRankDecayPermille = FamilyRankDecayPermille;
+    type FamilyWeightEmaAlphaPermille = FamilyWeightEmaAlphaPermille;
+    type MaxFamilyWeightDeltaPerBucket = MaxFamilyWeightDeltaPerBucket;
+    type NewcomerGraceBuckets = NewcomerGraceBuckets;
+    type NewcomerFloorWeight = NewcomerFloorWeight;
+    type NodeBandwidthWeightPermille = NodeBandwidthWeightPermille;
+    type NodeStorageWeightPermille = NodeStorageWeightPermille;
+    type NodeScoreScale = NodeScoreScale;
+    type StrikePenalty = StrikePenalty;
+    type IntegrityFailPenalty = IntegrityFailPenalty;
+}
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
@@ -98,8 +165,8 @@ pub use frame_support::{
 	pallet_prelude::Get,
 	parameter_types,
 	traits::{
-		ConstU128, ConstU16, ConstU32, Currency, EitherOfDiverse, EqualPrivilegeOnly, Everything,
-		Imbalance, InstanceFilter, KeyOwnerProofSystem, LockIdentifier, OnUnbalanced,
+		ConstU16, Currency, EitherOfDiverse, EqualPrivilegeOnly, Everything,
+		Imbalance, InstanceFilter, LockIdentifier, OnUnbalanced,
 	},
 	weights::{
 		constants::{
@@ -149,6 +216,7 @@ use sp_runtime::generic::Era;
 pub use sp_runtime::BuildStorage;
 pub use sp_runtime::{MultiAddress, Perbill, Percent, Permill};
 use sp_staking::currency_to_vote::U128CurrencyToVote;
+use frame_support::traits::ExistenceRequirement;
 // use hex_literal::hex;
 // pub use hippius_services::PalletServicesConstraints;
 
@@ -174,7 +242,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9142,
+	spec_version: 9143,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -198,6 +266,46 @@ pub fn native_version() -> NativeVersion {
 }
 
 pub const MAXIMUM_BLOCK_LENGTH: u32 = 5 * 1024 * 1024;
+
+// Arion pallet configuration
+parameter_types! {
+	// Maximum number of miners in the CRUSH map
+	pub const MaxMiners: u32 = 1000;
+	// Maximum length for endpoint strings
+	pub const MaxEndpointLen: u32 = 256;
+	// Maximum length for HTTP address strings
+	pub const MaxHttpAddrLen: u32 = 128;
+	// Maximum number of stats updates per submission
+	pub const MaxStatsUpdates: u32 = 100;
+	// Maximum number of node weight updates per submission
+	pub const MaxNodeWeightUpdates: u32 = 100;
+	// Maximum node weight
+	pub const MaxNodeWeight: u16 = 1000;
+	// Maximum family weight
+	pub const MaxFamilyWeight: u16 = 1000;
+	// Number of top nodes to consider per family
+	pub const FamilyTopN: u32 = 10;
+	// Decay factor for family rank (permille)
+	pub const FamilyRankDecayPermille: u32 = 800;
+	// EMA alpha for family weight (permille)
+	pub const FamilyWeightEmaAlphaPermille: u32 = 300;
+	// Maximum family weight delta per bucket
+	pub const MaxFamilyWeightDeltaPerBucket: u16 = 100;
+	// Newcomer grace period in buckets
+	pub const NewcomerGraceBuckets: u32 = 24;
+	// Newcomer floor weight
+	pub const NewcomerFloorWeight: u16 = 10;
+	// Bandwidth weight (permille)
+	pub const NodeBandwidthWeightPermille: u32 = 700;
+	// Storage weight (permille)
+	pub const NodeStorageWeightPermille: u32 = 300;
+	// Node score scale factor
+	pub const NodeScoreScale: u16 = 512;
+	// Strike penalty
+	pub const StrikePenalty: u16 = 50;
+	// Integrity fail penalty
+	pub const IntegrityFailPenalty: u16 = 100;
+}
 
 parameter_types! {
 	pub const Version: RuntimeVersion = VERSION;
@@ -1261,7 +1369,7 @@ impl pallet_rankings::Config for Runtime {
 	type LocalRpcUrl = LocalRpcUrl;
 }
 
-// Add a second ranking pallet implementation
+// // Add a second ranking pallet implementation
 impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type PalletId = SecondRankingPalletId;
@@ -1754,7 +1862,7 @@ construct_runtime!(
 		AccountProfile: pallet_account_profile = 60,
 		Utils: pallet_utils = 62,
 		RankingStorage: pallet_rankings =63,
-		// RankingCompute: pallet_rankings::<Instance2> = 68,
+		RankingCompute: pallet_rankings::<Instance2> = 68,
 		RankingValidators: pallet_rankings::<Instance3> = 70,
 		// RankingGpu: pallet_rankings::<Instance4> = 71,
 		// RankingS3: pallet_rankings::<Instance5> = 77,
@@ -1764,7 +1872,8 @@ construct_runtime!(
 		ContainerRegistry: pallet_container_registry = 69,
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
-		IpfsPallet: ipfs_pallet = 75
+		IpfsPallet: ipfs_pallet = 75,
+		Arion: pallet_arion = 76
 	}
 );
 

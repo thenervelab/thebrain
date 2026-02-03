@@ -4554,6 +4554,7 @@ dependencies = [
  "pallet-account-profile",
  "pallet-account-profile-precompile",
  "pallet-alpha-bridge",
+ "pallet-arion",
  "pallet-assets 39.0.0",
  "pallet-authorship 37.0.0",
  "pallet-babe 37.0.0",
@@ -7769,6 +7770,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-arion"
+version = "0.1.0"
+dependencies = [
+ "frame-support 37.1.0",
+ "frame-system 37.1.0",
+ "pallet-proxy 37.0.0",
+ "pallet-registration",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
+ "sp-runtime 39.0.3",
+ "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
+]
+
+[[package]]
 name = "pallet-assets"
 version = "33.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7993,6 +8009,7 @@ dependencies = [
  "hex",
  "hippius-primitives",
  "log",
+ "pallet-arion",
  "pallet-babe 37.0.0",
  "pallet-execution-unit",
  "pallet-metagraph",

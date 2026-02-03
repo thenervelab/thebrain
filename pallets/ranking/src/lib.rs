@@ -17,8 +17,6 @@ mod types;
 use core::marker::PhantomData;
 use frame_support::PalletId;
 use pallet_balances;
-#[cfg(feature = "std")]
-use scale_info::prelude::vec;
 use sp_runtime::{KeyTypeId, SaturatedConversion};
 pub use types::*;
 
@@ -71,7 +69,7 @@ pub mod pallet {
 	use codec::alloc::string::ToString;
 	use frame_support::pallet_prelude::*;
 	use frame_system::{
-		offchain::{AppCrypto, SendTransactionTypes, SendUnsignedTransaction, Signer},
+		offchain::{AppCrypto, SendTransactionTypes},
 		pallet_prelude::*,
 	};
 	use pallet_registration::NodeType;
@@ -82,7 +80,6 @@ pub mod pallet {
 	use sp_runtime::{format, offchain::http};
 	use sp_runtime::{
 		offchain::{
-			storage_lock::{BlockAndTime, StorageLock},
 			Duration,
 		},
 		traits::{AccountIdConversion, Get, Zero},
@@ -90,9 +87,6 @@ pub mod pallet {
 	use sp_std::collections::btree_map::BTreeMap;
 	use sp_std::vec;
 	use sp_std::vec::Vec;
-
-	const LOCK_BLOCK_EXPIRATION: u32 = 3;
-	const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]

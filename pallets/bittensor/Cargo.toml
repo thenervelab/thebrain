@@ -18,6 +18,7 @@ pallet-registration = { default-features = false, workspace = true }
 pallet-execution-unit = { default-features = false, workspace = true }
 pallet-utils = { workspace = true, default-features = false }
 hippius-primitives = { workspace = true }
+pallet-arion = { workspace = true, default-features = false }
 
 # Substrate
 frame-support = { default-features = false, workspace = true }
@@ -67,7 +68,8 @@ std = [
 	"pallet-metagraph/std",
 	"pallet-utils/std",
 	"pallet-rankings/std",
-	"hippius-primitives/std"
+	"hippius-primitives/std",
+	"pallet-arion/std"
 ]
 
 try-runtime = [ "frame-support/try-runtime" ]
