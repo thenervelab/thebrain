@@ -101,7 +101,7 @@ parameter_types! {
 pub struct ArionAdminMembers;
 impl frame_support::traits::SortedMembers<AccountId> for ArionAdminMembers {
 	fn sorted_members() -> Vec<AccountId> {
-		let account = AccountId32::from_ss58check("5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g")
+		let account = AccountId32::from_ss58check("5CVXqxb7mhFTtZVw5BJ8M2ujND9PFymSDxF8bkod6Sm4XJTW")
 			.expect("Invalid SS58 address");
 		vec![account]
 	}

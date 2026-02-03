@@ -746,284 +746,284 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		#[pallet::call_index(2)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn register_node_with_hotkey(
-			origin: OriginFor<T>,
-			coldkey: T::AccountId,
-			node_type: NodeType,
-			node_id: Vec<u8>,
-			pay_in_credits: bool,
-			ipfs_node_id: Option<Vec<u8>>,
-			ipfs_peer_id: Vec<u8>,
-			owner: T::AccountId,
-			main_key_type: Libp2pKeyType,
-			main_public_key: Vec<u8>,
-			main_sig: Vec<u8>,
-			ipfs_key_type: Libp2pKeyType,
-			ipfs_public_key: Vec<u8>,
-			ipfs_sig: Vec<u8>,
-			challenge_bytes: Vec<u8>,
-			ipfs_id_hex: Vec<u8>,
-			node_id_hex: Vec<u8>,
-		) -> DispatchResultWithPostInfo {
-			let who = ensure_signed(origin)?;
+		// #[pallet::call_index(2)]
+		// #[pallet::weight((0, Pays::No))]
+		// pub fn register_node_with_hotkey(
+		// 	origin: OriginFor<T>,
+		// 	coldkey: T::AccountId,
+		// 	node_type: NodeType,
+		// 	node_id: Vec<u8>,
+		// 	pay_in_credits: bool,
+		// 	ipfs_node_id: Option<Vec<u8>>,
+		// 	ipfs_peer_id: Vec<u8>,
+		// 	owner: T::AccountId,
+		// 	main_key_type: Libp2pKeyType,
+		// 	main_public_key: Vec<u8>,
+		// 	main_sig: Vec<u8>,
+		// 	ipfs_key_type: Libp2pKeyType,
+		// 	ipfs_public_key: Vec<u8>,
+		// 	ipfs_sig: Vec<u8>,
+		// 	challenge_bytes: Vec<u8>,
+		// 	ipfs_id_hex: Vec<u8>,
+		// 	node_id_hex: Vec<u8>,
+		// ) -> DispatchResultWithPostInfo {
+		// 	let who = ensure_signed(origin)?;
 
-			// --- Decode & check the challenge ---
-			let mut rdr = &challenge_bytes[..];
-			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
-				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
+		// 	// --- Decode & check the challenge ---
+		// 	let mut rdr = &challenge_bytes[..];
+		// 	let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
+		// 		RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
 
-			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
-			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
-			ensure!(ch.account == owner, Error::<T>::InvalidAccountId);
-			ensure!(
-				ch.expires_at >= <frame_system::Pallet<T>>::block_number(),
-				Error::<T>::ChallengeExpired
-			);
-			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
-			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
-			ensure!(
-				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
-				Error::<T>::ChallengeMismatch
-			);
+		// 	const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
+		// 	ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
+		// 	ensure!(ch.account == owner, Error::<T>::InvalidAccountId);
+		// 	ensure!(
+		// 		ch.expires_at >= <frame_system::Pallet<T>>::block_number(),
+		// 		Error::<T>::ChallengeExpired
+		// 	);
+		// 	ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
+		// 	ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
+		// 	ensure!(
+		// 		ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
+		// 		Error::<T>::ChallengeMismatch
+		// 	);
 
-			let ch_hash = Self::blake256(&challenge_bytes);
-			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
+		// 	let ch_hash = Self::blake256(&challenge_bytes);
+		// 	ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
-			// --- Verify the two libp2p signatures (ed25519 now; extend later if needed) ---
-			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
+		// 	// --- Verify the two libp2p signatures (ed25519 now; extend later if needed) ---
+		// 	ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
+		// 	ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
 
-			// Verify signatures
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key),
-				Error::<T>::InvalidSignature
-			);
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key),
-				Error::<T>::InvalidSignature
-			);
+		// 	// Verify signatures
+		// 	ensure!(
+		// 		Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key),
+		// 		Error::<T>::InvalidSignature
+		// 	);
+		// 	ensure!(
+		// 		Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key),
+		// 		Error::<T>::InvalidSignature
+		// 	);
 
-			// NEW: Verify that public keys match the expected peer IDs
-			ensure!(
-				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
+		// 	// NEW: Verify that public keys match the expected peer IDs
+		// 	ensure!(
+		// 		Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
+		// 		Error::<T>::PublicKeyMismatch
+		// 	);
 
-			ensure!(
-				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
+		// 	ensure!(
+		// 		Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
+		// 		Error::<T>::PublicKeyMismatch
+		// 	);
 
-			// Mark challenge used (replay protection)
-			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
+		// 	// Mark challenge used (replay protection)
+		// 	UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
 
-			// Check if the account is banned
-			ensure!(!Self::is_account_banned(&owner), Error::<T>::AccountBanned);
+		// 	// Check if the account is banned
+		// 	ensure!(!Self::is_account_banned(&owner), Error::<T>::AccountBanned);
 
-			// Check if the owner already has a registered node
-			ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
+		// 	// Check if the owner already has a registered node
+		// 	ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
 
-			// Check cooldown period
-			let current_block = <frame_system::Pallet<T>>::block_number();
-			let last_deregistered = NodeLastDeregisteredAt::<T>::get(&node_id);
-			let cooldown_period = T::NodeCooldownPeriod::get();
-			ensure!(
-				current_block >= last_deregistered + cooldown_period,
-				Error::<T>::NodeCooldownPeriodNotExpired
-			);
+		// 	// Check cooldown period
+		// 	let current_block = <frame_system::Pallet<T>>::block_number();
+		// 	let last_deregistered = NodeLastDeregisteredAt::<T>::get(&node_id);
+		// 	let cooldown_period = T::NodeCooldownPeriod::get();
+		// 	ensure!(
+		// 		current_block >= last_deregistered + cooldown_period,
+		// 		Error::<T>::NodeCooldownPeriodNotExpired
+		// 	);
 
-			// Check if the caller is a proxy and retrieve the real (main) account
-			let proxy_def = ProxyPallet::<T>::find_proxy(
-				&coldkey, &owner, None, // Accept any proxy type for now
-			)
-			.map_err(|_| Error::<T>::NotAProxyAccount)?;
+		// 	// Check if the caller is a proxy and retrieve the real (main) account
+		// 	let proxy_def = ProxyPallet::<T>::find_proxy(
+		// 		&coldkey, &owner, None, // Accept any proxy type for now
+		// 	)
+		// 	.map_err(|_| Error::<T>::NotAProxyAccount)?;
 
-			let proxy_type = proxy_def.proxy_type;
+		// 	let proxy_type = proxy_def.proxy_type;
 
-			// Validate the proxy type using ProxyTypeCompat
-			ensure!(proxy_type.is_non_transfer(), Error::<T>::InvalidProxyType);
+		// 	// Validate the proxy type using ProxyTypeCompat
+		// 	ensure!(proxy_type.is_non_transfer(), Error::<T>::InvalidProxyType);
 
-			// Check if the coldkey is registered in ColdkeyNodeRegistration
-			let is_registered =
-				ColdkeyNodeRegistration::<T>::iter().any(|(_node_id, node_info)| {
-					if let Some(info) = node_info {
-						info.owner == coldkey
-					} else {
-						false
-					}
-				});
+		// 	// Check if the coldkey is registered in ColdkeyNodeRegistration
+		// 	let is_registered =
+		// 		ColdkeyNodeRegistration::<T>::iter().any(|(_node_id, node_info)| {
+		// 			if let Some(info) = node_info {
+		// 				info.owner == coldkey
+		// 			} else {
+		// 				false
+		// 			}
+		// 		});
 
-			ensure!(is_registered, Error::<T>::AccountNotRegistered);
+		// 	ensure!(is_registered, Error::<T>::AccountNotRegistered);
 
-			// Ensure that if the node type is `StorageMiner`, the `ipfs_node_id` is not `None`
-			match node_type {
-				NodeType::StorageMiner => {
-					ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired)
-				},
-				NodeType::Validator => {
-					ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired)
-				},
-				_ => {},
-			}
+		// 	// Ensure that if the node type is `StorageMiner`, the `ipfs_node_id` is not `None`
+		// 	match node_type {
+		// 		NodeType::StorageMiner => {
+		// 			ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired)
+		// 		},
+		// 		NodeType::Validator => {
+		// 			ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired)
+		// 		},
+		// 		_ => {},
+		// 	}
 
-			// Check if the node is already registered
-			ensure!(
-				!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
-				Error::<T>::NodeAlreadyRegistered
-			);
-			// Check if the node is already registered
-			ensure!(
-				!NodeRegistration::<T>::contains_key(&node_id),
-				Error::<T>::NodeAlreadyRegistered
-			);
+		// 	// Check if the node is already registered
+		// 	ensure!(
+		// 		!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
+		// 		Error::<T>::NodeAlreadyRegistered
+		// 	);
+		// 	// Check if the node is already registered
+		// 	ensure!(
+		// 		!NodeRegistration::<T>::contains_key(&node_id),
+		// 		Error::<T>::NodeAlreadyRegistered
+		// 	);
 
-			// Check if the account ID already has a registered node
-			let existing_node = NodeRegistration::<T>::iter().find(
-				|(_registered_node_id, registered_node_info)| {
-					if let Some(info) = registered_node_info {
-						info.owner == owner
-					} else {
-						false
-					}
-				},
-			);
+		// 	// Check if the account ID already has a registered node
+		// 	let existing_node = NodeRegistration::<T>::iter().find(
+		// 		|(_registered_node_id, registered_node_info)| {
+		// 			if let Some(info) = registered_node_info {
+		// 				info.owner == owner
+		// 			} else {
+		// 				false
+		// 			}
+		// 		},
+		// 	);
 
-			ensure!(existing_node.is_none(), Error::<T>::NodeAlreadyRegistered); // You can define a more specific error if needed
+		// 	ensure!(existing_node.is_none(), Error::<T>::NodeAlreadyRegistered); // You can define a more specific error if needed
 
-			// Check if the ipfs_node_id is already registered
-			if let Some(ref ipfs_id) = ipfs_node_id {
-				// Iterate through all registered nodes to check for the ipfs_node_id
-				for (_registered_node_id, registered_node_info) in NodeRegistration::<T>::iter() {
-					if let Some(info) = registered_node_info {
-						if info.ipfs_node_id.as_ref() == Some(ipfs_id) {
-							return Err(Error::<T>::IpfsNodeIdAlreadyRegistered.into());
-						}
-					}
-				}
-			}
+		// 	// Check if the ipfs_node_id is already registered
+		// 	if let Some(ref ipfs_id) = ipfs_node_id {
+		// 		// Iterate through all registered nodes to check for the ipfs_node_id
+		// 		for (_registered_node_id, registered_node_info) in NodeRegistration::<T>::iter() {
+		// 			if let Some(info) = registered_node_info {
+		// 				if info.ipfs_node_id.as_ref() == Some(ipfs_id) {
+		// 					return Err(Error::<T>::IpfsNodeIdAlreadyRegistered.into());
+		// 				}
+		// 			}
+		// 		}
+		// 	}
 
-			// Check if the node type is disabled
-			ensure!(!Self::is_node_type_disabled(node_type.clone()), Error::<T>::NodeTypeDisabled);
+		// 	// Check if the node type is disabled
+		// 	ensure!(!Self::is_node_type_disabled(node_type.clone()), Error::<T>::NodeTypeDisabled);
 
-			// If the node type is Validator, ensure minimum stake
-			if node_type == NodeType::Validator {
-				ensure!(
-					pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(
-						owner.clone()
-					))
-					.map(|ledger| ledger.active)
-					.unwrap_or_default()
-						>= T::MinerStakeThreshold::get().into(),
-					Error::<T>::InsufficientStake
-				);
-			}
+		// 	// If the node type is Validator, ensure minimum stake
+		// 	if node_type == NodeType::Validator {
+		// 		ensure!(
+		// 			pallet_staking::Pallet::<T>::ledger(sp_staking::StakingAccount::Stash(
+		// 				owner.clone()
+		// 			))
+		// 			.map(|ledger| ledger.active)
+		// 			.unwrap_or_default()
+		// 				>= T::MinerStakeThreshold::get().into(),
+		// 			Error::<T>::InsufficientStake
+		// 		);
+		// 	}
 
-			// Get all UIDs using the MetagraphInfo provider
-			let uids = T::MetagraphInfo::get_all_uids();
+		// 	// Get all UIDs using the MetagraphInfo provider
+		// 	let uids = T::MetagraphInfo::get_all_uids();
 
-			if let Ok(account_bytes) = owner.clone().encode().try_into() {
-				let account = AccountId32::new(account_bytes);
-				let who_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
-					.to_ss58check();
+		// 	if let Ok(account_bytes) = owner.clone().encode().try_into() {
+		// 		let account = AccountId32::new(account_bytes);
+		// 		let who_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
+		// 			.to_ss58check();
 
-				// Check if the caller is in UIDs
-				let is_in_uids =
-					uids.iter().any(|uid| uid.substrate_address.to_ss58check() == who_ss58);
+		// 		// Check if the caller is in UIDs
+		// 		let is_in_uids =
+		// 			uids.iter().any(|uid| uid.substrate_address.to_ss58check() == who_ss58);
 
-				// If the caller is in UIDs, check if the node_type matches the role
-				if is_in_uids {
-					let whitelist = T::MetagraphInfo::get_whitelisted_validators();
-					let is_whitelisted = whitelist.iter().any(|validator| validator == &owner);
+		// 		// If the caller is in UIDs, check if the node_type matches the role
+		// 		if is_in_uids {
+		// 			let whitelist = T::MetagraphInfo::get_whitelisted_validators();
+		// 			let is_whitelisted = whitelist.iter().any(|validator| validator == &owner);
 
-					if !is_whitelisted {
-						if let Some(uid) =
-							uids.iter().find(|uid| uid.substrate_address.to_ss58check() == who_ss58)
-						{
-							ensure!(uid.role == node_type.to_role(), Error::<T>::NodeTypeMismatch);
-						}
-					}
-				}
+		// 			if !is_whitelisted {
+		// 				if let Some(uid) =
+		// 					uids.iter().find(|uid| uid.substrate_address.to_ss58check() == who_ss58)
+		// 				{
+		// 					ensure!(uid.role == node_type.to_role(), Error::<T>::NodeTypeMismatch);
+		// 				}
+		// 			}
+		// 		}
 
-				// Check if fee charging is enabled
-				if Self::fee_charging_enabled() && !is_in_uids {
-					// Calculate dynamic fee based on node type
-					let fee = Self::calculate_dynamic_fee(node_type.clone());
+		// 		// Check if fee charging is enabled
+		// 		if Self::fee_charging_enabled() && !is_in_uids {
+		// 			// Calculate dynamic fee based on node type
+		// 			let fee = Self::calculate_dynamic_fee(node_type.clone());
 
-					// Ensure user has sufficient balance
-					ensure!(
-						<pallet_balances::Pallet<T>>::free_balance(&owner) >= fee,
-						Error::<T>::InsufficientBalanceForFee
-					);
+		// 			// Ensure user has sufficient balance
+		// 			ensure!(
+		// 				<pallet_balances::Pallet<T>>::free_balance(&owner) >= fee,
+		// 				Error::<T>::InsufficientBalanceForFee
+		// 			);
 
-					if !pay_in_credits {
-						// Transfer fee to the pallet's account
-						<pallet_balances::Pallet<T>>::transfer(
-							&owner.clone(),
-							&Self::account_id(),
-							fee,
-							ExistenceRequirement::AllowDeath,
-						)?;
-					} else {
-						// decrease credits and mint balance
-						let fee_u128: u128 = fee.try_into().unwrap_or_default();
-						CreditsPallet::<T>::decrease_user_credits(&owner.clone(), fee_u128);
-						// Deposit charge to marketplace account
-						let _ = pallet_balances::Pallet::<T>::deposit_creating(
-							&Self::account_id(),
-							fee,
-						);
-					}
+		// 			if !pay_in_credits {
+		// 				// Transfer fee to the pallet's account
+		// 				<pallet_balances::Pallet<T>>::transfer(
+		// 					&owner.clone(),
+		// 					&Self::account_id(),
+		// 					fee,
+		// 					ExistenceRequirement::AllowDeath,
+		// 				)?;
+		// 			} else {
+		// 				// decrease credits and mint balance
+		// 				let fee_u128: u128 = fee.try_into().unwrap_or_default();
+		// 				CreditsPallet::<T>::decrease_user_credits(&owner.clone(), fee_u128);
+		// 				// Deposit charge to marketplace account
+		// 				let _ = pallet_balances::Pallet::<T>::deposit_creating(
+		// 					&Self::account_id(),
+		// 					fee,
+		// 				);
+		// 			}
 
-					// Update fee after successful registration
-					Self::update_fee_after_registration(node_type.clone());
-				}
-			}
+		// 			// Update fee after successful registration
+		// 			Self::update_fee_after_registration(node_type.clone());
+		// 		}
+		// 	}
 
-			// Get the current block number
-			let current_block_number = <frame_system::Pallet<T>>::block_number();
+		// 	// Get the current block number
+		// 	let current_block_number = <frame_system::Pallet<T>>::block_number();
 
-			let node_info = NodeInfo {
-				node_id: node_id.clone(),
-				node_type,
-				ipfs_node_id,
-				status: Status::Online,
-				is_verified: true,
-				registered_at: current_block_number,
-				owner,
-			};
+		// 	let node_info = NodeInfo {
+		// 		node_id: node_id.clone(),
+		// 		node_type,
+		// 		ipfs_node_id,
+		// 		status: Status::Online,
+		// 		is_verified: true,
+		// 		registered_at: current_block_number,
+		// 		owner,
+		// 	};
 
-			NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+		// 	NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
 
-			// Iterate through ColdkeyNodeRegistration to find the node_info for the given coldkey
-			let coldkeynode_info = ColdkeyNodeRegistration::<T>::iter()
-				.find_map(|(_, node_info_opt)| {
-					node_info_opt.as_ref().and_then(|node_info| {
-						if node_info.owner == coldkey {
-							Some(node_info.clone())
-						} else {
-							None
-						}
-					})
-				})
-				.ok_or(Error::<T>::NodeNotFound)?;
+		// 	// Iterate through ColdkeyNodeRegistration to find the node_info for the given coldkey
+		// 	let coldkeynode_info = ColdkeyNodeRegistration::<T>::iter()
+		// 		.find_map(|(_, node_info_opt)| {
+		// 			node_info_opt.as_ref().and_then(|node_info| {
+		// 				if node_info.owner == coldkey {
+		// 					Some(node_info.clone())
+		// 				} else {
+		// 					None
+		// 				}
+		// 			})
+		// 		})
+		// 		.ok_or(Error::<T>::NodeNotFound)?;
 
-			// Update the linked nodes count
-			LinkedNodes::<T>::try_mutate(&coldkeynode_info.node_id.clone(), |linked_node_ids| {
-				if !linked_node_ids.contains(&node_id) {
-					linked_node_ids.push(node_id.clone());
-				}
-				Ok::<(), DispatchError>(())
-			})?;
+		// 	// Update the linked nodes count
+		// 	LinkedNodes::<T>::try_mutate(&coldkeynode_info.node_id.clone(), |linked_node_ids| {
+		// 		if !linked_node_ids.contains(&node_id) {
+		// 			linked_node_ids.push(node_id.clone());
+		// 		}
+		// 		Ok::<(), DispatchError>(())
+		// 	})?;
 
-			// Persist identities (for later audits/liveness checks)
-			Libp2pMainIdentity::<T>::insert(node_id.clone(), (main_key_type, main_public_key));
-			Libp2pIpfsIdentity::<T>::insert(node_id.clone(), (ipfs_key_type, ipfs_public_key));
+		// 	// Persist identities (for later audits/liveness checks)
+		// 	Libp2pMainIdentity::<T>::insert(node_id.clone(), (main_key_type, main_public_key));
+		// 	Libp2pIpfsIdentity::<T>::insert(node_id.clone(), (ipfs_key_type, ipfs_public_key));
 
-			Self::deposit_event(Event::NodeRegistered { node_id });
-			Ok(().into())
-		}
+		// 	Self::deposit_event(Event::NodeRegistered { node_id });
+		// 	Ok(().into())
+		// }
 
 		#[pallet::call_index(3)]
 		#[pallet::weight((10_000, DispatchClass::Normal, Pays::Yes))]
@@ -1057,74 +1057,74 @@ pub mod pallet {
 			})
 		}
 
-		#[pallet::call_index(5)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn force_register_node_with_hotkey(
-			origin: OriginFor<T>,
-			owner: T::AccountId,
-			coldkey: T::AccountId,
-			node_type: NodeType,
-			node_id: Vec<u8>,
-			ipfs_node_id: Option<Vec<u8>>,
-		) -> DispatchResultWithPostInfo {
-			ensure_root(origin)?;
+		// #[pallet::call_index(5)]
+		// #[pallet::weight((0, Pays::No))]
+		// pub fn force_register_node_with_hotkey(
+		// 	origin: OriginFor<T>,
+		// 	owner: T::AccountId,
+		// 	coldkey: T::AccountId,
+		// 	node_type: NodeType,
+		// 	node_id: Vec<u8>,
+		// 	ipfs_node_id: Option<Vec<u8>>,
+		// ) -> DispatchResultWithPostInfo {
+		// 	ensure_root(origin)?;
 
-			// Check if the account is banned
-			ensure!(!Self::is_account_banned(&owner), Error::<T>::AccountBanned);
+		// 	// Check if the account is banned
+		// 	ensure!(!Self::is_account_banned(&owner), Error::<T>::AccountBanned);
 
-			// Check if the owner already has a registered node
-			ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
+		// 	// Check if the owner already has a registered node
+		// 	ensure!(!Self::is_owner_node_registered(&owner), Error::<T>::OwnerAlreadyRegistered);
 
-			let node_id = node_id.clone();
-			// Check if the node is already registered
-			ensure!(
-				!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
-				Error::<T>::NodeAlreadyRegistered
-			);
-			// Check if the node is already registered
-			ensure!(
-				!NodeRegistration::<T>::contains_key(&node_id),
-				Error::<T>::NodeAlreadyRegistered
-			);
+		// 	let node_id = node_id.clone();
+		// 	// Check if the node is already registered
+		// 	ensure!(
+		// 		!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
+		// 		Error::<T>::NodeAlreadyRegistered
+		// 	);
+		// 	// Check if the node is already registered
+		// 	ensure!(
+		// 		!NodeRegistration::<T>::contains_key(&node_id),
+		// 		Error::<T>::NodeAlreadyRegistered
+		// 	);
 
-			// Get the current block number
-			let current_block_number = <frame_system::Pallet<T>>::block_number();
+		// 	// Get the current block number
+		// 	let current_block_number = <frame_system::Pallet<T>>::block_number();
 
-			let node_info = NodeInfo {
-				node_id: node_id.clone(),
-				node_type,
-				ipfs_node_id,
-				status: Status::Online,
-				is_verified: true,
-				registered_at: current_block_number,
-				owner,
-			};
-			NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+		// 	let node_info = NodeInfo {
+		// 		node_id: node_id.clone(),
+		// 		node_type,
+		// 		ipfs_node_id,
+		// 		status: Status::Online,
+		// 		is_verified: true,
+		// 		registered_at: current_block_number,
+		// 		owner,
+		// 	};
+		// 	NodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
 
-			// Iterate through ColdkeyNodeRegistration to find the node_info for the given coldkey
-			let node_info = ColdkeyNodeRegistration::<T>::iter()
-				.find_map(|(_, node_info_opt)| {
-					node_info_opt.as_ref().and_then(|node_info| {
-						if node_info.owner == coldkey {
-							Some(node_info.clone())
-						} else {
-							None
-						}
-					})
-				})
-				.ok_or(Error::<T>::NodeNotFound)?;
+		// 	// Iterate through ColdkeyNodeRegistration to find the node_info for the given coldkey
+		// 	let node_info = ColdkeyNodeRegistration::<T>::iter()
+		// 		.find_map(|(_, node_info_opt)| {
+		// 			node_info_opt.as_ref().and_then(|node_info| {
+		// 				if node_info.owner == coldkey {
+		// 					Some(node_info.clone())
+		// 				} else {
+		// 					None
+		// 				}
+		// 			})
+		// 		})
+		// 		.ok_or(Error::<T>::NodeNotFound)?;
 
-			// Update the linked nodes count
-			LinkedNodes::<T>::try_mutate(&node_info.node_id.clone(), |linked_node_ids| {
-				if !linked_node_ids.contains(&node_id) {
-					linked_node_ids.push(node_id.clone());
-				}
-				Ok::<(), DispatchError>(()) // Specify the type here
-			})?;
+		// 	// Update the linked nodes count
+		// 	LinkedNodes::<T>::try_mutate(&node_info.node_id.clone(), |linked_node_ids| {
+		// 		if !linked_node_ids.contains(&node_id) {
+		// 			linked_node_ids.push(node_id.clone());
+		// 		}
+		// 		Ok::<(), DispatchError>(()) // Specify the type here
+		// 	})?;
 
-			Self::deposit_event(Event::NodeRegistered { node_id });
-			Ok(().into())
-		}
+		// 	Self::deposit_event(Event::NodeRegistered { node_id });
+		// 	Ok(().into())
+		// }
 
 		/// Sudo function to enable or disable fee charging
 		#[pallet::call_index(6)]
