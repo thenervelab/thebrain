@@ -35,6 +35,7 @@ class WeightSubmitter:
         self.hippius_interface = None
         self.wallet = None
         self.validator_ss58 = None
+        self._metagraph = None
         
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from YAML file."""
@@ -134,14 +135,16 @@ class WeightSubmitter:
         self.logger.info(f"Fetching metagraph for subnet {self.config['bittensor']['subnet_id']}...")
         
         try:
-            # Get metagraph for the subnet
-            metagraph = bt.metagraph(
-                netuid=self.config['bittensor']['subnet_id'],
-                subtensor=self.subtensor
-            )
-            
-            # Get active neurons
-            active_neurons = metagraph.neurons
+            # Create metagraph once, then sync to refresh (avoids scalecodec type registration leak)
+            if self._metagraph is None:
+                self._metagraph = bt.metagraph(
+                    netuid=self.config['bittensor']['subnet_id'],
+                    subtensor=self.subtensor
+                )
+            else:
+                self._metagraph.sync(subtensor=self.subtensor)
+
+            active_neurons = self._metagraph.neurons
             
             # Create mapping of UID to hotkey
             uid_to_hotkey = {}
@@ -426,42 +429,54 @@ class WeightSubmitter:
             self.logger.error(f"Error submitting weights: {e}")
             return False
     
-    async def run(self):
-        """Main execution method that runs all steps."""
-        try:
-            # Initialize connections
-            await self.initialize_connections()
-            
-            # Step 1: Fetch metagraph
-            uid_to_hotkey = await self.fetch_metagraph()
-            
-            # Step 2: Fetch Hippius rankings
-            hippius_rankings = await self.fetch_hippius_rankings()
-            
-            # Step 3: Match rankings with UIDs
-            matched_weights = self.match_rankings_with_uids(uid_to_hotkey, hippius_rankings)
-            
-            # Step 4: Submit weights
-            if matched_weights:
-                success = await self.submit_weights(matched_weights)
-                if success:
-                    self.logger.info("Weight submission completed successfully")
-                else:
-                    self.logger.error("Weight submission failed")
-                return success
+    async def run_submission(self) -> bool:
+        """Run weight submission without reinitializing connections.
+
+        Designed for repeated calls in a loop. Assumes initialize_connections()
+        was already called. Does not close connections — caller manages lifecycle.
+        """
+        # Step 1: Fetch metagraph
+        uid_to_hotkey = await self.fetch_metagraph()
+
+        # Step 2: Fetch Hippius rankings
+        hippius_rankings = await self.fetch_hippius_rankings()
+
+        # Step 3: Match rankings with UIDs
+        matched_weights = self.match_rankings_with_uids(uid_to_hotkey, hippius_rankings)
+
+        # Step 4: Submit weights
+        if matched_weights:
+            success = await self.submit_weights(matched_weights)
+            if success:
+                self.logger.info("Weight submission completed successfully")
             else:
-                self.logger.warning("No weights to submit - no matches found")
-                return False
-                
+                self.logger.error("Weight submission failed")
+            return success
+        else:
+            self.logger.warning("No weights to submit - no matches found")
+            return False
+
+    def cleanup(self):
+        """Clean up connections. Call when done using this instance."""
+        self.logger.info("Cleaning up WeightSubmitter connections...")
+        if self.subtensor:
+            self.subtensor.close()
+            self.subtensor = None
+        if self.hippius_interface:
+            self.hippius_interface.close()
+            self.hippius_interface = None
+        self._metagraph = None
+
+    async def run(self):
+        """Main execution method that runs all steps (one-shot mode)."""
+        try:
+            await self.initialize_connections()
+            return await self.run_submission()
         except Exception as e:
             self.logger.error(f"Error in main execution: {e}")
             return False
         finally:
-            # Clean up connections
-            if self.subtensor:
-                self.subtensor.close()
-            if self.hippius_interface:
-                self.hippius_interface.close()
+            self.cleanup()
 
 
 async def main():
