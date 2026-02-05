@@ -1,5 +1,23 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+//! # Minimal Viable Bridge Contract
+//!
+//! A simplified bridge contract for bridging Alpha (Bittensor subnet token) to hAlpha (Hippius).
+//!
+//! ## Design Principles
+//! - Stateless guardians — chain is only source of truth
+//! - First-attestation-creates-record — no propose/checkpoint races
+//! - Symmetric recovery — both directions can refund
+//! - Nonce-based unique IDs — no hash collisions
+//!
+//! ## Storage Model
+//! - `deposit_requests` — User-created requests to deposit Alpha for hAlpha (source side)
+//! - `withdrawals` — Guardian-created records for releasing Alpha (destination side)
+//!
+//! ## Naming Convention
+//! - Users create **requests** on the chain they're leaving
+//! - Guardians create the matching **record** on the chain they're entering
+
 pub mod chain_extension;
 pub mod errors;
 pub mod events;
@@ -35,92 +53,79 @@ mod bridge {
 
 	#[ink(storage)]
 	pub struct Bridge {
+		// ============ Configuration ============
 		owner: AccountId,
 		chain_id: ChainId,
-		next_deposit_nonce: DepositNonce,
-		last_burns_checkpoint_nonce: CheckpointNonce,
-		last_refunds_checkpoint_nonce: CheckpointNonce,
-
-		locked: Mapping<DepositId, Balance>,
-		processed_deposits: Mapping<DepositId, bool>,
-		denied_deposits: Mapping<DepositId, bool>,
-		deposit_metadata: Mapping<DepositId, DepositMetadata>,
-
-		guardians: Vec<AccountId>,
-		approve_threshold: u16,
-		deny_threshold: u16,
-		signature_ttl_blocks: u32,
-
-		pending_burns: Mapping<BurnId, PendingBurn>,
-		processed_burns: Mapping<BurnId, bool>,
-		pending_refunds: Mapping<DepositId, PendingRefund>,
-
-		user_deposits: Mapping<AccountId, Vec<DepositId>>,
-		min_deposit_amount: Balance,
-		max_deposits_per_user: u32,
-
 		contract_hotkey: AccountId,
 		paused: bool,
 
-		nonce_to_deposit_id: Mapping<DepositNonce, DepositId>,
+		guardians: Vec<AccountId>,
+		approve_threshold: u16,
+
+		min_deposit_amount: Balance,
+
+		// ============ Deposit Requests (Source Side) ============
+		/// Nonce for generating unique deposit request IDs
+		next_deposit_nonce: DepositNonce,
+		/// User-created deposit requests (Alpha locked, awaiting hAlpha on Hippius)
+		deposit_requests: Mapping<DepositRequestId, DepositRequest>,
+		/// Map nonce to deposit request ID for recovery
+		nonce_to_deposit_request_id: Mapping<DepositNonce, DepositRequestId>,
+
+		// ============ Withdrawals (Destination Side) ============
+		/// Guardian-created withdrawal records (Hippius withdrawal observed, release Alpha)
+		withdrawals: Mapping<WithdrawalId, Withdrawal>,
+
+		// ============ Cleanup Configuration ============
+		/// TTL in blocks for cleaning up finalized records (~7 days at 6s blocks = 100800)
+		cleanup_ttl_blocks: BlockNumber,
 	}
 
 	impl Bridge {
 		/// Creates a new bridge contract instance
 		///
-		/// Initializes the bridge with default configuration:
-		/// - Empty guardian set (use set_guardians_and_thresholds to configure)
-		/// - Signature TTL: 100 blocks
-		/// - Minimum deposit: 1,000,000,000 rao (1 Alpha)
-		/// - Max deposits per user: 25
-		/// - Bridge is unpaused
-		///
 		/// # Arguments
 		/// * `owner` - Contract owner with admin privileges
-		/// * `chain_id` - Identifier for the Bittensor chain (used in deposit ID generation)
+		/// * `chain_id` - Identifier for the Bittensor chain (used in ID generation)
 		/// * `hotkey` - Contract's hotkey for stake consolidation
 		#[ink(constructor)]
 		pub fn new(owner: AccountId, chain_id: ChainId, hotkey: AccountId) -> Self {
 			Self {
 				owner,
 				chain_id,
-				next_deposit_nonce: 0,
-				last_burns_checkpoint_nonce: 0,
-				last_refunds_checkpoint_nonce: 0,
-				locked: Mapping::default(),
 				contract_hotkey: hotkey,
-				processed_deposits: Mapping::default(),
-				denied_deposits: Mapping::default(),
-				deposit_metadata: Mapping::default(),
+				paused: false,
 				guardians: Vec::new(),
 				approve_threshold: 0,
-				deny_threshold: 0,
-				signature_ttl_blocks: 100,
-				pending_burns: Mapping::default(),
-				processed_burns: Mapping::default(),
-				pending_refunds: Mapping::default(),
-				user_deposits: Mapping::default(),
-				min_deposit_amount: 1_000_000_000,
-				max_deposits_per_user: 25,
-				paused: false,
-				nonce_to_deposit_id: Mapping::default(),
+				min_deposit_amount: 1_000_000_000, // 1 Alpha (in alphaRao)
+				next_deposit_nonce: 0,
+				deposit_requests: Mapping::default(),
+				nonce_to_deposit_request_id: Mapping::default(),
+				withdrawals: Mapping::default(),
+				cleanup_ttl_blocks: 100_800, // ~7 days at 6s blocks
 			}
 		}
 
-		/// Locks Alpha tokens on Bittensor to be bridged to Hippius
+		// ============ User Actions ============
+
+		/// User locks Alpha to create a deposit request
 		///
-		/// Users call this function to deposit Alpha stake into the bridge contract.
-		/// The locked stake will be available for minting as hAlpha on Hippius after guardian approval.
+		/// Creates a deposit request that guardians will observe and attest on Hippius.
+		/// The caller MUST have added this contract as a proxy on Bittensor.
 		///
-		/// The caller MUST have added this contract as a proxy on Bittensor via the
-		/// Subtensor pallet's add_proxy extrinsic.
+		/// # Arguments
+		/// * `amount` - Amount of Alpha to lock (in alphaRao)
+		/// * `recipient` - Recipient on Hippius who will receive hAlpha
+		/// * `hotkey` - Hotkey where the stake is currently held
+		/// * `netuid` - Network UID (must match chain_id)
 		#[ink(message)]
-		pub fn lock(
+		pub fn deposit(
 			&mut self,
 			amount: Balance,
+			recipient: AccountId,
 			hotkey: AccountId,
 			netuid: NetUid,
-		) -> Result<DepositId, Error> {
+		) -> Result<DepositRequestId, Error> {
 			self.ensure_not_paused()?;
 
 			if netuid.as_u16() != self.chain_id {
@@ -132,14 +137,9 @@ mod bridge {
 			}
 
 			let sender = self.env().caller();
-
-			let mut user_deposits = self.user_deposits.get(sender).unwrap_or_default();
-			if user_deposits.len() >= self.max_deposits_per_user as usize {
-				return Err(Error::TooManyDeposits);
-			}
-
 			let contract_account = self.env().account_id();
 
+			// Verify sender has sufficient stake
 			let sender_stake_before = self.get_stake_amount(sender, hotkey, netuid)?;
 			if sender_stake_before < amount {
 				return Err(Error::InsufficientStake);
@@ -147,6 +147,7 @@ mod bridge {
 
 			let contract_stake_before = self.get_stake_amount(contract_account, hotkey, netuid)?;
 
+			// Transfer stake from user to contract via proxy
 			let transfer_call = RuntimeCall::SubtensorModule(SubtensorCall::TransferStake {
 				destination_coldkey: contract_account,
 				hotkey,
@@ -163,6 +164,7 @@ mod bridge {
 
 			self.env().call_runtime(&proxy_call).map_err(|_| Error::RuntimeCallFailed)?;
 
+			// Verify transfer
 			let sender_stake_after = self.get_stake_amount(sender, hotkey, netuid)?;
 			let contract_stake_after = self.get_stake_amount(contract_account, hotkey, netuid)?;
 
@@ -178,6 +180,7 @@ mod bridge {
 				return Err(Error::TransferNotVerified);
 			}
 
+			// Consolidate stake to contract's hotkey if needed
 			let contract_hk = self.contract_hotkey;
 			if hotkey != contract_hk {
 				let contract_stake_on_user_hotkey =
@@ -197,376 +200,227 @@ mod bridge {
 				}
 			}
 
+			// Generate unique deposit request ID
 			let deposit_nonce = self.next_deposit_nonce;
 			self.next_deposit_nonce =
 				self.next_deposit_nonce.checked_add(1).ok_or(Error::Overflow)?;
 
 			let mut canonical_bytes = Vec::new();
+			canonical_bytes.extend_from_slice(DOMAIN_DEPOSIT_REQUEST);
 			canonical_bytes.extend_from_slice(&self.chain_id.to_le_bytes());
 			canonical_bytes.extend_from_slice(contract_account.as_ref());
 			canonical_bytes.extend_from_slice(&deposit_nonce.to_le_bytes());
 			canonical_bytes.extend_from_slice(sender.as_ref());
+			canonical_bytes.extend_from_slice(recipient.as_ref());
 			canonical_bytes.extend_from_slice(&amount.to_le_bytes());
 
-			let mut domain_and_canonical = Vec::new();
-			domain_and_canonical.extend_from_slice(DOMAIN_DEPOSIT);
-			domain_and_canonical.extend_from_slice(&canonical_bytes);
-
-			let deposit_id = {
+			let deposit_request_id = {
 				let mut hash_output = <<Blake2x256 as HashOutput>::Type as Default>::default();
-				<Blake2x256 as CryptoHash>::hash(&domain_and_canonical, &mut hash_output);
+				<Blake2x256 as CryptoHash>::hash(&canonical_bytes, &mut hash_output);
 				Hash::from(hash_output)
 			};
 
-			self.locked.insert(deposit_id, &amount);
+			// Create deposit request
+			let request = DepositRequest {
+				sender,
+				recipient,
+				amount,
+				nonce: deposit_nonce,
+				hotkey,
+				netuid: netuid.as_u16(),
+				status: DepositRequestStatus::Requested,
+				created_at_block: self.env().block_number(),
+			};
 
-			// Store deposit metadata for refunds
-			let metadata = DepositMetadata { sender, hotkey, netuid: netuid.as_u16(), amount };
-			self.deposit_metadata.insert(deposit_id, &metadata);
-			self.nonce_to_deposit_id.insert(deposit_nonce, &deposit_id);
+			self.deposit_requests.insert(deposit_request_id, &request);
+			self.nonce_to_deposit_request_id.insert(deposit_nonce, &deposit_request_id);
 
-			user_deposits.push(deposit_id);
-			self.user_deposits.insert(sender, &user_deposits);
-
-			self.env().emit_event(DepositMade {
+			self.env().emit_event(DepositRequestCreated {
 				chain_id: self.chain_id,
 				escrow_contract: contract_account,
 				deposit_nonce,
 				sender,
+				recipient,
 				amount,
-				deposit_id,
+				deposit_request_id,
 			});
 
-			Ok(deposit_id)
+			Ok(deposit_request_id)
 		}
 
-		/// Proposes burns from Hippius for releasing locked stake
+		// ============ Guardian Actions ============
+
+		/// Guardian attests a withdrawal (first attestation creates the record)
 		///
-		/// Guardians monitor Hippius UnlockApproved events and create burn proposals.
-		/// The checkpoint must have sequential nonce (last_burns_checkpoint_nonce + 1).
-		/// The proposing guardian's vote is automatically counted as an approval.
-		/// Other guardians then attest via attest_release().
-		///
-		/// # Security
-		/// - Only guardians can propose burns
-		/// - Checkpoint nonces must be sequential
-		/// - Each burn is stored and voted on individually
-		#[ink(message)]
-		pub fn propose_releases(
-			&mut self,
-			burns: Vec<CanonicalBurn>,
-			checkpoint_nonce: CheckpointNonce,
-		) -> Result<(), Error> {
-			self.ensure_not_paused()?;
-			self.ensure_guardian()?;
-
-			// Validate sequential checkpoint nonce
-			let expected_nonce =
-				self.last_burns_checkpoint_nonce.checked_add(1).ok_or(Error::Overflow)?;
-			if checkpoint_nonce != expected_nonce {
-				return Err(Error::InvalidCheckpointNonce);
-			}
-
-			let caller = self.env().caller();
-			let current_block = self.env().block_number();
-			let mut burn_ids = Vec::new();
-
-			for burn in burns.iter() {
-				let burn_id = burn.burn_id;
-
-				// Check not already pending or already finalized
-				if self.pending_burns.contains(burn_id)
-					|| self.processed_burns.get(burn_id).unwrap_or(false)
-				{
-					return Err(Error::AlreadyProcessed);
-				}
-
-				// Create pending burn with proposer's approval
-				let approves = vec![caller];
-
-				let pending = PendingBurn {
-					burn_id,
-					recipient: burn.recipient,
-					hotkey: burn.hotkey,
-					netuid: burn.netuid,
-					amount: burn.amount,
-					approves,
-					denies: Vec::new(),
-					proposed_at: current_block,
-				};
-
-				// Check if threshold reached immediately (like pallet pattern)
-				if pending.approves.len() >= self.approve_threshold as usize {
-					self.finalize_burn(burn_id, pending)?;
-				} else {
-					self.pending_burns.insert(burn_id, &pending);
-				}
-
-				burn_ids.push(burn_id);
-			}
-
-			// Update checkpoint nonce
-			self.last_burns_checkpoint_nonce = checkpoint_nonce;
-
-			self.env().emit_event(BurnsProposed {
-				checkpoint_nonce,
-				proposer: caller,
-				burns_count: u32::try_from(burns.len()).map_err(|_| Error::Overflow)?,
-			});
-
-			Ok(())
-		}
-
-		/// Guardian attests (votes on) a pending burn
-		///
-		/// Guardians review individual burns and vote to approve or deny.
-		/// When approve_threshold is reached and within TTL, the burn is automatically finalized.
-		#[ink(message)]
-		pub fn attest_release(&mut self, burn_id: BurnId, approve: bool) -> Result<(), Error> {
-			self.ensure_not_paused()?;
-			self.ensure_guardian()?;
-
-			let mut pending = self.pending_burns.get(burn_id).ok_or(Error::CheckpointNotFound)?;
-
-			let caller = self.env().caller();
-
-			// Check not already voted
-			if pending.approves.contains(&caller) || pending.denies.contains(&caller) {
-				return Err(Error::AlreadyAttestedBurn);
-			}
-
-			// Check not expired
-			let current_block = self.env().block_number();
-			let blocks_elapsed = current_block.saturating_sub(pending.proposed_at);
-			if blocks_elapsed > self.signature_ttl_blocks {
-				return Err(Error::CheckpointExpired);
-			}
-
-			// Add vote
-			if approve {
-				pending.approves.push(caller);
-			} else {
-				pending.denies.push(caller);
-			}
-
-			// Check thresholds
-			if pending.approves.len() >= self.approve_threshold as usize {
-				self.finalize_burn(burn_id, pending)?;
-			} else if pending.denies.len() >= self.deny_threshold as usize {
-				self.pending_burns.remove(burn_id);
-				self.env().emit_event(BurnDenied { burn_id });
-			} else {
-				self.pending_burns.insert(burn_id, &pending);
-			}
-
-			Ok(())
-		}
-
-		/// Expires a burn that exceeded its TTL
-		///
-		/// Anyone can call this to clean up stale burn proposals that did not reach
-		/// consensus within signature_ttl_blocks.
-		#[ink(message)]
-		pub fn expire_release(&mut self, burn_id: BurnId) -> Result<(), Error> {
-			let pending = self.pending_burns.get(burn_id).ok_or(Error::CheckpointNotFound)?;
-
-			let current_block = self.env().block_number();
-			let blocks_elapsed = current_block.saturating_sub(pending.proposed_at);
-
-			if blocks_elapsed <= self.signature_ttl_blocks {
-				return Err(Error::CheckpointNotExpired);
-			}
-
-			self.pending_burns.remove(burn_id);
-
-			self.env().emit_event(BurnExpired { burn_id });
-
-			Ok(())
-		}
-
-		/// Proposes refunds for deposits that were denied on Hippius
-		///
-		/// # Guardian Workflow
-		/// 1. Monitor Hippius chain for `BridgeDenied` events
-		/// 2. Collect denied deposit_ids from events
-		/// 3. For each denied deposit, fetch deposit metadata from Bittensor contract
-		/// 4. Create RefundItem with deposit_id, original sender, and amount
-		/// 5. Call this function with the refund proposals
-		/// 6. Other guardians attest the refund via attest_refund()
-		/// 7. When threshold reached, refunds are executed automatically
+		/// When guardians observe a withdrawal_request on Hippius, they call this
+		/// to vote for releasing Alpha. First attestation creates the Withdrawal record.
+		/// When threshold is reached, Alpha is released to recipient.
 		///
 		/// # Arguments
-		/// * `refunds` - Vector of refund items (denied deposits to refund)
-		/// * `checkpoint_nonce` - Sequential nonce for checkpoint ordering
-		///
-		/// # Security
-		/// - Only guardians can propose refunds
-		/// - Checkpoint nonces must be sequential
-		/// - Each refund is stored and voted on individually
-		/// - **Refund recipient MUST match original deposit sender**
-		/// - **Refund amount MUST match full locked amount (no partial refunds)**
+		/// * `request_id` - The withdrawal request ID from Hippius
+		/// * `recipient` - Recipient to release Alpha to
+		/// * `amount` - Amount to release (in alphaRao)
 		#[ink(message)]
-		pub fn propose_refunds(
+		#[allow(clippy::cast_possible_truncation)] // vote_count bounded by MAX_GUARDIANS (10)
+		pub fn attest_withdrawal(
 			&mut self,
-			refunds: Vec<RefundItem>,
-			checkpoint_nonce: CheckpointNonce,
+			request_id: WithdrawalId,
+			recipient: AccountId,
+			amount: Balance,
 		) -> Result<(), Error> {
 			self.ensure_not_paused()?;
 			self.ensure_guardian()?;
 
-			// Validate sequential checkpoint nonce
-			let expected_nonce =
-				self.last_refunds_checkpoint_nonce.checked_add(1).ok_or(Error::Overflow)?;
-			if checkpoint_nonce != expected_nonce {
-				return Err(Error::InvalidCheckpointNonce);
-			}
-
 			let caller = self.env().caller();
-			let current_block = self.env().block_number();
-			let mut deposit_ids = Vec::new();
 
-			for refund in refunds.iter() {
-				let deposit_id = refund.deposit_id;
-
-				// Check not already pending
-				if self.pending_refunds.contains(deposit_id) {
-					return Err(Error::AlreadyProcessed);
+			if let Some(mut withdrawal) = self.withdrawals.get(request_id) {
+				// Withdrawal exists - verify details match to prevent poisoning
+				if withdrawal.recipient != recipient {
+					return Err(Error::InvalidWithdrawalDetails);
+				}
+				if withdrawal.amount != amount {
+					return Err(Error::InvalidWithdrawalDetails);
 				}
 
-				// Verify the deposit exists and is locked
-				if !self.locked.contains(deposit_id) {
-					return Err(Error::CheckpointNotFound);
+				// Check status and vote
+				if withdrawal.status != WithdrawalStatus::Pending {
+					return Err(Error::WithdrawalAlreadyFinalized);
+				}
+				if withdrawal.votes.contains(&caller) {
+					return Err(Error::AlreadyVoted);
 				}
 
-				// Fetch stored metadata to validate refund parameters
-				let metadata =
-					self.deposit_metadata.get(deposit_id).ok_or(Error::CheckpointNotFound)?;
+				withdrawal.votes.push(caller);
 
-				let locked_amount = self.locked.get(deposit_id).ok_or(Error::CheckpointNotFound)?;
+				self.env().emit_event(WithdrawalAttested {
+					withdrawal_id: request_id,
+					guardian: caller,
+					vote_count: withdrawal.votes.len() as u16,
+				});
 
-				// Validate recipient matches original sender
-				if refund.recipient != metadata.sender {
-					return Err(Error::InvalidRefundRecipient);
+				// Check if threshold reached
+				if withdrawal.votes.len() >= self.approve_threshold as usize {
+					self.finalize_withdrawal(request_id, withdrawal)?;
+				} else {
+					self.withdrawals.insert(request_id, &withdrawal);
 				}
-
-				// Validate amount matches full locked amount (no partial refunds)
-				if refund.amount != locked_amount {
-					return Err(Error::InvalidRefundAmount);
-				}
-
-				// Create pending refund with proposer's approval
-				let approves = vec![caller];
-
-				let pending = PendingRefund {
-					deposit_id,
-					recipient: refund.recipient,
-					amount: refund.amount,
-					approves,
-					denies: Vec::new(),
-					proposed_at: current_block,
+			} else {
+				// First attestation - create the withdrawal record
+				let withdrawal = Withdrawal {
+					request_id,
+					recipient,
+					amount,
+					votes: vec![caller],
+					status: WithdrawalStatus::Pending,
+					created_at_block: self.env().block_number(),
+					finalized_at_block: None,
 				};
 
-				// Check if threshold reached immediately (like pallet pattern)
-				if pending.approves.len() >= self.approve_threshold as usize {
-					self.finalize_refund(deposit_id, pending)?;
+				self.env().emit_event(WithdrawalAttested {
+					withdrawal_id: request_id,
+					guardian: caller,
+					vote_count: 1,
+				});
+
+				// Check if threshold reached immediately (single guardian setup)
+				if withdrawal.votes.len() >= self.approve_threshold as usize {
+					self.finalize_withdrawal(request_id, withdrawal)?;
 				} else {
-					self.pending_refunds.insert(deposit_id, &pending);
+					self.withdrawals.insert(request_id, &withdrawal);
 				}
-
-				deposit_ids.push(deposit_id);
-			}
-
-			// Update checkpoint nonce
-			self.last_refunds_checkpoint_nonce = checkpoint_nonce;
-
-			self.env().emit_event(RefundsProposed {
-				checkpoint_nonce,
-				proposer: caller,
-				refunds_count: u32::try_from(refunds.len()).map_err(|_| Error::Overflow)?,
-			});
-
-			Ok(())
-		}
-
-		/// Guardian attests (votes on) a pending refund
-		///
-		/// Guardians review individual refunds and vote to approve or deny.
-		/// When approve_threshold is reached and within TTL, the refund is automatically finalized.
-		#[ink(message)]
-		pub fn attest_refund(&mut self, deposit_id: DepositId, approve: bool) -> Result<(), Error> {
-			self.ensure_not_paused()?;
-			self.ensure_guardian()?;
-
-			let mut pending =
-				self.pending_refunds.get(deposit_id).ok_or(Error::CheckpointNotFound)?;
-
-			let caller = self.env().caller();
-
-			// Check not already voted
-			if pending.approves.contains(&caller) || pending.denies.contains(&caller) {
-				return Err(Error::AlreadyAttestedRefund);
-			}
-
-			// Check not expired
-			let current_block = self.env().block_number();
-			let blocks_elapsed = current_block.saturating_sub(pending.proposed_at);
-			if blocks_elapsed > self.signature_ttl_blocks {
-				return Err(Error::CheckpointExpired);
-			}
-
-			// Add vote
-			if approve {
-				pending.approves.push(caller);
-			} else {
-				pending.denies.push(caller);
-			}
-
-			// Check thresholds
-			if pending.approves.len() >= self.approve_threshold as usize {
-				self.finalize_refund(deposit_id, pending)?;
-			} else if pending.denies.len() >= self.deny_threshold as usize {
-				self.pending_refunds.remove(deposit_id);
-				self.env().emit_event(RefundDenied { deposit_id });
-			} else {
-				self.pending_refunds.insert(deposit_id, &pending);
 			}
 
 			Ok(())
 		}
 
-		/// Expires a refund that exceeded its TTL
+		// ============ Admin Functions ============
+
+		/// Admin marks a deposit request as failed
 		///
-		/// Anyone can call this to clean up stale refund proposals that did not reach
-		/// consensus within signature_ttl_blocks.
+		/// After calling this, admin should manually release Alpha via admin_manual_release.
+		///
+		/// # Arguments
+		/// * `request_id` - The deposit request ID to fail
 		#[ink(message)]
-		pub fn expire_refund(&mut self, deposit_id: DepositId) -> Result<(), Error> {
-			let pending = self.pending_refunds.get(deposit_id).ok_or(Error::CheckpointNotFound)?;
+		pub fn admin_fail_deposit_request(
+			&mut self,
+			request_id: DepositRequestId,
+		) -> Result<(), Error> {
+			self.ensure_owner()?;
 
-			let current_block = self.env().block_number();
-			let blocks_elapsed = current_block.saturating_sub(pending.proposed_at);
+			let mut request = self
+				.deposit_requests
+				.get(request_id)
+				.ok_or(Error::DepositRequestNotFound)?;
 
-			if blocks_elapsed <= self.signature_ttl_blocks {
-				return Err(Error::CheckpointNotExpired);
+			if request.status != DepositRequestStatus::Requested {
+				return Err(Error::DepositRequestAlreadyFinalized);
 			}
 
-			self.pending_refunds.remove(deposit_id);
+			request.status = DepositRequestStatus::Failed;
+			self.deposit_requests.insert(request_id, &request);
 
-			self.env().emit_event(RefundExpired { deposit_id });
+			self.env().emit_event(DepositRequestFailed { deposit_request_id: request_id });
 
 			Ok(())
 		}
 
-		/// Configures the guardian set and voting thresholds (owner only)
+		/// Admin manually releases Alpha to a recipient (for stuck deposits)
 		///
-		/// Sets the list of authorized guardians and the number of votes required
-		/// to approve or deny proposals. Validates that deny_threshold < approve_threshold
-		/// and approve_threshold <= guardian_count.
+		/// # Arguments
+		/// * `recipient` - Account to receive Alpha
+		/// * `amount` - Amount to release (in alphaRao)
 		#[ink(message)]
-		pub fn set_guardians_and_thresholds(
+		pub fn admin_manual_release(
+			&mut self,
+			recipient: AccountId,
+			amount: Balance,
+		) -> Result<(), Error> {
+			self.ensure_owner()?;
+
+			let contract_hk = self.contract_hotkey;
+			let netuid = NetUid::from(self.chain_id);
+
+			self.env()
+				.extension()
+				.transfer_stake(recipient, contract_hk, netuid, netuid, AlphaCurrency::from(amount))
+				.map_err(|_| Error::TransferFailed)?;
+
+			self.env().emit_event(AdminManualRelease { recipient, amount });
+
+			Ok(())
+		}
+
+		/// Admin cancels a withdrawal that is stuck
+		///
+		/// # Arguments
+		/// * `request_id` - The withdrawal ID to cancel
+		#[ink(message)]
+		pub fn admin_cancel_withdrawal(&mut self, request_id: WithdrawalId) -> Result<(), Error> {
+			self.ensure_owner()?;
+
+			let mut withdrawal =
+				self.withdrawals.get(request_id).ok_or(Error::WithdrawalNotFound)?;
+
+			if withdrawal.status != WithdrawalStatus::Pending {
+				return Err(Error::WithdrawalAlreadyFinalized);
+			}
+
+			withdrawal.finalized_at_block = Some(self.env().block_number());
+			withdrawal.status = WithdrawalStatus::Cancelled;
+			self.withdrawals.insert(request_id, &withdrawal);
+
+			self.env().emit_event(WithdrawalCancelled { withdrawal_id: request_id });
+
+			Ok(())
+		}
+
+		/// Configures the guardian set and voting threshold (owner only)
+		#[ink(message)]
+		pub fn set_guardians_and_threshold(
 			&mut self,
 			guardians: Vec<AccountId>,
 			approve_threshold: u16,
-			deny_threshold: u16,
 		) -> Result<(), Error> {
 			self.ensure_owner()?;
 
@@ -576,21 +430,16 @@ mod bridge {
 
 			let guardians_count =
 				u16::try_from(guardians.len()).map_err(|_| Error::TooManyGuardians)?;
-			if deny_threshold >= approve_threshold {
-				return Err(Error::InvalidThresholds);
-			}
-			if approve_threshold > guardians_count {
+			if approve_threshold > guardians_count || approve_threshold == 0 {
 				return Err(Error::InvalidThresholds);
 			}
 
 			self.guardians = guardians.clone();
 			self.approve_threshold = approve_threshold;
-			self.deny_threshold = deny_threshold;
 
 			self.env().emit_event(GuardiansUpdated {
 				guardians,
 				approve_threshold,
-				deny_threshold,
 				updated_by: self.env().caller(),
 			});
 
@@ -622,8 +471,6 @@ mod bridge {
 			Ok(())
 		}
 
-		/// Set the contract's hotkey (admin only)
-		/// All deposited stake will be consolidated to this hotkey
 		#[ink(message)]
 		pub fn set_contract_hotkey(&mut self, hotkey: AccountId) -> Result<(), Error> {
 			self.ensure_owner()?;
@@ -637,60 +484,112 @@ mod bridge {
 			Ok(())
 		}
 
-		/// Replace contract code with new implementation
-		/// Only callable by contract owner
 		#[ink(message)]
 		pub fn set_code(&mut self, code_hash: Hash) -> Result<(), Error> {
 			self.ensure_owner()?;
-
 			self.env().set_code_hash(&code_hash).map_err(|_| Error::CodeUpgradeFailed)?;
-
 			self.env()
 				.emit_event(CodeUpgraded { code_hash, upgraded_by: self.env().caller() });
+			Ok(())
+		}
+
+		// ============ Cleanup Functions ============
+
+		/// Anyone can cleanup a deposit request after TTL (no status check for source records)
+		#[ink(message)]
+		pub fn cleanup_deposit_request(
+			&mut self,
+			request_id: DepositRequestId,
+		) -> Result<(), Error> {
+			let request =
+				self.deposit_requests.get(request_id).ok_or(Error::DepositRequestNotFound)?;
+
+			// TTL must have passed since creation (no status check for source records)
+			let current_block = self.env().block_number();
+			if current_block < request.created_at_block + self.cleanup_ttl_blocks {
+				return Err(Error::TTLNotExpired);
+			}
+
+			// Remove from storage
+			self.deposit_requests.remove(request_id);
+			self.nonce_to_deposit_request_id.remove(request.nonce);
+
+			self.env().emit_event(DepositRequestCleanedUp { deposit_request_id: request_id });
 
 			Ok(())
 		}
 
-		/// Get the contract's current hotkey
+		/// Anyone can cleanup a finalized withdrawal after TTL
 		#[ink(message)]
-		pub fn contract_hotkey(&self) -> AccountId {
-			self.contract_hotkey
+		pub fn cleanup_withdrawal(&mut self, withdrawal_id: WithdrawalId) -> Result<(), Error> {
+			let withdrawal =
+				self.withdrawals.get(withdrawal_id).ok_or(Error::WithdrawalNotFound)?;
+
+			// Must be finalized (Completed or Cancelled)
+			if withdrawal.status != WithdrawalStatus::Completed
+				&& withdrawal.status != WithdrawalStatus::Cancelled
+			{
+				return Err(Error::RecordNotFinalized);
+			}
+
+			// Must have finalized_at_block set
+			let finalized_at = withdrawal.finalized_at_block.ok_or(Error::RecordNotFinalized)?;
+
+			// TTL must have passed since finalization
+			let current_block = self.env().block_number();
+			if current_block < finalized_at + self.cleanup_ttl_blocks {
+				return Err(Error::TTLNotExpired);
+			}
+
+			// Remove from storage
+			self.withdrawals.remove(withdrawal_id);
+
+			self.env().emit_event(WithdrawalCleanedUp { withdrawal_id });
+
+			Ok(())
+		}
+
+		/// Admin sets the cleanup TTL (in blocks)
+		#[ink(message)]
+		pub fn set_cleanup_ttl(&mut self, ttl_blocks: BlockNumber) -> Result<(), Error> {
+			self.ensure_owner()?;
+			let old_ttl = self.cleanup_ttl_blocks;
+			self.cleanup_ttl_blocks = ttl_blocks;
+			self.env().emit_event(CleanupTTLUpdated { old_ttl, new_ttl: ttl_blocks });
+			Ok(())
+		}
+
+		/// Admin sets the minimum deposit amount
+		#[ink(message)]
+		pub fn set_min_deposit_amount(&mut self, amount: Balance) -> Result<(), Error> {
+			self.ensure_owner()?;
+			let old_amount = self.min_deposit_amount;
+			self.min_deposit_amount = amount;
+			self.env().emit_event(MinDepositAmountUpdated { old_amount, new_amount: amount });
+			Ok(())
+		}
+
+		// ============ Query Functions ============
+
+		#[ink(message)]
+		pub fn get_deposit_request(
+			&self,
+			request_id: DepositRequestId,
+		) -> Option<DepositRequest> {
+			self.deposit_requests.get(request_id)
 		}
 
 		#[ink(message)]
-		pub fn get_locked_amount(&self, deposit_id: DepositId) -> Option<Balance> {
-			self.locked.get(deposit_id)
+		pub fn get_withdrawal(&self, withdrawal_id: WithdrawalId) -> Option<Withdrawal> {
+			self.withdrawals.get(withdrawal_id)
 		}
 
 		#[ink(message)]
-		pub fn is_processed(&self, deposit_id: DepositId) -> bool {
-			self.processed_deposits.get(deposit_id).unwrap_or(false)
-		}
-
-		#[ink(message)]
-		pub fn is_denied(&self, deposit_id: DepositId) -> bool {
-			self.denied_deposits.get(deposit_id).unwrap_or(false)
-		}
-
-		#[ink(message)]
-		pub fn get_user_deposits(&self, user: AccountId) -> Vec<DepositId> {
-			self.user_deposits.get(user).unwrap_or_default()
-		}
-
-		#[ink(message)]
-		pub fn get_pending_burn(&self, burn_id: BurnId) -> Option<PendingBurn> {
-			self.pending_burns.get(burn_id)
-		}
-
-		#[ink(message)]
-		pub fn get_pending_refund(&self, deposit_id: DepositId) -> Option<PendingRefund> {
-			self.pending_refunds.get(deposit_id)
-		}
-
-		/// Resolve a deposit ID from its nonce
-		#[ink(message)]
-		pub fn get_deposit_id_by_nonce(&self, deposit_nonce: DepositNonce) -> Option<DepositId> {
-			self.nonce_to_deposit_id.get(deposit_nonce)
+		pub fn get_deposit_request_id_by_nonce(
+			&self,
+			nonce: DepositNonce,
+		) -> Option<DepositRequestId> {
+			self.nonce_to_deposit_request_id.get(nonce)
 		}
 
 		#[ink(message)]
@@ -704,18 +603,13 @@ mod bridge {
 		}
 
 		#[ink(message)]
+		pub fn contract_hotkey(&self) -> AccountId {
+			self.contract_hotkey
+		}
+
+		#[ink(message)]
 		pub fn next_deposit_nonce(&self) -> DepositNonce {
 			self.next_deposit_nonce
-		}
-
-		#[ink(message)]
-		pub fn last_burns_checkpoint_nonce(&self) -> CheckpointNonce {
-			self.last_burns_checkpoint_nonce
-		}
-
-		#[ink(message)]
-		pub fn last_refunds_checkpoint_nonce(&self) -> CheckpointNonce {
-			self.last_refunds_checkpoint_nonce
 		}
 
 		#[ink(message)]
@@ -729,32 +623,21 @@ mod bridge {
 		}
 
 		#[ink(message)]
-		pub fn deny_threshold(&self) -> u16 {
-			self.deny_threshold
-		}
-
-		#[ink(message)]
 		pub fn is_paused(&self) -> bool {
 			self.paused
 		}
 
-		/// Get deposit metadata for a given deposit ID
 		#[ink(message)]
-		pub fn get_deposit_metadata(&self, deposit_id: DepositId) -> Option<DepositMetadata> {
-			self.deposit_metadata.get(deposit_id)
+		pub fn min_deposit_amount(&self) -> Balance {
+			self.min_deposit_amount
 		}
 
-		/// Check if a burn ID has a pending approval
 		#[ink(message)]
-		pub fn has_pending_burn(&self, burn_id: BurnId) -> bool {
-			self.pending_burns.contains(burn_id)
+		pub fn cleanup_ttl(&self) -> BlockNumber {
+			self.cleanup_ttl_blocks
 		}
 
-		/// Check if a deposit ID has a pending refund
-		#[ink(message)]
-		pub fn has_pending_refund(&self, deposit_id: DepositId) -> bool {
-			self.pending_refunds.contains(deposit_id)
-		}
+		// ============ Helper Functions ============
 
 		fn ensure_owner(&self) -> Result<(), Error> {
 			if self.env().caller() != self.owner {
@@ -796,87 +679,42 @@ mod bridge {
 			}
 		}
 
-		fn finalize_burn(&mut self, burn_id: BurnId, pending: PendingBurn) -> Result<(), Error> {
-			let contract_hk = self.contract_hotkey;
-
-			// Transfer stake for this individual burn
-			self.env()
-				.extension()
-				.transfer_stake(
-					pending.recipient,
-					contract_hk,
-					NetUid::from(pending.netuid),
-					NetUid::from(pending.netuid),
-					AlphaCurrency::from(pending.amount),
-				)
-				.map_err(|_| Error::TransferFailed)?;
-
-			// Mark burn as processed to prevent double releases
-			self.processed_burns.insert(burn_id, &true);
-			// Remove from pending
-			self.pending_burns.remove(burn_id);
-
-			// Emit release event
-			self.env().emit_event(Released {
-				burn_id,
-				recipient: pending.recipient,
-				amount: pending.amount,
-			});
-
-			Ok(())
-		}
-
-		fn finalize_refund(
+		fn finalize_withdrawal(
 			&mut self,
-			deposit_id: DepositId,
-			pending: PendingRefund,
+			withdrawal_id: WithdrawalId,
+			mut withdrawal: Withdrawal,
 		) -> Result<(), Error> {
 			let contract_hk = self.contract_hotkey;
+			let netuid = NetUid::from(self.chain_id);
+			let contract_account = self.env().account_id();
 
-			let locked_amount = self.locked.get(deposit_id).ok_or(Error::CheckpointNotFound)?;
-
-			if locked_amount < pending.amount {
-				return Err(Error::InsufficientStake);
+			// Check contract has sufficient stake before attempting transfer
+			let contract_stake = self.get_stake_amount(contract_account, contract_hk, netuid)?;
+			if contract_stake < withdrawal.amount {
+				return Err(Error::InsufficientContractStake);
 			}
 
-			// Get stored metadata to know which hotkey/netuid to refund
-			let metadata =
-				self.deposit_metadata.get(deposit_id).ok_or(Error::CheckpointNotFound)?;
-
-			// Transfer stake back to recipient
+			// Transfer stake to recipient
 			self.env()
 				.extension()
 				.transfer_stake(
-					pending.recipient,
+					withdrawal.recipient,
 					contract_hk,
-					NetUid::from(metadata.netuid),
-					NetUid::from(metadata.netuid),
-					AlphaCurrency::from(pending.amount),
+					netuid,
+					netuid,
+					AlphaCurrency::from(withdrawal.amount),
 				)
 				.map_err(|_| Error::TransferFailed)?;
 
-			// Clean up storage
-			self.locked.remove(deposit_id);
-			self.denied_deposits.insert(deposit_id, &true);
-			self.deposit_metadata.remove(deposit_id);
+			// Update status and set finalized_at_block
+			withdrawal.finalized_at_block = Some(self.env().block_number());
+			withdrawal.status = WithdrawalStatus::Completed;
+			self.withdrawals.insert(withdrawal_id, &withdrawal);
 
-			// Remove from user deposits
-			let mut user_deposits = self.user_deposits.get(pending.recipient).unwrap_or_default();
-			user_deposits.retain(|&id| id != deposit_id);
-			if user_deposits.is_empty() {
-				self.user_deposits.remove(pending.recipient);
-			} else {
-				self.user_deposits.insert(pending.recipient, &user_deposits);
-			}
-
-			// Remove from pending
-			self.pending_refunds.remove(deposit_id);
-
-			// Emit refund event
-			self.env().emit_event(Refunded {
-				deposit_id,
-				recipient: pending.recipient,
-				amount: pending.amount,
+			self.env().emit_event(WithdrawalCompleted {
+				withdrawal_id,
+				recipient: withdrawal.recipient,
+				amount: withdrawal.amount,
 			});
 
 			Ok(())
@@ -924,11 +762,10 @@ mod bridge {
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
 
 			let guardians = vec![accounts.bob, accounts.charlie];
-			assert!(bridge.set_guardians_and_thresholds(guardians.clone(), 2, 1).is_ok());
+			assert!(bridge.set_guardians_and_threshold(guardians.clone(), 2).is_ok());
 
 			assert_eq!(bridge.guardians(), guardians);
 			assert_eq!(bridge.approve_threshold(), 2);
-			assert_eq!(bridge.deny_threshold(), 1);
 		}
 
 		#[ink::test]
@@ -938,13 +775,15 @@ mod bridge {
 
 			let guardians = vec![accounts.bob, accounts.charlie];
 
+			// Threshold too high
 			assert_eq!(
-				bridge.set_guardians_and_thresholds(guardians.clone(), 1, 2),
+				bridge.set_guardians_and_threshold(guardians.clone(), 3),
 				Err(Error::InvalidThresholds)
 			);
 
+			// Threshold zero
 			assert_eq!(
-				bridge.set_guardians_and_thresholds(guardians.clone(), 3, 1),
+				bridge.set_guardians_and_threshold(guardians.clone(), 0),
 				Err(Error::InvalidThresholds)
 			);
 		}
@@ -968,31 +807,570 @@ mod bridge {
 		}
 
 		#[ink::test]
-		fn cannot_propose_already_processed_burn() {
+		fn attest_withdrawal_creates_record_on_first_attestation() {
 			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
 
-			// Configure a single guardian so propose_releases can be called.
-			let guardians = vec![accounts.bob];
-			assert!(bridge.set_guardians_and_thresholds(guardians.clone(), 1, 0).is_ok());
+			// Set up guardian with threshold of 2 so it doesn't auto-finalize
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
 
-			// Guardian is the caller.
+			// Call attest_withdrawal as guardian bob
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let recipient = accounts.django;
+			let amount: Balance = 1_000_000_000;
 
-			// Simulate a burn that has already been finalized.
-			let burn_id: BurnId = Default::default();
-			bridge.processed_burns.insert(burn_id, &true);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount);
+			assert!(result.is_ok());
 
-			let burn = CanonicalBurn {
-				burn_id,
+			// Verify the withdrawal record was created
+			let withdrawal = bridge.get_withdrawal(withdrawal_id);
+			assert!(withdrawal.is_some());
+			let withdrawal = withdrawal.unwrap();
+			assert_eq!(withdrawal.recipient, recipient);
+			assert_eq!(withdrawal.amount, amount);
+			assert_eq!(withdrawal.votes.len(), 1);
+			assert!(withdrawal.votes.contains(&accounts.bob));
+			assert_eq!(withdrawal.status, WithdrawalStatus::Pending);
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_adds_vote_on_subsequent_attestation() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians with threshold of 3 so it doesn't auto-finalize
+			let guardians = vec![accounts.bob, accounts.charlie, accounts.django];
+			bridge.set_guardians_and_threshold(guardians, 3).unwrap();
+
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+
+			// First attestation by bob
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+
+			// Second attestation by charlie
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount);
+			assert!(result.is_ok());
+
+			// Verify the withdrawal record has 2 votes
+			let withdrawal = bridge.get_withdrawal(withdrawal_id).unwrap();
+			assert_eq!(withdrawal.votes.len(), 2);
+			assert!(withdrawal.votes.contains(&accounts.bob));
+			assert!(withdrawal.votes.contains(&accounts.charlie));
+			assert_eq!(withdrawal.status, WithdrawalStatus::Pending);
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_fails_with_invalid_recipient() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let recipient = accounts.eve;
+			let wrong_recipient = accounts.django;
+			let amount: Balance = 1_000_000_000;
+
+			// First attestation by bob with correct recipient
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+
+			// Second attestation by charlie with wrong recipient
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+			let result = bridge.attest_withdrawal(withdrawal_id, wrong_recipient, amount);
+			assert_eq!(result, Err(Error::InvalidWithdrawalDetails));
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_fails_with_invalid_amount() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+			let wrong_amount: Balance = 2_000_000_000;
+
+			// First attestation by bob with correct amount
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+
+			// Second attestation by charlie with wrong amount
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, wrong_amount);
+			assert_eq!(result, Err(Error::InvalidWithdrawalDetails));
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_fails_with_already_voted() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+
+			// First attestation by bob
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+
+			// Try to vote again as bob
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount);
+			assert_eq!(result, Err(Error::AlreadyVoted));
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_fails_if_not_guardian() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians (bob and charlie, but not django)
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+
+			// Try to attest as django (not a guardian)
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount);
+			assert_eq!(result, Err(Error::NotGuardian));
+		}
+
+		#[ink::test]
+		fn admin_fail_deposit_request_works() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Manually create a deposit request in storage for testing
+			// Since we can't test the full deposit flow (requires chain extension),
+			// we insert a deposit request directly
+			let deposit_request_id = Hash::from([2u8; 32]);
+			let request = DepositRequest {
+				sender: accounts.bob,
 				recipient: accounts.charlie,
+				amount: 1_000_000_000,
+				nonce: 0,
 				hotkey: accounts.eve,
-				netuid: 1u16,
-				amount: 42,
+				netuid: 1,
+				status: DepositRequestStatus::Requested,
+				created_at_block: 0,
 			};
+			bridge.deposit_requests.insert(deposit_request_id, &request);
 
-			let result = bridge.propose_releases(vec![burn], 1);
-			assert_eq!(result, Err(Error::AlreadyProcessed));
+			// Admin fails the deposit request
+			let result = bridge.admin_fail_deposit_request(deposit_request_id);
+			assert!(result.is_ok());
+
+			// Verify the status changed
+			let updated_request = bridge.get_deposit_request(deposit_request_id).unwrap();
+			assert_eq!(updated_request.status, DepositRequestStatus::Failed);
+		}
+
+		#[ink::test]
+		fn admin_fail_deposit_request_fails_if_not_owner() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			let deposit_request_id = Hash::from([2u8; 32]);
+			let request = DepositRequest {
+				sender: accounts.bob,
+				recipient: accounts.charlie,
+				amount: 1_000_000_000,
+				nonce: 0,
+				hotkey: accounts.eve,
+				netuid: 1,
+				status: DepositRequestStatus::Requested,
+				created_at_block: 0,
+			};
+			bridge.deposit_requests.insert(deposit_request_id, &request);
+
+			// Try to fail as non-owner
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let result = bridge.admin_fail_deposit_request(deposit_request_id);
+			assert_eq!(result, Err(Error::Unauthorized));
+		}
+
+		#[ink::test]
+		fn admin_fail_deposit_request_fails_if_not_found() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			let deposit_request_id = Hash::from([2u8; 32]);
+			let result = bridge.admin_fail_deposit_request(deposit_request_id);
+			assert_eq!(result, Err(Error::DepositRequestNotFound));
+		}
+
+		#[ink::test]
+		fn admin_fail_deposit_request_fails_if_already_finalized() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			let deposit_request_id = Hash::from([2u8; 32]);
+			let request = DepositRequest {
+				sender: accounts.bob,
+				recipient: accounts.charlie,
+				amount: 1_000_000_000,
+				nonce: 0,
+				hotkey: accounts.eve,
+				netuid: 1,
+				status: DepositRequestStatus::Failed, // Already failed
+				created_at_block: 0,
+			};
+			bridge.deposit_requests.insert(deposit_request_id, &request);
+
+			let result = bridge.admin_fail_deposit_request(deposit_request_id);
+			assert_eq!(result, Err(Error::DepositRequestAlreadyFinalized));
+		}
+
+		#[ink::test]
+		fn admin_cancel_withdrawal_works() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			// Create a withdrawal via attest_withdrawal
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+
+			// Admin cancels the withdrawal
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+			let result = bridge.admin_cancel_withdrawal(withdrawal_id);
+			assert!(result.is_ok());
+
+			// Verify the status changed
+			let withdrawal = bridge.get_withdrawal(withdrawal_id).unwrap();
+			assert_eq!(withdrawal.status, WithdrawalStatus::Cancelled);
+		}
+
+		#[ink::test]
+		fn admin_cancel_withdrawal_fails_if_not_owner() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			// Create a withdrawal
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+
+			// Try to cancel as non-owner
+			let result = bridge.admin_cancel_withdrawal(withdrawal_id);
+			assert_eq!(result, Err(Error::Unauthorized));
+		}
+
+		#[ink::test]
+		fn admin_cancel_withdrawal_fails_if_not_found() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let result = bridge.admin_cancel_withdrawal(withdrawal_id);
+			assert_eq!(result, Err(Error::WithdrawalNotFound));
+		}
+
+		#[ink::test]
+		fn admin_cancel_withdrawal_fails_if_already_finalized() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Insert a withdrawal directly with Cancelled status
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let withdrawal = Withdrawal {
+				request_id: withdrawal_id,
+				recipient: accounts.eve,
+				amount: 1_000_000_000,
+				votes: vec![accounts.bob],
+				status: WithdrawalStatus::Cancelled,
+				created_at_block: 0,
+				finalized_at_block: Some(0),
+			};
+			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
+
+			let result = bridge.admin_cancel_withdrawal(withdrawal_id);
+			assert_eq!(result, Err(Error::WithdrawalAlreadyFinalized));
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_fails_when_paused() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			// Pause the bridge
+			bridge.pause().unwrap();
+
+			// Try to attest
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let result = bridge.attest_withdrawal(withdrawal_id, accounts.eve, 1_000_000_000);
+			assert_eq!(result, Err(Error::BridgePaused));
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_fails_on_already_finalized() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie, accounts.django];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			// Insert a completed withdrawal directly
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let withdrawal = Withdrawal {
+				request_id: withdrawal_id,
+				recipient: accounts.eve,
+				amount: 1_000_000_000,
+				votes: vec![accounts.bob, accounts.charlie],
+				status: WithdrawalStatus::Completed,
+				created_at_block: 0,
+				finalized_at_block: Some(0),
+			};
+			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
+
+			// Try to attest on a completed withdrawal
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+			let result = bridge.attest_withdrawal(withdrawal_id, accounts.eve, 1_000_000_000);
+			assert_eq!(result, Err(Error::WithdrawalAlreadyFinalized));
+		}
+
+		// ============ Cleanup Tests ============
+
+		#[ink::test]
+		fn test_cleanup_deposit_request_after_ttl() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set a small TTL for testing
+			bridge.set_cleanup_ttl(10).unwrap();
+
+			// Insert a deposit request
+			let deposit_request_id = Hash::from([2u8; 32]);
+			let request = DepositRequest {
+				sender: accounts.bob,
+				recipient: accounts.charlie,
+				amount: 1_000_000_000,
+				nonce: 0,
+				hotkey: accounts.eve,
+				netuid: 1,
+				status: DepositRequestStatus::Requested,
+				created_at_block: 0,
+			};
+			bridge.deposit_requests.insert(deposit_request_id, &request);
+			bridge.nonce_to_deposit_request_id.insert(0, &deposit_request_id);
+
+			// Advance block number past TTL
+			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(11);
+
+			// Cleanup should succeed
+			let result = bridge.cleanup_deposit_request(deposit_request_id);
+			assert!(result.is_ok());
+
+			// Verify the deposit request was removed
+			assert!(bridge.get_deposit_request(deposit_request_id).is_none());
+			assert!(bridge.get_deposit_request_id_by_nonce(0).is_none());
+		}
+
+		#[ink::test]
+		fn test_cleanup_deposit_request_before_ttl_fails() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set a TTL
+			bridge.set_cleanup_ttl(100).unwrap();
+
+			// Insert a deposit request at block 0
+			let deposit_request_id = Hash::from([2u8; 32]);
+			let request = DepositRequest {
+				sender: accounts.bob,
+				recipient: accounts.charlie,
+				amount: 1_000_000_000,
+				nonce: 0,
+				hotkey: accounts.eve,
+				netuid: 1,
+				status: DepositRequestStatus::Requested,
+				created_at_block: 0,
+			};
+			bridge.deposit_requests.insert(deposit_request_id, &request);
+
+			// Try to cleanup before TTL expires (block 50 < 0 + 100)
+			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(50);
+
+			let result = bridge.cleanup_deposit_request(deposit_request_id);
+			assert_eq!(result, Err(Error::TTLNotExpired));
+		}
+
+		#[ink::test]
+		fn test_cleanup_withdrawal_after_ttl() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set a small TTL for testing
+			bridge.set_cleanup_ttl(10).unwrap();
+
+			// Insert a completed withdrawal
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let withdrawal = Withdrawal {
+				request_id: withdrawal_id,
+				recipient: accounts.eve,
+				amount: 1_000_000_000,
+				votes: vec![accounts.bob],
+				status: WithdrawalStatus::Completed,
+				created_at_block: 0,
+				finalized_at_block: Some(5),
+			};
+			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
+
+			// Advance block number past TTL from finalized_at_block (5 + 10 = 15)
+			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(16);
+
+			// Cleanup should succeed
+			let result = bridge.cleanup_withdrawal(withdrawal_id);
+			assert!(result.is_ok());
+
+			// Verify the withdrawal was removed
+			assert!(bridge.get_withdrawal(withdrawal_id).is_none());
+		}
+
+		#[ink::test]
+		fn test_cleanup_withdrawal_before_ttl_fails() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set a TTL
+			bridge.set_cleanup_ttl(100).unwrap();
+
+			// Insert a completed withdrawal finalized at block 10
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let withdrawal = Withdrawal {
+				request_id: withdrawal_id,
+				recipient: accounts.eve,
+				amount: 1_000_000_000,
+				votes: vec![accounts.bob],
+				status: WithdrawalStatus::Completed,
+				created_at_block: 0,
+				finalized_at_block: Some(10),
+			};
+			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
+
+			// Try to cleanup before TTL expires (block 50 < 10 + 100)
+			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(50);
+
+			let result = bridge.cleanup_withdrawal(withdrawal_id);
+			assert_eq!(result, Err(Error::TTLNotExpired));
+		}
+
+		#[ink::test]
+		fn test_cleanup_pending_withdrawal_fails() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set a small TTL
+			bridge.set_cleanup_ttl(10).unwrap();
+
+			// Insert a pending withdrawal (not finalized)
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let withdrawal = Withdrawal {
+				request_id: withdrawal_id,
+				recipient: accounts.eve,
+				amount: 1_000_000_000,
+				votes: vec![accounts.bob],
+				status: WithdrawalStatus::Pending,
+				created_at_block: 0,
+				finalized_at_block: None,
+			};
+			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
+
+			// Advance block number past any TTL
+			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(1000);
+
+			// Cleanup should fail because withdrawal is not finalized
+			let result = bridge.cleanup_withdrawal(withdrawal_id);
+			assert_eq!(result, Err(Error::RecordNotFinalized));
+		}
+
+		#[ink::test]
+		fn test_set_cleanup_ttl() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Default TTL
+			assert_eq!(bridge.cleanup_ttl(), 100_800);
+
+			// Update TTL as owner
+			let result = bridge.set_cleanup_ttl(50_000);
+			assert!(result.is_ok());
+			assert_eq!(bridge.cleanup_ttl(), 50_000);
+		}
+
+		#[ink::test]
+		fn test_set_cleanup_ttl_non_owner_fails() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Try to update TTL as non-owner
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let result = bridge.set_cleanup_ttl(50_000);
+			assert_eq!(result, Err(Error::Unauthorized));
+		}
+
+		#[ink::test]
+		fn test_set_min_deposit_amount() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Default min deposit amount
+			assert_eq!(bridge.min_deposit_amount(), 1_000_000_000);
+
+			// Update min deposit amount as owner
+			let result = bridge.set_min_deposit_amount(2_000_000_000);
+			assert!(result.is_ok());
+			assert_eq!(bridge.min_deposit_amount(), 2_000_000_000);
+		}
+
+		#[ink::test]
+		fn test_set_min_deposit_amount_non_owner_fails() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Try to update min deposit amount as non-owner
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let result = bridge.set_min_deposit_amount(2_000_000_000);
+			assert_eq!(result, Err(Error::Unauthorized));
 		}
 	}
 }

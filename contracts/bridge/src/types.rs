@@ -1,100 +1,104 @@
+//! Type definitions for the minimal viable bridge contract
+//!
+//! ## Naming Convention
+//! - `deposit_requests` — Created by users on Bittensor (Alpha locked, waiting for hAlpha on Hippius)
+//! - `withdrawals` — Created by guardians on Bittensor (Hippius withdrawal observed, release Alpha)
+
+// Allow truncation warnings from scale_derive macro expansion on enum discriminants
+#![allow(clippy::cast_possible_truncation)]
+
 use ink::prelude::vec::Vec;
 use ink::primitives::Hash;
-use ink::storage::Mapping;
 
 pub type Balance = u64;
 pub type ChainId = u16;
 pub type DepositNonce = u64;
-pub type CheckpointNonce = u64;
-pub type DepositId = Hash;
-pub type BurnId = Hash;
 pub type BlockNumber = u32;
 
-/// Domain separator for deposit ID generation (prevents hash collision)
-pub const DOMAIN_DEPOSIT: &[u8] = b"HIPPIUS_DEPOSIT-V1";
+/// Unique identifier for deposit requests (created by users)
+pub type DepositRequestId = Hash;
+
+/// Unique identifier for withdrawals (created by guardians, matches Hippius withdrawal_request ID)
+pub type WithdrawalId = Hash;
+
+/// Domain separator for deposit request ID generation (prevents hash collision)
+pub const DOMAIN_DEPOSIT_REQUEST: &[u8] = b"HIPPIUS_DEPOSIT_REQUEST-V2";
+
 /// Maximum number of guardians allowed in the guardian set
-pub const MAX_GUARDIANS: usize = 10; // TODO: adjust as needed
-/// Tolerance for stake transfer verification (10 rao)
+pub const MAX_GUARDIANS: usize = 10;
+
+/// Tolerance for stake transfer verification (10 alphaRao)
 /// Accounts for rounding in Subtensor pallet's transfer_stake operation
 pub const TRANSFER_TOLERANCE: u64 = 10;
 
-pub type LockedMapping = Mapping<DepositId, Balance>;
-pub type ProcessedDepositsMapping = Mapping<DepositId, bool>;
-pub type DeniedDepositsMapping = Mapping<DepositId, bool>;
-pub type PendingBurnsMapping = Mapping<BurnId, PendingBurn>;
-pub type PendingRefundsMapping = Mapping<DepositId, PendingRefund>;
-pub type UserDepositsMapping = Mapping<ink::primitives::AccountId, Vec<DepositId>>;
-pub type DepositMetadataMapping = Mapping<DepositId, DepositMetadata>;
-
-/// Metadata for a deposit, storing all context needed for releases and refunds
+/// Status of a deposit request (source side - user created)
+///
+/// Note: Bittensor (source) does not track whether Hippius (destination) credited.
+/// Hippius is the source of truth for crediting. Deposits stay in Requested status
+/// while Alpha remains locked as backing for minted hAlpha.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
-pub struct DepositMetadata {
-	/// Original sender who locked the stake on Bittensor
+pub enum DepositRequestStatus {
+	/// Alpha locked, awaiting credit on Hippius (or already credited - Hippius is source of truth)
+	Requested,
+	/// Admin marked after stuck (Alpha manually released)
+	Failed,
+}
+
+/// Status of a withdrawal (destination side - guardian created)
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[ink::scale_derive(Encode, Decode, TypeInfo)]
+#[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
+pub enum WithdrawalStatus {
+	/// Collecting votes for success
+	Pending,
+	/// Alpha released to recipient
+	Completed,
+	/// Admin cancelled after stuck
+	Cancelled,
+}
+
+/// A deposit request created by a user locking Alpha
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[ink::scale_derive(Encode, Decode, TypeInfo)]
+#[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
+pub struct DepositRequest {
+	/// Original sender who locked the stake
 	pub sender: ink::primitives::AccountId,
+	/// Recipient on Hippius who will receive hAlpha
+	pub recipient: ink::primitives::AccountId,
+	/// Amount locked (in alphaRao)
+	pub amount: Balance,
+	/// Nonce used for ID generation
+	pub nonce: DepositNonce,
 	/// Hotkey used for the stake
 	pub hotkey: ink::primitives::AccountId,
 	/// Network UID where the stake is locked
 	pub netuid: u16,
-	/// Amount locked (in rao)
-	pub amount: Balance,
+	/// Current status
+	pub status: DepositRequestStatus,
+	/// Block when request was created
+	pub created_at_block: BlockNumber,
 }
 
-/// Burn item from Hippius checkpoint (releases locked stake to recipient)
+/// A withdrawal record created by guardians when they observe a withdrawal_request on Hippius
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 #[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
-pub struct CanonicalBurn {
-	/// Burn ID from Hippius
-	pub burn_id: BurnId,
-	/// Recipient coldkey to receive the released stake
+pub struct Withdrawal {
+	/// The withdrawal request ID from Hippius
+	pub request_id: WithdrawalId,
+	/// Recipient on Bittensor who will receive Alpha
 	pub recipient: ink::primitives::AccountId,
-	/// Hotkey where the stake should be released
-	pub hotkey: ink::primitives::AccountId,
-	/// Network UID for the release
-	pub netuid: u16,
-	/// Amount to release (in rao)
+	/// Amount to release (in alphaRao)
 	pub amount: Balance,
-}
-
-/// Refund item (returns locked stake when deposit is denied on Hippius)
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[ink::scale_derive(Encode, Decode, TypeInfo)]
-#[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
-pub struct RefundItem {
-	/// Deposit ID to refund
-	pub deposit_id: DepositId,
-	/// Recipient coldkey to receive the refund (should match original sender)
-	pub recipient: ink::primitives::AccountId,
-	/// Amount to refund (in rao)
-	pub amount: Balance,
-}
-
-/// Pending burn approval record for individual burn
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[ink::scale_derive(Encode, Decode, TypeInfo)]
-#[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
-pub struct PendingBurn {
-	pub burn_id: BurnId,
-	pub recipient: ink::primitives::AccountId,
-	pub hotkey: ink::primitives::AccountId,
-	pub netuid: u16,
-	pub amount: Balance,
-	pub approves: Vec<ink::primitives::AccountId>,
-	pub denies: Vec<ink::primitives::AccountId>,
-	pub proposed_at: BlockNumber,
-}
-
-/// Pending refund approval record for individual deposit refund
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[ink::scale_derive(Encode, Decode, TypeInfo)]
-#[cfg_attr(feature = "std", derive(ink::storage::traits::StorageLayout))]
-pub struct PendingRefund {
-	pub deposit_id: DepositId,
-	pub recipient: ink::primitives::AccountId,
-	pub amount: Balance,
-	pub approves: Vec<ink::primitives::AccountId>,
-	pub denies: Vec<ink::primitives::AccountId>,
-	pub proposed_at: BlockNumber,
+	/// Guardian votes for success
+	pub votes: Vec<ink::primitives::AccountId>,
+	/// Current status
+	pub status: WithdrawalStatus,
+	/// Block when first guardian attested
+	pub created_at_block: BlockNumber,
+	/// Block when withdrawal was finalized (Completed or Cancelled)
+	pub finalized_at_block: Option<BlockNumber>,
 }
