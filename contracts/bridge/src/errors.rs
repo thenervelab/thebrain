@@ -41,12 +41,6 @@ pub enum Error {
 	DepositRequestNotFound,
 	/// Withdrawal not found
 	WithdrawalNotFound,
-	/// Deposit request already exists
-	DepositRequestAlreadyExists,
-	/// Withdrawal already exists
-	WithdrawalAlreadyExists,
-	/// Invalid status for this operation
-	InvalidStatus,
 	/// Deposit request already finalized
 	DepositRequestAlreadyFinalized,
 	/// Withdrawal already finalized

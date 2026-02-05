@@ -1258,17 +1258,19 @@ fn test_cleanup_withdrawal_request_before_ttl_fails() {
 #[test]
 fn test_set_cleanup_ttl() {
 	new_test_ext().execute_with(|| {
-		// Initial TTL should be 0 (default)
-		assert_eq!(crate::CleanupTTLBlocks::<Test>::get(), 0);
-
-		// Set a new TTL
-		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 100800));
-
-		// Verify TTL was updated
+		// Initial TTL should be the default (100800 blocks, ~7 days)
 		assert_eq!(crate::CleanupTTLBlocks::<Test>::get(), 100800);
 
+		// Set a new TTL (different from default)
+		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 50400));
+
+		// Verify TTL was updated
+		assert_eq!(crate::CleanupTTLBlocks::<Test>::get(), 50400);
+
 		// Check event
-		System::assert_has_event(Event::CleanupTTLUpdated { old_ttl: 0, new_ttl: 100800 }.into());
+		System::assert_has_event(
+			Event::CleanupTTLUpdated { old_ttl: 100800, new_ttl: 50400 }.into(),
+		);
 	});
 }
 

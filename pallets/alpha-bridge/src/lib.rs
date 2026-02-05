@@ -37,14 +37,14 @@ use frame_support::{
 	traits::{
 		fungible::Mutate,
 		tokens::{Fortitude, Precision, Preservation},
-		Currency, ExistenceRequirement, StorageVersion,
+		StorageVersion,
 	},
 	PalletId,
 };
 use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
 use sp_core::H256;
-use sp_runtime::traits::{AtLeast32BitUnsigned, Saturating};
+use sp_runtime::traits::AtLeast32BitUnsigned;
 use sp_std::{collections::btree_set::BTreeSet, prelude::*};
 
 pub use pallet::*;
@@ -69,8 +69,9 @@ pub mod pallet {
 	/// Balance type from pallet_balances
 	pub type BalanceOf<T> = <T as pallet_balances::Config>::Balance;
 
-	/// Maximum number of guardians
-	pub const MAX_GUARDIANS: u32 = 10;
+	/// Default TTL in blocks before finalized records can be cleaned up
+	/// ~7 days at 6 second block times
+	pub const DEFAULT_CLEANUP_TTL_BLOCKS: u32 = 100_800;
 
 	/// Status of a deposit record (destination side)
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
@@ -92,11 +93,7 @@ pub mod pallet {
 	/// Reason for cancellation (for audit trail)
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 	pub enum CancelReason {
-		InvalidAmount,
-		InvalidRecipient,
-		InsufficientStake,
 		AdminEmergency,
-		Fraudulent,
 	}
 
 	/// Record of a deposit (guardian-created, destination side)
@@ -228,11 +225,18 @@ pub mod pallet {
 	#[pallet::getter(fn next_withdrawal_request_nonce)]
 	pub type NextWithdrawalRequestNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
 
+	/// Default value for cleanup TTL
+	#[pallet::type_value]
+	pub fn DefaultCleanupTTL<T: Config>() -> BlockNumberFor<T> {
+		DEFAULT_CLEANUP_TTL_BLOCKS.into()
+	}
+
 	/// TTL in blocks before finalized records can be cleaned up
 	/// Default: 100800 blocks (~7 days at 6s blocks)
 	#[pallet::storage]
 	#[pallet::getter(fn cleanup_ttl_blocks)]
-	pub type CleanupTTLBlocks<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+	pub type CleanupTTLBlocks<T: Config> =
+		StorageValue<_, BlockNumberFor<T>, ValueQuery, DefaultCleanupTTL<T>>;
 
 	// ============ Events ============
 
@@ -355,16 +359,12 @@ pub mod pallet {
 		GuardianAlreadyExists,
 		/// Guardian not found in the set
 		GuardianNotFound,
-		/// Caller not authorized for this action
-		NotAuthorized,
 		/// Failed to convert between numeric balance types
 		AmountConversionFailed,
 		/// Failed to mint tokens
 		MintFailed,
 		/// Arithmetic overflow
 		ArithmeticOverflow,
-		/// Deposit already exists
-		DepositAlreadyExists,
 		/// Deposit already completed
 		DepositAlreadyCompleted,
 		/// Withdrawal request already completed or failed
@@ -856,11 +856,6 @@ pub mod pallet {
 			<T as pallet::Config>::PalletId::get().into_account_truncating()
 		}
 
-		/// Get the current balance of the Bridge pallet
-		pub fn balance() -> BalanceOf<T> {
-			pallet_balances::Pallet::<T>::free_balance(Self::account_id())
-		}
-
 		/// Ensure the caller is a guardian
 		pub fn ensure_guardian(account: &T::AccountId) -> DispatchResult {
 			ensure!(Guardians::<T>::get().contains(account), Error::<T>::NotGuardian);
@@ -932,34 +927,11 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Mint hAlpha to a recipient, handling existential deposit if needed
+		/// Mint hAlpha to a recipient
 		fn mint_to_recipient(recipient: &T::AccountId, amount: u64) -> DispatchResult {
 			let balance_amount = Self::amount_to_balance(amount)?;
-			let ed = T::Currency::minimum_balance();
-			let recipient_balance = T::Currency::free_balance(recipient);
-
-			let mut mint_amount = balance_amount;
-
-			// If the recipient doesn't have enough for ED, transfer from bridge account
-			if recipient_balance < ed {
-				let shortfall = ed - recipient_balance;
-				let bridge_account = Self::account_id();
-				T::Currency::transfer(
-					&bridge_account,
-					recipient,
-					shortfall,
-					ExistenceRequirement::KeepAlive,
-				)?;
-				// Adjust mint amount
-				let shortfall_u64: u64 = shortfall.try_into().map_err(|_| Error::<T>::AmountConversionFailed)?;
-				let shortfall_balance = Self::amount_to_balance(shortfall_u64)?;
-				mint_amount = balance_amount.saturating_sub(shortfall_balance);
-			}
-
-			// Mint the adjusted amount
-			pallet_balances::Pallet::<T>::mint_into(recipient, mint_amount)
+			pallet_balances::Pallet::<T>::mint_into(recipient, balance_amount)
 				.map_err(|_| Error::<T>::MintFailed)?;
-
 			Ok(())
 		}
 	}
