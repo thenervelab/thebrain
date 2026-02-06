@@ -506,7 +506,7 @@ mod bridge {
 
 			// TTL must have passed since creation (no status check for source records)
 			let current_block = self.env().block_number();
-			if current_block < request.created_at_block + self.cleanup_ttl_blocks {
+			if current_block < request.created_at_block.saturating_add(self.cleanup_ttl_blocks) {
 				return Err(Error::TTLNotExpired);
 			}
 
@@ -537,7 +537,7 @@ mod bridge {
 
 			// TTL must have passed since finalization
 			let current_block = self.env().block_number();
-			if current_block < finalized_at + self.cleanup_ttl_blocks {
+			if current_block < finalized_at.saturating_add(self.cleanup_ttl_blocks) {
 				return Err(Error::TTLNotExpired);
 			}
 
