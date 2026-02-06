@@ -70,6 +70,8 @@ pub struct AdminManualRelease {
 	#[ink(topic)]
 	pub recipient: ink::primitives::AccountId,
 	pub amount: Balance,
+	/// Optional deposit request ID for audit trail
+	pub deposit_request_id: Option<DepositRequestId>,
 }
 
 /// Emitted when guardian set and thresholds are updated

@@ -339,6 +339,8 @@ mod bridge {
 		///
 		/// After calling this, admin should manually release Alpha via admin_manual_release.
 		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		///
 		/// # Arguments
 		/// * `request_id` - The deposit request ID to fail
 		#[ink(message)]
@@ -367,14 +369,18 @@ mod bridge {
 
 		/// Admin manually releases Alpha to a recipient (for stuck deposits)
 		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		///
 		/// # Arguments
 		/// * `recipient` - Account to receive Alpha
 		/// * `amount` - Amount to release (in alphaRao)
+		/// * `deposit_request_id` - Optional deposit request ID for audit trail
 		#[ink(message)]
 		pub fn admin_manual_release(
 			&mut self,
 			recipient: AccountId,
 			amount: Balance,
+			deposit_request_id: Option<DepositRequestId>,
 		) -> Result<(), Error> {
 			self.ensure_owner()?;
 
@@ -386,12 +392,14 @@ mod bridge {
 				.transfer_stake(recipient, contract_hk, netuid, netuid, AlphaCurrency::from(amount))
 				.map_err(|_| Error::TransferFailed)?;
 
-			self.env().emit_event(AdminManualRelease { recipient, amount });
+			self.env().emit_event(AdminManualRelease { recipient, amount, deposit_request_id });
 
 			Ok(())
 		}
 
 		/// Admin cancels a withdrawal that is stuck
+		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
 		///
 		/// # Arguments
 		/// * `request_id` - The withdrawal ID to cancel
@@ -553,6 +561,9 @@ mod bridge {
 		#[ink(message)]
 		pub fn set_cleanup_ttl(&mut self, ttl_blocks: BlockNumber) -> Result<(), Error> {
 			self.ensure_owner()?;
+			if ttl_blocks == 0 {
+				return Err(Error::InvalidTTL);
+			}
 			let old_ttl = self.cleanup_ttl_blocks;
 			self.cleanup_ttl_blocks = ttl_blocks;
 			self.env().emit_event(CleanupTTLUpdated { old_ttl, new_ttl: ttl_blocks });
@@ -1335,6 +1346,15 @@ mod bridge {
 			let result = bridge.set_cleanup_ttl(50_000);
 			assert!(result.is_ok());
 			assert_eq!(bridge.cleanup_ttl(), 50_000);
+		}
+
+		#[ink::test]
+		fn test_set_cleanup_ttl_zero_fails() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			let result = bridge.set_cleanup_ttl(0);
+			assert_eq!(result, Err(Error::InvalidTTL));
 		}
 
 		#[ink::test]

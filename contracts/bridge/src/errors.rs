@@ -33,6 +33,8 @@ pub enum Error {
 	TooManyGuardians,
 	/// Withdrawal details do not match existing record
 	InvalidWithdrawalDetails,
+	/// TTL must be greater than zero
+	InvalidTTL,
 
 	// ============ State Errors ============
 	/// Bridge is paused

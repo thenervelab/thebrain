@@ -44,13 +44,13 @@ use frame_support::{
 use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
 use sp_core::H256;
-use sp_runtime::traits::AtLeast32BitUnsigned;
+use sp_runtime::traits::{AtLeast32BitUnsigned, Zero};
 use sp_std::{collections::btree_set::BTreeSet, prelude::*};
 
 pub use pallet::*;
 
 /// The current storage version
-const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+const STORAGE_VERSION: StorageVersion = StorageVersion::new(0);
 
 /// Domain separator for withdrawal request ID generation
 const DOMAIN_WITHDRAWAL_REQUEST: &[u8] = b"HIPPIUS-WITHDRAWAL-REQUEST-v1";
@@ -285,6 +285,8 @@ pub mod pallet {
 		AdminManualMint {
 			recipient: T::AccountId,
 			amount: u64,
+			/// Optional deposit ID for audit trail
+			deposit_id: Option<H256>,
 		},
 
 		/// Bridge pause state changed
@@ -379,6 +381,8 @@ pub mod pallet {
 		RecordNotFinalized,
 		/// TTL has not expired yet
 		TTLNotExpired,
+		/// TTL must be greater than zero
+		InvalidTTL,
 	}
 
 	// ============ Extrinsics ============
@@ -533,6 +537,8 @@ pub mod pallet {
 
 		/// Admin cancels a deposit that is stuck (Pending but not reaching threshold)
 		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		///
 		/// # Arguments
 		/// * `origin` - Must be root
 		/// * `request_id` - The deposit ID to cancel
@@ -566,6 +572,8 @@ pub mod pallet {
 		///
 		/// This restores the hAlpha that was burned during withdraw(). The mint cap
 		/// check and TotalMintedByBridge update are performed to maintain accounting.
+		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
@@ -609,6 +617,7 @@ pub mod pallet {
 			Self::deposit_event(Event::AdminManualMint {
 				recipient: request.sender,
 				amount: request.amount,
+				deposit_id: None,
 			});
 
 			Ok(())
@@ -619,16 +628,20 @@ pub mod pallet {
 		/// WARNING: This mints new hAlpha that wasn't part of a deposit flow.
 		/// Only use for emergency recovery. The amount counts toward the mint cap.
 		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		///
 		/// # Arguments
 		/// * `origin` - Must be root
 		/// * `recipient` - Account to receive hAlpha
 		/// * `amount` - Amount to mint (in halphaRao)
+		/// * `deposit_id` - Optional deposit ID for audit trail
 		#[pallet::call_index(4)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_global_mint_cap())]
 		pub fn admin_manual_mint(
 			origin: OriginFor<T>,
 			recipient: T::AccountId,
 			amount: u64,
+			deposit_id: Option<H256>,
 		) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -644,7 +657,7 @@ pub mod pallet {
 
 			Self::mint_to_recipient(&recipient, amount)?;
 
-			Self::deposit_event(Event::AdminManualMint { recipient, amount });
+			Self::deposit_event(Event::AdminManualMint { recipient, amount, deposit_id });
 
 			Ok(())
 		}
@@ -838,6 +851,7 @@ pub mod pallet {
 			ttl_blocks: BlockNumberFor<T>,
 		) -> DispatchResult {
 			ensure_root(origin)?;
+			ensure!(ttl_blocks > Zero::zero(), Error::<T>::InvalidTTL);
 
 			let old_ttl = CleanupTTLBlocks::<T>::get();
 			CleanupTTLBlocks::<T>::put(ttl_blocks);

@@ -570,7 +570,7 @@ fn test_admin_fail_withdrawal_request_mints_back() {
 		// Check events
 		System::assert_has_event(Event::WithdrawalRequestFailed { id: request_id }.into());
 		System::assert_has_event(
-			Event::AdminManualMint { recipient: user1(), amount: 1000 }.into(),
+			Event::AdminManualMint { recipient: user1(), amount: 1000, deposit_id: None }.into(),
 		);
 	});
 }
@@ -601,7 +601,7 @@ fn test_admin_manual_mint() {
 		let initial_balance = Balances::free_balance(&user1());
 		let initial_total_minted = crate::TotalMintedByBridge::<Test>::get();
 
-		assert_ok!(AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::root(), user1(), 500));
+		assert_ok!(AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::root(), user1(), 500, None));
 
 		// Balance should increase
 		assert_eq!(Balances::free_balance(&user1()), initial_balance + 500);
@@ -610,7 +610,7 @@ fn test_admin_manual_mint() {
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), initial_total_minted + 500);
 
 		// Check event
-		System::assert_has_event(Event::AdminManualMint { recipient: user1(), amount: 500 }.into());
+		System::assert_has_event(Event::AdminManualMint { recipient: user1(), amount: 500, deposit_id: None }.into());
 	});
 }
 
@@ -622,12 +622,12 @@ fn test_admin_manual_mint_respects_cap() {
 
 		// Try to mint more than remaining cap
 		assert_noop!(
-			AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::root(), user1(), 100),
+			AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::root(), user1(), 100, None),
 			Error::<Test>::CapExceeded
 		);
 
 		// Mint exactly up to cap should succeed
-		assert_ok!(AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::root(), user1(), 50));
+		assert_ok!(AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::root(), user1(), 50, None));
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 100);
 	});
 }
@@ -636,7 +636,7 @@ fn test_admin_manual_mint_respects_cap() {
 fn test_admin_manual_mint_by_non_root_fails() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::signed(alice()), user1(), 500),
+			AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::signed(alice()), user1(), 500, None),
 			sp_runtime::DispatchError::BadOrigin
 		);
 	});
@@ -1135,8 +1135,8 @@ fn test_cleanup_deposit_before_ttl_fails() {
 #[test]
 fn test_cleanup_pending_deposit_fails() {
 	new_test_ext().execute_with(|| {
-		// Set TTL to 0 so we can't fail due to TTL
-		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 0));
+		// Set TTL to 1 so we can't fail due to TTL
+		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 1));
 
 		// Create a pending deposit (only one attestation, threshold is 2)
 		let deposit_id = generate_deposit_id(1);
@@ -1150,6 +1150,9 @@ fn test_cleanup_pending_deposit_fails() {
 		// Verify deposit is pending
 		let deposit = crate::Deposits::<Test>::get(deposit_id).expect("Deposit should exist");
 		assert_eq!(deposit.status, DepositStatus::Pending);
+
+		// Advance past TTL so we hit RecordNotFinalized, not TTLNotExpired
+		System::set_block_number(100);
 
 		// Try to cleanup pending deposit
 		assert_noop!(
@@ -1270,6 +1273,16 @@ fn test_set_cleanup_ttl() {
 		// Check event
 		System::assert_has_event(
 			Event::CleanupTTLUpdated { old_ttl: 100800, new_ttl: 50400 }.into(),
+		);
+	});
+}
+
+#[test]
+fn test_set_cleanup_ttl_zero_fails() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 0),
+			Error::<Test>::InvalidTTL
 		);
 	});
 }
