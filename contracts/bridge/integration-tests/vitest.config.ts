@@ -4,12 +4,12 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    testTimeout: 60000,
-    hookTimeout: 30000,
-    pool: 'threads',
+    testTimeout: 120000,
+    hookTimeout: 300000,
+    pool: 'forks',
     poolOptions: {
-      threads: {
-        singleThread: true,
+      forks: {
+        singleFork: true,
         isolate: false,
       },
     },

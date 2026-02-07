@@ -116,14 +116,6 @@ pub enum ProxyCall {
 
 #[ink::scale_derive(Encode)]
 pub enum SubtensorCall {
-	#[codec(index = 85)]
-	MoveStake {
-		origin_hotkey: AccountId,
-		destination_hotkey: AccountId,
-		origin_netuid: NetUid,
-		destination_netuid: NetUid,
-		alpha_amount: AlphaCurrency,
-	},
 	#[codec(index = 86)]
 	TransferStake {
 		destination_coldkey: AccountId,

@@ -262,56 +262,57 @@ export function findContractEvent<T>(
 	return matchedEvent?.value as T | undefined;
 }
 
-export interface DepositMadeEvent {
+export interface DepositRequestCreatedEvent {
 	chain_id: number;
 	escrow_contract: string;
 	deposit_nonce: bigint;
 	sender: string;
+	recipient: string;
 	amount: bigint;
-	deposit_id: string | Uint8Array;
+	deposit_request_id: string | Uint8Array;
 }
 
-export interface ReleasedEvent {
-	burn_id: string | Uint8Array;
+export interface WithdrawalCompletedEvent {
+	withdrawal_id: string | Uint8Array;
 	recipient: string;
 	amount: bigint;
 }
 
-export interface RefundedEvent {
-	deposit_id: string | Uint8Array;
-	recipient: string;
-	amount: bigint;
+export interface WithdrawalAttestedEvent {
+	withdrawal_id: string | Uint8Array;
+	guardian: string;
+	vote_count: number;
 }
 
-export function expectDepositEvent(
+export function expectDepositRequestCreatedEvent(
 	contract: ReturnType<ContractSdk["getContract"]>,
 	finalized: TxFinalized
-): DepositMadeEvent {
-	const event = findContractEvent<DepositMadeEvent>(contract, finalized, "DepositMade");
+): DepositRequestCreatedEvent {
+	const event = findContractEvent<DepositRequestCreatedEvent>(contract, finalized, "DepositRequestCreated");
 	if (!event) {
-		throw new Error("DepositMade event not emitted");
+		throw new Error("DepositRequestCreated event not emitted");
 	}
 	return event;
 }
 
-export function expectReleasedEvent(
+export function expectWithdrawalCompletedEvent(
 	contract: ReturnType<ContractSdk["getContract"]>,
 	finalized: TxFinalized
-): ReleasedEvent {
-	const event = findContractEvent<ReleasedEvent>(contract, finalized, "Released");
+): WithdrawalCompletedEvent {
+	const event = findContractEvent<WithdrawalCompletedEvent>(contract, finalized, "WithdrawalCompleted");
 	if (!event) {
-		throw new Error("Released event not emitted");
+		throw new Error("WithdrawalCompleted event not emitted");
 	}
 	return event;
 }
 
-export function expectRefundedEvent(
+export function expectWithdrawalAttestedEvent(
 	contract: ReturnType<ContractSdk["getContract"]>,
 	finalized: TxFinalized
-): RefundedEvent {
-	const event = findContractEvent<RefundedEvent>(contract, finalized, "Refunded");
+): WithdrawalAttestedEvent {
+	const event = findContractEvent<WithdrawalAttestedEvent>(contract, finalized, "WithdrawalAttested");
 	if (!event) {
-		throw new Error("Refunded event not emitted");
+		throw new Error("WithdrawalAttested event not emitted");
 	}
 	return event;
 }
