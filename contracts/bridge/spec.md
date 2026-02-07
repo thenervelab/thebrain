@@ -283,7 +283,7 @@ ID = blake2_256(
 | Function | Description |
 |----------|-------------|
 | `admin_fail_deposit_request(request_id)` | Mark deposit as failed |
-| `admin_manual_release(recipient, amount)` | Release Alpha to user |
+| `admin_manual_release(recipient, amount, deposit_request_id?)` | Release Alpha to user |
 | `admin_cancel_withdrawal(request_id)` | Cancel stuck withdrawal |
 | `set_guardians_and_threshold(guardians, threshold)` | Update guardian set |
 | `pause()` / `unpause()` | Emergency controls |
@@ -311,7 +311,7 @@ ID = blake2_256(
 |-----------|-------------|
 | `admin_cancel_deposit(request_id, reason)` | Cancel stuck deposit |
 | `admin_fail_withdrawal_request(request_id)` | Fail withdrawal, mint hAlpha back |
-| `admin_manual_mint(recipient, amount)` | Emergency mint hAlpha |
+| `admin_manual_mint(recipient, amount, deposit_id?)` | Emergency mint hAlpha |
 | `add_guardian(guardian)` | Add guardian |
 | `remove_guardian(guardian)` | Remove guardian |
 | `set_approve_threshold(threshold)` | Update threshold |
@@ -329,7 +329,7 @@ ID = blake2_256(
 | `WithdrawalAttested` | Guardian votes on withdrawal |
 | `WithdrawalCompleted` | Threshold reached, Alpha released |
 | `WithdrawalCancelled` | Admin cancels withdrawal |
-| `AdminManualRelease` | Admin releases Alpha manually |
+| `AdminManualRelease` | Admin releases Alpha manually (includes optional `deposit_request_id`) |
 | `GuardiansUpdated` | Guardian set changed |
 | `Paused` / `Unpaused` | Pause state changed |
 | `OwnerUpdated` | Ownership transferred |
@@ -345,7 +345,7 @@ ID = blake2_256(
 | `DepositCancelled` | Admin cancels deposit |
 | `WithdrawalRequestCreated` | User burns hAlpha |
 | `WithdrawalRequestFailed` | Admin marks withdrawal as failed |
-| `AdminManualMint` | Admin mints hAlpha manually |
+| `AdminManualMint` | Admin mints hAlpha manually (includes optional `deposit_id`) |
 | `BridgePaused` | Pause state changed |
 | `GlobalMintCapUpdated` | Cap changed |
 | `ApproveThresholdUpdated` | Threshold changed |
@@ -408,6 +408,10 @@ if contract_stake < withdrawal.amount {
 }
 ```
 
+### Admin Pause Bypass
+
+Admin recovery functions (`admin_fail_deposit_request`, `admin_manual_release`, `admin_cancel_withdrawal` on Bittensor; `admin_cancel_deposit`, `admin_fail_withdrawal_request`, `admin_manual_mint` on Hippius) intentionally do **not** check the pause state. This is by design — admin must be able to operate during emergencies when the bridge is paused.
+
 ## Error Handling
 
 ### Bittensor Contract Errors
@@ -436,6 +440,7 @@ if contract_stake < withdrawal.amount {
 | `TransferFailed` | Stake transfer failed |
 | `StakeConsolidationFailed` | Consolidation failed |
 | `CodeUpgradeFailed` | Contract upgrade failed |
+| `InvalidTTL` | TTL must be greater than zero |
 | `RecordNotFinalized` | Destination record is still Pending |
 | `TTLNotExpired` | TTL hasn't passed yet |
 
@@ -464,6 +469,7 @@ if contract_stake < withdrawal.amount {
 | `InvalidDepositDetails` | Recipient/amount mismatch (poisoning) |
 | `AmountTooSmall` | Amount is zero |
 | `AccountingUnderflow` | Bug in mint tracking |
+| `InvalidTTL` | TTL must be greater than zero |
 | `RecordNotFinalized` | Destination record is still Pending |
 | `TTLNotExpired` | TTL hasn't passed yet |
 
@@ -473,7 +479,7 @@ if contract_stake < withdrawal.amount {
 
 1. Admin calls `admin_cancel_deposit(id, reason)` on Hippius → deposit status = `Cancelled`
 2. Admin calls `admin_fail_deposit_request(id)` on Bittensor → status = `Failed`
-3. Admin calls `admin_manual_release(sender, amount)` on Bittensor → Alpha returned
+3. Admin calls `admin_manual_release(sender, amount, deposit_request_id)` on Bittensor → Alpha returned
 
 ### Stuck Withdrawal (hAlpha burned, Alpha not released)
 
@@ -510,7 +516,7 @@ Records can be cleaned up after a configurable TTL to prevent unbounded storage 
 
 `100,800 blocks` (~7 days at 6 second block times)
 
-Configurable via `set_cleanup_ttl` (admin only).
+Configurable via `set_cleanup_ttl` (admin only). TTL must be greater than zero.
 
 ### Cleanup Functions
 
@@ -553,6 +559,7 @@ Configurable via `set_cleanup_ttl` (admin only).
 
 | Error | Description |
 |-------|-------------|
+| `InvalidTTL` | TTL must be greater than zero |
 | `RecordNotFinalized` | Destination record is still Pending |
 | `TTLNotExpired` | TTL hasn't passed yet |
 
@@ -598,4 +605,4 @@ The minimum deposit amount can be adjusted by the contract owner to adapt to mar
 |----------|-------|-------------|
 | `DOMAIN_WITHDRAWAL_REQUEST` | `"HIPPIUS-WITHDRAWAL-REQUEST-v1"` | ID domain separator |
 | `MAX_GUARDIANS` | 10 | Maximum guardians |
-| `STORAGE_VERSION` | 2 | Current storage version |
+| `STORAGE_VERSION` | 0 | Current storage version |

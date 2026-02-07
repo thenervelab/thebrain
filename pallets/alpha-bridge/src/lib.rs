@@ -395,19 +395,19 @@ pub mod pallet {
 		///
 		/// hAlpha is burned immediately - no escrow. If the withdrawal fails,
 		/// admin can manually mint hAlpha back via `admin_manual_mint`.
+		/// The recipient on Bittensor is automatically set to the sender's address.
 		///
 		/// # Arguments
 		/// * `origin` - Must be signed by the user
 		/// * `amount` - Amount of hAlpha to burn (in halphaRao)
-		/// * `recipient` - Recipient account on Bittensor to receive Alpha
 		#[pallet::call_index(0)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::request_unlock())]
 		pub fn withdraw(
 			origin: OriginFor<T>,
 			amount: u64,
-			recipient: T::AccountId,
 		) -> DispatchResult {
 			let sender = ensure_signed(origin)?;
+			let recipient = sender.clone();
 			Self::ensure_not_paused()?;
 
 			// Reject zero amount

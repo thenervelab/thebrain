@@ -305,7 +305,6 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.bob.address,
 				data: {
 					amount: bobDepositAmount,
-					recipient: context.accounts.bob.address,
 					hotkey: bobHotkey.address,
 					netuid,
 				},
@@ -372,7 +371,6 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.charlie.address,
 				data: {
 					amount: 1n,
-					recipient: context.accounts.charlie.address,
 					hotkey: charlieHotkey.address,
 					netuid,
 				},
@@ -392,7 +390,6 @@ describe("Bridge Contract Integration", () => {
 				origin: randomWallet.address,
 				data: {
 					amount: MIN_DEPOSIT,
-					recipient: randomWallet.address,
 					hotkey: randomWallet.address,
 					netuid,
 				},
@@ -411,7 +408,6 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.charlie.address,
 				data: {
 					amount: MIN_DEPOSIT,
-					recipient: context.accounts.charlie.address,
 					hotkey: charlieHotkey.address,
 					netuid: invalidNetuid,
 				},
@@ -582,7 +578,6 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.charlie.address,
 				data: {
 					amount: charlieDepositAmount,
-					recipient: context.accounts.charlie.address,
 					hotkey: charlieHotkey.address,
 					netuid,
 				},
@@ -720,7 +715,6 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.dave.address,
 				data: {
 					amount: MIN_DEPOSIT,
-					recipient: context.accounts.dave.address,
 					hotkey: daveHotkey.address,
 					netuid,
 				},
@@ -1248,7 +1242,6 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.dave.address,
 				data: {
 					amount: MIN_DEPOSIT * 2n,
-					recipient: context.accounts.dave.address,
 					hotkey: daveHotkey.address,
 					netuid,
 				},
@@ -1302,7 +1295,6 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.eve.address,
 				data: {
 					amount: MIN_DEPOSIT * 2n,
-					recipient: context.accounts.eve.address,
 					hotkey: eveHotkey.address,
 					netuid,
 				},

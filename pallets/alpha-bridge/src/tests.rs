@@ -367,11 +367,10 @@ fn test_user_withdraw_burns_halpha() {
 		let balance_after_deposit = Balances::free_balance(&user1());
 		let total_minted_after_deposit = crate::TotalMintedByBridge::<Test>::get();
 
-		// Now user withdraws
+		// Now user withdraws (recipient = sender automatically)
 		assert_ok!(AlphaBridge::<Test>::withdraw(
 			RuntimeOrigin::signed(user1()),
 			1000,
-			user2(), // recipient on Bittensor
 		));
 
 		// Balance should be reduced
@@ -385,7 +384,7 @@ fn test_user_withdraw_burns_halpha() {
 		assert_eq!(requests.len(), 1);
 		let (request_id, request) = &requests[0];
 		assert_eq!(request.sender, user1());
-		assert_eq!(request.recipient, user2());
+		assert_eq!(request.recipient, user1());
 		assert_eq!(request.amount, 1000);
 
 		// Check event
@@ -393,7 +392,7 @@ fn test_user_withdraw_burns_halpha() {
 			Event::WithdrawalRequestCreated {
 				id: *request_id,
 				sender: user1(),
-				recipient: user2(),
+				recipient: user1(),
 				amount: 1000,
 			}
 			.into(),
@@ -411,7 +410,6 @@ fn test_withdraw_with_insufficient_balance_fails() {
 			AlphaBridge::<Test>::withdraw(
 				RuntimeOrigin::signed(user1()),
 				excessive_amount,
-				user2(),
 			),
 			Error::<Test>::InsufficientBalance
 		);
@@ -424,7 +422,7 @@ fn test_withdraw_while_paused_fails() {
 		crate::Paused::<Test>::put(true);
 
 		assert_noop!(
-			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000, user2()),
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000),
 			Error::<Test>::BridgePaused
 		);
 	});
@@ -438,7 +436,7 @@ fn test_withdraw_while_paused_fails() {
 fn test_withdraw_zero_amount_fails() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 0, user2()),
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 0),
 			Error::<Test>::AmountTooSmall
 		);
 	});
@@ -450,7 +448,7 @@ fn test_withdraw_positive_amount_succeeds() {
 		// First, make sure TotalMintedByBridge is set so the accounting works
 		crate::TotalMintedByBridge::<Test>::put(10000);
 
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1, user2()));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1));
 	});
 }
 
@@ -545,7 +543,7 @@ fn test_admin_fail_withdrawal_request_mints_back() {
 		let balance_after_deposit = Balances::free_balance(&user1());
 
 		// Withdraw
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000, user2()));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
 
 		let balance_after_withdraw = Balances::free_balance(&user1());
 		assert_eq!(balance_after_withdraw, balance_after_deposit - 1000);
@@ -580,7 +578,7 @@ fn test_admin_fail_withdrawal_respects_mint_cap() {
 	new_test_ext().execute_with(|| {
 		// Setup: mint and withdraw
 		crate::TotalMintedByBridge::<Test>::put(5000);
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000, user2()));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
 
 		// Now set a low cap that would be exceeded by minting back
 		crate::GlobalMintCap::<Test>::put(4500); // Below what would be needed
@@ -866,7 +864,7 @@ fn test_total_minted_decreases_on_withdraw() {
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 5000);
 
 		// Withdraw
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000, user2()));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
 
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 4000);
 	});
@@ -881,7 +879,7 @@ fn test_withdraw_accounting_underflow_fails() {
 
 		// Trying to withdraw should fail due to underflow
 		assert_noop!(
-			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000, user2()),
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000),
 			Error::<Test>::AccountingUnderflow
 		);
 	});
@@ -923,11 +921,11 @@ fn test_multiple_deposits_and_withdrawals_accounting() {
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 5000);
 
 		// Withdraw 1
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000, user2()));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 4000);
 
 		// Withdraw 2
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user2()), 500, user1()));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user2()), 500));
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 3500);
 	});
 }
@@ -993,7 +991,7 @@ fn test_full_withdrawal_cycle() {
 		let balance_after_deposit = Balances::free_balance(&user1());
 
 		// User initiates withdrawal (burns hAlpha)
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000, user2()));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
 
 		// Verify burn
 		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit - 1000);
@@ -1006,7 +1004,7 @@ fn test_full_withdrawal_cycle() {
 		let request = crate::WithdrawalRequests::<Test>::get(request_id).unwrap();
 		assert_eq!(request.status, crate::pallet::WithdrawalRequestStatus::Requested);
 		assert_eq!(request.sender, user1());
-		assert_eq!(request.recipient, user2());
+		assert_eq!(request.recipient, user1());
 		assert_eq!(request.amount, 1000);
 	});
 }
@@ -1032,7 +1030,7 @@ fn test_failed_withdrawal_recovery_cycle() {
 		let balance_after_deposit = Balances::free_balance(&user1());
 
 		// User initiates withdrawal
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000, user2()));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 4000);
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
@@ -1190,7 +1188,6 @@ fn test_cleanup_withdrawal_request_after_ttl() {
 		assert_ok!(AlphaBridge::<Test>::withdraw(
 			RuntimeOrigin::signed(user1()),
 			1000,
-			user2(),
 		));
 
 		// Get the request
@@ -1239,7 +1236,6 @@ fn test_cleanup_withdrawal_request_before_ttl_fails() {
 		assert_ok!(AlphaBridge::<Test>::withdraw(
 			RuntimeOrigin::signed(user1()),
 			1000,
-			user2(),
 		));
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;

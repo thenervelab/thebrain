@@ -112,17 +112,16 @@ mod bridge {
 		///
 		/// Creates a deposit request that guardians will observe and attest on Hippius.
 		/// The caller MUST have added this contract as a proxy on Bittensor.
+		/// The recipient on Hippius is automatically set to the caller's address.
 		///
 		/// # Arguments
 		/// * `amount` - Amount of Alpha to lock (in alphaRao)
-		/// * `recipient` - Recipient on Hippius who will receive hAlpha
 		/// * `hotkey` - Hotkey where the stake is currently held
 		/// * `netuid` - Network UID (must match chain_id)
 		#[ink(message)]
 		pub fn deposit(
 			&mut self,
 			amount: Balance,
-			recipient: AccountId,
 			hotkey: AccountId,
 			netuid: NetUid,
 		) -> Result<DepositRequestId, Error> {
@@ -137,6 +136,7 @@ mod bridge {
 			}
 
 			let sender = self.env().caller();
+			let recipient = sender;
 			let contract_account = self.env().account_id();
 
 			// Verify sender has sufficient stake
