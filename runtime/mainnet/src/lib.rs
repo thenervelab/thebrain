@@ -114,6 +114,16 @@ impl pallet_arion::Config for Runtime {
 	type MapAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
     type StatsAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
     type WeightAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type AttestationAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type MaxContentHashLen = ConstU32<32>;
+	type AttestationRetentionBuckets = ConstU32<168>;
+	type WeightInfo = pallet_arion::weights::SubstrateWeight<Runtime>;
+	type MaxAttestations = ConstU32<1000>;
+	type MaxShardHashLen = ConstU32<100>;
+	type MaxWardenPubkeyLen = ConstU32<100>;
+	type MaxSignatureLen = ConstU32<100>;
+	type MaxMerkleProofLen = ConstU32<100>;
+	type MaxWardenIdLen = ConstU32<100>;
     type DepositCurrency = Balances;
     type FamilyRegistry = pallet_registration::Pallet<Runtime>;
     type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
@@ -124,7 +134,7 @@ impl pallet_arion::Config for Runtime {
     type MaxStatsUpdates = MaxStatsUpdates;
     type MaxFamilies = ConstU32<100>;
     type MaxChildrenTotal = ConstU32<1000>;
-    type MaxChildrenPerFamily = ConstU32<32>;
+    type MaxChildrenPerFamily = ConstU32<35>;
     type BaseChildDeposit = BaseChildDeposit;
     type GlobalDepositHalvingPeriodBlocks = GlobalDepositHalvingPeriodBlocks;
     type UnregisterCooldownBlocks = UnregisterCooldownBlocks;
@@ -232,7 +242,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9164,
+	spec_version: 9143,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,

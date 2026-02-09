@@ -1,18 +1,19 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-//! `pallet-arion`
-//!
-//! Minimal scaffold for Arion’s **on-chain CRUSH map** + **periodic miner stats**.
-//! Goals:
-//! - Keep placement-critical state on-chain (epoch → CRUSH input map)
-//! - Allow periodic aggregated stats updates without per-heartbeat writes
-//! - Avoid epoch regressions
-//! - Provide **node registration** primitives to:
-//!   - prevent spoofed node ids (node_id must prove ownership via signature)
-//!   - enforce global adaptive registration cost (anti-sybil / anti-yoyo)
-//!   - support deregistration with cooldown + unbonding (anti lock/unlock spam)
-//!
-//! This pallet is designed to be copied into your Substrate chain repository.
+pub mod weights;
+pub use weights::WeightInfo;
+
+// `pallet-arion`
+//
+// Minimal scaffold for Arion’s **on-chain CRUSH map** + **periodic miner stats**.
+// Goals:
+// - Keep placement-critical state on-chain (epoch → CRUSH input map)
+// - Allow periodic aggregated stats updates without per-heartbeat writes
+// - Avoid epoch regressions
+// - Provide **node registration** primitives to:
+//   - prevent spoofed node ids (node_id must prove ownership via signature)
+//   - enforce global adaptive registration cost (anti-sybil / anti-yoyo)
+//   - support deregistration with cooldown + unbonding (anti lock/unlock spam)
 
 use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
@@ -35,6 +36,12 @@ pub use pallet::*;
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
+
+    /// Domain separator for attestation signing.
+    ///
+    /// IMPORTANT: This must be typed as `&[u8]` (slice) to match off-chain SCALE encoding.
+    /// Using `b"..."` directly would be `&[u8; N]` (fixed array) which encodes differently.
+    const ATTESTATION_DOMAIN_SEPARATOR: &[u8] = b"ARION_ATTESTATION_V1";
 
     type BalanceOf<T> =
         <<T as Config>::DepositCurrency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
@@ -78,7 +85,7 @@ pub mod pallet {
             // Optional: Enforce specific proxy type
             // proxy_definitions.iter().any(|p| {
             //     &p.delegate == child && 
-            //     matches!(p.proxy_type, ProxyType::NonTransfer)  // or your specific type
+            //     matches!(p.proxy_type, ProxyType::NonTransfer) 
             // })
         }
     }
@@ -199,6 +206,200 @@ pub mod pallet {
         pub stats: MinerStats,
     }
 
+    /// Audit result from warden proof-of-storage verification.
+    #[derive(Clone, Copy, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+    pub enum AuditResult {
+        /// Miner provided valid proof for the challenged data
+        Passed,
+        /// Miner provided incorrect proof
+        Failed,
+        /// Miner did not respond within timeout
+        Timeout,
+        /// Miner's proof was malformed or cryptographically invalid
+        InvalidProof,
+    }
+
+    impl AuditResult {
+        /// Convert to u8 for SCALE encoding consistency with off-chain components.
+        ///
+        /// This must match the encoding used by warden, validator, and chain-submitter
+        /// when signing/verifying attestations.
+        pub fn as_u8(&self) -> u8 {
+            match self {
+                AuditResult::Passed => 0,
+                AuditResult::Failed => 1,
+                AuditResult::Timeout => 2,
+                AuditResult::InvalidProof => 3,
+            }
+        }
+    }
+
+    /// Attestation record (signed by warden after proof-of-storage audit).
+    #[derive(Encode, Decode, TypeInfo, MaxEncodedLen)]
+    #[scale_info(skip_type_params(MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId))]
+    pub struct AttestationRecord<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId>
+    where
+        MaxShardHash: Get<u32> + 'static,
+        MaxWardenPubkey: Get<u32> + 'static,
+        MaxSignature: Get<u32> + 'static,
+        MaxMerkleProof: Get<u32> + 'static,
+        MaxWardenId: Get<u32> + 'static,
+    {
+        /// BLAKE3 hash of the shard that was audited (hex string bytes)
+        pub shard_hash: BoundedVec<u8, MaxShardHash>,
+        /// UID of the miner being audited
+        pub miner_uid: u32,
+        /// Result of the audit
+        pub result: AuditResult,
+        /// Random seed used to generate the challenge
+        pub challenge_seed: [u8; 32],
+        /// Block number when challenge was issued
+        pub block_number: u64,
+        /// Unix timestamp when challenge was issued
+        pub timestamp: u64,
+        /// Warden's Ed25519 public key (32 bytes)
+        pub warden_pubkey: BoundedVec<u8, MaxWardenPubkey>,
+        /// Ed25519 signature over attestation (64 bytes)
+        pub signature: BoundedVec<u8, MaxSignature>,
+        /// Merkle proof signature hash for proof-of-storage verification
+        pub merkle_proof_sig_hash: BoundedVec<u8, MaxMerkleProof>,
+        /// Warden identifier (unique warden ID)
+        pub warden_id: BoundedVec<u8, MaxWardenId>,
+    }
+
+    impl<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId> Clone 
+        for AttestationRecord<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId>
+    where
+        MaxShardHash: Get<u32> + 'static,
+        MaxWardenPubkey: Get<u32> + 'static,
+        MaxSignature: Get<u32> + 'static,
+        MaxMerkleProof: Get<u32> + 'static,
+        MaxWardenId: Get<u32> + 'static,
+    {
+        fn clone(&self) -> Self {
+            Self {
+                shard_hash: self.shard_hash.clone(),
+                miner_uid: self.miner_uid,
+                result: self.result,
+                challenge_seed: self.challenge_seed,
+                block_number: self.block_number,
+                timestamp: self.timestamp,
+                warden_pubkey: self.warden_pubkey.clone(),
+                signature: self.signature.clone(),
+                merkle_proof_sig_hash: self.merkle_proof_sig_hash.clone(),
+                warden_id: self.warden_id.clone(),
+            }
+        }
+    }
+
+    impl<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId> PartialEq 
+        for AttestationRecord<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId>
+    where
+        MaxShardHash: Get<u32> + 'static,
+        MaxWardenPubkey: Get<u32> + 'static,
+        MaxSignature: Get<u32> + 'static,
+        MaxMerkleProof: Get<u32> + 'static,
+        MaxWardenId: Get<u32> + 'static,
+    {
+        fn eq(&self, other: &Self) -> bool {
+            self.shard_hash == other.shard_hash &&
+            self.miner_uid == other.miner_uid &&
+            self.result == other.result &&
+            self.challenge_seed == other.challenge_seed &&
+            self.block_number == other.block_number &&
+            self.timestamp == other.timestamp &&
+            self.warden_pubkey == other.warden_pubkey &&
+            self.signature == other.signature &&
+            self.merkle_proof_sig_hash == other.merkle_proof_sig_hash &&
+            self.warden_id == other.warden_id
+        }
+    }
+
+    impl<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId> Eq 
+        for AttestationRecord<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId>
+    where
+        MaxShardHash: Get<u32> + 'static,
+        MaxWardenPubkey: Get<u32> + 'static,
+        MaxSignature: Get<u32> + 'static,
+        MaxMerkleProof: Get<u32> + 'static,
+        MaxWardenId: Get<u32> + 'static,
+    {}
+
+    impl<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId> sp_std::fmt::Debug
+        for AttestationRecord<MaxShardHash, MaxWardenPubkey, MaxSignature, MaxMerkleProof, MaxWardenId>
+    where
+        MaxShardHash: Get<u32> + 'static,
+        MaxWardenPubkey: Get<u32> + 'static,
+        MaxSignature: Get<u32> + 'static,
+        MaxMerkleProof: Get<u32> + 'static,
+        MaxWardenId: Get<u32> + 'static,
+    {
+        fn fmt(&self, f: &mut sp_std::fmt::Formatter<'_>) -> sp_std::fmt::Result {
+            f.debug_struct("AttestationRecord")
+                .field("shard_hash", &self.shard_hash)
+                .field("miner_uid", &self.miner_uid)
+                .field("result", &self.result)
+                .field("challenge_seed", &self.challenge_seed)
+                .field("block_number", &self.block_number)
+                .field("timestamp", &self.timestamp)
+                .field("warden_pubkey", &self.warden_pubkey)
+                .field("signature", &self.signature)
+                .field("merkle_proof_sig_hash", &self.merkle_proof_sig_hash)
+                .field("warden_id", &self.warden_id)
+                .finish()
+        }
+    }
+
+    /// Compact commitment for epoch attestation bundles stored on-chain.
+    ///
+    /// This enables third-party verification:
+    /// 1. Query chain: `EpochAttestationCommitments[epoch]`
+    /// 2. Download bundle from Arion: `GET /download/{arion_content_hash}`
+    /// 3. Verify `BLAKE3(bundle_bytes) == arion_content_hash`
+    /// 4. Recompute merkle roots and compare against commitment
+    /// 5. Verify individual attestation signatures
+    #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+    #[scale_info(skip_type_params(MaxContentHash))]
+    pub struct EpochAttestationCommitment<MaxContentHash>
+    where
+        MaxContentHash: Get<u32> + 'static,
+    {
+        /// Epoch this commitment covers
+        pub epoch: u64,
+        /// BLAKE3 hash of the SCALE-encoded AttestationBundle (for Arion retrieval)
+        pub arion_content_hash: BoundedVec<u8, MaxContentHash>,
+        /// Merkle root of all attestation leaves
+        pub attestation_merkle_root: [u8; 32],
+        /// Merkle root of unique warden public keys
+        pub warden_pubkey_merkle_root: [u8; 32],
+        /// Number of attestations in the bundle
+        pub attestation_count: u32,
+        /// Block number when commitment was submitted
+        pub submitted_at_block: u64,
+    }
+
+    /// Warden registration status.
+    #[derive(Clone, Copy, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+    pub enum WardenStatus {
+        /// Actively registered and authorized to submit attestations
+        Active,
+        /// Deregistered, attestations from this warden will be rejected
+        Deregistered,
+    }
+
+    /// Warden registration information.
+    ///
+    /// Tracks authorized wardens for third-party verification of attestation authorization.
+    #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+    pub struct WardenInfo<BlockNumber> {
+        /// Current registration status
+        pub status: WardenStatus,
+        /// Block number when warden was registered
+        pub registered_at: BlockNumber,
+        /// Block number when warden was deregistered (if applicable)
+        pub deregistered_at: Option<BlockNumber>,
+    }
+
     /// Network-wide totals (validator-observed).
     #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
     pub struct NetworkTotals {
@@ -248,7 +449,6 @@ pub mod pallet {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
         /// Sudo/admin origin for pallet parameters.
-        /// Configure this as `EnsureRoot` (or a dedicated governance origin) in your runtime.
         type ArionAdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
         /// Who is allowed to publish a new CRUSH map epoch.
@@ -257,13 +457,15 @@ pub mod pallet {
         /// Who is allowed to submit periodic miner stats aggregates.
         type StatsAuthorityOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
+        /// Who is allowed to submit warden attestations.
+        type AttestationAuthorityOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
         /// Currency used to reserve deposits for child registrations.
         type DepositCurrency: ReservableCurrency<Self::AccountId>;
 
-        /// Family registry hook (TODO: wire to your pallet).
+        /// Family registry hook (TODO: wire to pallet).
         type FamilyRegistry: FamilyRegistry<Self::AccountId>;
 
-        /// Proxy verification hook (TODO: wire to `pallet-proxy` / your rules).
         type ProxyVerifier: ProxyVerifier<Self::AccountId>;
 
         /// Enforce that miners in submitted CRUSH maps must be present in this pallet’s registry.
@@ -286,6 +488,40 @@ pub mod pallet {
         /// Max number of miner stats updates per submission.
         #[pallet::constant]
         type MaxStatsUpdates: Get<u32>;
+
+        /// Max number of attestations per submission.
+        #[pallet::constant]
+        type MaxAttestations: Get<u32>;
+
+        /// Max bytes for shard hash in attestation.
+        #[pallet::constant]
+        type MaxShardHashLen: Get<u32>;
+
+        /// Max bytes for warden pubkey in attestation.
+        #[pallet::constant]
+        type MaxWardenPubkeyLen: Get<u32>;
+
+        /// Max bytes for signature in attestation.
+        #[pallet::constant]
+        type MaxSignatureLen: Get<u32>;
+
+        /// Max bytes for Merkle proof signature hash in attestation.
+        #[pallet::constant]
+        type MaxMerkleProofLen: Get<u32>;
+
+        /// Max bytes for warden ID in attestation.
+        #[pallet::constant]
+        type MaxWardenIdLen: Get<u32>;
+
+        /// Max bytes for content hash in attestation commitment (BLAKE3 = 32 bytes).
+        #[pallet::constant]
+        type MaxContentHashLen: Get<u32>;
+
+        /// Number of attestation buckets to retain before pruning.
+        /// Older buckets can be pruned to prevent unbounded storage growth.
+        /// Default recommendation: 1000 buckets (~7 days at 300 blocks/bucket, 6s blocks)
+        #[pallet::constant]
+        type AttestationRetentionBuckets: Get<u32>;
 
         // --- Registration economics / safety controls ---
 
@@ -386,6 +622,9 @@ pub mod pallet {
         /// Integrity failure penalty per fail (in u16 weight units).
         #[pallet::constant]
         type IntegrityFailPenalty: Get<u16>;
+
+        /// Weight information for extrinsics in this pallet.
+        type WeightInfo: crate::weights::WeightInfo;
     }
 
 	#[pallet::pallet]
@@ -428,6 +667,57 @@ pub mod pallet {
     /// Stats by miner uid (latest).
     #[pallet::storage]
     pub type MinerStatsByUid<T> = StorageMap<_, Blake2_128Concat, u32, MinerStats, OptionQuery>;
+
+    // -------------------------
+    // Attestation state
+    // -------------------------
+
+    /// Current attestation bucket (monotonic).
+    #[pallet::storage]
+    pub type CurrentAttestationBucket<T> = StorageValue<_, u32, ValueQuery>;
+
+    /// Attestations by bucket (bounded list of attestation records).
+    #[pallet::storage]
+    pub type AttestationsByBucket<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        u32,
+        BoundedVec<
+            AttestationRecord<T::MaxShardHashLen, T::MaxWardenPubkeyLen, T::MaxSignatureLen, T::MaxMerkleProofLen, T::MaxWardenIdLen>,
+            T::MaxAttestations,
+        >,
+        ValueQuery,
+    >;
+
+    /// Epoch attestation commitments for third-party verification.
+    ///
+    /// Maps epoch → commitment containing merkle roots and Arion content hash.
+    /// The full attestation bundle can be retrieved from Arion using the content hash.
+    #[pallet::storage]
+    pub type EpochAttestationCommitments<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        u64,
+        EpochAttestationCommitment<T::MaxContentHashLen>,
+        OptionQuery,
+    >;
+
+    /// Registered wardens authorized to submit attestations.
+    ///
+    /// Maps warden Ed25519 public key (32 bytes) → registration info.
+    /// This enables third-party verification of warden authorization.
+    #[pallet::storage]
+    pub type RegisteredWardens<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        [u8; 32],
+        WardenInfo<BlockNumberFor<T>>,
+        OptionQuery,
+    >;
+
+    /// Total count of active (not deregistered) wardens.
+    #[pallet::storage]
+    pub type ActiveWardenCount<T> = StorageValue<_, u32, ValueQuery>;
 
     // -------------------------
     // Registration state
@@ -574,6 +864,15 @@ pub mod pallet {
         CrushMapPublished { epoch: u64, miners: u32, root: H256 },
         /// Miner stats were updated for a bucket.
         MinerStatsUpdated { bucket: u32, updates: u32 },
+        /// Attestations were submitted for a bucket.
+        AttestationsSubmitted { bucket: u32, count: u32 },
+        /// Attestation commitment was submitted for an epoch.
+        AttestationCommitmentSubmitted {
+            epoch: u64,
+            attestation_count: u32,
+            attestation_merkle_root: [u8; 32],
+            warden_pubkey_merkle_root: [u8; 32],
+        },
         /// A child node was registered under a family.
         ChildRegistered {
             family: T::AccountId,
@@ -604,6 +903,21 @@ pub mod pallet {
         LockupEnabledSet { enabled: bool },
         /// Base child deposit floor was set by admin.
         BaseChildDepositSet { deposit: BalanceOf<T> },
+        /// A warden was registered and authorized to submit attestations.
+        WardenRegistered {
+            warden_pubkey: [u8; 32],
+            registered_at: BlockNumberFor<T>,
+        },
+        /// A warden was deregistered and can no longer submit attestations.
+        WardenDeregistered {
+            warden_pubkey: [u8; 32],
+            deregistered_at: BlockNumberFor<T>,
+        },
+        /// Old attestation buckets were pruned.
+        AttestationBucketsPruned {
+            pruned_count: u32,
+            oldest_remaining: u32,
+        },
     }
 
     #[pallet::error]
@@ -656,6 +970,26 @@ pub mod pallet {
         WeightBucketRegression,
         /// Too many node weight updates.
         TooManyNodeWeightUpdates,
+        /// Attestation bucket regression.
+        AttestationBucketRegression,
+        /// Too many attestations in one call.
+        TooManyAttestations,
+        /// Attestation list is full for this bucket.
+        AttestationBucketFull,
+        /// Invalid attestation signature.
+        InvalidAttestationSignature,
+        /// Attestation commitment already exists for this epoch.
+        AttestationCommitmentAlreadyExists,
+        /// Invalid content hash length (expected 32 bytes for BLAKE3).
+        InvalidContentHashLength,
+        /// Warden is already registered.
+        WardenAlreadyRegistered,
+        /// Warden is not registered.
+        WardenNotRegistered,
+        /// Attestation submitted by unregistered warden.
+        UnregisteredWarden,
+        /// Cannot prune buckets within retention period.
+        PruningWithinRetentionPeriod,
     }
 
     impl<T: Config> Pallet<T> {
@@ -737,6 +1071,47 @@ pub mod pallet {
             let pk = ed25519::Public::from_raw(node_id);
             let sig = ed25519::Signature::from_raw(sig);
             sig.verify(message, &pk)
+        }
+
+        /// Verify attestation signature.
+        ///
+        /// Constructs the canonical signing message from attestation fields and verifies
+        /// the Ed25519 signature using the warden's public key.
+        fn verify_attestation_sig(
+            attestation: &AttestationRecord<T::MaxShardHashLen, T::MaxWardenPubkeyLen, T::MaxSignatureLen, T::MaxMerkleProofLen, T::MaxWardenIdLen>,
+        ) -> bool {
+            // Ensure warden_pubkey is exactly 32 bytes (Ed25519)
+            let pubkey_bytes: [u8; 32] = match attestation.warden_pubkey.as_slice().try_into() {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+
+            // Ensure signature is exactly 64 bytes (Ed25519)
+            let sig_bytes: [u8; 64] = match attestation.signature.as_slice().try_into() {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+
+            // Construct canonical message for signature verification
+            // Domain-separated payload: SCALE(domain_sep, fields...)
+            // IMPORTANT: Uses ATTESTATION_DOMAIN_SEPARATOR (&[u8] slice) which SCALE-encodes
+            // with a length prefix, matching off-chain warden/validator encoding.
+            let message = (
+                ATTESTATION_DOMAIN_SEPARATOR,
+                attestation.shard_hash.as_slice(),
+                attestation.miner_uid,
+                attestation.result.as_u8(),
+                attestation.challenge_seed,
+                attestation.block_number,
+                attestation.timestamp,
+                attestation.merkle_proof_sig_hash.as_slice(),
+                attestation.warden_id.as_slice(),
+            ).encode();
+
+            // Verify Ed25519 signature
+            let pk = ed25519::Public::from_raw(pubkey_bytes);
+            let sig = ed25519::Signature::from_raw(sig_bytes);
+            sig.verify(&message[..], &pk)
         }
 
         fn ensure_miner_records_registered(
@@ -951,7 +1326,7 @@ pub mod pallet {
         /// Updates:
         /// - `CurrentEpoch`
         #[pallet::call_index(0)]
-        #[pallet::weight((0, Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::submit_crush_map(miners.len() as u32), Pays::No))]
         pub fn submit_crush_map(
             origin: OriginFor<T>,
             epoch: u64,
@@ -1002,7 +1377,7 @@ pub mod pallet {
         ///
         /// Suggested: call every N blocks (e.g. 300) with aggregates.
         #[pallet::call_index(1)]
-        #[pallet::weight((0, Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::submit_miner_stats(updates.len() as u32), Pays::No))]
         pub fn submit_miner_stats(
             origin: OriginFor<T>,
             bucket: u32,
@@ -1039,7 +1414,7 @@ pub mod pallet {
         /// Signature payload (domain-separated, SCALE-encoded):
         /// - ("ARION_NODE_REG_V1", family, child, node_id, nonce)
         #[pallet::call_index(10)]
-        #[pallet::weight((0, Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::register_child(), Pays::No))]
         pub fn register_child(
             origin: OriginFor<T>,
             family: T::AccountId,
@@ -1167,7 +1542,7 @@ pub mod pallet {
         /// - Node id is released from the active registry, but put in cooldown
         /// - Deposit remains reserved until `claim_unbonded`
         #[pallet::call_index(11)]
-        #[pallet::weight((0, Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::deregister_child(), Pays::No))]
         pub fn deregister_child(origin: OriginFor<T>, child: T::AccountId) -> DispatchResult {
             let who = ensure_signed(origin)?;
 
@@ -1224,7 +1599,7 @@ pub mod pallet {
         ///
         /// Note: this does NOT bypass cooldown; cooldown is enforced on `register_child`.
         #[pallet::call_index(12)]
-        #[pallet::weight((0, Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::claim_unbonded(), Pays::No))]
         pub fn claim_unbonded(origin: OriginFor<T>, child: T::AccountId) -> DispatchResult {
             let who = ensure_signed(origin)?;
 
@@ -1255,7 +1630,7 @@ pub mod pallet {
         ///
         /// This is the **recommended** path (deterministic on-chain weight calculation).
         #[pallet::call_index(20)]
-        #[pallet::weight((0, Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::submit_node_quality(updates.len() as u32), Pays::No))]
         pub fn submit_node_quality(
             origin: OriginFor<T>,
             bucket: u32,
@@ -1279,11 +1654,133 @@ pub mod pallet {
             Self::apply_node_weights_and_recompute(bucket, &node_updates)
         }
 
+        /// Submit warden proof-of-storage attestations.
+        ///
+        /// Attestations are signed audit results from wardens that verify miners
+        /// are storing the data they claim to store. These are used for:
+        /// - Reputation scoring
+        /// - Slashing for failed audits
+        /// - Rewarding successful storage proofs
+        ///
+        /// Expected usage:
+        /// - Called periodically by the chain-submitter service
+        /// - Warden signs attestations with Ed25519 keypair
+        /// - Signature verification is performed on-chain for each attestation
+        ///
+        /// # Security
+        /// - Each attestation signature is verified using Ed25519
+        /// - Invalid signatures are rejected with InvalidAttestationSignature error
+        #[pallet::call_index(2)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::submit_attestations(attestations.len() as u32), Pays::No))]
+        pub fn submit_attestations(
+            origin: OriginFor<T>,
+            bucket: u32,
+            attestations: BoundedVec<
+                AttestationRecord<T::MaxShardHashLen, T::MaxWardenPubkeyLen, T::MaxSignatureLen, T::MaxMerkleProofLen, T::MaxWardenIdLen>,
+                T::MaxAttestations,
+            >,
+        ) -> DispatchResult {
+            T::AttestationAuthorityOrigin::ensure_origin(origin)?;
+
+            let cur = CurrentAttestationBucket::<T>::get();
+            ensure!(bucket >= cur, Error::<T>::AttestationBucketRegression);
+
+            let count = attestations.len() as u32;
+            ensure!(count > 0, Error::<T>::TooManyAttestations);
+
+            // Verify all attestation signatures before storing
+            for attestation in attestations.iter() {
+                ensure!(
+                    Self::verify_attestation_sig(attestation),
+                    Error::<T>::InvalidAttestationSignature
+                );
+            }
+
+            // Append to existing attestations for this bucket (or create new vec)
+            AttestationsByBucket::<T>::try_mutate(bucket, |existing| {
+                for attestation in attestations.iter() {
+                    existing
+                        .try_push(attestation.clone())
+                        .map_err(|_| Error::<T>::AttestationBucketFull)?;
+                }
+                Ok::<(), DispatchError>(())
+            })?;
+
+            // Update bucket cursor
+            CurrentAttestationBucket::<T>::put(bucket);
+
+            Self::deposit_event(Event::AttestationsSubmitted { bucket, count });
+            Ok(())
+        }
+
+        /// Submit an attestation commitment for third-party verification.
+        ///
+        /// This stores a compact commitment containing merkle roots and the Arion
+        /// content hash. Third parties can:
+        /// 1. Query this commitment from the chain
+        /// 2. Download the full bundle from Arion using `arion_content_hash`
+        /// 3. Verify the bundle hash matches
+        /// 4. Verify attestations against the merkle roots
+        ///
+        /// # Parameters
+        /// - `epoch`: The epoch this commitment covers
+        /// - `arion_content_hash`: BLAKE3 hash of the SCALE-encoded AttestationBundle (32 bytes)
+        /// - `attestation_merkle_root`: Merkle root of all attestation leaves
+        /// - `warden_pubkey_merkle_root`: Merkle root of unique warden public keys
+        /// - `attestation_count`: Number of attestations in the bundle
+        #[pallet::call_index(3)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::submit_attestation_commitment(), Pays::No))]
+        pub fn submit_attestation_commitment(
+            origin: OriginFor<T>,
+            epoch: u64,
+            arion_content_hash: BoundedVec<u8, T::MaxContentHashLen>,
+            attestation_merkle_root: [u8; 32],
+            warden_pubkey_merkle_root: [u8; 32],
+            attestation_count: u32,
+        ) -> DispatchResult {
+            T::AttestationAuthorityOrigin::ensure_origin(origin)?;
+
+            // Ensure commitment doesn't already exist for this epoch
+            ensure!(
+                !EpochAttestationCommitments::<T>::contains_key(epoch),
+                Error::<T>::AttestationCommitmentAlreadyExists
+            );
+
+            // Validate content hash is 32 bytes (BLAKE3)
+            ensure!(
+                arion_content_hash.len() == 32,
+                Error::<T>::InvalidContentHashLength
+            );
+
+            let now = <frame_system::Pallet<T>>::block_number();
+            let submitted_at_block: u64 = TryInto::<u64>::try_into(now).ok().unwrap_or(0);
+
+            let commitment = EpochAttestationCommitment {
+                epoch,
+                arion_content_hash,
+                attestation_merkle_root,
+                warden_pubkey_merkle_root,
+                attestation_count,
+                submitted_at_block,
+            };
+
+            EpochAttestationCommitments::<T>::insert(epoch, commitment);
+
+            Self::deposit_event(Event::AttestationCommitmentSubmitted {
+                epoch,
+                attestation_count,
+                attestation_merkle_root,
+                warden_pubkey_merkle_root,
+            });
+
+            Ok(())
+        }
+
         /// Admin: enable/disable registration lockup (reserve/unbond).
         ///
         /// Configure `AdminOrigin` as `EnsureRoot` to make this a sudo-only extrinsic.
         #[pallet::call_index(30)]
-        #[pallet::weight((0, Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::set_lockup_enabled(), Pays::No))]
         pub fn set_lockup_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
             T::ArionAdminOrigin::ensure_origin(origin)?;
             LockupEnabled::<T>::put(enabled);
@@ -1299,7 +1796,7 @@ pub mod pallet {
         /// - This does not overwrite `GlobalNextDeposit` unless it is below the new floor;
         ///   the next time registration runs, `global_next_deposit_floor_init` will raise it.
         #[pallet::call_index(31)]
-        #[pallet::weight((0, Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::set_base_child_deposit(), Pays::No))]
         pub fn set_base_child_deposit(origin: OriginFor<T>, deposit: BalanceOf<T>) -> DispatchResult {
             T::ArionAdminOrigin::ensure_origin(origin)?;
             BaseChildDepositValue::<T>::put(deposit);
@@ -1308,7 +1805,131 @@ pub mod pallet {
             Self::deposit_event(Event::BaseChildDepositSet { deposit });
             Ok(())
         }
+
+        /// Admin: Register a warden authorized to submit attestations.
+        ///
+        /// Once registered, attestations from this warden's public key will be accepted.
+        /// Third parties can query `RegisteredWardens[pubkey]` to verify authorization.
+        ///
+        /// # Parameters
+        /// - `warden_pubkey`: The warden's Ed25519 public key (32 bytes)
+        #[pallet::call_index(32)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::register_warden(), Pays::No))]
+        pub fn register_warden(origin: OriginFor<T>, warden_pubkey: [u8; 32]) -> DispatchResult {
+            T::ArionAdminOrigin::ensure_origin(origin)?;
+
+            // Check if already registered
+            ensure!(
+                !RegisteredWardens::<T>::contains_key(&warden_pubkey),
+                Error::<T>::WardenAlreadyRegistered
+            );
+
+            let now = Self::now();
+            let info = WardenInfo {
+                status: WardenStatus::Active,
+                registered_at: now,
+                deregistered_at: None,
+            };
+
+            RegisteredWardens::<T>::insert(&warden_pubkey, info);
+            ActiveWardenCount::<T>::put(ActiveWardenCount::<T>::get().saturating_add(1));
+
+            Self::deposit_event(Event::WardenRegistered {
+                warden_pubkey,
+                registered_at: now,
+            });
+
+            Ok(())
+        }
+
+        /// Admin: Deregister a warden, preventing future attestation submissions.
+        ///
+        /// The warden's registration record is kept for audit purposes but marked as deregistered.
+        /// Attestations from deregistered wardens will be rejected.
+        ///
+        /// # Parameters
+        /// - `warden_pubkey`: The warden's Ed25519 public key (32 bytes)
+        #[pallet::call_index(33)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::deregister_warden(), Pays::No))]
+        pub fn deregister_warden(origin: OriginFor<T>, warden_pubkey: [u8; 32]) -> DispatchResult {
+            T::ArionAdminOrigin::ensure_origin(origin)?;
+
+            // Check if registered
+            let mut info = RegisteredWardens::<T>::get(&warden_pubkey)
+                .ok_or(Error::<T>::WardenNotRegistered)?;
+
+            // Already deregistered?
+            ensure!(
+                info.status == WardenStatus::Active,
+                Error::<T>::WardenNotRegistered
+            );
+
+            let now = Self::now();
+            info.status = WardenStatus::Deregistered;
+            info.deregistered_at = Some(now);
+
+            RegisteredWardens::<T>::insert(&warden_pubkey, info);
+            ActiveWardenCount::<T>::put(ActiveWardenCount::<T>::get().saturating_sub(1));
+
+            Self::deposit_event(Event::WardenDeregistered {
+                warden_pubkey,
+                deregistered_at: now,
+            });
+
+            Ok(())
+        }
+
+        /// Prune old attestation buckets to prevent unbounded storage growth.
+        ///
+        /// Removes attestation data for buckets older than `before_bucket`.
+        /// The `before_bucket` must be at least `AttestationRetentionBuckets` behind
+        /// the current bucket to prevent accidental pruning of recent data.
+        ///
+        /// This is a permissionless operation - anyone can call it to help clean up
+        /// old attestation data. The retention period ensures recent data is protected.
+        ///
+        /// # Parameters
+        /// - `before_bucket`: Prune all buckets with ID less than this value
+        /// - `max_buckets`: Maximum number of buckets to prune in this call (for weight limiting)
+        #[pallet::call_index(34)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::prune_attestation_buckets(*max_buckets), Pays::No))]
+        pub fn prune_attestation_buckets(
+            origin: OriginFor<T>,
+            before_bucket: u32,
+            max_buckets: u32,
+        ) -> DispatchResult {
+            // Permissionless - anyone can prune old data
+            let _who = ensure_signed(origin)?;
+
+            let current = CurrentAttestationBucket::<T>::get();
+            let retention = T::AttestationRetentionBuckets::get();
+
+            // Ensure we're not pruning within the retention period
+            ensure!(
+                before_bucket <= current.saturating_sub(retention),
+                Error::<T>::PruningWithinRetentionPeriod
+            );
+
+            // Prune buckets, up to max_buckets
+            let mut pruned: u32 = 0;
+            let mut bucket = before_bucket.saturating_sub(max_buckets);
+
+            while bucket < before_bucket && pruned < max_buckets {
+                if AttestationsByBucket::<T>::contains_key(bucket) {
+                    AttestationsByBucket::<T>::remove(bucket);
+                    pruned = pruned.saturating_add(1);
+                }
+                bucket = bucket.saturating_add(1);
+            }
+
+            if pruned > 0 {
+                Self::deposit_event(Event::AttestationBucketsPruned {
+                    pruned_count: pruned,
+                    oldest_remaining: before_bucket,
+                });
+            }
+
+            Ok(())
+        }
     }
 }
-
-

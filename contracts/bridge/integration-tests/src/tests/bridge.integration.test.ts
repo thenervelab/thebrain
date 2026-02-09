@@ -13,9 +13,8 @@ import { devnet, contracts } from "@polkadot-api/descriptors";
 import {
 	addContractAsProxy,
 	createHotkey,
-	expectDepositEvent,
-	expectRefundedEvent,
-	expectReleasedEvent,
+	expectDepositRequestCreatedEvent,
+	expectWithdrawalCompletedEvent,
 	findContractEvent,
 	fundAccount,
 	getRandomWallet,
@@ -33,7 +32,6 @@ import {
 } from "../utils/stake-helpers";
 
 const MIN_DEPOSIT = 1_000_000_000n;
-const SIGNATURE_TTL_BLOCKS = 100;
 
 async function trackTx(observable: Observable<TxEvent>): Promise<TxFinalized> {
 	return new Promise<TxFinalized>((resolve, reject) => {
@@ -66,7 +64,6 @@ function randomHash(label: string): Binary {
 }
 
 function toBinary(value: string | Uint8Array | Binary | { toHex?: () => string }): Binary {
-	// If already a Binary, return as-is
 	if (value instanceof Binary) {
 		return value;
 	}
@@ -81,7 +78,6 @@ function toBinary(value: string | Uint8Array | Binary | { toHex?: () => string }
 	if (value instanceof Uint8Array) {
 		return Binary.fromBytes(value);
 	}
-	// Fallback: try to convert to Uint8Array first
 	return Binary.fromBytes(new Uint8Array(value as ArrayLike<number>));
 }
 
@@ -96,23 +92,13 @@ describe("Bridge Contract Integration", () => {
 	let daveHotkey: Wallet;
 	let eveHotkey: Wallet;
 
-	let lastBurnCheckpoint = 0n;
-	let lastRefundCheckpoint = 0n;
-
-	let bobDepositId: Binary | undefined;
+	let bobDepositRequestId: Binary | undefined;
 	let bobDepositAmount: bigint = 0n;
 
-	let charlieDepositId: Binary | undefined;
+	let charlieDepositRequestId: Binary | undefined;
 	let charlieDepositAmount: bigint = 0n;
 
-	let daveDepositId: Binary | undefined;
-	let daveDepositAmount: bigint = 0n;
-
-	let eveDepositId: Binary | undefined;
-	let eveDepositAmount: bigint = 0n;
-
 	beforeAll(async () => {
-		// Setup API and accounts (without deploying contract yet)
 		const setup = TestSetup.getInstance();
 		const api = await setup.getApi();
 		const { accounts, guardians, contractHotkey } = setup.createTestAccounts();
@@ -156,7 +142,6 @@ describe("Bridge Contract Integration", () => {
 		contract = contractSdk.getContract(contractAddress);
 
 		// Register validators
-
 		await registerValidator(context.api, netuid, aliceHotkey.address, context.accounts.alice.signer, taoToRao(400));
 		await registerValidator(context.api, netuid, bobHotkey.address, context.accounts.bob.signer, taoToRao(200));
 		await registerValidator(context.api, netuid, charlieHotkey.address, context.accounts.charlie.signer, taoToRao(200));
@@ -164,7 +149,7 @@ describe("Bridge Contract Integration", () => {
 		await registerValidator(context.api, netuid, eveHotkey.address, context.accounts.eve.signer, taoToRao(200));
 		await registerValidator(context.api, netuid, context.contractHotkey.address, context.contractHotkey.signer, taoToRao(100));
 
-		// Provide initial stake liquidity to the contract for release tests
+		// Provide initial stake liquidity to the contract for withdrawal tests
 		await moveStake(
 			context.api,
 			aliceHotkey.address,
@@ -234,24 +219,39 @@ describe("Bridge Contract Integration", () => {
 			if (guardiansResult.success) {
 				expect(guardiansResult.value.response.length).toBe(0);
 			}
+
+			const nonceResult = await contract.query("next_deposit_nonce", {
+				origin: context.accounts.alice.address,
+				data: {},
+			});
+			expect(nonceResult.success).toBe(true);
+			if (nonceResult.success) {
+				expect(nonceResult.value.response).toBe(0n);
+			}
+
+			const minDepositResult = await contract.query("min_deposit_amount", {
+				origin: context.accounts.alice.address,
+				data: {},
+			});
+			expect(minDepositResult.success).toBe(true);
+			if (minDepositResult.success) {
+				expect(minDepositResult.value.response).toBe(MIN_DEPOSIT);
+			}
 		});
 	});
 
 	describe("Guardian Management", () => {
-		it("allows the owner to configure guardians and thresholds", async () => {
+		it("allows the owner to configure guardians and threshold", async () => {
 			const guardianAddresses = context.guardians.map((guardian) => guardian.address);
 
-			const tx = contract.send("set_guardians_and_thresholds", {
+			const tx = contract.send("set_guardians_and_threshold", {
 				origin: context.accounts.alice.address,
 				data: {
 					guardians: guardianAddresses,
 					approve_threshold: 2,
-					deny_threshold: 1,
 				},
 			});
 			const finalized = await signAndFinalize(tx, context.accounts.alice.signer);
-			const allEvents = contract.filterEvents(finalized.events);
-			console.log("Events emitted:", JSON.stringify(allEvents, (_, v) => typeof v === 'bigint' ? v.toString() : v, 2));
 			const event = findContractEvent(contract, finalized, "GuardiansUpdated");
 			expect(event).toBeDefined();
 
@@ -263,29 +263,35 @@ describe("Bridge Contract Integration", () => {
 			if (storedGuardians.success) {
 				expect(storedGuardians.value.response).toEqual(guardianAddresses);
 			}
+
+			const thresholdResult = await contract.query("approve_threshold", {
+				origin: context.accounts.alice.address,
+				data: {},
+			});
+			expect(thresholdResult.success).toBe(true);
+			if (thresholdResult.success) {
+				expect(thresholdResult.value.response).toBe(2);
+			}
 		});
 
 		it("rejects guardian configuration from non-owner accounts", async () => {
-			const attempt = await contract.query("set_guardians_and_thresholds", {
+			const attempt = await contract.query("set_guardians_and_threshold", {
 				origin: context.accounts.bob.address,
 				data: {
 					guardians: context.guardians.map((guardian) => guardian.address),
 					approve_threshold: 2,
-					deny_threshold: 1,
 				},
 			});
 
 			expect(attempt.success).toBe(false);
 			if (!attempt.success) {
-				// Query dry-runs that revert have type "FlagReverted"
-				// The specific error (Unauthorized) is encoded in value.value.message
 				expect(attempt.value.type).toBe("FlagReverted");
 			}
 		});
 	});
 
-	describe("Lock Flow", () => {
-		it("locks stake and records deposit metadata", async () => {
+	describe("Deposit Flow", () => {
+		it("deposits stake and creates a deposit request", async () => {
 			bobDepositAmount = MIN_DEPOSIT * 2n;
 
 			const bobStakeBefore = await getStakeBalance(
@@ -295,58 +301,53 @@ describe("Bridge Contract Integration", () => {
 				context.accounts.bob.address
 			);
 
-			const tx = contract.send("lock", {
+			const tx = contract.send("deposit", {
 				origin: context.accounts.bob.address,
 				data: {
 					amount: bobDepositAmount,
 					hotkey: bobHotkey.address,
-					netuid,
 				},
 			});
 			const finalized = await signAndFinalize(tx, context.accounts.bob.signer);
-			const depositEvent = expectDepositEvent(contract, finalized);
+			const depositEvent = expectDepositRequestCreatedEvent(contract, finalized);
 
-			bobDepositId = toBinary(depositEvent.deposit_id);
+			bobDepositRequestId = toBinary(depositEvent.deposit_request_id);
 			expect(depositEvent.amount).toBe(bobDepositAmount);
 
-			const depositIdByNonce = await contract.query("get_deposit_id_by_nonce", {
+			// Verify deposit request ID can be looked up by nonce
+			const depositIdByNonce = await contract.query("get_deposit_request_id_by_nonce", {
 				origin: context.accounts.alice.address,
 				data: {
-					deposit_nonce: depositEvent.deposit_nonce,
+					nonce: depositEvent.deposit_nonce,
 				},
 			});
 
 			expect(depositIdByNonce.success).toBe(true);
 			if (depositIdByNonce.success) {
 				expect(toBinary(depositIdByNonce.value.response?.asHex() || '0x').toString()).toBe(
-					toBinary(bobDepositId).toString(),
+					toBinary(bobDepositRequestId).toString(),
 				);
 			}
 
-			const lockedQuery = await contract.query("get_locked_amount", {
+			// Verify deposit request record exists
+			const depositRequest = await contract.query("get_deposit_request", {
 				origin: context.accounts.alice.address,
 				data: {
-					deposit_id: bobDepositId,
+					request_id: bobDepositRequestId,
 				},
 			});
 
-			expect(lockedQuery.success).toBe(true);
-			if (lockedQuery.success) {
-				expect(lockedQuery.value.response).toBe(bobDepositAmount);
+			expect(depositRequest.success).toBe(true);
+			if (depositRequest.success) {
+				const request = depositRequest.value.response;
+				expect(request).toBeDefined();
+				expect(request.amount).toBe(bobDepositAmount);
+				expect(request.sender).toBe(context.accounts.bob.address);
+				expect(request.recipient).toBe(context.accounts.bob.address);
+				expect(request.status.type).toBe("Requested");
 			}
 
-			const depositsResult = await contract.query("get_user_deposits", {
-				origin: context.accounts.alice.address,
-				data: {
-					user: context.accounts.bob.address,
-				},
-			});
-			expect(depositsResult.success).toBe(true);
-			if (depositsResult.success) {
-				const deposits = depositsResult.value.response.map((id) => id.toString());
-				expect(deposits).toContain(depositEvent.deposit_id.toString());
-			}
-
+			// Verify stake was transferred
 			const bobStakeAfter = await getStakeBalance(
 				context.api,
 				bobHotkey.address,
@@ -365,12 +366,11 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("rejects deposits below minimum amount", async () => {
-			const result = await contract.query("lock", {
+			const result = await contract.query("deposit", {
 				origin: context.accounts.charlie.address,
 				data: {
 					amount: 1n,
 					hotkey: charlieHotkey.address,
-					netuid,
 				},
 			});
 
@@ -384,30 +384,11 @@ describe("Bridge Contract Integration", () => {
 			const randomWallet = getRandomWallet();
 			await fundAccount(context.api, randomWallet.address, taoToRao(5), context.accounts.alice.signer);
 
-			const result = await contract.query("lock", {
+			const result = await contract.query("deposit", {
 				origin: randomWallet.address,
 				data: {
 					amount: MIN_DEPOSIT,
 					hotkey: randomWallet.address,
-					netuid,
-				},
-			});
-
-			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.value.type).toBe("FlagReverted");
-			}
-		});
-
-		it("rejects deposits with invalid netuid", async () => {
-			const invalidNetuid = netuid + 1;
-
-			const result = await contract.query("lock", {
-				origin: context.accounts.charlie.address,
-				data: {
-					amount: MIN_DEPOSIT,
-					hotkey: charlieHotkey.address,
-					netuid: invalidNetuid,
 				},
 			});
 
@@ -419,10 +400,10 @@ describe("Bridge Contract Integration", () => {
 
 		it("returns none for an unknown deposit nonce", async () => {
 			const unknownNonce = 9_999_999n;
-			const result = await contract.query("get_deposit_id_by_nonce", {
+			const result = await contract.query("get_deposit_request_id_by_nonce", {
 				origin: context.accounts.alice.address,
 				data: {
-					deposit_nonce: unknownNonce,
+					nonce: unknownNonce,
 				},
 			});
 
@@ -433,41 +414,10 @@ describe("Bridge Contract Integration", () => {
 		});
 	});
 
-	describe("Release Flow", () => {
-		it("handles guardian approvals and finalizes releases", async () => {
-			if (!bobDepositId) {
-				throw new Error("Bob's deposit was not recorded");
-			}
-
-			const burnId = randomHash("bob-release");
-			const checkpointNonce = lastBurnCheckpoint + 1n;
-			const burns = [{
-				burn_id: burnId,
-				recipient: context.accounts.bob.address,
-				hotkey: bobHotkey.address,
-				netuid,
-				amount: bobDepositAmount,
-			}];
-
-			const proposeTx = contract.send("propose_releases", {
-				origin: context.guardians[0].address,
-				data: {
-					burns,
-					checkpoint_nonce: checkpointNonce,
-				},
-			});
-			await signAndFinalize(proposeTx, context.guardians[0].signer);
-
-			const pendingQuery = await contract.query("has_pending_burn", {
-				origin: context.accounts.alice.address,
-				data: {
-					burn_id: burnId,
-				},
-			});
-			expect(pendingQuery.success).toBe(true);
-			if (pendingQuery.success) {
-				expect(pendingQuery.value.response).toBe(true);
-			}
+	describe("Withdrawal Flow", () => {
+		it("handles guardian attestations and finalizes withdrawal", async () => {
+			const withdrawalId = randomHash("bob-withdrawal");
+			const withdrawalAmount = bobDepositAmount;
 
 			const contractStakeBefore = await getStakeBalance(
 				context.api,
@@ -476,16 +426,46 @@ describe("Bridge Contract Integration", () => {
 				context.contractAddress!
 			);
 
-			const attestTx = contract.send("attest_release", {
-				origin: context.guardians[1].address,
+			// First guardian attests (creates the withdrawal record)
+			const attest1Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
 				data: {
-					burn_id: burnId,
-					approve: true,
+					request_id: withdrawalId,
+					recipient: context.accounts.bob.address,
+					amount: withdrawalAmount,
 				},
 			});
-			const finalized = await signAndFinalize(attestTx, context.guardians[1].signer);
-			expectReleasedEvent(contract, finalized);
+			const attest1Finalized = await signAndFinalize(attest1Tx, context.guardians[0].signer);
+			const attestEvent = findContractEvent(contract, attest1Finalized, "WithdrawalAttested");
+			expect(attestEvent).toBeDefined();
 
+			// Verify the withdrawal record was created as Pending
+			const pendingQuery = await contract.query("get_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					withdrawal_id: withdrawalId,
+				},
+			});
+			expect(pendingQuery.success).toBe(true);
+			if (pendingQuery.success) {
+				expect(pendingQuery.value.response).toBeDefined();
+				expect(pendingQuery.value.response.status.type).toBe("Pending");
+				expect(pendingQuery.value.response.votes.length).toBe(1);
+			}
+
+			// Second guardian attests (reaches threshold=2, triggers finalization)
+			const attest2Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[1].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.bob.address,
+					amount: withdrawalAmount,
+				},
+			});
+			const attest2Finalized = await signAndFinalize(attest2Tx, context.guardians[1].signer);
+			expectWithdrawalCompletedEvent(contract, attest2Finalized);
+
+			// Verify contract stake decreased (Alpha released to Bob)
 			const contractStakeAfter = await getStakeBalance(
 				context.api,
 				context.contractHotkey.address,
@@ -494,114 +474,70 @@ describe("Bridge Contract Integration", () => {
 			);
 			expect(contractStakeAfter).toBeLessThan(contractStakeBefore);
 
-			const pendingAfter = await contract.query("has_pending_burn", {
+			// Verify withdrawal status is Completed
+			const completedQuery = await contract.query("get_withdrawal", {
 				origin: context.accounts.alice.address,
 				data: {
-					burn_id: burnId,
+					withdrawal_id: withdrawalId,
 				},
 			});
-			expect(pendingAfter.success).toBe(true);
-			if (pendingAfter.success) {
-				expect(pendingAfter.value.response).toBe(false);
+			expect(completedQuery.success).toBe(true);
+			if (completedQuery.success) {
+				expect(completedQuery.value.response.status.type).toBe("Completed");
 			}
-
-			lastBurnCheckpoint = checkpointNonce;
 		});
-	});
 
-	describe("Refund Flow", () => {
-		it("processes denied deposits and refunds stake", async () => {
-			charlieDepositAmount = MIN_DEPOSIT * 3n;
+		it("rejects attestation with mismatched recipient", async () => {
+			const withdrawalId = randomHash("mismatch-recipient");
 
-			const lockTx = contract.send("lock", {
-				origin: context.accounts.charlie.address,
-				data: {
-					amount: charlieDepositAmount,
-					hotkey: charlieHotkey.address,
-					netuid,
-				},
-			});
-			const lockFinalized = await signAndFinalize(lockTx, context.accounts.charlie.signer);
-			const depositEvent = expectDepositEvent(contract, lockFinalized);
-			charlieDepositId = toBinary(depositEvent.deposit_id);
-
-			const charlieLockedAmount = await contract.query("get_locked_amount", {
-				origin: context.accounts.alice.address,
-				data: {
-					deposit_id: charlieDepositId,
-				},
-			});
-
-			expect(charlieLockedAmount.success).toBe(true);
-			if (charlieLockedAmount.success) {
-				expect(charlieLockedAmount.value.response).toBe(charlieDepositAmount);
-			}
-
-			const checkpointNonce = lastRefundCheckpoint + 1n;
-			const refunds = [{
-				deposit_id: charlieDepositId,
-				recipient: context.accounts.charlie.address,
-				amount: charlieDepositAmount,
-			}];
-
-			const proposeTx = contract.send("propose_refunds", {
+			// First guardian attests with correct recipient
+			const attest1Tx = contract.send("attest_withdrawal", {
 				origin: context.guardians[0].address,
 				data: {
-					refunds,
-					checkpoint_nonce: checkpointNonce,
+					request_id: withdrawalId,
+					recipient: context.accounts.bob.address,
+					amount: MIN_DEPOSIT,
 				},
 			});
-			await signAndFinalize(proposeTx, context.guardians[0].signer);
+			await signAndFinalize(attest1Tx, context.guardians[0].signer);
 
-			const attestTx = contract.send("attest_refund", {
+			// Second guardian attests with wrong recipient
+			const attempt = await contract.query("attest_withdrawal", {
 				origin: context.guardians[1].address,
 				data: {
-					deposit_id: charlieDepositId,
-					approve: true,
+					request_id: withdrawalId,
+					recipient: context.accounts.charlie.address,
+					amount: MIN_DEPOSIT,
 				},
 			});
-			const finalized = await signAndFinalize(attestTx, context.guardians[1].signer);
-			expectRefundedEvent(contract, finalized);
 
-			const lockedAmount = await contract.query("get_locked_amount", {
-				origin: context.accounts.alice.address,
-				data: {
-					deposit_id: charlieDepositId,
-				},
-			});
-			expect(lockedAmount.success).toBe(true);
-			if (lockedAmount.success) {
-				expect(lockedAmount.value.response).toBeUndefined();
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
 			}
-
-			const deniedFlag = await contract.query("is_denied", {
-				origin: context.accounts.alice.address,
-				data: {
-					deposit_id: charlieDepositId,
-				},
-			});
-			expect(deniedFlag.success).toBe(true);
-			if (deniedFlag.success) {
-				expect(deniedFlag.value.response).toBe(true);
-			}
-
-			lastRefundCheckpoint = checkpointNonce;
 		});
 
-		it("rejects mismatched refund metadata", async () => {
-			if (!bobDepositId) {
-				throw new Error("Bob deposit not available for mismatch test");
-			}
+		it("rejects attestation with mismatched amount", async () => {
+			const withdrawalId = randomHash("mismatch-amount");
 
-			const attempt = await contract.query("propose_refunds", {
+			// First guardian attests
+			const attest1Tx = contract.send("attest_withdrawal", {
 				origin: context.guardians[0].address,
 				data: {
-					refunds: [{
-						deposit_id: bobDepositId,
-						recipient: context.accounts.charlie.address,
-						amount: bobDepositAmount,
-					}],
-					checkpoint_nonce: lastRefundCheckpoint + 1n,
+					request_id: withdrawalId,
+					recipient: context.accounts.bob.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attest1Tx, context.guardians[0].signer);
+
+			// Second guardian attests with wrong amount
+			const attempt = await contract.query("attest_withdrawal", {
+				origin: context.guardians[1].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.bob.address,
+					amount: MIN_DEPOSIT * 2n,
 				},
 			});
 
@@ -612,124 +548,132 @@ describe("Bridge Contract Integration", () => {
 		});
 	});
 
-	describe("Expiry Paths", () => {
-		it("expires stale releases and refunds after TTL", async () => {
-			daveDepositAmount = MIN_DEPOSIT * 2n;
-			eveDepositAmount = MIN_DEPOSIT * 4n;
+	describe("Admin Recovery", () => {
+		it("admin fails a deposit request and manually releases Alpha", async () => {
+			charlieDepositAmount = MIN_DEPOSIT * 3n;
 
-			// Dave deposit for release expiry
-			const daveLock = contract.send("lock", {
-				origin: context.accounts.dave.address,
+			// Charlie deposits
+			const depositTx = contract.send("deposit", {
+				origin: context.accounts.charlie.address,
 				data: {
-					amount: daveDepositAmount,
-					hotkey: daveHotkey.address,
-					netuid,
+					amount: charlieDepositAmount,
+					hotkey: charlieHotkey.address,
 				},
 			});
-			const daveFinalized = await signAndFinalize(daveLock, context.accounts.dave.signer);
-			daveDepositId = toBinary(expectDepositEvent(contract, daveFinalized).deposit_id);
+			const depositFinalized = await signAndFinalize(depositTx, context.accounts.charlie.signer);
+			const depositEvent = expectDepositRequestCreatedEvent(contract, depositFinalized);
+			charlieDepositRequestId = toBinary(depositEvent.deposit_request_id);
 
-			// Eve deposit for refund expiry
-			const eveLock = contract.send("lock", {
-				origin: context.accounts.eve.address,
-				data: {
-					amount: eveDepositAmount,
-					hotkey: eveHotkey.address,
-					netuid,
-				},
-			});
-			const eveFinalized = await signAndFinalize(eveLock, context.accounts.eve.signer);
-			eveDepositId = toBinary(expectDepositEvent(contract, eveFinalized).deposit_id);
-
-			// Pending release that will expire
-			const expiringBurnId = randomHash("expire-release");
-			const releaseCheckpoint = lastBurnCheckpoint + 1n;
-			const releaseTx = contract.send("propose_releases", {
-				origin: context.guardians[2].address,
-				data: {
-					burns: [{
-						burn_id: expiringBurnId,
-						recipient: context.accounts.dave.address,
-						hotkey: daveHotkey.address,
-						netuid,
-						amount: daveDepositAmount,
-					}],
-					checkpoint_nonce: releaseCheckpoint,
-				},
-			});
-			await signAndFinalize(releaseTx, context.guardians[2].signer);
-
-			lastBurnCheckpoint = releaseCheckpoint;
-
-			// Pending refund that will expire
-			if (!eveDepositId) {
-				throw new Error("Missing Eve deposit id");
-			}
-
-			const refundCheckpoint = lastRefundCheckpoint + 1n;
-			const refundTx = contract.send("propose_refunds", {
-				origin: context.guardians[1].address,
-				data: {
-					refunds: [{
-						deposit_id: eveDepositId,
-						recipient: context.accounts.eve.address,
-						amount: eveDepositAmount,
-					}],
-					checkpoint_nonce: refundCheckpoint,
-				},
-			});
-			await signAndFinalize(refundTx, context.guardians[1].signer);
-
-			lastRefundCheckpoint = refundCheckpoint;
-
-			await waitForBlocks(context.api, SIGNATURE_TTL_BLOCKS + 2);
-
-			const expireReleaseTx = contract.send("expire_release", {
-				origin: context.accounts.eve.address,
-				data: {
-					burn_id: expiringBurnId,
-				},
-			});
-			const releaseExpired = await signAndFinalize(expireReleaseTx, context.accounts.eve.signer);
-			const burnExpired = findContractEvent(contract, releaseExpired, "BurnExpired");
-			expect(burnExpired).toBeDefined();
-
-			const pendingRelease = await contract.query("has_pending_burn", {
+			// Verify deposit request is in Requested status
+			const requestQuery = await contract.query("get_deposit_request", {
 				origin: context.accounts.alice.address,
 				data: {
-					burn_id: expiringBurnId,
+					request_id: charlieDepositRequestId,
 				},
 			});
-			expect(pendingRelease.success).toBe(true);
-			if (pendingRelease.success) {
-				expect(pendingRelease.value.response).toBe(false);
+			expect(requestQuery.success).toBe(true);
+			if (requestQuery.success) {
+				expect(requestQuery.value.response.status.type).toBe("Requested");
+				expect(requestQuery.value.response.amount).toBe(charlieDepositAmount);
 			}
 
-			const expireRefundTx = contract.send("expire_refund", {
-				origin: context.accounts.eve.address,
-				data: {
-					deposit_id: eveDepositId,
-				},
-			});
-			const refundExpired = await signAndFinalize(expireRefundTx, context.accounts.eve.signer);
-			const refundExpiredEvent = findContractEvent(contract, refundExpired, "RefundExpired");
-			expect(refundExpiredEvent).toBeDefined();
-
-			const pendingRefund = await contract.query("has_pending_refund", {
+			// Admin fails the deposit request
+			const failTx = contract.send("admin_fail_deposit_request", {
 				origin: context.accounts.alice.address,
 				data: {
-					deposit_id: eveDepositId,
+					request_id: charlieDepositRequestId,
 				},
 			});
-			expect(pendingRefund.success).toBe(true);
-			if (pendingRefund.success) {
-				expect(pendingRefund.value.response).toBe(false);
+			const failFinalized = await signAndFinalize(failTx, context.accounts.alice.signer);
+			const failEvent = findContractEvent(contract, failFinalized, "DepositRequestFailed");
+			expect(failEvent).toBeDefined();
+
+			// Verify deposit request is now Failed
+			const failedQuery = await contract.query("get_deposit_request", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: charlieDepositRequestId,
+				},
+			});
+			expect(failedQuery.success).toBe(true);
+			if (failedQuery.success) {
+				expect(failedQuery.value.response.status.type).toBe("Failed");
 			}
-		}, 480000);
+
+			// Admin manually releases Alpha back to Charlie
+			const releaseTx = contract.send("admin_manual_release", {
+				origin: context.accounts.alice.address,
+				data: {
+					recipient: context.accounts.charlie.address,
+					amount: charlieDepositAmount,
+					deposit_request_id: charlieDepositRequestId,
+				},
+			});
+			const releaseFinalized = await signAndFinalize(releaseTx, context.accounts.alice.signer);
+			const releaseEvent = findContractEvent(contract, releaseFinalized, "AdminManualRelease");
+			expect(releaseEvent).toBeDefined();
+		});
+
+		it("rejects admin_fail_deposit_request from non-owner", async () => {
+			if (!bobDepositRequestId) {
+				throw new Error("Bob deposit not available");
+			}
+
+			const attempt = await contract.query("admin_fail_deposit_request", {
+				origin: context.accounts.bob.address,
+				data: {
+					request_id: bobDepositRequestId,
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("admin cancels a stuck withdrawal", async () => {
+			const withdrawalId = randomHash("cancel-withdrawal");
+
+			// First guardian creates a pending withdrawal
+			const attestTx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.dave.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attestTx, context.guardians[0].signer);
+
+			// Admin cancels the withdrawal
+			const cancelTx = contract.send("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
+				},
+			});
+			const cancelFinalized = await signAndFinalize(cancelTx, context.accounts.alice.signer);
+			const cancelEvent = findContractEvent(contract, cancelFinalized, "WithdrawalCancelled");
+			expect(cancelEvent).toBeDefined();
+
+			// Verify withdrawal is Cancelled
+			const cancelledQuery = await contract.query("get_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					withdrawal_id: withdrawalId,
+				},
+			});
+			expect(cancelledQuery.success).toBe(true);
+			if (cancelledQuery.success) {
+				expect(cancelledQuery.value.response.status.type).toBe("Cancelled");
+			}
+		});
 	});
 
 	describe("Administrative Controls", () => {
-		it("toggles pause state and blocks lock operations", async () => {
+		it("toggles pause state and blocks deposit operations", async () => {
 			const pauseTx = contract.send("pause", {
 				origin: context.accounts.alice.address,
 				data: {},
@@ -745,17 +689,31 @@ describe("Bridge Contract Integration", () => {
 				expect(pausedState.value.response).toBe(true);
 			}
 
-			const lockAttempt = await contract.query("lock", {
+			// Deposit should be rejected when paused
+			const depositAttempt = await contract.query("deposit", {
 				origin: context.accounts.dave.address,
 				data: {
 					amount: MIN_DEPOSIT,
 					hotkey: daveHotkey.address,
-					netuid,
 				},
 			});
-			expect(lockAttempt.success).toBe(false);
-			if (!lockAttempt.success) {
-				expect(lockAttempt.value.type).toBe("FlagReverted");
+			expect(depositAttempt.success).toBe(false);
+			if (!depositAttempt.success) {
+				expect(depositAttempt.value.type).toBe("FlagReverted");
+			}
+
+			// attest_withdrawal should also be rejected when paused
+			const attestAttempt = await contract.query("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: randomHash("paused-attest"),
+					recipient: context.accounts.dave.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			expect(attestAttempt.success).toBe(false);
+			if (!attestAttempt.success) {
+				expect(attestAttempt.value.type).toBe("FlagReverted");
 			}
 
 			const unpauseTx = contract.send("unpause", {
@@ -820,116 +778,665 @@ describe("Bridge Contract Integration", () => {
 			});
 			await signAndFinalize(revertOwnerTx, context.accounts.bob.signer);
 		});
+
+		it("updates cleanup TTL and min deposit amount", async () => {
+			// Update cleanup TTL
+			const setTtlTx = contract.send("set_cleanup_ttl", {
+				origin: context.accounts.alice.address,
+				data: {
+					ttl_blocks: 50000,
+				},
+			});
+			const ttlFinalized = await signAndFinalize(setTtlTx, context.accounts.alice.signer);
+			const ttlEvent = findContractEvent(contract, ttlFinalized, "CleanupTTLUpdated");
+			expect(ttlEvent).toBeDefined();
+
+			const ttlQuery = await contract.query("cleanup_ttl", {
+				origin: context.accounts.alice.address,
+				data: {},
+			});
+			expect(ttlQuery.success).toBe(true);
+			if (ttlQuery.success) {
+				expect(ttlQuery.value.response).toBe(50000);
+			}
+
+			// Restore default TTL
+			const restoreTtlTx = contract.send("set_cleanup_ttl", {
+				origin: context.accounts.alice.address,
+				data: {
+					ttl_blocks: 100800,
+				},
+			});
+			await signAndFinalize(restoreTtlTx, context.accounts.alice.signer);
+
+			// Update min deposit amount
+			const setMinTx = contract.send("set_min_deposit_amount", {
+				origin: context.accounts.alice.address,
+				data: {
+					amount: MIN_DEPOSIT * 2n,
+				},
+			});
+			const minFinalized = await signAndFinalize(setMinTx, context.accounts.alice.signer);
+			const minEvent = findContractEvent(contract, minFinalized, "MinDepositAmountUpdated");
+			expect(minEvent).toBeDefined();
+
+			const minQuery = await contract.query("min_deposit_amount", {
+				origin: context.accounts.alice.address,
+				data: {},
+			});
+			expect(minQuery.success).toBe(true);
+			if (minQuery.success) {
+				expect(minQuery.value.response).toBe(MIN_DEPOSIT * 2n);
+			}
+
+			// Restore default min deposit
+			const restoreMinTx = contract.send("set_min_deposit_amount", {
+				origin: context.accounts.alice.address,
+				data: {
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(restoreMinTx, context.accounts.alice.signer);
+		});
 	});
 
 	describe("Access Control Regression", () => {
-		it("prevents non-guardians from proposing releases and refunds", async () => {
+		it("prevents non-guardians from attesting withdrawals", async () => {
 			const nonGuardian = context.accounts.eve;
 
-			const releaseAttempt = await contract.query("propose_releases", {
+			const attestAttempt = await contract.query("attest_withdrawal", {
 				origin: nonGuardian.address,
 				data: {
-					burns: [{
-						burn_id: randomHash("unauthorized-release"),
-						recipient: nonGuardian.address,
-						hotkey: eveHotkey.address,
-						netuid,
-						amount: MIN_DEPOSIT,
-					}],
-					checkpoint_nonce: lastBurnCheckpoint + 1n,
+					request_id: randomHash("unauthorized-attest"),
+					recipient: nonGuardian.address,
+					amount: MIN_DEPOSIT,
 				},
 			});
-			expect(releaseAttempt.success).toBe(false);
-			if (!releaseAttempt.success) {
-				expect(releaseAttempt.value.type).toBe("FlagReverted");
-			}
-
-			const refundAttempt = await contract.query("propose_refunds", {
-				origin: nonGuardian.address,
-				data: {
-					refunds: [{
-						deposit_id: bobDepositId ?? randomHash("missing-deposit"),
-						recipient: nonGuardian.address,
-						amount: MIN_DEPOSIT,
-					}],
-					checkpoint_nonce: lastRefundCheckpoint + 1n,
-				},
-			});
-			expect(refundAttempt.success).toBe(false);
-			if (!refundAttempt.success) {
-				expect(refundAttempt.value.type).toBe("FlagReverted");
+			expect(attestAttempt.success).toBe(false);
+			if (!attestAttempt.success) {
+				expect(attestAttempt.value.type).toBe("FlagReverted");
 			}
 		});
 
-		it("rejects duplicate guardian attestations before finalization", async () => {
-			const checkpointNonce = lastBurnCheckpoint + 1n;
-			const burnId = randomHash("duplicate-attest");
+		it("rejects duplicate guardian attestations on the same withdrawal", async () => {
+			const withdrawalId = randomHash("duplicate-attest");
 
-			const proposeTx = contract.send("propose_releases", {
-				origin: context.guardians[0].address,
-				data: {
-					burns: [{
-						burn_id: burnId,
-						recipient: context.accounts.dave.address,
-						hotkey: daveHotkey.address,
-						netuid,
-						amount: MIN_DEPOSIT,
-					}],
-					checkpoint_nonce: checkpointNonce,
-				},
-			});
-			await signAndFinalize(proposeTx, context.guardians[0].signer);
-
-			// Temporarily raise thresholds to keep burn pending
-			const adjustTx = contract.send("set_guardians_and_thresholds", {
+			// Temporarily raise threshold so withdrawal stays pending
+			const adjustTx = contract.send("set_guardians_and_threshold", {
 				origin: context.accounts.alice.address,
 				data: {
 					guardians: context.guardians.map((g) => g.address),
 					approve_threshold: 3,
-					deny_threshold: 2,
 				},
 			});
 			await signAndFinalize(adjustTx, context.accounts.alice.signer);
 
-			await signAndFinalize(contract.send("attest_release", {
-				origin: context.guardians[1].address,
+			// First attestation by guardian 0
+			const attest1Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
 				data: {
-					burn_id: burnId,
-					approve: true,
-				},
-			}), context.guardians[1].signer);
-
-			const secondAttest = await contract.query("attest_release", {
-				origin: context.guardians[1].address,
-				data: {
-					burn_id: burnId,
-					approve: true,
+					request_id: withdrawalId,
+					recipient: context.accounts.dave.address,
+					amount: MIN_DEPOSIT,
 				},
 			});
-			expect(secondAttest.success).toBe(false);
-			if (!secondAttest.success) {
-				expect(secondAttest.value.type).toBe("FlagReverted");
+			await signAndFinalize(attest1Tx, context.guardians[0].signer);
+
+			// Duplicate attestation by guardian 0 should fail
+			const duplicateAttempt = await contract.query("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.dave.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			expect(duplicateAttempt.success).toBe(false);
+			if (!duplicateAttempt.success) {
+				expect(duplicateAttempt.value.type).toBe("FlagReverted");
 			}
 
-			// Clean up pending burn
-			const expireTx = contract.send("expire_release", {
-				origin: context.accounts.eve.address,
+			// Clean up: cancel the pending withdrawal and restore threshold
+			const cancelTx = contract.send("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
 				data: {
-					burn_id: burnId,
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
-			await signAndFinalize(expireTx, context.accounts.eve.signer);
+			await signAndFinalize(cancelTx, context.accounts.alice.signer);
 
-			// Restore thresholds
-			const restoreTx = contract.send("set_guardians_and_thresholds", {
+			const restoreTx = contract.send("set_guardians_and_threshold", {
 				origin: context.accounts.alice.address,
 				data: {
 					guardians: context.guardians.map((g) => g.address),
 					approve_threshold: 2,
-					deny_threshold: 1,
 				},
 			});
 			await signAndFinalize(restoreTx, context.accounts.alice.signer);
 		});
+
+		it("rejects attestation on an already completed withdrawal", async () => {
+			const withdrawalId = randomHash("already-completed");
+
+			// First guardian attests
+			const attest1Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.eve.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attest1Tx, context.guardians[0].signer);
+
+			// Second guardian attests (reaches threshold, completes withdrawal)
+			const attest2Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[1].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.eve.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attest2Tx, context.guardians[1].signer);
+
+			// Third guardian tries to attest on already-completed withdrawal
+			const attempt = await contract.query("attest_withdrawal", {
+				origin: context.guardians[2].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.eve.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects admin_manual_release from non-owner", async () => {
+			const attempt = await contract.query("admin_manual_release", {
+				origin: context.accounts.bob.address,
+				data: {
+					recipient: context.accounts.bob.address,
+					amount: MIN_DEPOSIT,
+					deposit_request_id: undefined,
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects admin_cancel_withdrawal from non-owner", async () => {
+			const withdrawalId = randomHash("cancel-non-owner");
+
+			// Create a pending withdrawal
+			const attestTx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.dave.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attestTx, context.guardians[0].signer);
+
+			// Non-owner tries to cancel
+			const attempt = await contract.query("admin_cancel_withdrawal", {
+				origin: context.accounts.bob.address,
+				data: {
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+
+			// Clean up
+			const cancelTx = contract.send("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
+				},
+			});
+			await signAndFinalize(cancelTx, context.accounts.alice.signer);
+		});
+
+		it("rejects pause and unpause from non-owner", async () => {
+			const pauseAttempt = await contract.query("pause", {
+				origin: context.accounts.bob.address,
+				data: {},
+			});
+			expect(pauseAttempt.success).toBe(false);
+			if (!pauseAttempt.success) {
+				expect(pauseAttempt.value.type).toBe("FlagReverted");
+			}
+
+			const unpauseAttempt = await contract.query("unpause", {
+				origin: context.accounts.bob.address,
+				data: {},
+			});
+			expect(unpauseAttempt.success).toBe(false);
+			if (!unpauseAttempt.success) {
+				expect(unpauseAttempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects set_cleanup_ttl from non-owner", async () => {
+			const attempt = await contract.query("set_cleanup_ttl", {
+				origin: context.accounts.bob.address,
+				data: {
+					ttl_blocks: 1,
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects set_min_deposit_amount from non-owner", async () => {
+			const attempt = await contract.query("set_min_deposit_amount", {
+				origin: context.accounts.bob.address,
+				data: {
+					amount: 1n,
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+	});
+
+	describe("Admin Edge Cases", () => {
+		it("rejects admin_fail_deposit_request on already-failed request", async () => {
+			if (!charlieDepositRequestId) {
+				throw new Error("Charlie deposit not available");
+			}
+
+			// Charlie's deposit was already failed in the Admin Recovery tests
+			const attempt = await contract.query("admin_fail_deposit_request", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: charlieDepositRequestId,
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects admin_fail_deposit_request on non-existent request", async () => {
+			const attempt = await contract.query("admin_fail_deposit_request", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: randomHash("nonexistent-deposit"),
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects admin_cancel_withdrawal on already-cancelled withdrawal", async () => {
+			const withdrawalId = randomHash("double-cancel");
+
+			// Create and cancel a withdrawal
+			const attestTx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.dave.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attestTx, context.guardians[0].signer);
+
+			const cancelTx = contract.send("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
+				},
+			});
+			await signAndFinalize(cancelTx, context.accounts.alice.signer);
+
+			// Try to cancel again
+			const attempt = await contract.query("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects admin_cancel_withdrawal on completed withdrawal", async () => {
+			// Ensure contract has enough stake on the contract hotkey for this withdrawal
+			await seedBridgeStake(
+				context.api,
+				netuid,
+				context.accounts.alice.signer,
+				context.contractAddress!,
+				context.contractHotkey.address,
+				taoToRao(5),
+			);
+
+			const withdrawalId = randomHash("cancel-completed");
+
+			// Create and complete a withdrawal
+			const attest1Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.eve.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attest1Tx, context.guardians[0].signer);
+
+			const attest2Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[1].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.eve.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attest2Tx, context.guardians[1].signer);
+
+			// Verify the withdrawal actually completed
+			const statusQuery = await contract.query("get_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					withdrawal_id: withdrawalId,
+				},
+			});
+			expect(statusQuery.success).toBe(true);
+			if (statusQuery.success) {
+				expect(statusQuery.value.response.status.type).toBe("Completed");
+			}
+
+			// Try to cancel a completed withdrawal
+			const attempt = await contract.query("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("rejects admin_cancel_withdrawal on non-existent withdrawal", async () => {
+			const attempt = await contract.query("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: randomHash("nonexistent-withdrawal"),
+					reason: { type: "AdminEmergency" },
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+	});
+
+	describe("Cleanup Flows", () => {
+		const SMALL_TTL = 5;
+
+		it("cleans up a deposit request after TTL expires", async () => {
+			// Set a small TTL for testing
+			const setTtlTx = contract.send("set_cleanup_ttl", {
+				origin: context.accounts.alice.address,
+				data: {
+					ttl_blocks: SMALL_TTL,
+				},
+			});
+			await signAndFinalize(setTtlTx, context.accounts.alice.signer);
+
+			// Create a deposit
+			const depositTx = contract.send("deposit", {
+				origin: context.accounts.dave.address,
+				data: {
+					amount: MIN_DEPOSIT * 2n,
+					hotkey: daveHotkey.address,
+				},
+			});
+			const depositFinalized = await signAndFinalize(depositTx, context.accounts.dave.signer);
+			const depositEvent = expectDepositRequestCreatedEvent(contract, depositFinalized);
+			const depositRequestId = toBinary(depositEvent.deposit_request_id);
+
+			// Verify the deposit request exists
+			const existsQuery = await contract.query("get_deposit_request", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: depositRequestId,
+				},
+			});
+			expect(existsQuery.success).toBe(true);
+			if (existsQuery.success) {
+				expect(existsQuery.value.response).toBeDefined();
+			}
+
+			// Wait for TTL to expire
+			await waitForBlocks(context.api, SMALL_TTL + 2);
+
+			// Cleanup should succeed (guardian can call it)
+			const cleanupTx = contract.send("cleanup_deposit_request", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: depositRequestId,
+				},
+			});
+			const cleanupFinalized = await signAndFinalize(cleanupTx, context.guardians[0].signer);
+			const cleanupEvent = findContractEvent(contract, cleanupFinalized, "DepositRequestCleanedUp");
+			expect(cleanupEvent).toBeDefined();
+
+			// Verify the deposit request is removed
+			const removedQuery = await contract.query("get_deposit_request", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: depositRequestId,
+				},
+			});
+			expect(removedQuery.success).toBe(true);
+			if (removedQuery.success) {
+				expect(removedQuery.value.response).toBeUndefined();
+			}
+		}, 120000);
+
+		it("rejects cleanup of deposit request before TTL expires", async () => {
+			// Create a deposit (TTL is still set to SMALL_TTL from previous test)
+			const depositTx = contract.send("deposit", {
+				origin: context.accounts.eve.address,
+				data: {
+					amount: MIN_DEPOSIT * 2n,
+					hotkey: eveHotkey.address,
+				},
+			});
+			const depositFinalized = await signAndFinalize(depositTx, context.accounts.eve.signer);
+			const depositEvent = expectDepositRequestCreatedEvent(contract, depositFinalized);
+			const depositRequestId = toBinary(depositEvent.deposit_request_id);
+
+			// Try to cleanup immediately (before TTL)
+			const attempt = await contract.query("cleanup_deposit_request", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: depositRequestId,
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+		});
+
+		it("cleans up a completed withdrawal after TTL expires", async () => {
+			const withdrawalId = randomHash("cleanup-completed");
+
+			// Create and complete a withdrawal
+			const attest1Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.bob.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attest1Tx, context.guardians[0].signer);
+
+			const attest2Tx = contract.send("attest_withdrawal", {
+				origin: context.guardians[1].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.bob.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attest2Tx, context.guardians[1].signer);
+
+			// Wait for TTL to expire
+			await waitForBlocks(context.api, SMALL_TTL + 2);
+
+			// Cleanup should succeed (guardian can call it)
+			const cleanupTx = contract.send("cleanup_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					withdrawal_id: withdrawalId,
+				},
+			});
+			const cleanupFinalized = await signAndFinalize(cleanupTx, context.guardians[0].signer);
+			const cleanupEvent = findContractEvent(contract, cleanupFinalized, "WithdrawalCleanedUp");
+			expect(cleanupEvent).toBeDefined();
+
+			// Verify the withdrawal is removed
+			const removedQuery = await contract.query("get_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					withdrawal_id: withdrawalId,
+				},
+			});
+			expect(removedQuery.success).toBe(true);
+			if (removedQuery.success) {
+				expect(removedQuery.value.response).toBeUndefined();
+			}
+		}, 120000);
+
+		it("cleans up a cancelled withdrawal after TTL expires", async () => {
+			const withdrawalId = randomHash("cleanup-cancelled");
+
+			// Create and cancel a withdrawal
+			const attestTx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.dave.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attestTx, context.guardians[0].signer);
+
+			const cancelTx = contract.send("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
+				},
+			});
+			await signAndFinalize(cancelTx, context.accounts.alice.signer);
+
+			// Wait for TTL to expire
+			await waitForBlocks(context.api, SMALL_TTL + 2);
+
+			// Cleanup should succeed (guardian can call it)
+			const cleanupTx = contract.send("cleanup_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					withdrawal_id: withdrawalId,
+				},
+			});
+			const cleanupFinalized = await signAndFinalize(cleanupTx, context.guardians[0].signer);
+			const cleanupEvent = findContractEvent(contract, cleanupFinalized, "WithdrawalCleanedUp");
+			expect(cleanupEvent).toBeDefined();
+		}, 120000);
+
+		it("rejects cleanup of a pending (non-finalized) withdrawal", async () => {
+			const withdrawalId = randomHash("cleanup-pending");
+
+			// Create a pending withdrawal (not finalized)
+			const attestTx = contract.send("attest_withdrawal", {
+				origin: context.guardians[0].address,
+				data: {
+					request_id: withdrawalId,
+					recipient: context.accounts.dave.address,
+					amount: MIN_DEPOSIT,
+				},
+			});
+			await signAndFinalize(attestTx, context.guardians[0].signer);
+
+			// Wait for TTL
+			await waitForBlocks(context.api, SMALL_TTL + 2);
+
+			// Cleanup should fail because withdrawal is still pending
+			const attempt = await contract.query("cleanup_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					withdrawal_id: withdrawalId,
+				},
+			});
+
+			expect(attempt.success).toBe(false);
+			if (!attempt.success) {
+				expect(attempt.value.type).toBe("FlagReverted");
+			}
+
+			// Clean up: cancel the pending withdrawal and restore TTL
+			const cancelTx = contract.send("admin_cancel_withdrawal", {
+				origin: context.accounts.alice.address,
+				data: {
+					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
+				},
+			});
+			await signAndFinalize(cancelTx, context.accounts.alice.signer);
+
+			// Restore default TTL
+			const restoreTtlTx = contract.send("set_cleanup_ttl", {
+				origin: context.accounts.alice.address,
+				data: {
+					ttl_blocks: 100800,
+				},
+			});
+			await signAndFinalize(restoreTtlTx, context.accounts.alice.signer);
+		}, 120000);
 	});
 });

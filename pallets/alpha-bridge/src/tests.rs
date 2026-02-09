@@ -8,9 +8,10 @@ use frame_support::{assert_noop, assert_ok};
 #[test]
 fn test_first_attestation_creates_deposit_record() {
 	new_test_ext().execute_with(|| {
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
 		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 
 		// First guardian attestation creates the deposit record
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
@@ -18,6 +19,7 @@ fn test_first_attestation_creates_deposit_record() {
 			deposit_id,
 			recipient.clone(),
 			amount,
+			nonce,
 		));
 
 		// Check that deposit was created
@@ -38,9 +40,10 @@ fn test_first_attestation_creates_deposit_record() {
 fn test_deposit_completes_when_threshold_reached() {
 	new_test_ext().execute_with(|| {
 		// Threshold is 2 by default
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
 		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 		let initial_balance = Balances::free_balance(&recipient);
 
 		// First attestation
@@ -49,6 +52,7 @@ fn test_deposit_completes_when_threshold_reached() {
 			deposit_id,
 			recipient.clone(),
 			amount,
+			nonce,
 		));
 
 		// Second attestation should complete the deposit
@@ -57,6 +61,7 @@ fn test_deposit_completes_when_threshold_reached() {
 			deposit_id,
 			recipient.clone(),
 			amount,
+			nonce,
 		));
 
 		// Check that hAlpha was minted
@@ -79,14 +84,18 @@ fn test_deposit_completes_when_threshold_reached() {
 #[test]
 fn test_deposit_attestation_by_non_guardian_fails() {
 	new_test_ext().execute_with(|| {
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user2();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 
 		assert_noop!(
 			AlphaBridge::<Test>::attest_deposit(
 				RuntimeOrigin::signed(user1()),
 				deposit_id,
-				user2(),
-				1000,
+				recipient,
+				amount,
+				nonce,
 			),
 			Error::<Test>::NotGuardian
 		);
@@ -99,15 +108,18 @@ fn test_double_voting_on_deposit_fails() {
 		// Set threshold to 3 so deposit doesn't complete on second vote
 		crate::ApproveThreshold::<Test>::put(3);
 
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 
 		// First attestation
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
 			recipient.clone(),
-			1000,
+			amount,
+			nonce,
 		));
 
 		// Same guardian tries to vote again
@@ -116,7 +128,8 @@ fn test_double_voting_on_deposit_fails() {
 				RuntimeOrigin::signed(alice()),
 				deposit_id,
 				recipient,
-				1000,
+				amount,
+				nonce,
 			),
 			Error::<Test>::AlreadyVoted
 		);
@@ -126,21 +139,25 @@ fn test_double_voting_on_deposit_fails() {
 #[test]
 fn test_attestation_on_completed_deposit_fails() {
 	new_test_ext().execute_with(|| {
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 
 		// Complete the deposit with threshold votes
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
 			recipient.clone(),
-			1000,
+			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
 			recipient.clone(),
-			1000,
+			amount,
+			nonce,
 		));
 
 		// Third guardian tries to attest on completed deposit
@@ -149,7 +166,8 @@ fn test_attestation_on_completed_deposit_fails() {
 				RuntimeOrigin::signed(charlie()),
 				deposit_id,
 				recipient,
-				1000,
+				amount,
+				nonce,
 			),
 			Error::<Test>::DepositAlreadyCompleted
 		);
@@ -161,12 +179,18 @@ fn test_deposit_while_paused_fails() {
 	new_test_ext().execute_with(|| {
 		crate::Paused::<Test>::put(true);
 
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
+
 		assert_noop!(
 			AlphaBridge::<Test>::attest_deposit(
 				RuntimeOrigin::signed(alice()),
-				generate_deposit_id(1),
-				user1(),
-				1000,
+				deposit_id,
+				recipient,
+				amount,
+				nonce,
 			),
 			Error::<Test>::BridgePaused
 		);
@@ -179,15 +203,18 @@ fn test_deposit_exceeding_mint_cap_fails() {
 		// Set a low cap
 		crate::GlobalMintCap::<Test>::put(500);
 
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 
 		// First attestation succeeds (just creates record)
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
 			recipient.clone(),
-			1000,
+			amount,
+			nonce,
 		));
 
 		// Second attestation should fail at finalization due to cap
@@ -196,7 +223,8 @@ fn test_deposit_exceeding_mint_cap_fails() {
 				RuntimeOrigin::signed(bob()),
 				deposit_id,
 				recipient,
-				1000,
+				amount,
+				nonce,
 			),
 			Error::<Test>::CapExceeded
 		);
@@ -207,8 +235,9 @@ fn test_deposit_exceeding_mint_cap_fails() {
 fn test_deposit_minting_to_new_account() {
 	new_test_ext().execute_with(|| {
 		let new_recipient = new_account();
-		let deposit_id = generate_deposit_id(1);
 		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&new_recipient, amount, nonce);
 
 		// Verify account doesn't exist yet
 		assert_eq!(Balances::free_balance(&new_recipient), 0);
@@ -219,12 +248,14 @@ fn test_deposit_minting_to_new_account() {
 			deposit_id,
 			new_recipient.clone(),
 			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
 			new_recipient.clone(),
 			amount,
+			nonce,
 		));
 
 		// Verify account was created with minted balance
@@ -236,33 +267,37 @@ fn test_deposit_minting_to_new_account() {
 }
 
 // ============================================================================
-// Poisoning Prevention Tests (InvalidDepositDetails error)
+// Poisoning Prevention Tests (InvalidRequestId — hash-based ID verification)
 // ============================================================================
 
 #[test]
 fn test_attestation_with_wrong_recipient_fails() {
 	new_test_ext().execute_with(|| {
-		let deposit_id = generate_deposit_id(1);
 		let original_recipient = user1();
 		let wrong_recipient = user2();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&original_recipient, amount, nonce);
 
 		// First guardian creates the deposit
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
 			original_recipient.clone(),
-			1000,
+			amount,
+			nonce,
 		));
 
-		// Second guardian tries to attest with different recipient (poisoning attempt)
+		// Second guardian tries to attest with different recipient — fails ID verification
 		assert_noop!(
 			AlphaBridge::<Test>::attest_deposit(
 				RuntimeOrigin::signed(bob()),
 				deposit_id,
 				wrong_recipient,
-				1000,
+				amount,
+				nonce,
 			),
-			Error::<Test>::InvalidDepositDetails
+			Error::<Test>::InvalidRequestId
 		);
 
 		// Deposit should still be pending with original recipient
@@ -275,10 +310,11 @@ fn test_attestation_with_wrong_recipient_fails() {
 #[test]
 fn test_attestation_with_wrong_amount_fails() {
 	new_test_ext().execute_with(|| {
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
 		let original_amount = 1000u128;
 		let wrong_amount = 2000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, original_amount, nonce);
 
 		// First guardian creates the deposit
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
@@ -286,17 +322,19 @@ fn test_attestation_with_wrong_amount_fails() {
 			deposit_id,
 			recipient.clone(),
 			original_amount,
+			nonce,
 		));
 
-		// Second guardian tries to attest with different amount (poisoning attempt)
+		// Second guardian tries to attest with different amount — fails ID verification
 		assert_noop!(
 			AlphaBridge::<Test>::attest_deposit(
 				RuntimeOrigin::signed(bob()),
 				deposit_id,
 				recipient,
 				wrong_amount,
+				nonce,
 			),
-			Error::<Test>::InvalidDepositDetails
+			Error::<Test>::InvalidRequestId
 		);
 
 		// Deposit should still be pending with original amount
@@ -311,9 +349,10 @@ fn test_attestation_with_matching_details_succeeds() {
 	new_test_ext().execute_with(|| {
 		crate::ApproveThreshold::<Test>::put(3);
 
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
 		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 
 		// All three guardians attest with same details
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
@@ -321,18 +360,21 @@ fn test_attestation_with_matching_details_succeeds() {
 			deposit_id,
 			recipient.clone(),
 			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
 			recipient.clone(),
 			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(charlie()),
 			deposit_id,
 			recipient.clone(),
 			amount,
+			nonce,
 		));
 
 		// Deposit should complete successfully
@@ -350,34 +392,41 @@ fn test_attestation_with_matching_details_succeeds() {
 fn test_user_withdraw_burns_halpha() {
 	new_test_ext().execute_with(|| {
 		// First mint some hAlpha to the user via deposit
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let deposit_amount = 5_000_000_000_000u128; // Must be divisible by 1e9
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, deposit_amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 
 		let balance_after_deposit = Balances::free_balance(&user1());
 		let total_minted_after_deposit = crate::TotalMintedByBridge::<Test>::get();
 
+		let withdraw_amount = 1_000_000_000_000u128; // Must be divisible by 1e9
+
 		// Now user withdraws (recipient = sender automatically)
 		assert_ok!(AlphaBridge::<Test>::withdraw(
 			RuntimeOrigin::signed(user1()),
-			1000,
+			withdraw_amount,
 		));
 
 		// Balance should be reduced
-		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit - 1000);
+		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit - withdraw_amount);
 
 		// Total minted should be reduced
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), total_minted_after_deposit - 1000);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), total_minted_after_deposit - withdraw_amount);
 
 		// Check that withdrawal request was created
 		let requests: Vec<_> = crate::WithdrawalRequests::<Test>::iter().collect();
@@ -385,7 +434,7 @@ fn test_user_withdraw_burns_halpha() {
 		let (request_id, request) = &requests[0];
 		assert_eq!(request.sender, user1());
 		assert_eq!(request.recipient, user1());
-		assert_eq!(request.amount, 1000);
+		assert_eq!(request.amount, withdraw_amount);
 
 		// Check event
 		System::assert_has_event(
@@ -393,7 +442,7 @@ fn test_user_withdraw_burns_halpha() {
 				id: *request_id,
 				sender: user1(),
 				recipient: user1(),
-				amount: 1000,
+				amount: withdraw_amount,
 			}
 			.into(),
 		);
@@ -404,7 +453,8 @@ fn test_user_withdraw_burns_halpha() {
 fn test_withdraw_with_insufficient_balance_fails() {
 	new_test_ext().execute_with(|| {
 		let balance = Balances::free_balance(&user1());
-		let excessive_amount = balance + 1000;
+		// Round up to nearest multiple of 1e9
+		let excessive_amount = ((balance + 1000 + 999_999_999) / 1_000_000_000) * 1_000_000_000;
 
 		assert_noop!(
 			AlphaBridge::<Test>::withdraw(
@@ -422,7 +472,7 @@ fn test_withdraw_while_paused_fails() {
 		crate::Paused::<Test>::put(true);
 
 		assert_noop!(
-			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000),
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1_000_000_000),
 			Error::<Test>::BridgePaused
 		);
 	});
@@ -436,14 +486,14 @@ fn test_withdraw_while_paused_fails() {
 fn test_withdraw_below_minimum_fails() {
 	new_test_ext().execute_with(|| {
 		// Set a specific minimum for this test
-		crate::MinWithdrawalAmount::<Test>::put(1000u128);
+		crate::MinWithdrawalAmount::<Test>::put(1_000_000_000u128);
 
 		assert_noop!(
 			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 0),
 			Error::<Test>::AmountTooSmall
 		);
 		assert_noop!(
-			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 999),
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 999_999_999),
 			Error::<Test>::AmountTooSmall
 		);
 	});
@@ -453,11 +503,44 @@ fn test_withdraw_below_minimum_fails() {
 fn test_withdraw_at_minimum_succeeds() {
 	new_test_ext().execute_with(|| {
 		// Set a specific minimum for this test
-		crate::MinWithdrawalAmount::<Test>::put(1000u128);
+		crate::MinWithdrawalAmount::<Test>::put(1_000_000_000u128);
 		// Set TotalMintedByBridge so the accounting works
-		crate::TotalMintedByBridge::<Test>::put(10_000_000u128);
+		crate::TotalMintedByBridge::<Test>::put(10_000_000_000u128);
 
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1_000_000_000));
+	});
+}
+
+// ============================================================================
+// Dust Amount Tests (AmountNotBridgeable error)
+// ============================================================================
+
+#[test]
+fn test_withdraw_dust_amount_fails() {
+	new_test_ext().execute_with(|| {
+		crate::MinWithdrawalAmount::<Test>::put(1u128);
+		crate::TotalMintedByBridge::<Test>::put(10_000_000_000u128);
+
+		// Amount not divisible by 1_000_000_000
+		assert_noop!(
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1_500_000_000),
+			Error::<Test>::AmountNotBridgeable
+		);
+		assert_noop!(
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1),
+			Error::<Test>::AmountNotBridgeable
+		);
+	});
+}
+
+#[test]
+fn test_withdraw_clean_amount_succeeds() {
+	new_test_ext().execute_with(|| {
+		crate::MinWithdrawalAmount::<Test>::put(1u128);
+		crate::TotalMintedByBridge::<Test>::put(10_000_000_000u128);
+
+		// Exactly divisible by 1_000_000_000
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 2_000_000_000));
 	});
 }
 
@@ -468,14 +551,18 @@ fn test_withdraw_at_minimum_succeeds() {
 #[test]
 fn test_admin_cancel_deposit() {
 	new_test_ext().execute_with(|| {
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 
 		// Create a pending deposit
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient,
+			amount,
+			nonce,
 		));
 
 		// Admin cancels
@@ -503,20 +590,25 @@ fn test_admin_cancel_deposit() {
 #[test]
 fn test_admin_cancel_completed_deposit_fails() {
 	new_test_ext().execute_with(|| {
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 
 		// Complete a deposit
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient.clone(),
+			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient,
+			amount,
+			nonce,
 		));
 
 		// Try to cancel completed deposit
@@ -535,27 +627,34 @@ fn test_admin_cancel_completed_deposit_fails() {
 fn test_admin_fail_withdrawal_request_mints_back() {
 	new_test_ext().execute_with(|| {
 		// Setup: mint and withdraw
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let deposit_amount = 5_000_000_000_000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, deposit_amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient,
+			deposit_amount,
+			nonce,
 		));
 
 		let balance_after_deposit = Balances::free_balance(&user1());
 
+		let withdraw_amount = 1_000_000_000_000u128;
+
 		// Withdraw
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount));
 
 		let balance_after_withdraw = Balances::free_balance(&user1());
-		assert_eq!(balance_after_withdraw, balance_after_deposit - 1000);
+		assert_eq!(balance_after_withdraw, balance_after_deposit - withdraw_amount);
 
 		let total_minted_after_withdraw = crate::TotalMintedByBridge::<Test>::get();
 
@@ -568,7 +667,7 @@ fn test_admin_fail_withdrawal_request_mints_back() {
 		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit);
 
 		// TotalMintedByBridge should increase back
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), total_minted_after_withdraw + 1000);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), total_minted_after_withdraw + withdraw_amount);
 
 		// Check status
 		let request = crate::WithdrawalRequests::<Test>::get(request_id).unwrap();
@@ -577,7 +676,7 @@ fn test_admin_fail_withdrawal_request_mints_back() {
 		// Check events
 		System::assert_has_event(Event::WithdrawalRequestFailed { id: request_id }.into());
 		System::assert_has_event(
-			Event::AdminManualMint { recipient: user1(), amount: 1000, deposit_id: None }.into(),
+			Event::AdminManualMint { recipient: user1(), amount: withdraw_amount, deposit_id: None }.into(),
 		);
 	});
 }
@@ -586,11 +685,11 @@ fn test_admin_fail_withdrawal_request_mints_back() {
 fn test_admin_fail_withdrawal_respects_mint_cap() {
 	new_test_ext().execute_with(|| {
 		// Setup: mint and withdraw
-		crate::TotalMintedByBridge::<Test>::put(5000);
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
+		crate::TotalMintedByBridge::<Test>::put(5_000_000_000_000u128);
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1_000_000_000_000));
 
 		// Now set a low cap that would be exceeded by minting back
-		crate::GlobalMintCap::<Test>::put(4500); // Below what would be needed
+		crate::GlobalMintCap::<Test>::put(4_500_000_000_000u128); // Below what would be needed
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
 
@@ -763,8 +862,10 @@ fn test_single_guardian_threshold() {
 		// Set threshold to 1
 		crate::ApproveThreshold::<Test>::put(1);
 
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 		let initial_balance = Balances::free_balance(&recipient);
 
 		// Single attestation should complete the deposit
@@ -772,7 +873,8 @@ fn test_single_guardian_threshold() {
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
 			recipient.clone(),
-			1000,
+			amount,
+			nonce,
 		));
 
 		// Should be completed immediately
@@ -846,18 +948,23 @@ fn test_total_minted_increases_on_deposit() {
 	new_test_ext().execute_with(|| {
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 0);
 
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient.clone(),
+			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient,
+			amount,
+			nonce,
 		));
 
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 1000);
@@ -868,26 +975,32 @@ fn test_total_minted_increases_on_deposit() {
 fn test_total_minted_decreases_on_withdraw() {
 	new_test_ext().execute_with(|| {
 		// Setup: deposit first
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let deposit_amount = 5_000_000_000_000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, deposit_amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient,
+			deposit_amount,
+			nonce,
 		));
 
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 5000);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount);
 
 		// Withdraw
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
+		let withdraw_amount = 1_000_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount));
 
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 4000);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount - withdraw_amount);
 	});
 }
 
@@ -900,7 +1013,7 @@ fn test_withdraw_accounting_underflow_fails() {
 
 		// Trying to withdraw should fail due to underflow
 		assert_noop!(
-			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000),
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1_000_000_000),
 			Error::<Test>::AccountingUnderflow
 		);
 	});
@@ -909,45 +1022,54 @@ fn test_withdraw_accounting_underflow_fails() {
 #[test]
 fn test_multiple_deposits_and_withdrawals_accounting() {
 	new_test_ext().execute_with(|| {
+		let deposit_amount_1 = 3_000_000_000_000u128;
+		let deposit_amount_2 = 2_000_000_000_000u128;
+
 		// Deposit 1
-		let deposit_id1 = generate_deposit_id(1);
+		let deposit_id1 = generate_deposit_id_for(&user1(), deposit_amount_1, 0);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id1,
 			user1(),
-			3000,
+			deposit_amount_1,
+			0,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id1,
 			user1(),
-			3000,
+			deposit_amount_1,
+			0,
 		));
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 3000);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount_1);
 
 		// Deposit 2
-		let deposit_id2 = generate_deposit_id(2);
+		let deposit_id2 = generate_deposit_id_for(&user2(), deposit_amount_2, 1);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id2,
 			user2(),
-			2000,
+			deposit_amount_2,
+			1,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id2,
 			user2(),
-			2000,
+			deposit_amount_2,
+			1,
 		));
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 5000);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount_1 + deposit_amount_2);
 
 		// Withdraw 1
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 4000);
+		let withdraw_1 = 1_000_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_1));
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount_1 + deposit_amount_2 - withdraw_1);
 
 		// Withdraw 2
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user2()), 500));
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 3500);
+		let withdraw_2 = 1_000_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user2()), withdraw_2));
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount_1 + deposit_amount_2 - withdraw_1 - withdraw_2);
 	});
 }
 
@@ -958,8 +1080,10 @@ fn test_multiple_deposits_and_withdrawals_accounting() {
 #[test]
 fn test_full_deposit_cycle() {
 	new_test_ext().execute_with(|| {
-		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 		let initial_balance = Balances::free_balance(&recipient);
 
 		// Guardian 1 attests (creates record)
@@ -967,7 +1091,8 @@ fn test_full_deposit_cycle() {
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
 			recipient.clone(),
-			1000,
+			amount,
+			nonce,
 		));
 
 		// Verify pending state
@@ -980,7 +1105,8 @@ fn test_full_deposit_cycle() {
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
 			recipient.clone(),
-			1000,
+			amount,
+			nonce,
 		));
 
 		// Verify completed state
@@ -995,28 +1121,35 @@ fn test_full_deposit_cycle() {
 fn test_full_withdrawal_cycle() {
 	new_test_ext().execute_with(|| {
 		// Setup: deposit first
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let deposit_amount = 5_000_000_000_000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, deposit_amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient,
+			deposit_amount,
+			nonce,
 		));
 
 		let balance_after_deposit = Balances::free_balance(&user1());
 
+		let withdraw_amount = 1_000_000_000_000u128;
+
 		// User initiates withdrawal (burns hAlpha)
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount));
 
 		// Verify burn
-		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit - 1000);
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 4000);
+		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit - withdraw_amount);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount - withdraw_amount);
 
 		// Get withdrawal request ID
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
@@ -1026,7 +1159,7 @@ fn test_full_withdrawal_cycle() {
 		assert_eq!(request.status, crate::pallet::WithdrawalRequestStatus::Requested);
 		assert_eq!(request.sender, user1());
 		assert_eq!(request.recipient, user1());
-		assert_eq!(request.amount, 1000);
+		assert_eq!(request.amount, withdraw_amount);
 	});
 }
 
@@ -1034,25 +1167,32 @@ fn test_full_withdrawal_cycle() {
 fn test_failed_withdrawal_recovery_cycle() {
 	new_test_ext().execute_with(|| {
 		// Setup: deposit first
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let deposit_amount = 5_000_000_000_000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, deposit_amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient,
+			deposit_amount,
+			nonce,
 		));
 
 		let balance_after_deposit = Balances::free_balance(&user1());
 
+		let withdraw_amount = 1_000_000_000_000u128;
+
 		// User initiates withdrawal
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 4000);
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount));
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount - withdraw_amount);
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
 
@@ -1061,7 +1201,7 @@ fn test_failed_withdrawal_recovery_cycle() {
 
 		// Verify recovery - user gets hAlpha back
 		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit);
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 5000);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount);
 
 		let request = crate::WithdrawalRequests::<Test>::get(request_id).unwrap();
 		assert_eq!(request.status, crate::pallet::WithdrawalRequestStatus::Failed);
@@ -1079,18 +1219,23 @@ fn test_cleanup_deposit_after_ttl() {
 		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 10));
 
 		// Create and complete a deposit
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient.clone(),
+			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient,
+			amount,
+			nonce,
 		));
 
 		// Verify deposit exists and is completed
@@ -1123,18 +1268,23 @@ fn test_cleanup_deposit_before_ttl_fails() {
 		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 100));
 
 		// Create and complete a deposit
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient.clone(),
+			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient,
+			amount,
+			nonce,
 		));
 
 		// Try to cleanup immediately (before TTL expires) as guardian
@@ -1158,12 +1308,16 @@ fn test_cleanup_pending_deposit_fails() {
 		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 1));
 
 		// Create a pending deposit (only one attestation, threshold is 2)
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient,
+			amount,
+			nonce,
 		));
 
 		// Verify deposit is pending
@@ -1191,24 +1345,30 @@ fn test_cleanup_withdrawal_request_after_ttl() {
 		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 10));
 
 		// Setup: deposit first to get hAlpha
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let deposit_amount = 5_000_000_000_000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, deposit_amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient,
+			deposit_amount,
+			nonce,
 		));
 
 		// Create a withdrawal request
+		let withdraw_amount = 1_000_000_000_000u128;
 		assert_ok!(AlphaBridge::<Test>::withdraw(
 			RuntimeOrigin::signed(user1()),
-			1000,
+			withdraw_amount,
 		));
 
 		// Get the request
@@ -1239,24 +1399,30 @@ fn test_cleanup_withdrawal_request_before_ttl_fails() {
 		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 100));
 
 		// Setup: deposit first to get hAlpha
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let deposit_amount = 5_000_000_000_000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, deposit_amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient,
+			deposit_amount,
+			nonce,
 		));
 
 		// Create a withdrawal request
+		let withdraw_amount = 1_000_000_000_000u128;
 		assert_ok!(AlphaBridge::<Test>::withdraw(
 			RuntimeOrigin::signed(user1()),
-			1000,
+			withdraw_amount,
 		));
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
@@ -1282,18 +1448,23 @@ fn test_cleanup_deposit_non_guardian_fails() {
 		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 10));
 
 		// Create and complete a deposit
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient.clone(),
+			amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			1000,
+			recipient,
+			amount,
+			nonce,
 		));
 
 		// Advance block number past TTL
@@ -1322,24 +1493,30 @@ fn test_cleanup_withdrawal_request_non_guardian_fails() {
 		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 10));
 
 		// Setup: deposit first to get hAlpha
-		let deposit_id = generate_deposit_id(1);
+		let recipient = user1();
+		let deposit_amount = 5_000_000_000_000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, deposit_amount, nonce);
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(alice()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient.clone(),
+			deposit_amount,
+			nonce,
 		));
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
 			RuntimeOrigin::signed(bob()),
 			deposit_id,
-			user1(),
-			5000,
+			recipient,
+			deposit_amount,
+			nonce,
 		));
 
 		// Create a withdrawal request
+		let withdraw_amount = 1_000_000_000_000u128;
 		assert_ok!(AlphaBridge::<Test>::withdraw(
 			RuntimeOrigin::signed(user1()),
-			1000,
+			withdraw_amount,
 		));
 
 		// Get the request
@@ -1439,5 +1616,67 @@ fn test_set_min_withdrawal_amount_zero_fails() {
 			AlphaBridge::<Test>::set_min_withdrawal_amount(RuntimeOrigin::root(), 0),
 			Error::<Test>::AmountTooSmall
 		);
+	});
+}
+
+// ============================================================================
+// Request ID Verification Tests
+// ============================================================================
+
+#[test]
+fn test_attest_deposit_with_wrong_nonce_fails() {
+	new_test_ext().execute_with(|| {
+		let recipient = user1();
+		let amount = 1000u128;
+		let correct_nonce = 5u64;
+		let wrong_nonce = 99u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, correct_nonce);
+
+		assert_noop!(
+			AlphaBridge::<Test>::attest_deposit(
+				RuntimeOrigin::signed(alice()),
+				deposit_id,
+				recipient,
+				amount,
+				wrong_nonce,
+			),
+			Error::<Test>::InvalidRequestId
+		);
+	});
+}
+
+#[test]
+fn test_attest_deposit_with_fabricated_id_fails() {
+	new_test_ext().execute_with(|| {
+		let fabricated_id = sp_core::H256::from([0xAB; 32]);
+
+		assert_noop!(
+			AlphaBridge::<Test>::attest_deposit(
+				RuntimeOrigin::signed(alice()),
+				fabricated_id,
+				user1(),
+				1000,
+				0,
+			),
+			Error::<Test>::InvalidRequestId
+		);
+	});
+}
+
+#[test]
+fn test_attest_deposit_with_correct_nonce_passes() {
+	new_test_ext().execute_with(|| {
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 42u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
+
+		assert_ok!(AlphaBridge::<Test>::attest_deposit(
+			RuntimeOrigin::signed(alice()),
+			deposit_id,
+			recipient,
+			amount,
+			nonce,
+		));
 	});
 }

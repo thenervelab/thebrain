@@ -12,7 +12,7 @@ use ink::primitives::Hash;
 
 pub type Balance = u64;
 pub type ChainId = u16;
-pub type DepositNonce = u64;
+pub type Nonce = u64;
 pub type BlockNumber = u32;
 
 /// Unique identifier for deposit requests (created by users)
@@ -22,7 +22,13 @@ pub type DepositRequestId = Hash;
 pub type WithdrawalId = Hash;
 
 /// Domain separator for deposit request ID generation (prevents hash collision)
-pub const DOMAIN_DEPOSIT_REQUEST: &[u8] = b"HIPPIUS_DEPOSIT_REQUEST-V2";
+pub const DOMAIN_DEPOSIT_REQUEST: &[u8] = b"DEPOSIT_REQUEST-V1";
+
+/// Domain separator for withdrawal request ID verification
+pub const DOMAIN_WITHDRAWAL_REQUEST: &[u8] = b"WITHDRAWAL_REQUEST-V1";
+
+/// Conversion factor: 1 alphaRao = 1_000_000_000 halphaRao
+pub const HALPHA_RAO_PER_ALPHA_RAO: u128 = 1_000_000_000;
 
 /// Maximum number of guardians allowed in the guardian set
 pub const MAX_GUARDIANS: usize = 10;
@@ -79,7 +85,7 @@ pub struct DepositRequest {
 	/// Amount locked (in alphaRao)
 	pub amount: Balance,
 	/// Nonce used for ID generation
-	pub nonce: DepositNonce,
+	pub nonce: Nonce,
 	/// Hotkey used for the stake
 	pub hotkey: ink::primitives::AccountId,
 	/// Network UID where the stake is locked

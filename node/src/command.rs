@@ -75,6 +75,10 @@ impl SubstrateCli for Cli {
 			"dev" => Box::new(chainspec::mainnet::hippius_testnet_config(
 				hippius_primitives::MAINNET_LOCAL_CHAIN_ID,
 			)?),
+			// Development chainspec with Alice as sole authority (for E2E testing)
+			"development" => Box::new(chainspec::mainnet::development_config(
+				hippius_primitives::MAINNET_LOCAL_CHAIN_ID,
+			)?),
 			// generates the spec for benchmarking.
 			"benchmark" => Box::new(chainspec::mainnet::local_benchmarking_config(
 				hippius_primitives::MAINNET_CHAIN_ID,

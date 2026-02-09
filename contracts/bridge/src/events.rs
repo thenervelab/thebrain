@@ -1,6 +1,6 @@
 //! Event definitions for the minimal viable bridge contract
 
-use crate::types::{Balance, BlockNumber, CancelReason, ChainId, DepositNonce, DepositRequestId, WithdrawalId};
+use crate::types::{Balance, BlockNumber, CancelReason, DepositRequestId, Nonce, WithdrawalId};
 use ink::prelude::vec::Vec;
 
 // ============ Deposit Flow Events (Source Side) ============
@@ -10,19 +10,16 @@ use ink::prelude::vec::Vec;
 /// **Guardian Action Required**: Monitor this event on Bittensor chain.
 /// When seen, call attest_deposit on Hippius pallet with:
 /// - request_id: deposit_request_id from this event
-/// - recipient: recipient from this event
+/// - recipient: sender from this event (sender == recipient)
 /// - amount: amount from this event (alphaRao converted to halphaRao)
+/// - nonce: deposit_nonce from this event
 #[ink::event]
 pub struct DepositRequestCreated {
-	#[ink(topic)]
-	pub chain_id: ChainId,
-	pub escrow_contract: ink::primitives::AccountId,
-	pub deposit_nonce: DepositNonce,
+	pub deposit_nonce: Nonce,
 	#[ink(topic)]
 	pub sender: ink::primitives::AccountId,
-	#[ink(topic)]
-	pub recipient: ink::primitives::AccountId,
 	pub amount: Balance,
+	#[ink(topic)]
 	pub deposit_request_id: DepositRequestId,
 }
 

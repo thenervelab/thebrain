@@ -1,12 +1,12 @@
 {
   "source": {
-    "hash": "0xe448bdced59762cbdff64ebea4402a282807d918a96c9095a3bb500a36a08f2a",
+    "hash": "0xdb4c9dcad6cd05baff5d20e42c067d914483023f2da3da65919170607aba8346",
     "language": "ink! 5.1.1",
     "compiler": "rustc 1.85.0",
     "build_info": {
-      "build_mode": "Release",
+      "build_mode": "Debug",
       "cargo_contract_version": "5.0.3",
-      "rust_toolchain": "stable-x86_64-unknown-linux-gnu",
+      "rust_toolchain": "stable-aarch64-apple-darwin",
       "wasm_opt_settings": {
         "keep_debug_symbols": false,
         "optimization_passes": "Z"
@@ -57,16 +57,9 @@
         "docs": [
           "Creates a new bridge contract instance",
           "",
-          "Initializes the bridge with default configuration:",
-          "- Empty guardian set (use set_guardians_and_thresholds to configure)",
-          "- Signature TTL: 100 blocks",
-          "- Minimum deposit: 1,000,000,000 rao (1 Alpha)",
-          "- Max deposits per user: 25",
-          "- Bridge is unpaused",
-          "",
           "# Arguments",
           "* `owner` - Contract owner with admin privileges",
-          "* `chain_id` - Identifier for the Bittensor chain (used in deposit ID generation)",
+          "* `chain_id` - Identifier for the Bittensor chain (used in ID generation)",
           "* `hotkey` - Contract's hotkey for stake consolidation"
         ],
         "label": "new",
@@ -76,7 +69,7 @@
             "ink_primitives",
             "ConstructorResult"
           ],
-          "type": 40
+          "type": 26
         },
         "selector": "0x9bae9d5e"
       }
@@ -93,25 +86,25 @@
         "displayName": [
           "Balance"
         ],
-        "type": 4
+        "type": 6
       },
       "blockNumber": {
         "displayName": [
           "BlockNumber"
         ],
-        "type": 23
+        "type": 7
       },
       "chainExtension": {
         "displayName": [
           "ChainExtension"
         ],
-        "type": 68
+        "type": 46
       },
       "hash": {
         "displayName": [
           "Hash"
         ],
-        "type": 6
+        "type": 9
       },
       "maxEventTopics": 4,
       "staticBufferSize": 16384,
@@ -119,7 +112,7 @@
         "displayName": [
           "Timestamp"
         ],
-        "type": 4
+        "type": 6
       }
     },
     "events": [
@@ -157,7 +150,7 @@
               "displayName": [
                 "DepositNonce"
               ],
-              "type": 4
+              "type": 6
             }
           },
           {
@@ -175,53 +168,200 @@
           },
           {
             "docs": [],
+            "indexed": true,
+            "label": "recipient",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
             "indexed": false,
             "label": "amount",
             "type": {
               "displayName": [
                 "Balance"
               ],
-              "type": 4
+              "type": 6
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "deposit_request_id",
+            "type": {
+              "displayName": [
+                "DepositRequestId"
+              ],
+              "type": 9
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when a user creates a deposit request by locking Alpha",
+          "",
+          "**Guardian Action Required**: Monitor this event on Bittensor chain.",
+          "When seen, call attest_deposit on Hippius pallet with:",
+          "- request_id: deposit_request_id from this event",
+          "- recipient: recipient from this event",
+          "- amount: amount from this event (alphaRao converted to halphaRao)"
+        ],
+        "label": "DepositRequestCreated",
+        "module_path": "bridge::events",
+        "signature_topic": "0x739f750c8fc30427bf8e06588886b81420e42526df0bb35290671717d64680d8"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "deposit_request_id",
+            "type": {
+              "displayName": [
+                "DepositRequestId"
+              ],
+              "type": 9
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when admin marks a deposit request as failed"
+        ],
+        "label": "DepositRequestFailed",
+        "module_path": "bridge::events",
+        "signature_topic": "0x0ee02c7ad5765636065377f1933afb7a5531177b32510861e11a90eaaa75501d"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "withdrawal_id",
+            "type": {
+              "displayName": [
+                "WithdrawalId"
+              ],
+              "type": 9
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "guardian",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [
+              "Current vote count after this attestation"
+            ],
+            "indexed": false,
+            "label": "vote_count",
+            "type": {
+              "displayName": [
+                "u16"
+              ],
+              "type": 3
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when a guardian attests a withdrawal"
+        ],
+        "label": "WithdrawalAttested",
+        "module_path": "bridge::events",
+        "signature_topic": "0xb52c566038df46a55b61bbffb0716e0aad25bf44e232b0f619cc0deb04c02e82"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "withdrawal_id",
+            "type": {
+              "displayName": [
+                "WithdrawalId"
+              ],
+              "type": 9
             }
           },
           {
             "docs": [],
             "indexed": true,
-            "label": "deposit_id",
+            "label": "recipient",
             "type": {
               "displayName": [
-                "DepositId"
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
               ],
               "type": 6
             }
           }
         ],
         "docs": [
-          "Emitted when a deposit is successfully locked on Bittensor",
-          "",
-          "**Guardian Action Required**: Monitor this event on Bittensor chain.",
-          "When seen, create a DepositProposal for the Hippius pallet with:",
-          "- id: deposit_id from this event",
-          "- recipient: sender from this event",
-          "- amount: amount from this event"
+          "Emitted when a withdrawal is completed (Alpha released to recipient)"
         ],
-        "label": "DepositMade",
+        "label": "WithdrawalCompleted",
         "module_path": "bridge::events",
-        "signature_topic": "0xa79d4e23a06aa58e749f469e2f797fe80176135f9f17412a09cf1a3c4ec05db5"
+        "signature_topic": "0xe53427dede14ff5d58c119a577378576f1550789b62d04525e4701d9761033b9"
       },
       {
         "args": [
           {
             "docs": [],
             "indexed": true,
-            "label": "burn_id",
+            "label": "withdrawal_id",
             "type": {
               "displayName": [
-                "BurnId"
+                "WithdrawalId"
               ],
-              "type": 6
+              "type": 9
             }
           },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "reason",
+            "type": {
+              "displayName": [
+                "CancelReason"
+              ],
+              "type": 34
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when admin cancels a withdrawal"
+        ],
+        "label": "WithdrawalCancelled",
+        "module_path": "bridge::events",
+        "signature_topic": "0xe9f3368fad68935f72fd98ee7cc73f25a30932382164ecae4b1aa782d39283a9"
+      },
+      {
+        "args": [
           {
             "docs": [],
             "indexed": true,
@@ -243,219 +383,29 @@
               "displayName": [
                 "Balance"
               ],
-              "type": 4
-            }
-          }
-        ],
-        "docs": [],
-        "label": "Released",
-        "module_path": "bridge::events",
-        "signature_topic": "0x35ea8d6a76206a125499df5621072526b8be17512c8744dbc5b35edd35dafdd2"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "deposit_id",
-            "type": {
-              "displayName": [
-                "DepositId"
-              ],
               "type": 6
             }
           },
           {
-            "docs": [],
-            "indexed": true,
-            "label": "recipient",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
+            "docs": [
+              "Optional deposit request ID for audit trail"
+            ],
             "indexed": false,
-            "label": "amount",
+            "label": "deposit_request_id",
             "type": {
               "displayName": [
-                "Balance"
+                "Option"
               ],
-              "type": 4
+              "type": 33
             }
           }
         ],
-        "docs": [],
-        "label": "Refunded",
-        "module_path": "bridge::events",
-        "signature_topic": "0x61217fd15f7cb93d5023c3d84d5ae547af926188de6b4649d4a92679a60f9ca5"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "checkpoint_nonce",
-            "type": {
-              "displayName": [
-                "CheckpointNonce"
-              ],
-              "type": 4
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "proposer",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "burns_count",
-            "type": {
-              "displayName": [
-                "u32"
-              ],
-              "type": 23
-            }
-          }
+        "docs": [
+          "Emitted when admin manually releases Alpha to a user"
         ],
-        "docs": [],
-        "label": "BurnsProposed",
+        "label": "AdminManualRelease",
         "module_path": "bridge::events",
-        "signature_topic": "0xefc52d4dfae013d2e9e7d4095b0692ab97f388b3711fb7efdeeeeda5ed6b85d4"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "burn_id",
-            "type": {
-              "displayName": [
-                "BurnId"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "docs": [],
-        "label": "BurnDenied",
-        "module_path": "bridge::events",
-        "signature_topic": "0x25ea0c87e85a10daa7cced176b18ebc1fd9deb1a4c9961e74bda58c133f96418"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "burn_id",
-            "type": {
-              "displayName": [
-                "BurnId"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "docs": [],
-        "label": "BurnExpired",
-        "module_path": "bridge::events",
-        "signature_topic": "0x32cd3cc0fe76dd7fc01dc3bf69c4035655d9661362e667be8afae21286a958d6"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "checkpoint_nonce",
-            "type": {
-              "displayName": [
-                "CheckpointNonce"
-              ],
-              "type": 4
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "proposer",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "refunds_count",
-            "type": {
-              "displayName": [
-                "u32"
-              ],
-              "type": 23
-            }
-          }
-        ],
-        "docs": [],
-        "label": "RefundsProposed",
-        "module_path": "bridge::events",
-        "signature_topic": "0x834f220b263d31d8aedb2c00373423ef2e3d833cae02cc21163742b996c0a085"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "deposit_id",
-            "type": {
-              "displayName": [
-                "DepositId"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "docs": [],
-        "label": "RefundDenied",
-        "module_path": "bridge::events",
-        "signature_topic": "0x85784ce211378ca750630a855be5d7f3bf92177da038a37408aaa2bd84ca699f"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "deposit_id",
-            "type": {
-              "displayName": [
-                "DepositId"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "docs": [],
-        "label": "RefundExpired",
-        "module_path": "bridge::events",
-        "signature_topic": "0x4b8e9219d8fc9ca13172366ed59ab36945e47ab8a3cc5439454063c95908afb8"
+        "signature_topic": "0xa771baf45b438776fd1a49a8a69147d4550f4f0f8790e66b06ca4348750edf8c"
       },
       {
         "args": [
@@ -467,24 +417,13 @@
               "displayName": [
                 "Vec"
               ],
-              "type": 22
+              "type": 5
             }
           },
           {
             "docs": [],
             "indexed": false,
             "label": "approve_threshold",
-            "type": {
-              "displayName": [
-                "u16"
-              ],
-              "type": 3
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "deny_threshold",
             "type": {
               "displayName": [
                 "u16"
@@ -506,10 +445,12 @@
             }
           }
         ],
-        "docs": [],
+        "docs": [
+          "Emitted when guardian set and thresholds are updated"
+        ],
         "label": "GuardiansUpdated",
         "module_path": "bridge::events",
-        "signature_topic": "0xab790fc5c5c96dd6609f7f53fab8cc83319e2026ba2afb9b415c97cb75247ea8"
+        "signature_topic": "0xa21462fef00c4091f3296600ecd313cb52a74d60b67c5a717b863b1a26aef1b5"
       },
       {
         "args": [
@@ -527,7 +468,9 @@
             }
           }
         ],
-        "docs": [],
+        "docs": [
+          "Emitted when bridge is paused"
+        ],
         "label": "Paused",
         "module_path": "bridge::events",
         "signature_topic": "0x9bf6cab4dfed2a2092aba7b4bbbfbb1be94ddeab1ba64146e8f0576d5e45741f"
@@ -548,7 +491,9 @@
             }
           }
         ],
-        "docs": [],
+        "docs": [
+          "Emitted when bridge is unpaused"
+        ],
         "label": "Unpaused",
         "module_path": "bridge::events",
         "signature_topic": "0xa458d4a471e9b31292ec531673221945fad4d9e8e8eb5ad00393dded115c03a3"
@@ -582,7 +527,9 @@
             }
           }
         ],
-        "docs": [],
+        "docs": [
+          "Emitted when owner is updated"
+        ],
         "label": "OwnerUpdated",
         "module_path": "bridge::events",
         "signature_topic": "0x2e06d4b1969eccaeac7bcdc197a41cda5f6026de097a1b19d385f06fb8950921"
@@ -629,7 +576,9 @@
             }
           }
         ],
-        "docs": [],
+        "docs": [
+          "Emitted when contract hotkey is updated"
+        ],
         "label": "ContractHotkeyUpdated",
         "module_path": "bridge::events",
         "signature_topic": "0x6cc54e660ff69cc11e0ef186bbbfca068b3fcb0b36ca0b1ca4bc5977f2637c43"
@@ -646,7 +595,7 @@
                 "primitives",
                 "Hash"
               ],
-              "type": 6
+              "type": 9
             }
           },
           {
@@ -663,10 +612,118 @@
             }
           }
         ],
-        "docs": [],
+        "docs": [
+          "Emitted when contract code is upgraded"
+        ],
         "label": "CodeUpgraded",
         "module_path": "bridge::events",
         "signature_topic": "0xe335d4518f27bd2d839099a2f7cf9684072fa0d91b6d3bb84424baf379d87c75"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "deposit_request_id",
+            "type": {
+              "displayName": [
+                "DepositRequestId"
+              ],
+              "type": 9
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when a deposit request is cleaned up after TTL"
+        ],
+        "label": "DepositRequestCleanedUp",
+        "module_path": "bridge::events",
+        "signature_topic": "0x4da0f35b5af8c9819c8767ff0def32a9e42280411305c8c15a2db7a8e1b061f5"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "withdrawal_id",
+            "type": {
+              "displayName": [
+                "WithdrawalId"
+              ],
+              "type": 9
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when a withdrawal is cleaned up after TTL"
+        ],
+        "label": "WithdrawalCleanedUp",
+        "module_path": "bridge::events",
+        "signature_topic": "0xf49cd5415894d6773022c3ad93a70ac2998fd7f872d353d47f48149a4b770beb"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "old_ttl",
+            "type": {
+              "displayName": [
+                "BlockNumber"
+              ],
+              "type": 7
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "new_ttl",
+            "type": {
+              "displayName": [
+                "BlockNumber"
+              ],
+              "type": 7
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when the cleanup TTL is updated"
+        ],
+        "label": "CleanupTTLUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0xf98f81638ffd89acf466bcb3a1ddb425fe8eb6989c65ef1530925c7cfa762bc4"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "old_amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 6
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "new_amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when the minimum deposit amount is updated"
+        ],
+        "label": "MinDepositAmountUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0xc1fe834d5752ac999c5fac0fc17219d7328ddb8e3bbdab2e047d88f500979a7f"
       }
     ],
     "lang_error": {
@@ -674,7 +731,7 @@
         "ink",
         "LangError"
       ],
-      "type": 41
+      "type": 27
     },
     "messages": [
       {
@@ -685,7 +742,7 @@
               "displayName": [
                 "Balance"
               ],
-              "type": 4
+              "type": 6
             }
           },
           {
@@ -696,203 +753,21 @@
               ],
               "type": 0
             }
-          },
-          {
-            "label": "netuid",
-            "type": {
-              "displayName": [
-                "NetUid"
-              ],
-              "type": 42
-            }
           }
         ],
         "default": false,
         "docs": [
-          " Locks Alpha tokens on Bittensor to be bridged to Hippius",
+          " User locks Alpha to create a deposit request",
           "",
-          " Users call this function to deposit Alpha stake into the bridge contract.",
-          " The locked stake will be available for minting as hAlpha on Hippius after guardian approval.",
-          "",
-          " The caller MUST have added this contract as a proxy on Bittensor via the",
-          " Subtensor pallet's add_proxy extrinsic."
-        ],
-        "label": "lock",
-        "mutates": true,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 43
-        },
-        "selector": "0xbbaa6540"
-      },
-      {
-        "args": [
-          {
-            "label": "burns",
-            "type": {
-              "displayName": [
-                "Vec"
-              ],
-              "type": 46
-            }
-          },
-          {
-            "label": "checkpoint_nonce",
-            "type": {
-              "displayName": [
-                "CheckpointNonce"
-              ],
-              "type": 4
-            }
-          }
-        ],
-        "default": false,
-        "docs": [
-          " Proposes burns from Hippius for releasing locked stake",
-          "",
-          " Guardians monitor Hippius UnlockApproved events and create burn proposals.",
-          " The checkpoint must have sequential nonce (last_burns_checkpoint_nonce + 1).",
-          " The proposing guardian's vote is automatically counted as an approval.",
-          " Other guardians then attest via attest_release().",
-          "",
-          " # Security",
-          " - Only guardians can propose burns",
-          " - Checkpoint nonces must be sequential",
-          " - Each burn is stored and voted on individually"
-        ],
-        "label": "propose_releases",
-        "mutates": true,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 48
-        },
-        "selector": "0x2592f344"
-      },
-      {
-        "args": [
-          {
-            "label": "burn_id",
-            "type": {
-              "displayName": [
-                "BurnId"
-              ],
-              "type": 6
-            }
-          },
-          {
-            "label": "approve",
-            "type": {
-              "displayName": [
-                "bool"
-              ],
-              "type": 11
-            }
-          }
-        ],
-        "default": false,
-        "docs": [
-          " Guardian attests (votes on) a pending burn",
-          "",
-          " Guardians review individual burns and vote to approve or deny.",
-          " When approve_threshold is reached and within TTL, the burn is automatically finalized."
-        ],
-        "label": "attest_release",
-        "mutates": true,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 48
-        },
-        "selector": "0x1b68503f"
-      },
-      {
-        "args": [
-          {
-            "label": "burn_id",
-            "type": {
-              "displayName": [
-                "BurnId"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "default": false,
-        "docs": [
-          " Expires a burn that exceeded its TTL",
-          "",
-          " Anyone can call this to clean up stale burn proposals that did not reach",
-          " consensus within signature_ttl_blocks."
-        ],
-        "label": "expire_release",
-        "mutates": true,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 48
-        },
-        "selector": "0x6fce115e"
-      },
-      {
-        "args": [
-          {
-            "label": "refunds",
-            "type": {
-              "displayName": [
-                "Vec"
-              ],
-              "type": 50
-            }
-          },
-          {
-            "label": "checkpoint_nonce",
-            "type": {
-              "displayName": [
-                "CheckpointNonce"
-              ],
-              "type": 4
-            }
-          }
-        ],
-        "default": false,
-        "docs": [
-          " Proposes refunds for deposits that were denied on Hippius",
-          "",
-          " # Guardian Workflow",
-          " 1. Monitor Hippius chain for `BridgeDenied` events",
-          " 2. Collect denied deposit_ids from events",
-          " 3. For each denied deposit, fetch deposit metadata from Bittensor contract",
-          " 4. Create RefundItem with deposit_id, original sender, and amount",
-          " 5. Call this function with the refund proposals",
-          " 6. Other guardians attest the refund via attest_refund()",
-          " 7. When threshold reached, refunds are executed automatically",
+          " Creates a deposit request that guardians will observe and attest on Hippius.",
+          " The caller MUST have added this contract as a proxy on Bittensor.",
+          " The recipient on Hippius is automatically set to the caller's address.",
           "",
           " # Arguments",
-          " * `refunds` - Vector of refund items (denied deposits to refund)",
-          " * `checkpoint_nonce` - Sequential nonce for checkpoint ordering",
-          "",
-          " # Security",
-          " - Only guardians can propose refunds",
-          " - Checkpoint nonces must be sequential",
-          " - Each refund is stored and voted on individually",
-          " - **Refund recipient MUST match original deposit sender**",
-          " - **Refund amount MUST match full locked amount (no partial refunds)**"
+          " * `amount` - Amount of Alpha to lock (in alphaRao)",
+          " * `hotkey` - Hotkey where the stake is currently held"
         ],
-        "label": "propose_refunds",
+        "label": "deposit",
         "mutates": true,
         "payable": false,
         "returnType": {
@@ -900,39 +775,142 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 28
         },
-        "selector": "0xd97ab6bb"
+        "selector": "0x2d10c9bd"
       },
       {
         "args": [
           {
-            "label": "deposit_id",
+            "label": "request_id",
             "type": {
               "displayName": [
-                "DepositId"
+                "WithdrawalId"
+              ],
+              "type": 9
+            }
+          },
+          {
+            "label": "recipient",
+            "type": {
+              "displayName": [
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Guardian attests a withdrawal (first attestation creates the record)",
+          "",
+          " When guardians observe a withdrawal_request on Hippius, they call this",
+          " to vote for releasing Alpha. First attestation creates the Withdrawal record.",
+          " When threshold is reached, Alpha is released to recipient.",
+          "",
+          " # Arguments",
+          " * `request_id` - The withdrawal request ID from Hippius",
+          " * `recipient` - Recipient to release Alpha to",
+          " * `amount` - Amount to release (in alphaRao)"
+        ],
+        "label": "attest_withdrawal",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 31
+        },
+        "selector": "0x8eed990f"
+      },
+      {
+        "args": [
+          {
+            "label": "request_id",
+            "type": {
+              "displayName": [
+                "DepositRequestId"
+              ],
+              "type": 9
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Admin marks a deposit request as failed",
+          "",
+          " After calling this, admin should manually release Alpha via admin_manual_release.",
+          "",
+          " NOTE: Intentionally does not check pause state — admin must operate during emergencies.",
+          "",
+          " # Arguments",
+          " * `request_id` - The deposit request ID to fail"
+        ],
+        "label": "admin_fail_deposit_request",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 31
+        },
+        "selector": "0xf16c112c"
+      },
+      {
+        "args": [
+          {
+            "label": "recipient",
+            "type": {
+              "displayName": [
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
               ],
               "type": 6
             }
           },
           {
-            "label": "approve",
+            "label": "deposit_request_id",
             "type": {
               "displayName": [
-                "bool"
+                "Option"
               ],
-              "type": 11
+              "type": 33
             }
           }
         ],
         "default": false,
         "docs": [
-          " Guardian attests (votes on) a pending refund",
+          " Admin manually releases Alpha to a recipient (for stuck deposits)",
           "",
-          " Guardians review individual refunds and vote to approve or deny.",
-          " When approve_threshold is reached and within TTL, the refund is automatically finalized."
+          " NOTE: Intentionally does not check pause state — admin must operate during emergencies.",
+          "",
+          " # Arguments",
+          " * `recipient` - Account to receive Alpha",
+          " * `amount` - Amount to release (in alphaRao)",
+          " * `deposit_request_id` - Optional deposit request ID for audit trail"
         ],
-        "label": "attest_refund",
+        "label": "admin_manual_release",
         "mutates": true,
         "payable": false,
         "returnType": {
@@ -940,30 +918,41 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 31
         },
-        "selector": "0x5c79af4e"
+        "selector": "0xe0292c82"
       },
       {
         "args": [
           {
-            "label": "deposit_id",
+            "label": "request_id",
             "type": {
               "displayName": [
-                "DepositId"
+                "WithdrawalId"
               ],
-              "type": 6
+              "type": 9
+            }
+          },
+          {
+            "label": "reason",
+            "type": {
+              "displayName": [
+                "CancelReason"
+              ],
+              "type": 34
             }
           }
         ],
         "default": false,
         "docs": [
-          " Expires a refund that exceeded its TTL",
+          " Admin cancels a withdrawal that is stuck",
           "",
-          " Anyone can call this to clean up stale refund proposals that did not reach",
-          " consensus within signature_ttl_blocks."
+          " NOTE: Intentionally does not check pause state — admin must operate during emergencies.",
+          "",
+          " # Arguments",
+          " * `request_id` - The withdrawal ID to cancel"
         ],
-        "label": "expire_refund",
+        "label": "admin_cancel_withdrawal",
         "mutates": true,
         "payable": false,
         "returnType": {
@@ -971,9 +960,9 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 31
         },
-        "selector": "0x86367cc5"
+        "selector": "0x7f0515dd"
       },
       {
         "args": [
@@ -983,7 +972,7 @@
               "displayName": [
                 "Vec"
               ],
-              "type": 22
+              "type": 5
             }
           },
           {
@@ -994,26 +983,13 @@
               ],
               "type": 3
             }
-          },
-          {
-            "label": "deny_threshold",
-            "type": {
-              "displayName": [
-                "u16"
-              ],
-              "type": 3
-            }
           }
         ],
         "default": false,
         "docs": [
-          " Configures the guardian set and voting thresholds (owner only)",
-          "",
-          " Sets the list of authorized guardians and the number of votes required",
-          " to approve or deny proposals. Validates that deny_threshold < approve_threshold",
-          " and approve_threshold <= guardian_count."
+          " Configures the guardian set and voting threshold (owner only)"
         ],
-        "label": "set_guardians_and_thresholds",
+        "label": "set_guardians_and_threshold",
         "mutates": true,
         "payable": false,
         "returnType": {
@@ -1021,9 +997,9 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 31
         },
-        "selector": "0xcb53dd62"
+        "selector": "0xd44f0e8f"
       },
       {
         "args": [],
@@ -1037,7 +1013,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 31
         },
         "selector": "0x81e0c604"
       },
@@ -1053,7 +1029,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 31
         },
         "selector": "0x67616649"
       },
@@ -1079,7 +1055,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 31
         },
         "selector": "0x22a8dc8f"
       },
@@ -1096,10 +1072,7 @@
           }
         ],
         "default": false,
-        "docs": [
-          " Set the contract's hotkey (admin only)",
-          " All deposited stake will be consolidated to this hotkey"
-        ],
+        "docs": [],
         "label": "set_contract_hotkey",
         "mutates": true,
         "payable": false,
@@ -1108,7 +1081,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 31
         },
         "selector": "0xbc05399e"
       },
@@ -1120,15 +1093,12 @@
               "displayName": [
                 "Hash"
               ],
-              "type": 6
+              "type": 9
             }
           }
         ],
         "default": false,
-        "docs": [
-          " Replace contract code with new implementation",
-          " Only callable by contract owner"
-        ],
+        "docs": [],
         "label": "set_code",
         "mutates": true,
         "payable": false,
@@ -1137,69 +1107,137 @@
             "ink",
             "MessageResult"
           ],
-          "type": 48
+          "type": 31
         },
         "selector": "0x694fb50f"
       },
       {
-        "args": [],
+        "args": [
+          {
+            "label": "request_id",
+            "type": {
+              "displayName": [
+                "DepositRequestId"
+              ],
+              "type": 9
+            }
+          }
+        ],
         "default": false,
         "docs": [
-          " Get the contract's current hotkey"
+          " Guardian can cleanup a deposit request after TTL (no status check for source records)"
         ],
-        "label": "contract_hotkey",
-        "mutates": false,
+        "label": "cleanup_deposit_request",
+        "mutates": true,
         "payable": false,
         "returnType": {
           "displayName": [
             "ink",
             "MessageResult"
           ],
-          "type": 52
+          "type": 31
         },
-        "selector": "0x7c847b08"
+        "selector": "0x60b8fdc2"
       },
       {
         "args": [
           {
-            "label": "deposit_id",
+            "label": "withdrawal_id",
             "type": {
               "displayName": [
-                "DepositId"
+                "WithdrawalId"
+              ],
+              "type": 9
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Guardian can cleanup a finalized withdrawal after TTL"
+        ],
+        "label": "cleanup_withdrawal",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 31
+        },
+        "selector": "0x0c41648e"
+      },
+      {
+        "args": [
+          {
+            "label": "ttl_blocks",
+            "type": {
+              "displayName": [
+                "BlockNumber"
+              ],
+              "type": 7
+            }
+          }
+        ],
+        "default": false,
+        "docs": [
+          " Admin sets the cleanup TTL (in blocks)"
+        ],
+        "label": "set_cleanup_ttl",
+        "mutates": true,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 31
+        },
+        "selector": "0xe3e63347"
+      },
+      {
+        "args": [
+          {
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
               ],
               "type": 6
             }
           }
         ],
         "default": false,
-        "docs": [],
-        "label": "get_locked_amount",
-        "mutates": false,
+        "docs": [
+          " Admin sets the minimum deposit amount"
+        ],
+        "label": "set_min_deposit_amount",
+        "mutates": true,
         "payable": false,
         "returnType": {
           "displayName": [
             "ink",
             "MessageResult"
           ],
-          "type": 53
+          "type": 31
         },
-        "selector": "0xac35abb3"
+        "selector": "0xa590344d"
       },
       {
         "args": [
           {
-            "label": "deposit_id",
+            "label": "request_id",
             "type": {
               "displayName": [
-                "DepositId"
+                "DepositRequestId"
               ],
-              "type": 6
+              "type": 9
             }
           }
         ],
         "default": false,
         "docs": [],
-        "label": "is_processed",
+        "label": "get_deposit_request",
         "mutates": false,
         "payable": false,
         "returnType": {
@@ -1207,25 +1245,25 @@
             "ink",
             "MessageResult"
           ],
-          "type": 55
+          "type": 35
         },
-        "selector": "0x5953d998"
+        "selector": "0x6370ed0c"
       },
       {
         "args": [
           {
-            "label": "deposit_id",
+            "label": "withdrawal_id",
             "type": {
               "displayName": [
-                "DepositId"
+                "WithdrawalId"
               ],
-              "type": 6
+              "type": 9
             }
           }
         ],
         "default": false,
         "docs": [],
-        "label": "is_denied",
+        "label": "get_withdrawal",
         "mutates": false,
         "payable": false,
         "returnType": {
@@ -1233,105 +1271,25 @@
             "ink",
             "MessageResult"
           ],
-          "type": 55
+          "type": 37
         },
-        "selector": "0xb173829d"
+        "selector": "0x6a667620"
       },
       {
         "args": [
           {
-            "label": "user",
-            "type": {
-              "displayName": [
-                "AccountId"
-              ],
-              "type": 0
-            }
-          }
-        ],
-        "default": false,
-        "docs": [],
-        "label": "get_user_deposits",
-        "mutates": false,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 56
-        },
-        "selector": "0xcb824993"
-      },
-      {
-        "args": [
-          {
-            "label": "burn_id",
-            "type": {
-              "displayName": [
-                "BurnId"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "default": false,
-        "docs": [],
-        "label": "get_pending_burn",
-        "mutates": false,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 57
-        },
-        "selector": "0xc1ffc908"
-      },
-      {
-        "args": [
-          {
-            "label": "deposit_id",
-            "type": {
-              "displayName": [
-                "DepositId"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "default": false,
-        "docs": [],
-        "label": "get_pending_refund",
-        "mutates": false,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 59
-        },
-        "selector": "0xcbd09c0e"
-      },
-      {
-        "args": [
-          {
-            "label": "deposit_nonce",
+            "label": "nonce",
             "type": {
               "displayName": [
                 "DepositNonce"
               ],
-              "type": 4
+              "type": 6
             }
           }
         ],
         "default": false,
-        "docs": [
-          " Resolve a deposit ID from its nonce"
-        ],
-        "label": "get_deposit_id_by_nonce",
+        "docs": [],
+        "label": "get_deposit_request_id_by_nonce",
         "mutates": false,
         "payable": false,
         "returnType": {
@@ -1339,9 +1297,9 @@
             "ink",
             "MessageResult"
           ],
-          "type": 61
+          "type": 39
         },
-        "selector": "0x63b8d781"
+        "selector": "0xa1bb85dc"
       },
       {
         "args": [],
@@ -1355,7 +1313,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 52
+          "type": 40
         },
         "selector": "0xfeaea4fa"
       },
@@ -1371,9 +1329,25 @@
             "ink",
             "MessageResult"
           ],
-          "type": 63
+          "type": 41
         },
         "selector": "0xffe9f9cf"
+      },
+      {
+        "args": [],
+        "default": false,
+        "docs": [],
+        "label": "contract_hotkey",
+        "mutates": false,
+        "payable": false,
+        "returnType": {
+          "displayName": [
+            "ink",
+            "MessageResult"
+          ],
+          "type": 40
+        },
+        "selector": "0x7c847b08"
       },
       {
         "args": [],
@@ -1387,41 +1361,9 @@
             "ink",
             "MessageResult"
           ],
-          "type": 64
+          "type": 42
         },
         "selector": "0xfd648c34"
-      },
-      {
-        "args": [],
-        "default": false,
-        "docs": [],
-        "label": "last_burns_checkpoint_nonce",
-        "mutates": false,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 64
-        },
-        "selector": "0x937cf37c"
-      },
-      {
-        "args": [],
-        "default": false,
-        "docs": [],
-        "label": "last_refunds_checkpoint_nonce",
-        "mutates": false,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 64
-        },
-        "selector": "0x8cbc4bda"
       },
       {
         "args": [],
@@ -1435,7 +1377,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 65
+          "type": 43
         },
         "selector": "0x12d70020"
       },
@@ -1451,25 +1393,9 @@
             "ink",
             "MessageResult"
           ],
-          "type": 63
+          "type": 41
         },
         "selector": "0x8cd59c44"
-      },
-      {
-        "args": [],
-        "default": false,
-        "docs": [],
-        "label": "deny_threshold",
-        "mutates": false,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 63
-        },
-        "selector": "0x17238879"
       },
       {
         "args": [],
@@ -1483,27 +1409,15 @@
             "ink",
             "MessageResult"
           ],
-          "type": 55
+          "type": 44
         },
         "selector": "0xfa7d505b"
       },
       {
-        "args": [
-          {
-            "label": "deposit_id",
-            "type": {
-              "displayName": [
-                "DepositId"
-              ],
-              "type": 6
-            }
-          }
-        ],
+        "args": [],
         "default": false,
-        "docs": [
-          " Get deposit metadata for a given deposit ID"
-        ],
-        "label": "get_deposit_metadata",
+        "docs": [],
+        "label": "min_deposit_amount",
         "mutates": false,
         "payable": false,
         "returnType": {
@@ -1511,27 +1425,15 @@
             "ink",
             "MessageResult"
           ],
-          "type": 66
+          "type": 42
         },
-        "selector": "0xefccb143"
+        "selector": "0x6894756f"
       },
       {
-        "args": [
-          {
-            "label": "burn_id",
-            "type": {
-              "displayName": [
-                "BurnId"
-              ],
-              "type": 6
-            }
-          }
-        ],
+        "args": [],
         "default": false,
-        "docs": [
-          " Check if a burn ID has a pending approval"
-        ],
-        "label": "has_pending_burn",
+        "docs": [],
+        "label": "cleanup_ttl",
         "mutates": false,
         "payable": false,
         "returnType": {
@@ -1539,37 +1441,9 @@
             "ink",
             "MessageResult"
           ],
-          "type": 55
+          "type": 45
         },
-        "selector": "0x5c5702da"
-      },
-      {
-        "args": [
-          {
-            "label": "deposit_id",
-            "type": {
-              "displayName": [
-                "DepositId"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "default": false,
-        "docs": [
-          " Check if a deposit ID has a pending refund"
-        ],
-        "label": "has_pending_refund",
-        "mutates": false,
-        "payable": false,
-        "returnType": {
-          "displayName": [
-            "ink",
-            "MessageResult"
-          ],
-          "type": 55
-        },
-        "selector": "0x143eaf84"
+        "selector": "0x316e4e49"
       }
     ]
   },
@@ -1600,10 +1474,10 @@
               "layout": {
                 "leaf": {
                   "key": "0x00000000",
-                  "ty": 4
+                  "ty": 0
                 }
               },
-              "name": "next_deposit_nonce"
+              "name": "contract_hotkey"
             },
             {
               "layout": {
@@ -1612,119 +1486,13 @@
                   "ty": 4
                 }
               },
-              "name": "last_burns_checkpoint_nonce"
+              "name": "paused"
             },
             {
               "layout": {
                 "leaf": {
                   "key": "0x00000000",
-                  "ty": 4
-                }
-              },
-              "name": "last_refunds_checkpoint_nonce"
-            },
-            {
-              "layout": {
-                "root": {
-                  "layout": {
-                    "leaf": {
-                      "key": "0xdea95769",
-                      "ty": 4
-                    }
-                  },
-                  "root_key": "0xdea95769",
                   "ty": 5
-                }
-              },
-              "name": "locked"
-            },
-            {
-              "layout": {
-                "root": {
-                  "layout": {
-                    "leaf": {
-                      "key": "0x6f262d03",
-                      "ty": 11
-                    }
-                  },
-                  "root_key": "0x6f262d03",
-                  "ty": 12
-                }
-              },
-              "name": "processed_deposits"
-            },
-            {
-              "layout": {
-                "root": {
-                  "layout": {
-                    "leaf": {
-                      "key": "0xecb6bf46",
-                      "ty": 11
-                    }
-                  },
-                  "root_key": "0xecb6bf46",
-                  "ty": 15
-                }
-              },
-              "name": "denied_deposits"
-            },
-            {
-              "layout": {
-                "root": {
-                  "layout": {
-                    "struct": {
-                      "fields": [
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x853b879f",
-                              "ty": 0
-                            }
-                          },
-                          "name": "sender"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x853b879f",
-                              "ty": 0
-                            }
-                          },
-                          "name": "hotkey"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x853b879f",
-                              "ty": 3
-                            }
-                          },
-                          "name": "netuid"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x853b879f",
-                              "ty": 4
-                            }
-                          },
-                          "name": "amount"
-                        }
-                      ],
-                      "name": "DepositMetadata"
-                    }
-                  },
-                  "root_key": "0x853b879f",
-                  "ty": 18
-                }
-              },
-              "name": "deposit_metadata"
-            },
-            {
-              "layout": {
-                "leaf": {
-                  "key": "0x00000000",
-                  "ty": 22
                 }
               },
               "name": "guardians"
@@ -1742,198 +1510,7 @@
               "layout": {
                 "leaf": {
                   "key": "0x00000000",
-                  "ty": 3
-                }
-              },
-              "name": "deny_threshold"
-            },
-            {
-              "layout": {
-                "leaf": {
-                  "key": "0x00000000",
-                  "ty": 23
-                }
-              },
-              "name": "signature_ttl_blocks"
-            },
-            {
-              "layout": {
-                "root": {
-                  "layout": {
-                    "struct": {
-                      "fields": [
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x89afc2f6",
-                              "ty": 6
-                            }
-                          },
-                          "name": "burn_id"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x89afc2f6",
-                              "ty": 0
-                            }
-                          },
-                          "name": "recipient"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x89afc2f6",
-                              "ty": 0
-                            }
-                          },
-                          "name": "hotkey"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x89afc2f6",
-                              "ty": 3
-                            }
-                          },
-                          "name": "netuid"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x89afc2f6",
-                              "ty": 4
-                            }
-                          },
-                          "name": "amount"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x89afc2f6",
-                              "ty": 22
-                            }
-                          },
-                          "name": "approves"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x89afc2f6",
-                              "ty": 22
-                            }
-                          },
-                          "name": "denies"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0x89afc2f6",
-                              "ty": 23
-                            }
-                          },
-                          "name": "proposed_at"
-                        }
-                      ],
-                      "name": "PendingBurn"
-                    }
-                  },
-                  "root_key": "0x89afc2f6",
-                  "ty": 24
-                }
-              },
-              "name": "pending_burns"
-            },
-            {
-              "layout": {
-                "root": {
-                  "layout": {
-                    "struct": {
-                      "fields": [
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0xaa3eb858",
-                              "ty": 6
-                            }
-                          },
-                          "name": "deposit_id"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0xaa3eb858",
-                              "ty": 0
-                            }
-                          },
-                          "name": "recipient"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0xaa3eb858",
-                              "ty": 4
-                            }
-                          },
-                          "name": "amount"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0xaa3eb858",
-                              "ty": 22
-                            }
-                          },
-                          "name": "approves"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0xaa3eb858",
-                              "ty": 22
-                            }
-                          },
-                          "name": "denies"
-                        },
-                        {
-                          "layout": {
-                            "leaf": {
-                              "key": "0xaa3eb858",
-                              "ty": 23
-                            }
-                          },
-                          "name": "proposed_at"
-                        }
-                      ],
-                      "name": "PendingRefund"
-                    }
-                  },
-                  "root_key": "0xaa3eb858",
-                  "ty": 28
-                }
-              },
-              "name": "pending_refunds"
-            },
-            {
-              "layout": {
-                "root": {
-                  "layout": {
-                    "leaf": {
-                      "key": "0x14295bfd",
-                      "ty": 32
-                    }
-                  },
-                  "root_key": "0x14295bfd",
-                  "ty": 33
-                }
-              },
-              "name": "user_deposits"
-            },
-            {
-              "layout": {
-                "leaf": {
-                  "key": "0x00000000",
-                  "ty": 4
+                  "ty": 6
                 }
               },
               "name": "min_deposit_amount"
@@ -1942,50 +1519,252 @@
               "layout": {
                 "leaf": {
                   "key": "0x00000000",
-                  "ty": 23
+                  "ty": 6
                 }
               },
-              "name": "max_deposits_per_user"
+              "name": "next_deposit_nonce"
             },
             {
               "layout": {
-                "leaf": {
-                  "key": "0x00000000",
-                  "ty": 0
+                "root": {
+                  "layout": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x21c23764",
+                              "ty": 0
+                            }
+                          },
+                          "name": "sender"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x21c23764",
+                              "ty": 0
+                            }
+                          },
+                          "name": "recipient"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x21c23764",
+                              "ty": 6
+                            }
+                          },
+                          "name": "amount"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x21c23764",
+                              "ty": 6
+                            }
+                          },
+                          "name": "nonce"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x21c23764",
+                              "ty": 0
+                            }
+                          },
+                          "name": "hotkey"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x21c23764",
+                              "ty": 3
+                            }
+                          },
+                          "name": "netuid"
+                        },
+                        {
+                          "layout": {
+                            "enum": {
+                              "dispatchKey": "0x21c23764",
+                              "name": "DepositRequestStatus",
+                              "variants": {
+                                "0": {
+                                  "fields": [],
+                                  "name": "Requested"
+                                },
+                                "1": {
+                                  "fields": [],
+                                  "name": "Failed"
+                                }
+                              }
+                            }
+                          },
+                          "name": "status"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0x21c23764",
+                              "ty": 7
+                            }
+                          },
+                          "name": "created_at_block"
+                        }
+                      ],
+                      "name": "DepositRequest"
+                    }
+                  },
+                  "root_key": "0x21c23764",
+                  "ty": 8
                 }
               },
-              "name": "contract_hotkey"
-            },
-            {
-              "layout": {
-                "leaf": {
-                  "key": "0x00000000",
-                  "ty": 11
-                }
-              },
-              "name": "paused"
+              "name": "deposit_requests"
             },
             {
               "layout": {
                 "root": {
                   "layout": {
                     "leaf": {
-                      "key": "0x31df771e",
-                      "ty": 6
+                      "key": "0xcd371cd0",
+                      "ty": 9
                     }
                   },
-                  "root_key": "0x31df771e",
-                  "ty": 36
+                  "root_key": "0xcd371cd0",
+                  "ty": 16
                 }
               },
-              "name": "nonce_to_deposit_id"
+              "name": "nonce_to_deposit_request_id"
+            },
+            {
+              "layout": {
+                "root": {
+                  "layout": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xc344f318",
+                              "ty": 9
+                            }
+                          },
+                          "name": "request_id"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xc344f318",
+                              "ty": 0
+                            }
+                          },
+                          "name": "recipient"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xc344f318",
+                              "ty": 6
+                            }
+                          },
+                          "name": "amount"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xc344f318",
+                              "ty": 5
+                            }
+                          },
+                          "name": "votes"
+                        },
+                        {
+                          "layout": {
+                            "enum": {
+                              "dispatchKey": "0xc344f318",
+                              "name": "WithdrawalStatus",
+                              "variants": {
+                                "0": {
+                                  "fields": [],
+                                  "name": "Pending"
+                                },
+                                "1": {
+                                  "fields": [],
+                                  "name": "Completed"
+                                },
+                                "2": {
+                                  "fields": [],
+                                  "name": "Cancelled"
+                                }
+                              }
+                            }
+                          },
+                          "name": "status"
+                        },
+                        {
+                          "layout": {
+                            "leaf": {
+                              "key": "0xc344f318",
+                              "ty": 7
+                            }
+                          },
+                          "name": "created_at_block"
+                        },
+                        {
+                          "layout": {
+                            "enum": {
+                              "dispatchKey": "0xc344f318",
+                              "name": "Option",
+                              "variants": {
+                                "0": {
+                                  "fields": [],
+                                  "name": "None"
+                                },
+                                "1": {
+                                  "fields": [
+                                    {
+                                      "layout": {
+                                        "leaf": {
+                                          "key": "0xc344f318",
+                                          "ty": 7
+                                        }
+                                      },
+                                      "name": "0"
+                                    }
+                                  ],
+                                  "name": "Some"
+                                }
+                              }
+                            }
+                          },
+                          "name": "finalized_at_block"
+                        }
+                      ],
+                      "name": "Withdrawal"
+                    }
+                  },
+                  "root_key": "0xc344f318",
+                  "ty": 19
+                }
+              },
+              "name": "withdrawals"
+            },
+            {
+              "layout": {
+                "leaf": {
+                  "key": "0x00000000",
+                  "ty": 7
+                }
+              },
+              "name": "cleanup_ttl_blocks"
             }
           ],
           "name": "Bridge"
         }
       },
       "root_key": "0x00000000",
-      "ty": 39
+      "ty": 25
     }
   },
   "types": [
@@ -2040,7 +1819,7 @@
       "id": 4,
       "type": {
         "def": {
-          "primitive": "u64"
+          "primitive": "bool"
         }
       }
     },
@@ -2048,20 +1827,46 @@
       "id": 5,
       "type": {
         "def": {
+          "sequence": {
+            "type": 0
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": {
+        "def": {
+          "primitive": "u64"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": {
+        "def": {
+          "primitive": "u32"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": {
+        "def": {
           "composite": {}
         },
         "params": [
           {
             "name": "K",
-            "type": 6
+            "type": 9
           },
           {
             "name": "V",
-            "type": 4
+            "type": 10
           },
           {
             "name": "KeyType",
-            "type": 7
+            "type": 12
           }
         ],
         "path": [
@@ -2073,7 +1878,7 @@
       }
     },
     {
-      "id": 6,
+      "id": 9,
       "type": {
         "def": {
           "composite": {
@@ -2093,74 +1898,83 @@
       }
     },
     {
-      "id": 7,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "L",
-            "type": 8
-          },
-          {
-            "name": "R",
-            "type": 9
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ResolverKey"
-        ]
-      }
-    },
-    {
-      "id": 8,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "AutoKey"
-        ]
-      }
-    },
-    {
-      "id": 9,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "ParentKey",
-            "type": 10
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ManualKey"
-        ]
-      }
-    },
-    {
       "id": 10,
       "type": {
         "def": {
-          "tuple": []
-        }
+          "composite": {
+            "fields": [
+              {
+                "name": "sender",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "recipient",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "amount",
+                "type": 6,
+                "typeName": "Balance"
+              },
+              {
+                "name": "nonce",
+                "type": 6,
+                "typeName": "DepositNonce"
+              },
+              {
+                "name": "hotkey",
+                "type": 0,
+                "typeName": "ink::primitives::AccountId"
+              },
+              {
+                "name": "netuid",
+                "type": 3,
+                "typeName": "u16"
+              },
+              {
+                "name": "status",
+                "type": 11,
+                "typeName": "DepositRequestStatus"
+              },
+              {
+                "name": "created_at_block",
+                "type": 7,
+                "typeName": "BlockNumber"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "DepositRequest"
+        ]
       }
     },
     {
       "id": 11,
       "type": {
         "def": {
-          "primitive": "bool"
-        }
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "Requested"
+              },
+              {
+                "index": 1,
+                "name": "Failed"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "DepositRequestStatus"
+        ]
       }
     },
     {
@@ -2171,36 +1985,8 @@
         },
         "params": [
           {
-            "name": "K",
-            "type": 6
-          },
-          {
-            "name": "V",
-            "type": 11
-          },
-          {
-            "name": "KeyType",
-            "type": 13
-          }
-        ],
-        "path": [
-          "ink_storage",
-          "lazy",
-          "mapping",
-          "Mapping"
-        ]
-      }
-    },
-    {
-      "id": 13,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
             "name": "L",
-            "type": 8
+            "type": 13
           },
           {
             "name": "R",
@@ -2215,6 +2001,19 @@
       }
     },
     {
+      "id": 13,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "AutoKey"
+        ]
+      }
+    },
+    {
       "id": 14,
       "type": {
         "def": {
@@ -2223,7 +2022,7 @@
         "params": [
           {
             "name": "ParentKey",
-            "type": 10
+            "type": 15
           }
         ],
         "path": [
@@ -2237,28 +2036,8 @@
       "id": 15,
       "type": {
         "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "K",
-            "type": 6
-          },
-          {
-            "name": "V",
-            "type": 11
-          },
-          {
-            "name": "KeyType",
-            "type": 16
-          }
-        ],
-        "path": [
-          "ink_storage",
-          "lazy",
-          "mapping",
-          "Mapping"
-        ]
+          "tuple": []
+        }
       }
     },
     {
@@ -2269,18 +2048,23 @@
         },
         "params": [
           {
-            "name": "L",
-            "type": 8
+            "name": "K",
+            "type": 6
           },
           {
-            "name": "R",
+            "name": "V",
+            "type": 9
+          },
+          {
+            "name": "KeyType",
             "type": 17
           }
         ],
         "path": [
-          "ink_storage_traits",
-          "impls",
-          "ResolverKey"
+          "ink_storage",
+          "lazy",
+          "mapping",
+          "Mapping"
         ]
       }
     },
@@ -2292,14 +2076,18 @@
         },
         "params": [
           {
-            "name": "ParentKey",
-            "type": 10
+            "name": "L",
+            "type": 13
+          },
+          {
+            "name": "R",
+            "type": 18
           }
         ],
         "path": [
           "ink_storage_traits",
           "impls",
-          "ManualKey"
+          "ResolverKey"
         ]
       }
     },
@@ -2311,16 +2099,35 @@
         },
         "params": [
           {
+            "name": "ParentKey",
+            "type": 15
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
+        ]
+      }
+    },
+    {
+      "id": 19,
+      "type": {
+        "def": {
+          "composite": {}
+        },
+        "params": [
+          {
             "name": "K",
-            "type": 6
+            "type": 9
           },
           {
             "name": "V",
-            "type": 19
+            "type": 20
           },
           {
             "name": "KeyType",
-            "type": 20
+            "type": 23
           }
         ],
         "path": [
@@ -2332,30 +2139,45 @@
       }
     },
     {
-      "id": 19,
+      "id": 20,
       "type": {
         "def": {
           "composite": {
             "fields": [
               {
-                "name": "sender",
-                "type": 0,
-                "typeName": "ink::primitives::AccountId"
+                "name": "request_id",
+                "type": 9,
+                "typeName": "WithdrawalId"
               },
               {
-                "name": "hotkey",
+                "name": "recipient",
                 "type": 0,
                 "typeName": "ink::primitives::AccountId"
-              },
-              {
-                "name": "netuid",
-                "type": 3,
-                "typeName": "u16"
               },
               {
                 "name": "amount",
-                "type": 4,
+                "type": 6,
                 "typeName": "Balance"
+              },
+              {
+                "name": "votes",
+                "type": 5,
+                "typeName": "Vec<ink::primitives::AccountId>"
+              },
+              {
+                "name": "status",
+                "type": 21,
+                "typeName": "WithdrawalStatus"
+              },
+              {
+                "name": "created_at_block",
+                "type": 7,
+                "typeName": "BlockNumber"
+              },
+              {
+                "name": "finalized_at_block",
+                "type": 22,
+                "typeName": "Option<BlockNumber>"
               }
             ]
           }
@@ -2363,30 +2185,7 @@
         "path": [
           "bridge",
           "types",
-          "DepositMetadata"
-        ]
-      }
-    },
-    {
-      "id": 20,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "L",
-            "type": 8
-          },
-          {
-            "name": "R",
-            "type": 21
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ResolverKey"
+          "Withdrawal"
         ]
       }
     },
@@ -2394,18 +2193,27 @@
       "id": 21,
       "type": {
         "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "ParentKey",
-            "type": 10
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "Pending"
+              },
+              {
+                "index": 1,
+                "name": "Completed"
+              },
+              {
+                "index": 2,
+                "name": "Cancelled"
+              }
+            ]
           }
-        ],
+        },
         "path": [
-          "ink_storage_traits",
-          "impls",
-          "ManualKey"
+          "bridge",
+          "types",
+          "WithdrawalStatus"
         ]
       }
     },
@@ -2413,18 +2221,56 @@
       "id": 22,
       "type": {
         "def": {
-          "sequence": {
-            "type": 0
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "None"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 7
+                  }
+                ],
+                "index": 1,
+                "name": "Some"
+              }
+            ]
           }
-        }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 7
+          }
+        ],
+        "path": [
+          "Option"
+        ]
       }
     },
     {
       "id": 23,
       "type": {
         "def": {
-          "primitive": "u32"
-        }
+          "composite": {}
+        },
+        "params": [
+          {
+            "name": "L",
+            "type": 13
+          },
+          {
+            "name": "R",
+            "type": 24
+          }
+        ],
+        "path": [
+          "ink_storage_traits",
+          "impls",
+          "ResolverKey"
+        ]
       }
     },
     {
@@ -2435,392 +2281,19 @@
         },
         "params": [
           {
-            "name": "K",
-            "type": 6
-          },
-          {
-            "name": "V",
-            "type": 25
-          },
-          {
-            "name": "KeyType",
-            "type": 26
+            "name": "ParentKey",
+            "type": 15
           }
         ],
         "path": [
-          "ink_storage",
-          "lazy",
-          "mapping",
-          "Mapping"
+          "ink_storage_traits",
+          "impls",
+          "ManualKey"
         ]
       }
     },
     {
       "id": 25,
-      "type": {
-        "def": {
-          "composite": {
-            "fields": [
-              {
-                "name": "burn_id",
-                "type": 6,
-                "typeName": "BurnId"
-              },
-              {
-                "name": "recipient",
-                "type": 0,
-                "typeName": "ink::primitives::AccountId"
-              },
-              {
-                "name": "hotkey",
-                "type": 0,
-                "typeName": "ink::primitives::AccountId"
-              },
-              {
-                "name": "netuid",
-                "type": 3,
-                "typeName": "u16"
-              },
-              {
-                "name": "amount",
-                "type": 4,
-                "typeName": "Balance"
-              },
-              {
-                "name": "approves",
-                "type": 22,
-                "typeName": "Vec<ink::primitives::AccountId>"
-              },
-              {
-                "name": "denies",
-                "type": 22,
-                "typeName": "Vec<ink::primitives::AccountId>"
-              },
-              {
-                "name": "proposed_at",
-                "type": 23,
-                "typeName": "BlockNumber"
-              }
-            ]
-          }
-        },
-        "path": [
-          "bridge",
-          "types",
-          "PendingBurn"
-        ]
-      }
-    },
-    {
-      "id": 26,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "L",
-            "type": 8
-          },
-          {
-            "name": "R",
-            "type": 27
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ResolverKey"
-        ]
-      }
-    },
-    {
-      "id": 27,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "ParentKey",
-            "type": 10
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ManualKey"
-        ]
-      }
-    },
-    {
-      "id": 28,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "K",
-            "type": 6
-          },
-          {
-            "name": "V",
-            "type": 29
-          },
-          {
-            "name": "KeyType",
-            "type": 30
-          }
-        ],
-        "path": [
-          "ink_storage",
-          "lazy",
-          "mapping",
-          "Mapping"
-        ]
-      }
-    },
-    {
-      "id": 29,
-      "type": {
-        "def": {
-          "composite": {
-            "fields": [
-              {
-                "name": "deposit_id",
-                "type": 6,
-                "typeName": "DepositId"
-              },
-              {
-                "name": "recipient",
-                "type": 0,
-                "typeName": "ink::primitives::AccountId"
-              },
-              {
-                "name": "amount",
-                "type": 4,
-                "typeName": "Balance"
-              },
-              {
-                "name": "approves",
-                "type": 22,
-                "typeName": "Vec<ink::primitives::AccountId>"
-              },
-              {
-                "name": "denies",
-                "type": 22,
-                "typeName": "Vec<ink::primitives::AccountId>"
-              },
-              {
-                "name": "proposed_at",
-                "type": 23,
-                "typeName": "BlockNumber"
-              }
-            ]
-          }
-        },
-        "path": [
-          "bridge",
-          "types",
-          "PendingRefund"
-        ]
-      }
-    },
-    {
-      "id": 30,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "L",
-            "type": 8
-          },
-          {
-            "name": "R",
-            "type": 31
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ResolverKey"
-        ]
-      }
-    },
-    {
-      "id": 31,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "ParentKey",
-            "type": 10
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ManualKey"
-        ]
-      }
-    },
-    {
-      "id": 32,
-      "type": {
-        "def": {
-          "sequence": {
-            "type": 6
-          }
-        }
-      }
-    },
-    {
-      "id": 33,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "K",
-            "type": 0
-          },
-          {
-            "name": "V",
-            "type": 32
-          },
-          {
-            "name": "KeyType",
-            "type": 34
-          }
-        ],
-        "path": [
-          "ink_storage",
-          "lazy",
-          "mapping",
-          "Mapping"
-        ]
-      }
-    },
-    {
-      "id": 34,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "L",
-            "type": 8
-          },
-          {
-            "name": "R",
-            "type": 35
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ResolverKey"
-        ]
-      }
-    },
-    {
-      "id": 35,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "ParentKey",
-            "type": 10
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ManualKey"
-        ]
-      }
-    },
-    {
-      "id": 36,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "K",
-            "type": 4
-          },
-          {
-            "name": "V",
-            "type": 6
-          },
-          {
-            "name": "KeyType",
-            "type": 37
-          }
-        ],
-        "path": [
-          "ink_storage",
-          "lazy",
-          "mapping",
-          "Mapping"
-        ]
-      }
-    },
-    {
-      "id": 37,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "L",
-            "type": 8
-          },
-          {
-            "name": "R",
-            "type": 38
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ResolverKey"
-        ]
-      }
-    },
-    {
-      "id": 38,
-      "type": {
-        "def": {
-          "composite": {}
-        },
-        "params": [
-          {
-            "name": "ParentKey",
-            "type": 10
-          }
-        ],
-        "path": [
-          "ink_storage_traits",
-          "impls",
-          "ManualKey"
-        ]
-      }
-    },
-    {
-      "id": 39,
       "type": {
         "def": {
           "composite": {
@@ -2836,43 +2309,18 @@
                 "typeName": "<ChainId as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<375957688u32, ()>,>>::Type"
               },
               {
-                "name": "next_deposit_nonce",
+                "name": "contract_hotkey",
+                "type": 0,
+                "typeName": "<AccountId as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<2857426005u32, ()>,>>::Type"
+              },
+              {
+                "name": "paused",
                 "type": 4,
-                "typeName": "<DepositNonce as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<4139309743u32, ()>,>>::Type"
-              },
-              {
-                "name": "last_burns_checkpoint_nonce",
-                "type": 4,
-                "typeName": "<CheckpointNonce as::ink::storage::traits::AutoStorableHint<::ink\n::storage::traits::ManualKey<3428873982u32, ()>,>>::Type"
-              },
-              {
-                "name": "last_refunds_checkpoint_nonce",
-                "type": 4,
-                "typeName": "<CheckpointNonce as::ink::storage::traits::AutoStorableHint<::ink\n::storage::traits::ManualKey<35110692u32, ()>,>>::Type"
-              },
-              {
-                "name": "locked",
-                "type": 5,
-                "typeName": "<Mapping<DepositId, Balance> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<1767352798u32,\n()>,>>::Type"
-              },
-              {
-                "name": "processed_deposits",
-                "type": 12,
-                "typeName": "<Mapping<DepositId, bool> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<53290607u32, ()\n>,>>::Type"
-              },
-              {
-                "name": "denied_deposits",
-                "type": 15,
-                "typeName": "<Mapping<DepositId, bool> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<1186969324u32,\n()>,>>::Type"
-              },
-              {
-                "name": "deposit_metadata",
-                "type": 18,
-                "typeName": "<Mapping<DepositId, DepositMetadata> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<2676439941u32,\n()>,>>::Type"
+                "typeName": "<bool as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<1000293823u32, ()>,>>::Type"
               },
               {
                 "name": "guardians",
-                "type": 22,
+                "type": 5,
                 "typeName": "<Vec<AccountId> as::ink::storage::traits::AutoStorableHint<::\nink::storage::traits::ManualKey<1404589629u32, ()>,>>::Type"
               },
               {
@@ -2881,54 +2329,34 @@
                 "typeName": "<u16 as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<4624968u32, ()>,>>::Type"
               },
               {
-                "name": "deny_threshold",
-                "type": 3,
-                "typeName": "<u16 as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<331418468u32, ()>,>>::Type"
-              },
-              {
-                "name": "signature_ttl_blocks",
-                "type": 23,
-                "typeName": "<u32 as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<1348377679u32, ()>,>>::Type"
-              },
-              {
-                "name": "pending_burns",
-                "type": 24,
-                "typeName": "<Mapping<BurnId, PendingBurn> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<4139954057u32,\n()>,>>::Type"
-              },
-              {
-                "name": "pending_refunds",
-                "type": 28,
-                "typeName": "<Mapping<DepositId, PendingRefund> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<1488469674u32,\n()>,>>::Type"
-              },
-              {
-                "name": "user_deposits",
-                "type": 33,
-                "typeName": "<Mapping<AccountId, Vec<DepositId>> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<4250609940u32,\n()>,>>::Type"
-              },
-              {
                 "name": "min_deposit_amount",
-                "type": 4,
+                "type": 6,
                 "typeName": "<Balance as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<4033132534u32, ()>,>>::Type"
               },
               {
-                "name": "max_deposits_per_user",
-                "type": 23,
-                "typeName": "<u32 as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<2799222312u32, ()>,>>::Type"
+                "name": "next_deposit_nonce",
+                "type": 6,
+                "typeName": "<DepositNonce as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<4139309743u32, ()>,>>::Type"
               },
               {
-                "name": "contract_hotkey",
-                "type": 0,
-                "typeName": "<AccountId as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<2857426005u32, ()>,>>::Type"
+                "name": "deposit_requests",
+                "type": 8,
+                "typeName": "<Mapping<DepositRequestId, DepositRequest> as::ink::storage::traits\n::AutoStorableHint<::ink::storage::traits::ManualKey<\n1681375777u32, ()>,>>::Type"
               },
               {
-                "name": "paused",
-                "type": 11,
-                "typeName": "<bool as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<1000293823u32, ()>,>>::Type"
+                "name": "nonce_to_deposit_request_id",
+                "type": 16,
+                "typeName": "<Mapping<DepositNonce, DepositRequestId> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<3491510221u32,\n()>,>>::Type"
               },
               {
-                "name": "nonce_to_deposit_id",
-                "type": 36,
-                "typeName": "<Mapping<DepositNonce, DepositId> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<511172401u32, ()\n>,>>::Type"
+                "name": "withdrawals",
+                "type": 19,
+                "typeName": "<Mapping<WithdrawalId, Withdrawal> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<418596035u32, ()\n>,>>::Type"
+              },
+              {
+                "name": "cleanup_ttl_blocks",
+                "type": 7,
+                "typeName": "<BlockNumber as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<2779780450u32, ()>,>>::Type"
               }
             ]
           }
@@ -2941,7 +2369,7 @@
       }
     },
     {
-      "id": 40,
+      "id": 26,
       "type": {
         "def": {
           "variant": {
@@ -2949,7 +2377,7 @@
               {
                 "fields": [
                   {
-                    "type": 10
+                    "type": 15
                   }
                 ],
                 "index": 0,
@@ -2958,7 +2386,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 27
                   }
                 ],
                 "index": 1,
@@ -2970,11 +2398,11 @@
         "params": [
           {
             "name": "T",
-            "type": 10
+            "type": 15
           },
           {
             "name": "E",
-            "type": 41
+            "type": 27
           }
         ],
         "path": [
@@ -2983,7 +2411,7 @@
       }
     },
     {
-      "id": 41,
+      "id": 27,
       "type": {
         "def": {
           "variant": {
@@ -3002,27 +2430,7 @@
       }
     },
     {
-      "id": 42,
-      "type": {
-        "def": {
-          "composite": {
-            "fields": [
-              {
-                "type": 3,
-                "typeName": "u16"
-              }
-            ]
-          }
-        },
-        "path": [
-          "bridge",
-          "runtime",
-          "NetUid"
-        ]
-      }
-    },
-    {
-      "id": 43,
+      "id": 28,
       "type": {
         "def": {
           "variant": {
@@ -3030,7 +2438,7 @@
               {
                 "fields": [
                   {
-                    "type": 44
+                    "type": 29
                   }
                 ],
                 "index": 0,
@@ -3039,7 +2447,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 27
                   }
                 ],
                 "index": 1,
@@ -3051,11 +2459,11 @@
         "params": [
           {
             "name": "T",
-            "type": 44
+            "type": 29
           },
           {
             "name": "E",
-            "type": 41
+            "type": 27
           }
         ],
         "path": [
@@ -3064,7 +2472,7 @@
       }
     },
     {
-      "id": 44,
+      "id": 29,
       "type": {
         "def": {
           "variant": {
@@ -3072,7 +2480,7 @@
               {
                 "fields": [
                   {
-                    "type": 6
+                    "type": 9
                   }
                 ],
                 "index": 0,
@@ -3081,7 +2489,7 @@
               {
                 "fields": [
                   {
-                    "type": 45
+                    "type": 30
                   }
                 ],
                 "index": 1,
@@ -3093,11 +2501,11 @@
         "params": [
           {
             "name": "T",
-            "type": 6
+            "type": 9
           },
           {
             "name": "E",
-            "type": 45
+            "type": 30
           }
         ],
         "path": [
@@ -3106,7 +2514,7 @@
       }
     },
     {
-      "id": 45,
+      "id": 30,
       "type": {
         "def": {
           "variant": {
@@ -3121,19 +2529,19 @@
               },
               {
                 "index": 2,
-                "name": "AlreadyAttestedBurn"
+                "name": "AlreadyVoted"
               },
               {
                 "index": 3,
-                "name": "AlreadyAttestedRefund"
-              },
-              {
-                "index": 4,
                 "name": "InsufficientStake"
               },
               {
-                "index": 5,
+                "index": 4,
                 "name": "TransferNotVerified"
+              },
+              {
+                "index": 5,
+                "name": "InsufficientContractStake"
               },
               {
                 "index": 6,
@@ -3141,83 +2549,71 @@
               },
               {
                 "index": 7,
-                "name": "InvalidHotkey"
-              },
-              {
-                "index": 8,
-                "name": "InvalidNonce"
-              },
-              {
-                "index": 9,
-                "name": "TooManyDeposits"
-              },
-              {
-                "index": 10,
-                "name": "InvalidCheckpointNonce"
-              },
-              {
-                "index": 11,
                 "name": "InvalidThresholds"
               },
               {
-                "index": 12,
+                "index": 8,
                 "name": "TooManyGuardians"
               },
               {
-                "index": 13,
-                "name": "InvalidRefundRecipient"
+                "index": 9,
+                "name": "InvalidWithdrawalDetails"
               },
               {
-                "index": 14,
-                "name": "InvalidRefundAmount"
+                "index": 10,
+                "name": "InvalidTTL"
               },
               {
-                "index": 15,
+                "index": 11,
                 "name": "BridgePaused"
               },
               {
+                "index": 12,
+                "name": "DepositRequestNotFound"
+              },
+              {
+                "index": 13,
+                "name": "WithdrawalNotFound"
+              },
+              {
+                "index": 14,
+                "name": "DepositRequestAlreadyFinalized"
+              },
+              {
+                "index": 15,
+                "name": "WithdrawalAlreadyFinalized"
+              },
+              {
                 "index": 16,
-                "name": "AlreadyProcessed"
-              },
-              {
-                "index": 17,
-                "name": "DepositAlreadyDenied"
-              },
-              {
-                "index": 18,
-                "name": "CheckpointNotFound"
-              },
-              {
-                "index": 19,
-                "name": "CheckpointExpired"
-              },
-              {
-                "index": 20,
-                "name": "CheckpointNotExpired"
-              },
-              {
-                "index": 21,
                 "name": "Overflow"
               },
               {
-                "index": 22,
+                "index": 17,
                 "name": "RuntimeCallFailed"
               },
               {
-                "index": 23,
+                "index": 18,
                 "name": "StakeQueryFailed"
               },
               {
-                "index": 24,
+                "index": 19,
                 "name": "TransferFailed"
               },
               {
-                "index": 25,
+                "index": 20,
                 "name": "StakeConsolidationFailed"
               },
               {
-                "index": 26,
+                "index": 21,
                 "name": "CodeUpgradeFailed"
+              },
+              {
+                "index": 22,
+                "name": "RecordNotFinalized"
+              },
+              {
+                "index": 23,
+                "name": "TTLNotExpired"
               }
             ]
           }
@@ -3230,342 +2626,7 @@
       }
     },
     {
-      "id": 46,
-      "type": {
-        "def": {
-          "sequence": {
-            "type": 47
-          }
-        }
-      }
-    },
-    {
-      "id": 47,
-      "type": {
-        "def": {
-          "composite": {
-            "fields": [
-              {
-                "name": "burn_id",
-                "type": 6,
-                "typeName": "BurnId"
-              },
-              {
-                "name": "recipient",
-                "type": 0,
-                "typeName": "ink::primitives::AccountId"
-              },
-              {
-                "name": "hotkey",
-                "type": 0,
-                "typeName": "ink::primitives::AccountId"
-              },
-              {
-                "name": "netuid",
-                "type": 3,
-                "typeName": "u16"
-              },
-              {
-                "name": "amount",
-                "type": 4,
-                "typeName": "Balance"
-              }
-            ]
-          }
-        },
-        "path": [
-          "bridge",
-          "types",
-          "CanonicalBurn"
-        ]
-      }
-    },
-    {
-      "id": 48,
-      "type": {
-        "def": {
-          "variant": {
-            "variants": [
-              {
-                "fields": [
-                  {
-                    "type": 49
-                  }
-                ],
-                "index": 0,
-                "name": "Ok"
-              },
-              {
-                "fields": [
-                  {
-                    "type": 41
-                  }
-                ],
-                "index": 1,
-                "name": "Err"
-              }
-            ]
-          }
-        },
-        "params": [
-          {
-            "name": "T",
-            "type": 49
-          },
-          {
-            "name": "E",
-            "type": 41
-          }
-        ],
-        "path": [
-          "Result"
-        ]
-      }
-    },
-    {
-      "id": 49,
-      "type": {
-        "def": {
-          "variant": {
-            "variants": [
-              {
-                "fields": [
-                  {
-                    "type": 10
-                  }
-                ],
-                "index": 0,
-                "name": "Ok"
-              },
-              {
-                "fields": [
-                  {
-                    "type": 45
-                  }
-                ],
-                "index": 1,
-                "name": "Err"
-              }
-            ]
-          }
-        },
-        "params": [
-          {
-            "name": "T",
-            "type": 10
-          },
-          {
-            "name": "E",
-            "type": 45
-          }
-        ],
-        "path": [
-          "Result"
-        ]
-      }
-    },
-    {
-      "id": 50,
-      "type": {
-        "def": {
-          "sequence": {
-            "type": 51
-          }
-        }
-      }
-    },
-    {
-      "id": 51,
-      "type": {
-        "def": {
-          "composite": {
-            "fields": [
-              {
-                "name": "deposit_id",
-                "type": 6,
-                "typeName": "DepositId"
-              },
-              {
-                "name": "recipient",
-                "type": 0,
-                "typeName": "ink::primitives::AccountId"
-              },
-              {
-                "name": "amount",
-                "type": 4,
-                "typeName": "Balance"
-              }
-            ]
-          }
-        },
-        "path": [
-          "bridge",
-          "types",
-          "RefundItem"
-        ]
-      }
-    },
-    {
-      "id": 52,
-      "type": {
-        "def": {
-          "variant": {
-            "variants": [
-              {
-                "fields": [
-                  {
-                    "type": 0
-                  }
-                ],
-                "index": 0,
-                "name": "Ok"
-              },
-              {
-                "fields": [
-                  {
-                    "type": 41
-                  }
-                ],
-                "index": 1,
-                "name": "Err"
-              }
-            ]
-          }
-        },
-        "params": [
-          {
-            "name": "T",
-            "type": 0
-          },
-          {
-            "name": "E",
-            "type": 41
-          }
-        ],
-        "path": [
-          "Result"
-        ]
-      }
-    },
-    {
-      "id": 53,
-      "type": {
-        "def": {
-          "variant": {
-            "variants": [
-              {
-                "fields": [
-                  {
-                    "type": 54
-                  }
-                ],
-                "index": 0,
-                "name": "Ok"
-              },
-              {
-                "fields": [
-                  {
-                    "type": 41
-                  }
-                ],
-                "index": 1,
-                "name": "Err"
-              }
-            ]
-          }
-        },
-        "params": [
-          {
-            "name": "T",
-            "type": 54
-          },
-          {
-            "name": "E",
-            "type": 41
-          }
-        ],
-        "path": [
-          "Result"
-        ]
-      }
-    },
-    {
-      "id": 54,
-      "type": {
-        "def": {
-          "variant": {
-            "variants": [
-              {
-                "index": 0,
-                "name": "None"
-              },
-              {
-                "fields": [
-                  {
-                    "type": 4
-                  }
-                ],
-                "index": 1,
-                "name": "Some"
-              }
-            ]
-          }
-        },
-        "params": [
-          {
-            "name": "T",
-            "type": 4
-          }
-        ],
-        "path": [
-          "Option"
-        ]
-      }
-    },
-    {
-      "id": 55,
-      "type": {
-        "def": {
-          "variant": {
-            "variants": [
-              {
-                "fields": [
-                  {
-                    "type": 11
-                  }
-                ],
-                "index": 0,
-                "name": "Ok"
-              },
-              {
-                "fields": [
-                  {
-                    "type": 41
-                  }
-                ],
-                "index": 1,
-                "name": "Err"
-              }
-            ]
-          }
-        },
-        "params": [
-          {
-            "name": "T",
-            "type": 11
-          },
-          {
-            "name": "E",
-            "type": 41
-          }
-        ],
-        "path": [
-          "Result"
-        ]
-      }
-    },
-    {
-      "id": 56,
+      "id": 31,
       "type": {
         "def": {
           "variant": {
@@ -3582,7 +2643,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 27
                   }
                 ],
                 "index": 1,
@@ -3598,7 +2659,7 @@
           },
           {
             "name": "E",
-            "type": 41
+            "type": 27
           }
         ],
         "path": [
@@ -3607,7 +2668,7 @@
       }
     },
     {
-      "id": 57,
+      "id": 32,
       "type": {
         "def": {
           "variant": {
@@ -3615,7 +2676,7 @@
               {
                 "fields": [
                   {
-                    "type": 58
+                    "type": 15
                   }
                 ],
                 "index": 0,
@@ -3624,7 +2685,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 30
                   }
                 ],
                 "index": 1,
@@ -3636,11 +2697,11 @@
         "params": [
           {
             "name": "T",
-            "type": 58
+            "type": 15
           },
           {
             "name": "E",
-            "type": 41
+            "type": 30
           }
         ],
         "path": [
@@ -3649,7 +2710,7 @@
       }
     },
     {
-      "id": 58,
+      "id": 33,
       "type": {
         "def": {
           "variant": {
@@ -3661,7 +2722,7 @@
               {
                 "fields": [
                   {
-                    "type": 25
+                    "type": 9
                   }
                 ],
                 "index": 1,
@@ -3673,7 +2734,7 @@
         "params": [
           {
             "name": "T",
-            "type": 25
+            "type": 9
           }
         ],
         "path": [
@@ -3682,7 +2743,27 @@
       }
     },
     {
-      "id": 59,
+      "id": 34,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "AdminEmergency"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "CancelReason"
+        ]
+      }
+    },
+    {
+      "id": 35,
       "type": {
         "def": {
           "variant": {
@@ -3690,7 +2771,7 @@
               {
                 "fields": [
                   {
-                    "type": 60
+                    "type": 36
                   }
                 ],
                 "index": 0,
@@ -3699,7 +2780,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 27
                   }
                 ],
                 "index": 1,
@@ -3711,11 +2792,11 @@
         "params": [
           {
             "name": "T",
-            "type": 60
+            "type": 36
           },
           {
             "name": "E",
-            "type": 41
+            "type": 27
           }
         ],
         "path": [
@@ -3724,7 +2805,7 @@
       }
     },
     {
-      "id": 60,
+      "id": 36,
       "type": {
         "def": {
           "variant": {
@@ -3736,7 +2817,7 @@
               {
                 "fields": [
                   {
-                    "type": 29
+                    "type": 10
                   }
                 ],
                 "index": 1,
@@ -3748,7 +2829,7 @@
         "params": [
           {
             "name": "T",
-            "type": 29
+            "type": 10
           }
         ],
         "path": [
@@ -3757,7 +2838,7 @@
       }
     },
     {
-      "id": 61,
+      "id": 37,
       "type": {
         "def": {
           "variant": {
@@ -3765,7 +2846,7 @@
               {
                 "fields": [
                   {
-                    "type": 62
+                    "type": 38
                   }
                 ],
                 "index": 0,
@@ -3774,7 +2855,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 27
                   }
                 ],
                 "index": 1,
@@ -3786,11 +2867,11 @@
         "params": [
           {
             "name": "T",
-            "type": 62
+            "type": 38
           },
           {
             "name": "E",
-            "type": 41
+            "type": 27
           }
         ],
         "path": [
@@ -3799,7 +2880,7 @@
       }
     },
     {
-      "id": 62,
+      "id": 38,
       "type": {
         "def": {
           "variant": {
@@ -3811,7 +2892,7 @@
               {
                 "fields": [
                   {
-                    "type": 6
+                    "type": 20
                   }
                 ],
                 "index": 1,
@@ -3823,7 +2904,7 @@
         "params": [
           {
             "name": "T",
-            "type": 6
+            "type": 20
           }
         ],
         "path": [
@@ -3832,7 +2913,91 @@
       }
     },
     {
-      "id": 63,
+      "id": 39,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 33
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 27
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 33
+          },
+          {
+            "name": "E",
+            "type": 27
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 40,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 0
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 27
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 0
+          },
+          {
+            "name": "E",
+            "type": 27
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 41,
       "type": {
         "def": {
           "variant": {
@@ -3849,7 +3014,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 27
                   }
                 ],
                 "index": 1,
@@ -3865,7 +3030,7 @@
           },
           {
             "name": "E",
-            "type": 41
+            "type": 27
           }
         ],
         "path": [
@@ -3874,7 +3039,91 @@
       }
     },
     {
-      "id": 64,
+      "id": 42,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 6
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 27
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 6
+          },
+          {
+            "name": "E",
+            "type": 27
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 43,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "fields": [
+                  {
+                    "type": 5
+                  }
+                ],
+                "index": 0,
+                "name": "Ok"
+              },
+              {
+                "fields": [
+                  {
+                    "type": 27
+                  }
+                ],
+                "index": 1,
+                "name": "Err"
+              }
+            ]
+          }
+        },
+        "params": [
+          {
+            "name": "T",
+            "type": 5
+          },
+          {
+            "name": "E",
+            "type": 27
+          }
+        ],
+        "path": [
+          "Result"
+        ]
+      }
+    },
+    {
+      "id": 44,
       "type": {
         "def": {
           "variant": {
@@ -3891,7 +3140,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 27
                   }
                 ],
                 "index": 1,
@@ -3907,7 +3156,7 @@
           },
           {
             "name": "E",
-            "type": 41
+            "type": 27
           }
         ],
         "path": [
@@ -3916,7 +3165,7 @@
       }
     },
     {
-      "id": 65,
+      "id": 45,
       "type": {
         "def": {
           "variant": {
@@ -3924,7 +3173,7 @@
               {
                 "fields": [
                   {
-                    "type": 22
+                    "type": 7
                   }
                 ],
                 "index": 0,
@@ -3933,7 +3182,7 @@
               {
                 "fields": [
                   {
-                    "type": 41
+                    "type": 27
                   }
                 ],
                 "index": 1,
@@ -3945,11 +3194,11 @@
         "params": [
           {
             "name": "T",
-            "type": 22
+            "type": 7
           },
           {
             "name": "E",
-            "type": 41
+            "type": 27
           }
         ],
         "path": [
@@ -3958,82 +3207,7 @@
       }
     },
     {
-      "id": 66,
-      "type": {
-        "def": {
-          "variant": {
-            "variants": [
-              {
-                "fields": [
-                  {
-                    "type": 67
-                  }
-                ],
-                "index": 0,
-                "name": "Ok"
-              },
-              {
-                "fields": [
-                  {
-                    "type": 41
-                  }
-                ],
-                "index": 1,
-                "name": "Err"
-              }
-            ]
-          }
-        },
-        "params": [
-          {
-            "name": "T",
-            "type": 67
-          },
-          {
-            "name": "E",
-            "type": 41
-          }
-        ],
-        "path": [
-          "Result"
-        ]
-      }
-    },
-    {
-      "id": 67,
-      "type": {
-        "def": {
-          "variant": {
-            "variants": [
-              {
-                "index": 0,
-                "name": "None"
-              },
-              {
-                "fields": [
-                  {
-                    "type": 19
-                  }
-                ],
-                "index": 1,
-                "name": "Some"
-              }
-            ]
-          }
-        },
-        "params": [
-          {
-            "name": "T",
-            "type": 19
-          }
-        ],
-        "path": [
-          "Option"
-        ]
-      }
-    },
-    {
-      "id": 68,
+      "id": 46,
       "type": {
         "def": {
           "variant": {}

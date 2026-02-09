@@ -35,7 +35,7 @@ pub mod pallet {
 		traits::Zero,
 		AccountId32,
 	};
-	use sp_std::{collections::btree_map::BTreeMap, prelude::*};
+	use sp_std::prelude::*;
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + pallet_session::Config 
@@ -46,6 +46,7 @@ pub mod pallet {
                       + pallet_rankings::Config<pallet_rankings::Instance3>
                     //   + pallet_rankings::Config<pallet_rankings::Instance4> 
                     //   + pallet_rankings::Config<pallet_rankings::Instance5> 
+                      + pallet_arion::Config
                       {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
@@ -183,10 +184,12 @@ pub mod pallet {
 					);
 
 				// Calculate weight
-				let mut weight = WeightCalculation::calculate_weight::<T>(
-					NodeType::StorageMiner,
-					&miner.node_id,
-				);
+				let mut weight: u32 = 0;
+				if let Ok(node_id_32) = <[u8; 32]>::try_from(miner.node_id.clone()) {
+					if let Some(child) = pallet_arion::NodeIdToChild::<T>::get(node_id_32) {
+						weight = pallet_arion::NodeWeightByChild::<T>::get(child) as u32;
+					}
+				}
 
 				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
 				if let Some(reg_block) = registration_block {

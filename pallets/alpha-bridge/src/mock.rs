@@ -11,9 +11,9 @@ pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::Account
 pub type Balance = u128;
 
 // Test configuration constants
-pub const INITIAL_BALANCE: Balance = 1_000_000;
+pub const INITIAL_BALANCE: Balance = 10_000_000_000_000;
 pub const DEFAULT_APPROVE_THRESHOLD: u16 = 2;
-pub const DEFAULT_MINT_CAP: u128 = 10_000_000;
+pub const DEFAULT_MINT_CAP: u128 = 10_000_000_000_000;
 
 // Configure a mock runtime to test the pallet
 frame_support::construct_runtime!(
@@ -149,9 +149,15 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 	ext
 }
 
-// Helper function to generate a unique deposit ID for testing
-pub fn generate_deposit_id(seed: u64) -> sp_core::H256 {
-	use sp_core::Hasher;
-	use sp_runtime::traits::BlakeTwo256;
-	BlakeTwo256::hash(&seed.to_le_bytes())
+/// Generate a valid deposit ID using the same hash format the pallet verifies.
+/// Uses recipient account and amount to produce IDs that pass verification.
+pub fn generate_deposit_id_for(recipient: &AccountId, amount: u128, nonce: u64) -> sp_core::H256 {
+	use codec::Encode;
+	let domain = b"DEPOSIT_REQUEST-V1";
+	let mut data = Vec::new();
+	data.extend_from_slice(domain);
+	data.extend_from_slice(&recipient.encode());
+	data.extend_from_slice(&amount.to_le_bytes());
+	data.extend_from_slice(&nonce.to_le_bytes());
+	sp_core::H256::from(sp_core::hashing::blake2_256(&data))
 }
