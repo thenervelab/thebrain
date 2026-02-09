@@ -1,48 +1,72 @@
+//! Error types for the minimal viable bridge contract
+
 use ink::prelude::{format, string::String};
 
 #[allow(clippy::cast_possible_truncation)]
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[ink::scale_derive(Encode, Decode, TypeInfo)]
 pub enum Error {
-	// Authorization errors
+	// ============ Authorization Errors ============
+	/// Caller is not the contract owner
 	Unauthorized,
+	/// Caller is not a guardian
 	NotGuardian,
-	AlreadyAttestedBurn,
-	AlreadyAttestedRefund,
+	/// Guardian has already voted on this withdrawal
+	AlreadyVoted,
 
-	// Balance errors
+	// ============ Balance/Stake Errors ============
+	/// User has insufficient stake to lock
 	InsufficientStake,
+	/// Stake transfer could not be verified
 	TransferNotVerified,
+	/// Contract has insufficient stake to release
+	InsufficientContractStake,
 
-	// Validation errors
+	// ============ Validation Errors ============
+	/// Deposit amount is below minimum
 	AmountTooSmall,
-	InvalidHotkey,
-	InvalidNonce,
-	InvalidNetUid,
-	TooManyDeposits,
-	InvalidCheckpointNonce,
+	/// Guardian thresholds are invalid
 	InvalidThresholds,
+	/// Too many guardians provided
 	TooManyGuardians,
-	InvalidRefundRecipient,
-	InvalidRefundAmount,
+	/// Withdrawal details do not match existing record
+	InvalidWithdrawalDetails,
+	/// TTL must be greater than zero
+	InvalidTTL,
 
-	// State errors
+	// ============ State Errors ============
+	/// Bridge is paused
 	BridgePaused,
-	AlreadyProcessed,
-	DepositAlreadyDenied,
-	CheckpointNotFound,
-	CheckpointExpired,
-	CheckpointNotExpired,
+	/// Deposit request not found
+	DepositRequestNotFound,
+	/// Withdrawal not found
+	WithdrawalNotFound,
+	/// Deposit request already finalized
+	DepositRequestAlreadyFinalized,
+	/// Withdrawal already finalized
+	WithdrawalAlreadyFinalized,
 
-	// Arithmetic errors
+	// ============ Arithmetic Errors ============
+	/// Arithmetic overflow
 	Overflow,
 
-	// External call errors
+	// ============ External Call Errors ============
+	/// Runtime call failed
 	RuntimeCallFailed,
+	/// Stake query failed
 	StakeQueryFailed,
+	/// Stake transfer failed
 	TransferFailed,
+	/// Stake consolidation failed
 	StakeConsolidationFailed,
+	/// Code upgrade failed
 	CodeUpgradeFailed,
+
+	// ============ Cleanup Errors ============
+	/// Record is not finalized (must be Completed or Cancelled)
+	RecordNotFinalized,
+	/// TTL has not expired yet
+	TTLNotExpired,
 }
 
 impl From<Error> for String {

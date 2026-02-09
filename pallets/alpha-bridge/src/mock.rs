@@ -10,13 +10,9 @@ pub type Signature = sp_runtime::MultiSignature;
 pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::AccountId;
 pub type Balance = u128;
 
-const DAYS: u64 = 24 * 60 * 60 * 1000 / 2000; // blocks per day (assuming 2s block time)
-
 // Test configuration constants
 pub const INITIAL_BALANCE: Balance = 1_000_000;
 pub const DEFAULT_APPROVE_THRESHOLD: u16 = 2;
-pub const DEFAULT_DENY_THRESHOLD: u16 = 2;
-pub const DEFAULT_TTL_BLOCKS: u64 = 100;
 pub const DEFAULT_MINT_CAP: u128 = 10_000_000;
 
 // Configure a mock runtime to test the pallet
@@ -71,7 +67,7 @@ impl pallet_timestamp::Config for Test {
 }
 
 parameter_types! {
-	pub const IpReleasePeriod: u64 = 15 * DAYS;
+	pub const IpReleasePeriod: u64 = 15 * 24 * 60 * 60 * 1000 / 2000; // 15 days in blocks (assuming 2s block time)
 }
 
 impl pallet_ip::Config for Test {
@@ -116,6 +112,11 @@ pub fn new_account() -> AccountId {
 	AccountKeyring::One.to_account_id()
 }
 
+// Bridge pallet account - used for ED transfers
+pub fn bridge_account() -> AccountId {
+	pallet_alpha_bridge::Pallet::<Test>::account_id()
+}
+
 pub fn new_test_ext() -> sp_io::TestExternalities {
 	let mut t = frame_system::GenesisConfig::<Test>::default().build_storage().unwrap();
 
@@ -127,6 +128,8 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 			(user1(), INITIAL_BALANCE),
 			(user2(), INITIAL_BALANCE),
 			(dave(), INITIAL_BALANCE),
+			// Fund the bridge account so it can cover ED transfers for new accounts
+			(bridge_account(), INITIAL_BALANCE),
 		],
 	}
 	.assimilate_storage(&mut t)
@@ -139,34 +142,16 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 		// Set initial guardian configuration
 		pallet_alpha_bridge::Guardians::<Test>::put(vec![alice(), bob(), charlie()]);
 		pallet_alpha_bridge::ApproveThreshold::<Test>::put(DEFAULT_APPROVE_THRESHOLD);
-		pallet_alpha_bridge::DenyThreshold::<Test>::put(DEFAULT_DENY_THRESHOLD);
-		pallet_alpha_bridge::SignatureTTLBlocks::<Test>::put(DEFAULT_TTL_BLOCKS);
 		pallet_alpha_bridge::GlobalMintCap::<Test>::put(DEFAULT_MINT_CAP);
 		pallet_alpha_bridge::Paused::<Test>::put(false);
+		pallet_alpha_bridge::MinWithdrawalAmount::<Test>::put(1u128);
 	});
 	ext
 }
 
-// Helper function to run to a specific block number
-pub fn run_to_block(n: u64) {
-	while System::block_number() < n {
-		System::set_block_number(System::block_number() + 1);
-	}
-}
-
-// Helper function to create a test deposit proposal with unique ID
-pub fn create_deposit_proposal(
-	recipient: AccountId,
-	amount: u128,
-) -> pallet_alpha_bridge::DepositProposal<AccountId> {
+// Helper function to generate a unique deposit ID for testing
+pub fn generate_deposit_id(seed: u64) -> sp_core::H256 {
 	use sp_core::Hasher;
 	use sp_runtime::traits::BlakeTwo256;
-
-	// Generate a unique ID by hashing recipient + amount
-	let mut data = Vec::new();
-	data.extend_from_slice(recipient.as_ref());
-	data.extend_from_slice(&amount.to_le_bytes());
-	let id = BlakeTwo256::hash(&data);
-
-	pallet_alpha_bridge::DepositProposal { id, recipient, amount }
+	BlakeTwo256::hash(&seed.to_le_bytes())
 }

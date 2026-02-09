@@ -1,5 +1,22 @@
-// account id : 5EYCAe5ZJvQbPTyizLm1fmLdGTjVkFEzGSywNsZUmNFfR4XA
 #![cfg_attr(not(feature = "std"), no_std)]
+
+//! # Alpha Bridge Pallet
+//!
+//! A minimal viable bridge pallet for bridging Alpha (Bittensor subnet token) to hAlpha (Hippius).
+//!
+//! ## Design Principles
+//! - Stateless guardians — chain is only source of truth
+//! - First-attestation-creates-record — no propose/checkpoint races
+//! - Symmetric recovery — both directions can refund
+//! - Nonce-based unique IDs — no hash collisions
+//!
+//! ## Storage Model
+//! - `Deposits` — Guardian-created records for crediting hAlpha (destination for Alpha deposits)
+//! - `WithdrawalRequests` — User-created requests to withdraw hAlpha for Alpha (source for withdrawals)
+//!
+//! ## Naming Convention
+//! - Users create **requests** on the chain they're leaving
+//! - Guardians create the matching **record** on the chain they're entering
 
 #[cfg(test)]
 mod mock;
@@ -11,7 +28,6 @@ mod tests;
 mod benchmarking;
 
 pub mod weights;
-mod migration;
 
 use crate::weights::WeightInfo;
 use codec::{Decode, Encode, MaxEncodedLen};
@@ -21,94 +37,103 @@ use frame_support::{
 	traits::{
 		fungible::Mutate,
 		tokens::{Fortitude, Precision, Preservation},
-		Currency, ExistenceRequirement, GetStorageVersion, StorageVersion,
+		StorageVersion,
 	},
 	PalletId,
-	weights::Weight,
 };
 use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
 use sp_core::H256;
-use sp_runtime::traits::{AtLeast32BitUnsigned, Saturating, SaturatedConversion};
+use sp_runtime::traits::{AtLeast32BitUnsigned, Zero};
 use sp_std::{collections::btree_set::BTreeSet, prelude::*};
 
 pub use pallet::*;
 
 /// The current storage version
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+const STORAGE_VERSION: StorageVersion = StorageVersion::new(0);
 
-/// Domain separator for burn ID generation
-const DOMAIN_BURN: &[u8] = b"HIPPIUS-BURN-v1";
+/// Domain separator for withdrawal request ID generation
+const DOMAIN_WITHDRAWAL_REQUEST: &[u8] = b"HIPPIUS-WITHDRAWAL-REQUEST-v1";
 
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use crate::migration;
 	use frame_support::traits::ReservableCurrency;
-	use sp_runtime::traits::CheckedSub;
+
+	/// Unique identifier for deposits (matches Bittensor deposit_request ID)
 	pub type DepositId = H256;
 
-	pub type BurnId = H256;
+	/// Unique identifier for withdrawal requests
+	pub type WithdrawalRequestId = H256;
 
+	/// Balance type from pallet_balances
 	pub type BalanceOf<T> = <T as pallet_balances::Config>::Balance;
 
-	/// Deposit proposal structure submitted by guardians
-	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
-	pub struct DepositProposal<AccountId> {
-		pub id: DepositId,
-		pub recipient: AccountId,
-		pub amount: u128,
-	}
+	/// Default TTL in blocks before finalized records can be cleaned up
+	/// ~7 days at 6 second block times
+	pub const DEFAULT_CLEANUP_TTL_BLOCKS: u32 = 100_800;
 
-	/// Record of an expired deposit that needs to be refunded on the other chain
-	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
-	pub struct ExpiredDeposit<AccountId> {
-		pub deposit_id: DepositId,
-		pub recipient: AccountId,
-		pub amount: u128,
-	}
-
-	/// Status of a vote (deposit or unlock)
+	/// Status of a deposit record (destination side)
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
-	pub enum VoteStatus {
+	pub enum DepositStatus {
 		#[default]
-		Pending,
-		Approved,
-		Denied,
-		Expired,
+		Pending,     // Collecting votes for success
+		Completed,   // hAlpha credited to recipient
+		Cancelled,   // Admin cancelled after stuck
 	}
 
-	/// Record of a pending deposit proposal with votes
-	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
-	#[scale_info(skip_type_params(T))]
-	pub struct DepositRecord<AccountId, BlockNumber> {
-		pub recipient: AccountId,
-		pub amount: u128,
-		pub approve_votes: BTreeSet<AccountId>,
-		pub deny_votes: BTreeSet<AccountId>,
-		pub proposed_at_block: BlockNumber,
-		pub status: VoteStatus,
+	/// Status of a withdrawal request (source side)
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
+	pub enum WithdrawalRequestStatus {
+		#[default]
+		Requested,   // hAlpha burned, awaiting Alpha release on Bittensor
+		Failed,      // Admin marked after stuck (hAlpha manually minted back)
 	}
 
-	/// Record of a pending unlock request with votes
-	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
-	#[scale_info(skip_type_params(T))]
-	pub struct UnlockRecord<AccountId, BlockNumber> {
-		pub requester: AccountId,
-		pub amount: u128,
-		pub approve_votes: BTreeSet<AccountId>,
-		pub deny_votes: BTreeSet<AccountId>,
-		pub requested_at_block: BlockNumber,
-		pub status: VoteStatus,
+	/// Reason for cancellation (for audit trail)
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	pub enum CancelReason {
+		AdminEmergency,
 	}
 
-	/// Item in the burn queue for ordered processing of approved unlocks
+	/// Record of a deposit (guardian-created, destination side)
+	/// Guardians create this when they observe a deposit_request on Bittensor
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
 	#[scale_info(skip_type_params(T))]
-	pub struct BurnQueueItem<AccountId> {
-		pub burn_id: BurnId,
-		pub requester: AccountId,
+	pub struct Deposit<T: Config> {
+		/// The deposit request ID from Bittensor
+		pub request_id: DepositId,
+		/// Recipient who will receive hAlpha
+		pub recipient: T::AccountId,
+		/// Amount of hAlpha to credit (in halphaRao)
 		pub amount: u128,
+		/// Guardian votes for success
+		pub votes: BTreeSet<T::AccountId>,
+		/// Current status
+		pub status: DepositStatus,
+		/// Block when first guardian attested
+		pub created_at_block: BlockNumberFor<T>,
+		/// Block when deposit was finalized (Completed or Cancelled)
+		pub finalized_at_block: Option<BlockNumberFor<T>>,
+	}
+
+	/// Record of a withdrawal request (user-created, source side)
+	/// User creates this when they want to withdraw hAlpha for Alpha on Bittensor
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
+	#[scale_info(skip_type_params(T))]
+	pub struct WithdrawalRequest<T: Config> {
+		/// Sender who burned hAlpha
+		pub sender: T::AccountId,
+		/// Recipient on Bittensor who will receive Alpha
+		pub recipient: T::AccountId,
+		/// Amount of hAlpha burned (in halphaRao)
+		pub amount: u128,
+		/// Nonce used for ID generation
+		pub nonce: u64,
+		/// Current status
+		pub status: WithdrawalRequestStatus,
+		/// Block when request was created
+		pub created_at_block: BlockNumberFor<T>,
 	}
 
 	#[pallet::pallet]
@@ -119,6 +144,7 @@ pub mod pallet {
 	#[pallet::config]
 	pub trait Config: frame_system::Config + pallet_balances::Config {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+
 		/// The pallet's id, used for deriving its sovereign account ID.
 		#[pallet::constant]
 		type PalletId: Get<PalletId>;
@@ -139,667 +165,552 @@ pub mod pallet {
 		type Currency: ReservableCurrency<Self::AccountId>;
 	}
 
-	/// Tracks which deposit IDs have been fully processed (prevents replay attacks)
-	#[pallet::storage]
-	#[pallet::getter(fn processed_deposits)]
-	pub type ProcessedDeposits<T: Config> =
-		StorageMap<_, Blake2_128Concat, DepositId, bool, ValueQuery>;
+	// ============ Configuration Storage ============
 
-	/// Tracks the last processed Bittensor checkpoint nonce to enforce ordering
-	#[pallet::storage]
-	#[pallet::getter(fn last_checkpoint_nonce)]
-	pub type LastCheckpointNonce<T: Config> = StorageValue<_, u64, OptionQuery>;
-
-	/// Running total of all minted halpha (used for mint cap enforcement)
-	#[pallet::storage]
-	#[pallet::getter(fn total_minted_by_bridge)]
-	pub type TotalMintedByBridge<T: Config> = StorageValue<_, u128, ValueQuery>;
-
-	/// Maximum allowed minted halpha (set via governance/sudo)
-	#[pallet::storage]
-	#[pallet::getter(fn global_mint_cap)]
-	pub type GlobalMintCap<T: Config> = StorageValue<_, u128, ValueQuery>;
-
-	/// Emergency pause switch (blocks all deposit/unlock operations when true)
-	#[pallet::storage]
-	#[pallet::getter(fn paused)]
-	pub type Paused<T: Config> = StorageValue<_, bool, ValueQuery>;
-
-	/// Guardian accounts authorized to vote on deposits and unlocks
+	/// Guardian accounts authorized to attest deposits and withdrawals
 	#[pallet::storage]
 	#[pallet::getter(fn guardians)]
 	pub type Guardians<T: Config> = StorageValue<_, Vec<T::AccountId>, ValueQuery>;
 
-	/// Minimum guardian approvals needed to process an action
+	/// Minimum guardian approvals needed to complete an action
 	#[pallet::storage]
 	#[pallet::getter(fn approve_threshold)]
 	pub type ApproveThreshold<T: Config> = StorageValue<_, u16, ValueQuery>;
 
-	/// Minimum guardian denials needed to reject an action
+	/// Maximum allowed minted hAlpha (set via governance/sudo)
 	#[pallet::storage]
-	#[pallet::getter(fn deny_threshold)]
-	pub type DenyThreshold<T: Config> = StorageValue<_, u16, ValueQuery>;
+	#[pallet::getter(fn global_mint_cap)]
+	pub type GlobalMintCap<T: Config> = StorageValue<_, u128, ValueQuery>;
 
-	/// Number of blocks before a pending proposal expires
+	/// Running total of all minted hAlpha (used for mint cap enforcement)
 	#[pallet::storage]
-	#[pallet::getter(fn signature_ttl_blocks)]
-	pub type SignatureTTLBlocks<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+	#[pallet::getter(fn total_minted_by_bridge)]
+	pub type TotalMintedByBridge<T: Config> = StorageValue<_, u128, ValueQuery>;
 
-	/// Pending deposit proposals awaiting guardian votes
+	/// Emergency pause switch (blocks all bridge operations when true)
 	#[pallet::storage]
-	#[pallet::getter(fn pending_deposits)]
-	pub type PendingDeposits<T: Config> = StorageMap<
+	#[pallet::getter(fn paused)]
+	pub type Paused<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	// ============ Deposit Storage (Destination Side) ============
+
+	/// Deposits created by guardians when they observe deposit_requests on Bittensor
+	/// Key: DepositId (same as Bittensor deposit_request ID)
+	#[pallet::storage]
+	#[pallet::getter(fn deposits)]
+	pub type Deposits<T: Config> = StorageMap<
 		_,
 		Blake2_128Concat,
 		DepositId,
-		DepositRecord<T::AccountId, BlockNumberFor<T>>,
+		Deposit<T>,
 		OptionQuery,
 	>;
 
-	/// Pending unlock requests awaiting guardian votes
+	// ============ Withdrawal Request Storage (Source Side) ============
+
+	/// Withdrawal requests created by users (hAlpha burned immediately)
+	/// Key: WithdrawalRequestId
 	#[pallet::storage]
-	#[pallet::getter(fn pending_unlocks)]
-	pub type PendingUnlocks<T: Config> = StorageMap<
+	#[pallet::getter(fn withdrawal_requests)]
+	pub type WithdrawalRequests<T: Config> = StorageMap<
 		_,
 		Blake2_128Concat,
-		BurnId,
-		UnlockRecord<T::AccountId, BlockNumberFor<T>>,
+		WithdrawalRequestId,
+		WithdrawalRequest<T>,
 		OptionQuery,
 	>;
 
+	/// Nonce for generating unique withdrawal request IDs
 	#[pallet::storage]
-	#[pallet::getter(fn burn_nonce_by_id)]
-	pub type BurnNonceById<T: Config> =
-		StorageMap<_, Blake2_128Concat, BurnId, u64, OptionQuery>;
+	#[pallet::getter(fn next_withdrawal_request_nonce)]
+	pub type NextWithdrawalRequestNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
 
-	
-	#[pallet::storage]
-	#[pallet::getter(fn burn_queue)]
-	pub type BurnQueue<T: Config> =
-		StorageMap<_, Blake2_128Concat, u64, BurnQueueItem<T::AccountId>, OptionQuery>;
+	/// Default value for cleanup TTL
+	#[pallet::type_value]
+	pub fn DefaultCleanupTTL<T: Config>() -> BlockNumberFor<T> {
+		DEFAULT_CLEANUP_TTL_BLOCKS.into()
+	}
 
-	/// Nonce used for generating unique burn IDs via hashing
+	/// TTL in blocks before finalized records can be cleaned up
+	/// Default: 100800 blocks (~7 days at 6s blocks)
 	#[pallet::storage]
-	#[pallet::getter(fn next_burn_nonce)]
-	pub type NextBurnNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
+	#[pallet::getter(fn cleanup_ttl_blocks)]
+	pub type CleanupTTLBlocks<T: Config> =
+		StorageValue<_, BlockNumberFor<T>, ValueQuery, DefaultCleanupTTL<T>>;
 
-	/// Nonce for generating unique keys for expired deposits
-	#[pallet::storage]
-	#[pallet::getter(fn next_expired_deposit_nonce)]
-	pub type NextExpiredDepositNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
+	/// Default minimum withdrawal amount (1 hAlpha = 1_000_000_000 halphaRao)
+	#[pallet::type_value]
+	pub fn DefaultMinWithdrawal() -> u128 {
+		1_000_000_000
+	}
 
-	/// Tracks expired deposits that need to be refunded on the other chain
+	/// Minimum withdrawal amount (in halphaRao)
 	#[pallet::storage]
-	#[pallet::getter(fn expired_deposits)]
-	pub type ExpiredDeposits<T: Config> = StorageMap<
-		_,
-		Blake2_128Concat,
-		u64,
-		ExpiredDeposit<T::AccountId>,
-		OptionQuery,
-	>;
+	#[pallet::getter(fn min_withdrawal_amount)]
+	pub type MinWithdrawalAmount<T: Config> = StorageValue<_, u128, ValueQuery, DefaultMinWithdrawal>;
+
+	// ============ Events ============
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// Batch of deposits proposed by a guardian
-		DepositsProposed { 
-			deposit_ids: Vec<DepositId>, 
-			recipients: Vec<T::AccountId>,
-			proposer: T::AccountId 
+		// ============ Deposit Flow Events (Destination) ============
+
+		/// Guardian attested a deposit (vote for success)
+		DepositAttested {
+			id: DepositId,
+			guardian: T::AccountId,
 		},
-		/// Guardian voted on a deposit proposal
-		DepositAttested { 
-			deposit_id: DepositId, 
-		recipient: T::AccountId,
-		guardian: T::AccountId, 
-		approved: bool 
-		},
-		/// Deposit approved and halpha minted to recipient
-		BridgeMinted { deposit_id: DepositId, recipient: T::AccountId, amount: u128 },
-		/// Deposit denied by guardians
-		BridgeDenied { deposit_id: DepositId, recipient: T::AccountId, amount: u128 },
-		/// User requested unlock (burn halpha to receive alpha on Bittensor)
-		UnlockRequested { burn_id: BurnId, requester: T::AccountId, amount: u128 },
-		/// Guardian voted on an unlock request
-		UnlockAttested { burn_id: BurnId, guardian: T::AccountId, approved: bool },
-		/// Unlock approved and halpha burned
-		UnlockApproved { burn_id: BurnId, requester: T::AccountId, amount: u128 },
-		/// Unlock denied and funds restored to user
-		UnlockDenied { burn_id: BurnId, requester: T::AccountId, amount: u128 },
-		/// Unlock request expired and funds restored
-		UnlockExpired { burn_id: BurnId },
-		/// Bridge pause state changed
-		BridgePaused { paused: bool },
-		/// Global mint cap updated
-		GlobalMintCapUpdated { new_cap: u128 },
-		/// Approve threshold updated
-		ApproveThresholdUpdated { new_threshold: u16 },
-		/// Deny threshold updated
-		DenyThresholdUpdated { new_threshold: u16 },
-		/// Signature TTL updated
-		SignatureTTLUpdated { new_ttl: BlockNumberFor<T> },
-		/// Guardian added to the set
-		GuardianAdded { guardian: T::AccountId },
-		/// Guardian removed from the set
-		GuardianRemoved { guardian: T::AccountId },
-		/// Deposit proposal expired due to timeout
-		DepositExpired { 
-			deposit_id: DepositId, 
+
+		/// Deposit completed - hAlpha credited to recipient
+		DepositCompleted {
+			id: DepositId,
 			recipient: T::AccountId,
-			amount: u128 
+			amount: u128,
 		},
-		/// All storage has been reset to default values
-		StorageReset,
+
+		/// Deposit cancelled by admin after stuck
+		DepositCancelled {
+			id: DepositId,
+			reason: CancelReason,
+		},
+
+		// ============ Withdrawal Flow Events (Source) ============
+
+		/// User created a withdrawal request (hAlpha burned)
+		WithdrawalRequestCreated {
+			id: WithdrawalRequestId,
+			sender: T::AccountId,
+			recipient: T::AccountId,
+			amount: u128,
+		},
+
+		/// Withdrawal request marked as failed by admin (hAlpha manually minted back)
+		WithdrawalRequestFailed {
+			id: WithdrawalRequestId,
+		},
+
+		// ============ Admin Events ============
+
+		/// Admin manually minted hAlpha to a recipient (for stuck withdrawals)
+		AdminManualMint {
+			recipient: T::AccountId,
+			amount: u128,
+			/// Optional deposit ID for audit trail
+			deposit_id: Option<H256>,
+		},
+
+		/// Bridge paused
+		Paused,
+
+		/// Bridge unpaused
+		Unpaused,
+
+		/// Global mint cap updated
+		GlobalMintCapUpdated {
+			new_cap: u128,
+		},
+
+		/// Guardians and threshold updated atomically
+		GuardiansUpdated {
+			guardians: Vec<T::AccountId>,
+			approve_threshold: u16,
+		},
+
+		/// Minimum withdrawal amount updated
+		MinWithdrawalAmountUpdated {
+			old_amount: u128,
+			new_amount: u128,
+		},
+
+		// ============ Cleanup Events ============
+
+		/// Deposit record cleaned up after TTL
+		DepositCleanedUp {
+			id: DepositId,
+		},
+
+		/// Withdrawal request record cleaned up after TTL
+		WithdrawalRequestCleanedUp {
+			id: WithdrawalRequestId,
+		},
+
+		/// Cleanup TTL updated
+		CleanupTTLUpdated {
+			old_ttl: BlockNumberFor<T>,
+			new_ttl: BlockNumberFor<T>,
+		},
 	}
+
+	// ============ Errors ============
 
 	#[pallet::error]
 	pub enum Error<T> {
 		/// Caller is not a guardian
 		NotGuardian,
-		/// Deposit has already been processed (prevents replay attacks)
-		DepositAlreadyProcessed,
-		/// Deposit already exists in the pending queue
-		DepositAlreadyPending,
-		/// User has insufficient halpha balance
-		InsufficientBalance,
-		/// Guardian has already voted on this proposal
+		/// Guardian has already voted on this deposit
 		AlreadyVoted,
-		/// Not enough votes to finalize proposal
-		InsufficientVotes,
+		/// User has insufficient hAlpha balance
+		InsufficientBalance,
+		/// Minting would exceed the global mint cap
+		CapExceeded,
 		/// Bridge is currently paused
 		BridgePaused,
-		/// Minting would exceed the global mint cap
-		GlobalMintCapExceeded,
-		/// Deposit proposal not found in pending state
-		DepositNotPending,
-		/// Deposit has already been finalized
-		DepositAlreadyFinalized,
-		/// Unlock request not found in pending state
-		UnlockNotPending,
-		/// Unlock request has already been finalized
-		UnlockAlreadyFinalized,
-		/// Proposal has not expired yet
-		ProposalNotExpired,
-		/// Checkpoint nonce is not sequential
-		InvalidCheckpointNonce,
+		/// Deposit not found
+		DepositNotFound,
+		/// Withdrawal request not found
+		WithdrawalRequestNotFound,
+		/// Invalid status for this operation
+		InvalidStatus,
 		/// Threshold cannot be zero
 		ThresholdTooLow,
 		/// Threshold exceeds guardian count
 		ThresholdTooHigh,
-		/// Cannot propose empty deposit batch
-		EmptyDepositBatch,
-		/// Guardian already exists in the set
-		GuardianAlreadyExists,
-		/// Guardian not found in the set
-		GuardianNotFound,
-		/// Caller not authorized for this action
-		NotAuthorized,
-		/// Proposal has expired
-		ProposalExpired,
+		/// Too many guardians provided
+		TooManyGuardians,
 		/// Failed to convert between numeric balance types
 		AmountConversionFailed,
-		/// Failed to mint tokens for approved deposit
-		DepositMintFailed,
-		/// Escrow account does not hold enough balance (critical: indicates tampering or bug)
-		EscrowBalanceInsufficient,
-		/// Arithmetic underflow
-		ArithmeticUnderflow,
-		/// Burn nonce mapping missing for approved unlock (invariant violation)
-		BurnNonceNotFound,
+		/// Failed to mint tokens
+		MintFailed,
+		/// Arithmetic overflow
+		ArithmeticOverflow,
+		/// Deposit already completed
+		DepositAlreadyCompleted,
+		/// Withdrawal request already completed or failed
+		WithdrawalRequestAlreadyFinalized,
+		/// Deposit details do not match existing record
+		InvalidDepositDetails,
+		/// Amount must be greater than zero
+		AmountTooSmall,
+		/// Accounting underflow - indicates a bug
+		AccountingUnderflow,
+		/// Record is not finalized (not Completed or Cancelled)
+		RecordNotFinalized,
+		/// TTL has not expired yet
+		TTLNotExpired,
+		/// TTL must be greater than zero
+		InvalidTTL,
 	}
 
-	#[pallet::hooks]
-	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-		fn on_runtime_upgrade() -> Weight {
-			let on_chain = Self::on_chain_storage_version();
-			let mut weight = Weight::zero();
+	// ============ Extrinsics ============
 
-			if on_chain < STORAGE_VERSION {
-				weight = weight.saturating_add(migration::migrate_to_v2::<T>());
-				STORAGE_VERSION.put::<Self>();
-				weight = weight.saturating_add(T::DbWeight::get().writes(1));
-			}
-
-			weight
-		}
-	}
+	/// Maximum number of guardians allowed
+	pub const MAX_GUARDIANS: usize = 10;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// Guardian proposes a batch of deposit proposals from Bittensor checkpoint
+		// ============ User Actions ============
+
+		/// User burns hAlpha to initiate a withdrawal to Bittensor
+		///
+		/// hAlpha is burned immediately - no escrow. If the withdrawal fails,
+		/// admin can manually mint hAlpha back via `admin_manual_mint`.
+		/// The recipient on Bittensor is automatically set to the sender's address.
 		///
 		/// # Arguments
-		/// * `origin` - Must be signed by a guardian
-		/// * `deposits` - Vector of deposit proposals
-		/// * `checkpoint_nonce` - Bittensor checkpoint nonce (must be sequential)
+		/// * `origin` - Must be signed by the user
+		/// * `amount` - Amount of hAlpha to burn (in halphaRao, u128)
 		#[pallet::call_index(0)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::propose_deposits(deposits.len() as u32))]
-		pub fn propose_deposits(
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::request_unlock())]
+		pub fn withdraw(
 			origin: OriginFor<T>,
-			deposits: Vec<DepositProposal<T::AccountId>>,
-			checkpoint_nonce: u64,
+			amount: u128,
 		) -> DispatchResult {
-			let guardian = ensure_signed(origin)?;
-			Self::ensure_guardian(&guardian)?;
+			let sender = ensure_signed(origin)?;
+			let recipient = sender.clone();
 			Self::ensure_not_paused()?;
 
-			ensure!(!deposits.is_empty(), Error::<T>::EmptyDepositBatch);
+			// Reject amounts below minimum
+			ensure!(amount >= MinWithdrawalAmount::<T>::get(), Error::<T>::AmountTooSmall);
 
-			match LastCheckpointNonce::<T>::get() {
-				Some(last_nonce) => {
-					let expected_nonce =
-						last_nonce.checked_add(1).ok_or(Error::<T>::InvalidCheckpointNonce)?;
-					ensure!(checkpoint_nonce == expected_nonce, Error::<T>::InvalidCheckpointNonce);
-				},
-				None => ensure!(checkpoint_nonce == 0, Error::<T>::InvalidCheckpointNonce),
-			}
+			// Burn hAlpha from user immediately
+			let balance_value = Self::amount_to_balance(amount)?;
+			pallet_balances::Pallet::<T>::burn_from(
+				&sender,
+				balance_value,
+				Preservation::Expendable,
+				Precision::Exact,
+				Fortitude::Polite,
+			).map_err(|_| Error::<T>::InsufficientBalance)?;
 
-			let mut deposit_ids = Vec::new();
-			let current_block = frame_system::Pallet::<T>::block_number();
+			// Update total minted tracking (use checked_sub to catch accounting bugs)
+			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
+				*total = total.checked_sub(amount).ok_or(Error::<T>::AccountingUnderflow)?;
+				Ok(())
+			})?;
 
-			for deposit in deposits.iter() {
-				let deposit_id = deposit.id;
+			// Generate unique withdrawal request ID
+			let (request_id, nonce) = Self::generate_withdrawal_request_id(&sender, &recipient, amount);
 
-				ensure!(
-					!ProcessedDeposits::<T>::get(deposit_id),
-					Error::<T>::DepositAlreadyProcessed
-				);
-				ensure!(
-					!PendingDeposits::<T>::contains_key(deposit_id),
-					Error::<T>::DepositAlreadyPending
-				);
+			// Create withdrawal request
+			let request = WithdrawalRequest {
+				sender: sender.clone(),
+				recipient: recipient.clone(),
+				amount,
+				nonce,
+				status: WithdrawalRequestStatus::Requested,
+				created_at_block: frame_system::Pallet::<T>::block_number(),
+			};
 
-				Self::check_mint_cap(deposit.amount)?;
+			WithdrawalRequests::<T>::insert(request_id, request);
 
-				let mut approve_votes = BTreeSet::new();
-				approve_votes.insert(guardian.clone());
-
-				let record = DepositRecord {
-					recipient: deposit.recipient.clone(),
-					amount: deposit.amount,
-					approve_votes,
-					deny_votes: BTreeSet::new(),
-					proposed_at_block: current_block,
-					status: VoteStatus::Pending,
-				};
-
-				PendingDeposits::<T>::insert(deposit_id, record.clone());
-				deposit_ids.push(deposit_id);
-
-				let vote_status = Self::check_vote_thresholds(1, 0);
-				if vote_status == VoteStatus::Approved {
-					Self::finalize_deposit(deposit_id, record)?;
-				}
-			}
-
-			let recipients: Vec<_> = deposits.iter().map(|d| d.recipient.clone()).collect();
-			LastCheckpointNonce::<T>::put(checkpoint_nonce);
-
-			Self::deposit_event(Event::DepositsProposed { 
-				deposit_ids, 
-				recipients,
-				proposer: guardian 
+			Self::deposit_event(Event::WithdrawalRequestCreated {
+				id: request_id,
+				sender,
+				recipient,
+				amount,
 			});
 
 			Ok(())
 		}
 
-		/// Guardian attests (votes on) a pending deposit proposal
+		// ============ Guardian Actions ============
+
+		/// Guardian attests a deposit (first attestation creates the record)
+		///
+		/// When guardians observe a deposit_request on Bittensor, they call this
+		/// to vote for crediting hAlpha. First attestation creates the Deposit record.
+		/// When threshold is reached, hAlpha is credited to recipient.
 		///
 		/// # Arguments
 		/// * `origin` - Must be signed by a guardian
-		/// * `deposit_id` - The deposit ID to vote on
-		/// * `approve` - True to approve, false to deny
+		/// * `request_id` - The deposit request ID from Bittensor
+		/// * `recipient` - Recipient to credit hAlpha to
+		/// * `amount` - Amount to credit (in halphaRao)
 		#[pallet::call_index(1)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_deposit())]
 		pub fn attest_deposit(
 			origin: OriginFor<T>,
-			deposit_id: DepositId,
-			approve: bool,
+			request_id: DepositId,
+			recipient: T::AccountId,
+			amount: u128,
 		) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
 			Self::ensure_guardian(&guardian)?;
 			Self::ensure_not_paused()?;
 
-			let mut record =
-				PendingDeposits::<T>::get(deposit_id).ok_or(Error::<T>::DepositNotPending)?;
+			// Check if deposit already exists
+			if let Some(mut deposit) = Deposits::<T>::get(request_id) {
+				// Deposit exists - verify details match to prevent poisoning
+				ensure!(deposit.recipient == recipient, Error::<T>::InvalidDepositDetails);
+				ensure!(deposit.amount == amount, Error::<T>::InvalidDepositDetails);
 
-			ensure!(record.status == VoteStatus::Pending, Error::<T>::DepositAlreadyFinalized);
+				// Check status and vote
+				ensure!(deposit.status == DepositStatus::Pending, Error::<T>::DepositAlreadyCompleted);
+				ensure!(!deposit.votes.contains(&guardian), Error::<T>::AlreadyVoted);
 
-			ensure!(
-				!Self::is_proposal_expired(record.proposed_at_block),
-				Error::<T>::ProposalExpired
-			);
+				deposit.votes.insert(guardian.clone());
 
-			ensure!(
-				!record.approve_votes.contains(&guardian) && !record.deny_votes.contains(&guardian),
-				Error::<T>::AlreadyVoted
-			);
+				Self::deposit_event(Event::DepositAttested {
+					id: request_id,
+					guardian,
+				});
 
-			if approve {
-				record.approve_votes.insert(guardian.clone());
+				// Check if threshold reached
+				if deposit.votes.len() >= ApproveThreshold::<T>::get() as usize {
+					Self::finalize_deposit(request_id, deposit)?;
+				} else {
+					Deposits::<T>::insert(request_id, deposit);
+				}
 			} else {
-				record.deny_votes.insert(guardian.clone());
-			}
+				// First attestation - create the deposit record
+				let mut votes = BTreeSet::new();
+				votes.insert(guardian.clone());
 
-			let recipient = record.recipient.clone();
-			Self::deposit_event(Event::DepositAttested { 
-				deposit_id, 
-				recipient,
-				guardian, 
-				approved: approve 
-			});
+				let deposit = Deposit {
+					request_id,
+					recipient: recipient.clone(),
+					amount,
+					votes,
+					status: DepositStatus::Pending,
+					created_at_block: frame_system::Pallet::<T>::block_number(),
+					finalized_at_block: None,
+				};
 
-			let vote_status =
-				Self::check_vote_thresholds(record.approve_votes.len(), record.deny_votes.len());
+				Self::deposit_event(Event::DepositAttested {
+					id: request_id,
+					guardian,
+				});
 
-			match vote_status {
-				VoteStatus::Approved => {
-					Self::finalize_deposit(deposit_id, record)?;
-				},
-				VoteStatus::Denied => {
-					Self::deny_deposit(deposit_id, record)?;
-				},
-				_ => {
-					PendingDeposits::<T>::insert(deposit_id, record);
-				},
+				// Check if threshold reached immediately (single guardian setup)
+				if deposit.votes.len() >= ApproveThreshold::<T>::get() as usize {
+					Self::finalize_deposit(request_id, deposit)?;
+				} else {
+					Deposits::<T>::insert(request_id, deposit);
+				}
 			}
 
 			Ok(())
 		}
 
-		/// User requests to unlock (burn) halpha to receive alpha on Bittensor
+		// ============ Admin Functions ============
+
+		/// Admin cancels a deposit that is stuck (Pending but not reaching threshold)
+		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
 		///
 		/// # Arguments
-		/// * `origin` - Must be signed by the user (requester account is used as Bittensor destination)
-		/// * `amount` - Amount of halpha to burn
+		/// * `origin` - Must be root
+		/// * `request_id` - The deposit ID to cancel
+		/// * `reason` - Reason for cancellation
 		#[pallet::call_index(2)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::request_unlock())]
-		pub fn request_unlock(origin: OriginFor<T>, amount: u128) -> DispatchResult {
-			let requester = ensure_signed(origin)?;
-			Self::ensure_not_paused()?;
-
-			let balance_value = Self::amount_to_balance(amount)?;
-			let pallet_account = Self::account_id();
-
-			<pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
-				&requester,
-				&pallet_account,
-				balance_value,
-				ExistenceRequirement::AllowDeath,
-			)?;
-
-			let burn_id = Self::generate_burn_id(&requester, amount);
-
-			let record = UnlockRecord {
-				requester: requester.clone(),
-				amount,
-				approve_votes: BTreeSet::new(),
-				deny_votes: BTreeSet::new(),
-				requested_at_block: frame_system::Pallet::<T>::block_number(),
-				status: VoteStatus::Pending,
-			};
-
-			PendingUnlocks::<T>::insert(burn_id, record);
-
-			Self::deposit_event(Event::UnlockRequested { burn_id, requester, amount });
-
-			Ok(())
-		}
-
-		/// Guardian attests (votes on) a pending unlock request
-		///
-		/// # Arguments
-		/// * `origin` - Must be signed by a guardian
-		/// * `burn_id` - The burn ID to vote on
-		/// * `approve` - True to approve, false to deny
-		#[pallet::call_index(3)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_unlock())]
-		pub fn attest_unlock(
-			origin: OriginFor<T>,
-			burn_id: BurnId,
-			approve: bool,
-		) -> DispatchResult {
-			let guardian = ensure_signed(origin)?;
-			Self::ensure_guardian(&guardian)?;
-			Self::ensure_not_paused()?;
-
-			let mut record =
-				PendingUnlocks::<T>::get(burn_id).ok_or(Error::<T>::UnlockNotPending)?;
-
-			ensure!(record.status == VoteStatus::Pending, Error::<T>::UnlockAlreadyFinalized);
-
-			ensure!(
-				!Self::is_proposal_expired(record.requested_at_block),
-				Error::<T>::ProposalExpired
-			);
-
-			ensure!(
-				!record.approve_votes.contains(&guardian) && !record.deny_votes.contains(&guardian),
-				Error::<T>::AlreadyVoted
-			);
-
-			if approve {
-				record.approve_votes.insert(guardian.clone());
-			} else {
-				record.deny_votes.insert(guardian.clone());
-			}
-
-			Self::deposit_event(Event::UnlockAttested { burn_id, guardian, approved: approve });
-
-			let vote_status =
-				Self::check_vote_thresholds(record.approve_votes.len(), record.deny_votes.len());
-
-			match vote_status {
-				VoteStatus::Approved => {
-					Self::finalize_unlock(burn_id, record)?;
-				},
-				VoteStatus::Denied => {
-					Self::deny_unlock(burn_id, record)?;
-				},
-				_ => {
-					// Still pending, update the record
-					PendingUnlocks::<T>::insert(burn_id, record);
-				},
-			}
-
-			Ok(())
-		}
-
-		/// Expire a pending deposit proposal that has exceeded its TTL
-		/// Can be called by anyone to clean up stale proposals
-		///
-		/// # Arguments
-		/// * `origin` - Can be any signed account
-		/// * `deposit_id` - The deposit ID to expire
-		#[pallet::call_index(4)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::expire_pending_deposit())]
-		pub fn expire_pending_deposit(
+		pub fn admin_cancel_deposit(
 			origin: OriginFor<T>,
-			deposit_id: DepositId,
+			request_id: DepositId,
+			reason: CancelReason,
 		) -> DispatchResult {
-			ensure_signed(origin)?;
-		
-			let record = PendingDeposits::<T>::get(deposit_id)
-				.ok_or(Error::<T>::DepositNotPending)?;
-		
-			ensure!(
-				record.status == VoteStatus::Pending,
-				Error::<T>::DepositAlreadyFinalized
-			);
+			ensure_root(origin)?;
 
-			ensure!(
-				Self::is_proposal_expired(record.proposed_at_block),
-				Error::<T>::ProposalNotExpired
-			);
-		
-			let nonce = NextExpiredDepositNonce::<T>::get();
-			NextExpiredDepositNonce::<T>::put(nonce + 1);
-			
-			let expired_deposit = ExpiredDeposit {
-				deposit_id,
-				recipient: record.recipient.clone(),
-				amount: record.amount,
-			};
-			
-			ExpiredDeposits::<T>::insert(nonce, expired_deposit);
-		
-			PendingDeposits::<T>::remove(deposit_id);
-			ProcessedDeposits::<T>::insert(deposit_id, true);
-		
-			Self::deposit_event(Event::DepositExpired { 
-				deposit_id,
-				recipient: record.recipient,
-				amount: record.amount,
-			});
-		
-			Ok(())
+			Deposits::<T>::try_mutate(request_id, |maybe_deposit| -> DispatchResult {
+				let deposit = maybe_deposit.as_mut().ok_or(Error::<T>::DepositNotFound)?;
+				ensure!(deposit.status == DepositStatus::Pending, Error::<T>::InvalidStatus);
+
+				deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
+				deposit.status = DepositStatus::Cancelled;
+
+				Self::deposit_event(Event::DepositCancelled {
+					id: request_id,
+					reason,
+				});
+
+				Ok(())
+			})
 		}
 
-		/// Expire a pending unlock request that has exceeded its TTL
-		/// Restores locked funds to the user. Can be called by anyone.
+		/// Admin marks a withdrawal request as failed and manually mints hAlpha back
+		///
+		/// This restores the hAlpha that was burned during withdraw(). The mint cap
+		/// check and TotalMintedByBridge update are performed to maintain accounting.
+		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
 		///
 		/// # Arguments
-		/// * `origin` - Can be any signed account
-		/// * `burn_id` - The burn ID to expire
-		#[pallet::call_index(5)]
+		/// * `origin` - Must be root
+		/// * `request_id` - The withdrawal request ID to fail
+		#[pallet::call_index(3)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::expire_pending_unlock())]
-		pub fn expire_pending_unlock(origin: OriginFor<T>, burn_id: BurnId) -> DispatchResult {
-			ensure_signed(origin)?;
+		pub fn admin_fail_withdrawal_request(
+			origin: OriginFor<T>,
+			request_id: WithdrawalRequestId,
+		) -> DispatchResult {
+			ensure_root(origin)?;
 
-			let record = PendingUnlocks::<T>::get(burn_id).ok_or(Error::<T>::UnlockNotPending)?;
-
-			ensure!(record.status == VoteStatus::Pending, Error::<T>::UnlockAlreadyFinalized);
-
+			let request = WithdrawalRequests::<T>::get(request_id)
+				.ok_or(Error::<T>::WithdrawalRequestNotFound)?;
 			ensure!(
-				Self::is_proposal_expired(record.requested_at_block),
-				Error::<T>::ProposalNotExpired
+				request.status == WithdrawalRequestStatus::Requested,
+				Error::<T>::WithdrawalRequestAlreadyFinalized
 			);
 
-			let balance_value = Self::amount_to_balance(record.amount)?;
-			let pallet_account = Self::account_id();
+			// Check and update mint cap (this is restoring burned hAlpha, so it must fit in cap)
+			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
+				let mint_cap = GlobalMintCap::<T>::get();
+				let new_total = total.checked_add(request.amount).ok_or(Error::<T>::ArithmeticOverflow)?;
+				ensure!(new_total <= mint_cap, Error::<T>::CapExceeded);
+				*total = new_total;
+				Ok(())
+			})?;
 
-			<pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
-				&pallet_account,
-				&record.requester,
-				balance_value,
-				ExistenceRequirement::AllowDeath,
-			)?;
+			// Mint hAlpha back to sender
+			Self::mint_to_recipient(&request.sender, request.amount)?;
 
-			PendingUnlocks::<T>::remove(burn_id);
+			// Update status
+			WithdrawalRequests::<T>::mutate(request_id, |maybe_request| {
+				if let Some(req) = maybe_request {
+					req.status = WithdrawalRequestStatus::Failed;
+				}
+			});
 
-			Self::deposit_event(Event::UnlockExpired { burn_id });
+			Self::deposit_event(Event::WithdrawalRequestFailed { id: request_id });
+			Self::deposit_event(Event::AdminManualMint {
+				recipient: request.sender,
+				amount: request.amount,
+				deposit_id: None,
+			});
 
 			Ok(())
 		}
 
-		/// Add a new guardian to the set (sudo/root only)
+		/// Admin manually mints hAlpha to a recipient (for emergency recovery)
+		///
+		/// WARNING: This mints new hAlpha that wasn't part of a deposit flow.
+		/// Only use for emergency recovery. The amount counts toward the mint cap.
+		///
+		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
-		/// * `guardian` - Account to add as guardian
-		#[pallet::call_index(6)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::add_guardian(Guardians::<T>::get().len() as u32))]
-		pub fn add_guardian(origin: OriginFor<T>, guardian: T::AccountId) -> DispatchResult {
+		/// * `recipient` - Account to receive hAlpha
+		/// * `amount` - Amount to mint (in halphaRao)
+		/// * `deposit_id` - Optional deposit ID for audit trail
+		#[pallet::call_index(4)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_global_mint_cap())]
+		pub fn admin_manual_mint(
+			origin: OriginFor<T>,
+			recipient: T::AccountId,
+			amount: u128,
+			deposit_id: Option<H256>,
+		) -> DispatchResult {
 			ensure_root(origin)?;
 
-			Guardians::<T>::try_mutate(|guardians| -> DispatchResult {
-				ensure!(!guardians.contains(&guardian), Error::<T>::GuardianAlreadyExists);
-				guardians.push(guardian.clone());
-				Self::deposit_event(Event::GuardianAdded { guardian });
+			// Check and update mint cap
+			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
+				let mint_cap = GlobalMintCap::<T>::get();
+				let new_total = total.checked_add(amount).ok_or(Error::<T>::ArithmeticOverflow)?;
+				ensure!(new_total <= mint_cap, Error::<T>::CapExceeded);
+				*total = new_total;
 				Ok(())
-			})
+			})?;
+
+			Self::mint_to_recipient(&recipient, amount)?;
+
+			Self::deposit_event(Event::AdminManualMint { recipient, amount, deposit_id });
+
+			Ok(())
 		}
 
-		/// Remove a guardian from the set (sudo/root only)
+		/// Atomically set the guardian set and threshold (sudo/root only)
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
-		/// * `guardian` - Account to remove from guardians
-		#[pallet::call_index(7)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::remove_guardian(Guardians::<T>::get().len() as u32))]
-		pub fn remove_guardian(origin: OriginFor<T>, guardian: T::AccountId) -> DispatchResult {
+		/// * `guardians` - New guardian set
+		/// * `approve_threshold` - Minimum guardian votes needed
+		#[pallet::call_index(5)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_guardians_and_threshold(guardians.len() as u32))]
+		pub fn set_guardians_and_threshold(
+			origin: OriginFor<T>,
+			guardians: Vec<T::AccountId>,
+			approve_threshold: u16,
+		) -> DispatchResult {
 			ensure_root(origin)?;
-
-			Guardians::<T>::try_mutate(|guardians| -> DispatchResult {
-				let position = guardians
-					.iter()
-					.position(|g| g == &guardian)
-					.ok_or(Error::<T>::GuardianNotFound)?;
-
-				guardians.remove(position);
-
-				// Verify thresholds are still achievable
-				let guardian_count = guardians.len() as u16;
-				let approve_threshold = ApproveThreshold::<T>::get();
-				let deny_threshold = DenyThreshold::<T>::get();
-
-				ensure!(
-					guardian_count >= approve_threshold && guardian_count >= deny_threshold,
-					Error::<T>::ThresholdTooHigh
-				);
-
-				Self::deposit_event(Event::GuardianRemoved { guardian });
-				Ok(())
-			})
+			ensure!(guardians.len() <= MAX_GUARDIANS, Error::<T>::TooManyGuardians);
+			let guardian_count = guardians.len() as u16;
+			ensure!(approve_threshold > 0, Error::<T>::ThresholdTooLow);
+			ensure!(approve_threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
+			Guardians::<T>::put(guardians.clone());
+			ApproveThreshold::<T>::put(approve_threshold);
+			Self::deposit_event(Event::GuardiansUpdated { guardians, approve_threshold });
+			Ok(())
 		}
 
-		/// Set the approve threshold for proposals (sudo/root only)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `threshold` - Minimum number of approve votes needed
+		/// Pause the bridge (sudo/root only)
 		#[pallet::call_index(8)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_approve_threshold())]
-		pub fn set_approve_threshold(origin: OriginFor<T>, threshold: u16) -> DispatchResult {
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::pause())]
+		pub fn pause(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
-
-			ensure!(threshold > 0, Error::<T>::ThresholdTooLow);
-
-			let guardian_count = Guardians::<T>::get().len() as u16;
-			ensure!(threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
-
-			ApproveThreshold::<T>::put(threshold);
-			Self::deposit_event(Event::ApproveThresholdUpdated { new_threshold: threshold });
-
+			Paused::<T>::put(true);
+			Self::deposit_event(Event::Paused);
 			Ok(())
 		}
 
-		/// Set the deny threshold for proposals (sudo/root only)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `threshold` - Minimum number of deny votes needed
-		#[pallet::call_index(9)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_deny_threshold())]
-		pub fn set_deny_threshold(origin: OriginFor<T>, threshold: u16) -> DispatchResult {
+		/// Unpause the bridge (sudo/root only)
+		#[pallet::call_index(14)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::unpause())]
+		pub fn unpause(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
-
-			ensure!(threshold > 0, Error::<T>::ThresholdTooLow);
-
-			let guardian_count = Guardians::<T>::get().len() as u16;
-			ensure!(threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
-
-			DenyThreshold::<T>::put(threshold);
-			Self::deposit_event(Event::DenyThresholdUpdated { new_threshold: threshold });
-
-			Ok(())
-		}
-
-		/// Pause or unpause the bridge (sudo/root only)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `paused` - True to pause, false to unpause
-		#[pallet::call_index(10)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_paused())]
-		pub fn set_paused(origin: OriginFor<T>, paused: bool) -> DispatchResult {
-			ensure_root(origin)?;
-
-			Paused::<T>::put(paused);
-			Self::deposit_event(Event::BridgePaused { paused });
-
+			Paused::<T>::put(false);
+			Self::deposit_event(Event::Unpaused);
 			Ok(())
 		}
 
@@ -807,14 +718,14 @@ pub mod pallet {
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
-		/// * `cap` - Maximum total halpha that can be minted
-		#[pallet::call_index(11)]
+		/// * `cap` - Maximum total hAlpha that can be minted
+		#[pallet::call_index(9)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_global_mint_cap())]
 		pub fn set_global_mint_cap(origin: OriginFor<T>, cap: u128) -> DispatchResult {
 			ensure_root(origin)?;
 
 			let total_minted = TotalMintedByBridge::<T>::get();
-			ensure!(cap >= total_minted, Error::<T>::GlobalMintCapExceeded);
+			ensure!(cap >= total_minted, Error::<T>::CapExceeded);
 
 			GlobalMintCap::<T>::put(cap);
 			Self::deposit_event(Event::GlobalMintCapUpdated { new_cap: cap });
@@ -822,69 +733,124 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Set the signature TTL (time-to-live) in blocks (sudo/root only)
+		// ============ Cleanup Functions ============
+
+		/// Guardian can cleanup a finalized deposit after TTL
 		///
 		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `blocks` - Number of blocks before proposals expire
-		#[pallet::call_index(12)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_signature_ttl())]
-		pub fn set_signature_ttl(
+		/// * `origin` - Must be signed by a guardian
+		/// * `deposit_id` - The deposit ID to cleanup
+		#[pallet::call_index(10)]
+		#[pallet::weight(10_000)]
+		pub fn cleanup_deposit(
 			origin: OriginFor<T>,
-			blocks: BlockNumberFor<T>,
+			deposit_id: DepositId,
 		) -> DispatchResult {
-			ensure_root(origin)?;
+			let caller = ensure_signed(origin)?;
+			Self::ensure_guardian(&caller)?;
 
-			ensure!(blocks > 0u32.into(), Error::<T>::ThresholdTooLow);
+			let deposit = Deposits::<T>::get(deposit_id)
+				.ok_or(Error::<T>::DepositNotFound)?;
 
-			SignatureTTLBlocks::<T>::put(blocks);
-			Self::deposit_event(Event::SignatureTTLUpdated { new_ttl: blocks });
+			// Must be finalized (Completed or Cancelled)
+			ensure!(
+				deposit.status == DepositStatus::Completed ||
+				deposit.status == DepositStatus::Cancelled,
+				Error::<T>::RecordNotFinalized
+			);
+
+			// Must have finalized_at_block set
+			let finalized_at = deposit.finalized_at_block
+				.ok_or(Error::<T>::RecordNotFinalized)?;
+
+			// TTL must have passed since finalization
+			let current_block = frame_system::Pallet::<T>::block_number();
+			let ttl = CleanupTTLBlocks::<T>::get();
+			ensure!(current_block >= finalized_at + ttl, Error::<T>::TTLNotExpired);
+
+			// Remove from storage
+			Deposits::<T>::remove(deposit_id);
+
+			Self::deposit_event(Event::DepositCleanedUp { id: deposit_id });
 
 			Ok(())
 		}
 
-		/// Reset all storage in the pallet to default values (sudo/root only)
-		/// WARNING: This will clear all pending deposits, unlocks, and other state
+		/// Guardian can cleanup a withdrawal request after TTL (no status check for source records)
+		///
+		/// # Arguments
+		/// * `origin` - Must be signed by a guardian
+		/// * `request_id` - The withdrawal request ID to cleanup
+		#[pallet::call_index(11)]
+		#[pallet::weight(10_000)]
+		pub fn cleanup_withdrawal_request(
+			origin: OriginFor<T>,
+			request_id: WithdrawalRequestId,
+		) -> DispatchResult {
+			let caller = ensure_signed(origin)?;
+			Self::ensure_guardian(&caller)?;
+
+			let request = WithdrawalRequests::<T>::get(request_id)
+				.ok_or(Error::<T>::WithdrawalRequestNotFound)?;
+
+			// TTL must have passed since creation (no status check for source records)
+			let current_block = frame_system::Pallet::<T>::block_number();
+			let ttl = CleanupTTLBlocks::<T>::get();
+			ensure!(current_block >= request.created_at_block + ttl, Error::<T>::TTLNotExpired);
+
+			// Remove from storage
+			WithdrawalRequests::<T>::remove(request_id);
+
+			Self::deposit_event(Event::WithdrawalRequestCleanedUp { id: request_id });
+
+			Ok(())
+		}
+
+		/// Admin sets the cleanup TTL (in blocks)
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
+		/// * `ttl_blocks` - TTL in blocks before finalized records can be cleaned up
+		#[pallet::call_index(12)]
+		#[pallet::weight(10_000)]
+		pub fn set_cleanup_ttl(
+			origin: OriginFor<T>,
+			ttl_blocks: BlockNumberFor<T>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			ensure!(ttl_blocks > Zero::zero(), Error::<T>::InvalidTTL);
+
+			let old_ttl = CleanupTTLBlocks::<T>::get();
+			CleanupTTLBlocks::<T>::put(ttl_blocks);
+
+			Self::deposit_event(Event::CleanupTTLUpdated { old_ttl, new_ttl: ttl_blocks });
+
+			Ok(())
+		}
+
+		/// Admin sets the minimum withdrawal amount
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `amount` - Minimum amount of hAlpha to withdraw (in halphaRao)
 		#[pallet::call_index(13)]
-		#[pallet::weight(T::DbWeight::get().writes(12))]
-		pub fn reset_storage(origin: OriginFor<T>) -> DispatchResult {
-			let _guardian = ensure_signed(origin)?;
-
-			// Clear all storage items
-			ProcessedDeposits::<T>::remove_all(None);
-			LastCheckpointNonce::<T>::kill();
-			TotalMintedByBridge::<T>::kill();
-
-			PendingDeposits::<T>::remove_all(None);
-			PendingUnlocks::<T>::remove_all(None);
-			BurnNonceById::<T>::remove_all(None);
-			BurnQueue::<T>::remove_all(None);
-			NextBurnNonce::<T>::kill();
-			NextExpiredDepositNonce::<T>::kill();
-			ExpiredDeposits::<T>::remove_all(None);
-
-			// Set default values
-			NextBurnNonce::<T>::put(0);
-			NextExpiredDepositNonce::<T>::put(0);
-
-			Self::deposit_event(Event::<T>::StorageReset);
-
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_min_withdrawal_amount())]
+		pub fn set_min_withdrawal_amount(origin: OriginFor<T>, amount: u128) -> DispatchResult {
+			ensure_root(origin)?;
+			ensure!(amount > 0, Error::<T>::AmountTooSmall);
+			let old = MinWithdrawalAmount::<T>::get();
+			MinWithdrawalAmount::<T>::put(amount);
+			Self::deposit_event(Event::MinWithdrawalAmountUpdated { old_amount: old, new_amount: amount });
 			Ok(())
 		}
 	}
+
+	// ============ Helper Functions ============
 
 	impl<T: Config> Pallet<T> {
 		/// Get the pallet's account ID
 		pub fn account_id() -> T::AccountId {
 			<T as pallet::Config>::PalletId::get().into_account_truncating()
-		}
-
-		/// Get the current balance of the Bridge pallet
-		pub fn balance() -> BalanceOf<T> {
-			pallet_balances::Pallet::<T>::free_balance(Self::account_id())
 		}
 
 		/// Ensure the caller is a guardian
@@ -899,211 +865,70 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Check if minting the specified amount would exceed the global mint cap
-		pub fn check_mint_cap(amount: u128) -> DispatchResult {
-			let total_minted = TotalMintedByBridge::<T>::get();
-			let mint_cap = GlobalMintCap::<T>::get();
-			ensure!(
-				total_minted.saturating_add(amount) <= mint_cap,
-				Error::<T>::GlobalMintCapExceeded
-			);
-			Ok(())
-		}
-
-		/// Check if a proposal has expired based on its creation block
-		pub fn is_proposal_expired(proposed_at: BlockNumberFor<T>) -> bool {
-			let current_block = frame_system::Pallet::<T>::block_number();
-			let ttl = SignatureTTLBlocks::<T>::get();
-			current_block > proposed_at.saturating_add(ttl)
-		}
-
-		/// Generate a unique burn ID by hashing account, amount, and nonce
-		pub fn generate_burn_id(account: &T::AccountId, amount: u128) -> BurnId {
-			let nonce = NextBurnNonce::<T>::get();
-			NextBurnNonce::<T>::put(nonce.saturating_add(1));
-
-			let mut data = Vec::new();
-			data.extend_from_slice(DOMAIN_BURN);
-			data.extend_from_slice(&account.encode());
-			data.extend_from_slice(&amount.to_le_bytes());
-			data.extend_from_slice(&nonce.to_le_bytes());
-
-			let burn_id = H256::from(sp_core::hashing::blake2_256(&data));
-
-			// Record mapping from burn ID to its nonce for ordered processing
-			BurnNonceById::<T>::insert(burn_id, nonce);
-
-			burn_id
-		}
-
-		/// Convert a raw amount into the runtime's balance type.
+		/// Convert a raw amount into the runtime's balance type
 		pub fn amount_to_balance(amount: u128) -> Result<BalanceOf<T>, DispatchError> {
 			amount.try_into().map_err(|_| Error::<T>::AmountConversionFailed.into())
 		}
 
-		/// Finalize a deposit by minting halpha to the recipient
-		pub fn finalize_deposit(
-			deposit_id: DepositId,
-			record: DepositRecord<T::AccountId, BlockNumberFor<T>>,
-		) -> DispatchResult {
-			let recipient = record.recipient.clone();
-			let amount = record.amount;
+		/// Generate a unique withdrawal request ID using nonce
+		pub fn generate_withdrawal_request_id(
+			sender: &T::AccountId,
+			recipient: &T::AccountId,
+			amount: u128,
+		) -> (WithdrawalRequestId, u64) {
+			let nonce = NextWithdrawalRequestNonce::<T>::get();
+			NextWithdrawalRequestNonce::<T>::put(nonce.saturating_add(1));
 
+			let mut data = Vec::new();
+			data.extend_from_slice(DOMAIN_WITHDRAWAL_REQUEST);
+			data.extend_from_slice(&sender.encode());
+			data.extend_from_slice(&recipient.encode());
+			data.extend_from_slice(&amount.to_le_bytes());
+			data.extend_from_slice(&nonce.to_le_bytes());
+
+			(H256::from(sp_core::hashing::blake2_256(&data)), nonce)
+		}
+
+		/// Finalize a deposit by minting hAlpha to the recipient
+		fn finalize_deposit(
+			deposit_id: DepositId,
+			mut deposit: Deposit<T>,
+		) -> DispatchResult {
+			let recipient = deposit.recipient.clone();
+			let amount = deposit.amount;
+
+			// Check and update mint cap
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
-				let new_total = total.saturating_add(amount);
-				ensure!(new_total <= mint_cap, Error::<T>::GlobalMintCapExceeded);
-
-				let balance_amount = Self::amount_to_balance(amount)?;
-
-				// Ensure the recipient has at least the existential deposit
-				let ed = T::Currency::minimum_balance();
-				let recipient_balance = T::Currency::free_balance(&recipient);
-				let mut mint_amount = balance_amount;
-
-				// If the recipient doesn't have enough for ED, transfer from bridge account to cover it
-				let ed_u128: u128 = ed.saturated_into();
-
-				if recipient_balance < ed && amount < ed_u128 {
-					let shortfall = ed.saturating_sub(recipient_balance);
-					let bridge_account = Self::account_id();
-					T::Currency::transfer(
-						&bridge_account,
-						&recipient,
-						shortfall,
-						frame_support::traits::ExistenceRequirement::KeepAlive,
-					)
-					.map_err(|_| Error::<T>::DepositMintFailed)?;
-					let shortfall_u128: u128 = shortfall.saturated_into();
-					let shortfall_balance = Self::amount_to_balance(shortfall_u128)?;
-					mint_amount = mint_amount
-						.checked_sub(&shortfall_balance)
-						.ok_or(Error::<T>::DepositMintFailed)?;
-				}
-				
-				// Mint the adjusted amount
-				pallet_balances::Pallet::<T>::mint_into(&recipient, mint_amount)
-					.map_err(|_| Error::<T>::DepositMintFailed)?;
+				let new_total = total.checked_add(amount).ok_or(Error::<T>::ArithmeticOverflow)?;
+				ensure!(new_total <= mint_cap, Error::<T>::CapExceeded);
 				*total = new_total;
 				Ok(())
 			})?;
 
-			ProcessedDeposits::<T>::insert(deposit_id, true);
+			// Mint hAlpha to recipient
+			Self::mint_to_recipient(&recipient, amount)?;
 
-			PendingDeposits::<T>::remove(deposit_id);
+			// Update deposit status
+			deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
+			deposit.status = DepositStatus::Completed;
+			Deposits::<T>::insert(deposit_id, deposit);
 
-			Self::deposit_event(Event::BridgeMinted {
-				deposit_id,
-				recipient: record.recipient,
-				amount: record.amount,
+			Self::deposit_event(Event::DepositCompleted {
+				id: deposit_id,
+				recipient,
+				amount,
 			});
 
 			Ok(())
 		}
 
-		/// Deny a deposit proposal
-		pub fn deny_deposit(
-			deposit_id: DepositId,
-			record: DepositRecord<T::AccountId, BlockNumberFor<T>>,
-		) -> DispatchResult {
-			ProcessedDeposits::<T>::insert(deposit_id, true);
-			PendingDeposits::<T>::remove(deposit_id);
-
-			Self::deposit_event(Event::BridgeDenied {
-				deposit_id,
-				recipient: record.recipient,
-				amount: record.amount,
-			});
-
+		/// Mint hAlpha to a recipient
+		fn mint_to_recipient(recipient: &T::AccountId, amount: u128) -> DispatchResult {
+			let balance_amount = Self::amount_to_balance(amount)?;
+			pallet_balances::Pallet::<T>::mint_into(recipient, balance_amount)
+				.map_err(|_| Error::<T>::MintFailed)?;
 			Ok(())
-		}
-
-		/// Finalize an unlock by burning halpha
-		pub fn finalize_unlock(
-			burn_id: BurnId,
-			record: UnlockRecord<T::AccountId, BlockNumberFor<T>>,
-		) -> DispatchResult {
-			let balance_value = Self::amount_to_balance(record.amount)?;
-			let pallet_account = Self::account_id();
-
-			// Burn tokens from escrow. Should always succeed since funds were locked
-			// during request_unlock(). Failure indicates critical bug or tampering.
-			let _burned_balance = pallet_balances::Pallet::<T>::burn_from(
-				&pallet_account,
-				balance_value,
-				Preservation::Expendable,
-				Precision::Exact,
-				Fortitude::Polite,
-			)
-			.map_err(|_| Error::<T>::EscrowBalanceInsufficient)?;
-
-			TotalMintedByBridge::<T>::mutate(|total| {
-				*total = total.saturating_sub(record.amount);
-			});
-
-			// Enqueue approved burn for ordered off-chain processing
-			let burn_nonce =
-				BurnNonceById::<T>::get(burn_id).ok_or(Error::<T>::BurnNonceNotFound)?;
-
-			BurnQueue::<T>::insert(
-				burn_nonce,
-				BurnQueueItem {
-					burn_id,
-					requester: record.requester.clone(),
-					amount: record.amount,
-				},
-			);
-
-			PendingUnlocks::<T>::remove(burn_id);
-
-			// Emit event
-			Self::deposit_event(Event::UnlockApproved {
-				burn_id,
-				requester: record.requester,
-				amount: record.amount,
-			});
-
-			Ok(())
-		}
-
-		/// Deny an unlock request and restore funds
-		pub fn deny_unlock(
-			burn_id: BurnId,
-			record: UnlockRecord<T::AccountId, BlockNumberFor<T>>,
-		) -> DispatchResult {
-			let balance_value = Self::amount_to_balance(record.amount)?;
-
-			let pallet_account = Self::account_id();
-			<pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
-				&pallet_account,
-				&record.requester,
-				balance_value,
-				ExistenceRequirement::AllowDeath,
-			)?;
-
-			PendingUnlocks::<T>::remove(burn_id);
-
-			Self::deposit_event(Event::UnlockDenied {
-				burn_id,
-				requester: record.requester,
-				amount: record.amount,
-			});
-
-			Ok(())
-		}
-
-		/// Check vote thresholds and return the result status
-		pub fn check_vote_thresholds(approve_count: usize, deny_count: usize) -> VoteStatus {
-			let approve_threshold = ApproveThreshold::<T>::get() as usize;
-			let deny_threshold = DenyThreshold::<T>::get() as usize;
-
-			if approve_count >= approve_threshold {
-				VoteStatus::Approved
-			} else if deny_count >= deny_threshold {
-				VoteStatus::Denied
-			} else {
-				VoteStatus::Pending
-			}
 		}
 	}
 }

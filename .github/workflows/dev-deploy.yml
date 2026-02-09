@@ -1,0 +1,115 @@
+name: Dev - Build, Push & Deploy to K8s
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/hippius-node
+
+jobs:
+  build-and-push-dev:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=dev
+            type=sha,prefix=dev-
+      
+      - name: Build and push Docker image (DEV)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Ensure Public Visibility
+        continue-on-error: true
+        run: |
+          curl -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/user/packages/container/${IMAGE_NAME##*/}/visibility" \
+            -d '{"visibility":"public"}'
+
+  deploy-to-k8s-dev:
+    needs: build-and-push-dev
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+      
+      - name: Configure kubectl with kubeconfig
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          mkdir -p $HOME/.kube
+          echo "$KUBECONFIG_CONTENT" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+      
+      - name: Verify cluster connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+      
+      - name: Deploy to Kubernetes (DEV namespace)
+        run: |
+          # Apply all dev manifests
+          kubectl apply -f k8s-dev/
+          
+          # Wait for deployment to be ready
+          kubectl rollout status deployment/substrate-node-dev -n hippius-dev --timeout=10m
+      
+      - name: Get deployment status
+        if: always()
+        run: |
+          echo "=== DEV Deployment Status ==="
+          kubectl get all -n hippius-dev
+          
+          echo ""
+          echo "=== Pod Details ==="
+          kubectl describe pod -l app=substrate-node-dev -n hippius-dev
+          
+          echo ""
+          echo "=== Recent Events ==="
+          kubectl get events -n hippius-dev --sort-by='.lastTimestamp' | tail -20
+      
+      - name: Check pod logs
+        if: always()
+        run: |
+          echo "=== Pod Logs (last 50 lines) ==="
+          kubectl logs -l app=substrate-node-dev -n hippius-dev --tail=50 || echo "No logs available yet"
+
