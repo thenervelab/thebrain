@@ -25,8 +25,6 @@ pub enum Error {
 	// ============ Validation Errors ============
 	/// Deposit amount is below minimum
 	AmountTooSmall,
-	/// Network UID does not match chain ID
-	InvalidNetUid,
 	/// Guardian thresholds are invalid
 	InvalidThresholds,
 	/// Too many guardians provided

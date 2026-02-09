@@ -38,13 +38,11 @@ pub trait WeightInfo {
 	fn request_unlock() -> Weight;
 	fn expire_pending_deposit() -> Weight;
 	fn expire_pending_unlock() -> Weight;
-	fn add_guardian(g: u32, ) -> Weight;
-	fn remove_guardian(g: u32, ) -> Weight;
-	fn set_approve_threshold() -> Weight;
-	fn set_deny_threshold() -> Weight;
-	fn set_paused() -> Weight;
+	fn set_guardians_and_threshold(g: u32, ) -> Weight;
+	fn pause() -> Weight;
+	fn unpause() -> Weight;
 	fn set_global_mint_cap() -> Weight;
-	fn set_signature_ttl() -> Weight;
+	fn set_min_withdrawal_amount() -> Weight;
 }
 
 /// Weights for `pallet_alpha_bridge` using the Substrate node and recommended hardware.
@@ -184,73 +182,26 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(4_u64))
 			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:1)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// The range of component `g` is `[0, 100]`.
-	fn add_guardian(g: u32, ) -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `58 + g * (32 ±0)`
-		//  Estimated: `1542 + g * (32 ±0)`
-		// Minimum execution time: 12_850_000 picoseconds.
-		Weight::from_parts(14_725_697, 1542)
-			// Standard Error: 518
-			.saturating_add(Weight::from_parts(33_949, 0).saturating_mul(g.into()))
-			.saturating_add(T::DbWeight::get().reads(1_u64))
-			.saturating_add(T::DbWeight::get().writes(1_u64))
-			.saturating_add(Weight::from_parts(0, 32).saturating_mul(g.into()))
-	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:1)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// The range of component `g` is `[2, 100]`.
-	fn remove_guardian(g: u32, ) -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `58 + g * (32 ±0)`
-		//  Estimated: `1543 + g * (32 ±0)`
-		// Minimum execution time: 15_782_000 picoseconds.
-		Weight::from_parts(16_448_453, 1543)
-			// Standard Error: 521
-			.saturating_add(Weight::from_parts(31_688, 0).saturating_mul(g.into()))
-			.saturating_add(T::DbWeight::get().reads(3_u64))
-			.saturating_add(T::DbWeight::get().writes(1_u64))
-			.saturating_add(Weight::from_parts(0, 32).saturating_mul(g.into()))
-	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
+	/// Storage: `AlphaBridge::Guardians` (r:0 w:1)
 	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// Storage: `AlphaBridge::ApproveThreshold` (r:0 w:1)
 	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn set_approve_threshold() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `328`
-		//  Estimated: `1813`
-		// Minimum execution time: 11_057_000 picoseconds.
-		Weight::from_parts(11_412_000, 1813)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
-			.saturating_add(T::DbWeight::get().writes(1_u64))
+	/// The range of component `g` is `[1, 10]`.
+	fn set_guardians_and_threshold(g: u32, ) -> Weight {
+		Weight::from_parts(14_725_697, 1542)
+			.saturating_add(Weight::from_parts(33_949, 0).saturating_mul(g.into()))
+			.saturating_add(T::DbWeight::get().writes(2_u64))
+			.saturating_add(Weight::from_parts(0, 32).saturating_mul(g.into()))
 	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:0 w:1)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn set_deny_threshold() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `328`
-		//  Estimated: `1813`
-		// Minimum execution time: 10_910_000 picoseconds.
-		Weight::from_parts(11_206_000, 1813)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
+	/// Storage: `AlphaBridge::Paused` (r:0 w:1)
+	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn pause() -> Weight {
+		Weight::from_parts(7_881_000, 0)
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 	/// Storage: `AlphaBridge::Paused` (r:0 w:1)
 	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn set_paused() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `0`
-		//  Estimated: `0`
-		// Minimum execution time: 7_607_000 picoseconds.
+	fn unpause() -> Weight {
 		Weight::from_parts(7_881_000, 0)
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -259,22 +210,15 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Storage: `AlphaBridge::GlobalMintCap` (r:0 w:1)
 	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	fn set_global_mint_cap() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `20`
-		//  Estimated: `1505`
-		// Minimum execution time: 9_730_000 picoseconds.
 		Weight::from_parts(10_090_000, 1505)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:0 w:1)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn set_signature_ttl() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `0`
-		//  Estimated: `0`
-		// Minimum execution time: 7_296_000 picoseconds.
-		Weight::from_parts(7_751_000, 0)
+	/// Storage: `AlphaBridge::MinWithdrawalAmount` (r:1 w:1)
+	/// Proof: `AlphaBridge::MinWithdrawalAmount` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn set_min_withdrawal_amount() -> Weight {
+		Weight::from_parts(10_090_000, 1505)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 }
@@ -415,73 +359,26 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().reads(4_u64))
 			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:1)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// The range of component `g` is `[0, 100]`.
-	fn add_guardian(g: u32, ) -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `58 + g * (32 ±0)`
-		//  Estimated: `1542 + g * (32 ±0)`
-		// Minimum execution time: 12_850_000 picoseconds.
-		Weight::from_parts(14_725_697, 1542)
-			// Standard Error: 518
-			.saturating_add(Weight::from_parts(33_949, 0).saturating_mul(g.into()))
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
-			.saturating_add(RocksDbWeight::get().writes(1_u64))
-			.saturating_add(Weight::from_parts(0, 32).saturating_mul(g.into()))
-	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:1)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// The range of component `g` is `[2, 100]`.
-	fn remove_guardian(g: u32, ) -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `58 + g * (32 ±0)`
-		//  Estimated: `1543 + g * (32 ±0)`
-		// Minimum execution time: 15_782_000 picoseconds.
-		Weight::from_parts(16_448_453, 1543)
-			// Standard Error: 521
-			.saturating_add(Weight::from_parts(31_688, 0).saturating_mul(g.into()))
-			.saturating_add(RocksDbWeight::get().reads(3_u64))
-			.saturating_add(RocksDbWeight::get().writes(1_u64))
-			.saturating_add(Weight::from_parts(0, 32).saturating_mul(g.into()))
-	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
+	/// Storage: `AlphaBridge::Guardians` (r:0 w:1)
 	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// Storage: `AlphaBridge::ApproveThreshold` (r:0 w:1)
 	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn set_approve_threshold() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `328`
-		//  Estimated: `1813`
-		// Minimum execution time: 11_057_000 picoseconds.
-		Weight::from_parts(11_412_000, 1813)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
-			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	/// The range of component `g` is `[1, 10]`.
+	fn set_guardians_and_threshold(g: u32, ) -> Weight {
+		Weight::from_parts(14_725_697, 1542)
+			.saturating_add(Weight::from_parts(33_949, 0).saturating_mul(g.into()))
+			.saturating_add(RocksDbWeight::get().writes(2_u64))
+			.saturating_add(Weight::from_parts(0, 32).saturating_mul(g.into()))
 	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:0 w:1)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn set_deny_threshold() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `328`
-		//  Estimated: `1813`
-		// Minimum execution time: 10_910_000 picoseconds.
-		Weight::from_parts(11_206_000, 1813)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
+	/// Storage: `AlphaBridge::Paused` (r:0 w:1)
+	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn pause() -> Weight {
+		Weight::from_parts(7_881_000, 0)
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 	/// Storage: `AlphaBridge::Paused` (r:0 w:1)
 	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn set_paused() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `0`
-		//  Estimated: `0`
-		// Minimum execution time: 7_607_000 picoseconds.
+	fn unpause() -> Weight {
 		Weight::from_parts(7_881_000, 0)
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -490,22 +387,15 @@ impl WeightInfo for () {
 	/// Storage: `AlphaBridge::GlobalMintCap` (r:0 w:1)
 	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	fn set_global_mint_cap() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `20`
-		//  Estimated: `1505`
-		// Minimum execution time: 9_730_000 picoseconds.
 		Weight::from_parts(10_090_000, 1505)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:0 w:1)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn set_signature_ttl() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `0`
-		//  Estimated: `0`
-		// Minimum execution time: 7_296_000 picoseconds.
-		Weight::from_parts(7_751_000, 0)
+	/// Storage: `AlphaBridge::MinWithdrawalAmount` (r:1 w:1)
+	/// Proof: `AlphaBridge::MinWithdrawalAmount` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn set_min_withdrawal_amount() -> Weight {
+		Weight::from_parts(10_090_000, 1505)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 }

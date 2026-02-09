@@ -1,6 +1,6 @@
 //! Event definitions for the minimal viable bridge contract
 
-use crate::types::{Balance, BlockNumber, ChainId, DepositNonce, DepositRequestId, WithdrawalId};
+use crate::types::{Balance, BlockNumber, CancelReason, ChainId, DepositNonce, DepositRequestId, WithdrawalId};
 use ink::prelude::vec::Vec;
 
 // ============ Deposit Flow Events (Source Side) ============
@@ -60,6 +60,7 @@ pub struct WithdrawalCompleted {
 pub struct WithdrawalCancelled {
 	#[ink(topic)]
 	pub withdrawal_id: WithdrawalId,
+	pub reason: CancelReason,
 }
 
 // ============ Admin Events ============

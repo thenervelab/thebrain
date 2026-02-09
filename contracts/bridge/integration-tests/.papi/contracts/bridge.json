@@ -1,8 +1,8 @@
 {
   "source": {
-    "hash": "0x64cfd004b58fbe9b6c52702ee371b510873e00d57a2da8556ad49cf051399a79",
+    "hash": "0xdb4c9dcad6cd05baff5d20e42c067d914483023f2da3da65919170607aba8346",
     "language": "ink! 5.1.1",
-    "compiler": "rustc 1.93.0",
+    "compiler": "rustc 1.85.0",
     "build_info": {
       "build_mode": "Debug",
       "cargo_contract_version": "5.0.3",
@@ -120,452 +120,6 @@
         "args": [
           {
             "docs": [],
-            "indexed": false,
-            "label": "paused_by",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when bridge is paused"
-        ],
-        "label": "Paused",
-        "module_path": "bridge::events",
-        "signature_topic": "0x9bf6cab4dfed2a2092aba7b4bbbfbb1be94ddeab1ba64146e8f0576d5e45741f"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "unpaused_by",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when bridge is unpaused"
-        ],
-        "label": "Unpaused",
-        "module_path": "bridge::events",
-        "signature_topic": "0xa458d4a471e9b31292ec531673221945fad4d9e8e8eb5ad00393dded115c03a3"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "code_hash",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "Hash"
-              ],
-              "type": 9
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "upgraded_by",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when contract code is upgraded"
-        ],
-        "label": "CodeUpgraded",
-        "module_path": "bridge::events",
-        "signature_topic": "0xe335d4518f27bd2d839099a2f7cf9684072fa0d91b6d3bb84424baf379d87c75"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "old_owner",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "new_owner",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when owner is updated"
-        ],
-        "label": "OwnerUpdated",
-        "module_path": "bridge::events",
-        "signature_topic": "0x2e06d4b1969eccaeac7bcdc197a41cda5f6026de097a1b19d385f06fb8950921"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "guardians",
-            "type": {
-              "displayName": [
-                "Vec"
-              ],
-              "type": 5
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "approve_threshold",
-            "type": {
-              "displayName": [
-                "u16"
-              ],
-              "type": 3
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "updated_by",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when guardian set and thresholds are updated"
-        ],
-        "label": "GuardiansUpdated",
-        "module_path": "bridge::events",
-        "signature_topic": "0xa21462fef00c4091f3296600ecd313cb52a74d60b67c5a717b863b1a26aef1b5"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "old_ttl",
-            "type": {
-              "displayName": [
-                "BlockNumber"
-              ],
-              "type": 7
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "new_ttl",
-            "type": {
-              "displayName": [
-                "BlockNumber"
-              ],
-              "type": 7
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when the cleanup TTL is updated"
-        ],
-        "label": "CleanupTTLUpdated",
-        "module_path": "bridge::events",
-        "signature_topic": "0xf98f81638ffd89acf466bcb3a1ddb425fe8eb6989c65ef1530925c7cfa762bc4"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "recipient",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "amount",
-            "type": {
-              "displayName": [
-                "Balance"
-              ],
-              "type": 6
-            }
-          },
-          {
-            "docs": [
-              "Optional deposit request ID for audit trail"
-            ],
-            "indexed": false,
-            "label": "deposit_request_id",
-            "type": {
-              "displayName": [
-                "Option"
-              ],
-              "type": 34
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when admin manually releases Alpha to a user"
-        ],
-        "label": "AdminManualRelease",
-        "module_path": "bridge::events",
-        "signature_topic": "0xa771baf45b438776fd1a49a8a69147d4550f4f0f8790e66b06ca4348750edf8c"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "withdrawal_id",
-            "type": {
-              "displayName": [
-                "WithdrawalId"
-              ],
-              "type": 9
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "guardian",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [
-              "Current vote count after this attestation"
-            ],
-            "indexed": false,
-            "label": "vote_count",
-            "type": {
-              "displayName": [
-                "u16"
-              ],
-              "type": 3
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when a guardian attests a withdrawal"
-        ],
-        "label": "WithdrawalAttested",
-        "module_path": "bridge::events",
-        "signature_topic": "0xb52c566038df46a55b61bbffb0716e0aad25bf44e232b0f619cc0deb04c02e82"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "withdrawal_id",
-            "type": {
-              "displayName": [
-                "WithdrawalId"
-              ],
-              "type": 9
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when admin cancels a withdrawal"
-        ],
-        "label": "WithdrawalCancelled",
-        "module_path": "bridge::events",
-        "signature_topic": "0xc07cc1f522d09ccab74ea2859ca02de38ae9a27e4a280da53097fff9ef83ac8e"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "withdrawal_id",
-            "type": {
-              "displayName": [
-                "WithdrawalId"
-              ],
-              "type": 9
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when a withdrawal is cleaned up after TTL"
-        ],
-        "label": "WithdrawalCleanedUp",
-        "module_path": "bridge::events",
-        "signature_topic": "0xf49cd5415894d6773022c3ad93a70ac2998fd7f872d353d47f48149a4b770beb"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "withdrawal_id",
-            "type": {
-              "displayName": [
-                "WithdrawalId"
-              ],
-              "type": 9
-            }
-          },
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "recipient",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "amount",
-            "type": {
-              "displayName": [
-                "Balance"
-              ],
-              "type": 6
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when a withdrawal is completed (Alpha released to recipient)"
-        ],
-        "label": "WithdrawalCompleted",
-        "module_path": "bridge::events",
-        "signature_topic": "0xe53427dede14ff5d58c119a577378576f1550789b62d04525e4701d9761033b9"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "deposit_request_id",
-            "type": {
-              "displayName": [
-                "DepositRequestId"
-              ],
-              "type": 9
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when admin marks a deposit request as failed"
-        ],
-        "label": "DepositRequestFailed",
-        "module_path": "bridge::events",
-        "signature_topic": "0x0ee02c7ad5765636065377f1933afb7a5531177b32510861e11a90eaaa75501d"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "old_hotkey",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "new_hotkey",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "updated_by",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          }
-        ],
-        "docs": [
-          "Emitted when contract hotkey is updated"
-        ],
-        "label": "ContractHotkeyUpdated",
-        "module_path": "bridge::events",
-        "signature_topic": "0x6cc54e660ff69cc11e0ef186bbbfca068b3fcb0b36ca0b1ca4bc5977f2637c43"
-      },
-      {
-        "args": [
-          {
-            "docs": [],
             "indexed": true,
             "label": "chain_id",
             "type": {
@@ -676,11 +230,468 @@
           }
         ],
         "docs": [
+          "Emitted when admin marks a deposit request as failed"
+        ],
+        "label": "DepositRequestFailed",
+        "module_path": "bridge::events",
+        "signature_topic": "0x0ee02c7ad5765636065377f1933afb7a5531177b32510861e11a90eaaa75501d"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "withdrawal_id",
+            "type": {
+              "displayName": [
+                "WithdrawalId"
+              ],
+              "type": 9
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "guardian",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [
+              "Current vote count after this attestation"
+            ],
+            "indexed": false,
+            "label": "vote_count",
+            "type": {
+              "displayName": [
+                "u16"
+              ],
+              "type": 3
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when a guardian attests a withdrawal"
+        ],
+        "label": "WithdrawalAttested",
+        "module_path": "bridge::events",
+        "signature_topic": "0xb52c566038df46a55b61bbffb0716e0aad25bf44e232b0f619cc0deb04c02e82"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "withdrawal_id",
+            "type": {
+              "displayName": [
+                "WithdrawalId"
+              ],
+              "type": 9
+            }
+          },
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "recipient",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 6
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when a withdrawal is completed (Alpha released to recipient)"
+        ],
+        "label": "WithdrawalCompleted",
+        "module_path": "bridge::events",
+        "signature_topic": "0xe53427dede14ff5d58c119a577378576f1550789b62d04525e4701d9761033b9"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "withdrawal_id",
+            "type": {
+              "displayName": [
+                "WithdrawalId"
+              ],
+              "type": 9
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "reason",
+            "type": {
+              "displayName": [
+                "CancelReason"
+              ],
+              "type": 34
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when admin cancels a withdrawal"
+        ],
+        "label": "WithdrawalCancelled",
+        "module_path": "bridge::events",
+        "signature_topic": "0xe9f3368fad68935f72fd98ee7cc73f25a30932382164ecae4b1aa782d39283a9"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "recipient",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "amount",
+            "type": {
+              "displayName": [
+                "Balance"
+              ],
+              "type": 6
+            }
+          },
+          {
+            "docs": [
+              "Optional deposit request ID for audit trail"
+            ],
+            "indexed": false,
+            "label": "deposit_request_id",
+            "type": {
+              "displayName": [
+                "Option"
+              ],
+              "type": 33
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when admin manually releases Alpha to a user"
+        ],
+        "label": "AdminManualRelease",
+        "module_path": "bridge::events",
+        "signature_topic": "0xa771baf45b438776fd1a49a8a69147d4550f4f0f8790e66b06ca4348750edf8c"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "guardians",
+            "type": {
+              "displayName": [
+                "Vec"
+              ],
+              "type": 5
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "approve_threshold",
+            "type": {
+              "displayName": [
+                "u16"
+              ],
+              "type": 3
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "updated_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when guardian set and thresholds are updated"
+        ],
+        "label": "GuardiansUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0xa21462fef00c4091f3296600ecd313cb52a74d60b67c5a717b863b1a26aef1b5"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "paused_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when bridge is paused"
+        ],
+        "label": "Paused",
+        "module_path": "bridge::events",
+        "signature_topic": "0x9bf6cab4dfed2a2092aba7b4bbbfbb1be94ddeab1ba64146e8f0576d5e45741f"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "unpaused_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when bridge is unpaused"
+        ],
+        "label": "Unpaused",
+        "module_path": "bridge::events",
+        "signature_topic": "0xa458d4a471e9b31292ec531673221945fad4d9e8e8eb5ad00393dded115c03a3"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "old_owner",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "new_owner",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when owner is updated"
+        ],
+        "label": "OwnerUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0x2e06d4b1969eccaeac7bcdc197a41cda5f6026de097a1b19d385f06fb8950921"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "old_hotkey",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "new_hotkey",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "updated_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when contract hotkey is updated"
+        ],
+        "label": "ContractHotkeyUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0x6cc54e660ff69cc11e0ef186bbbfca068b3fcb0b36ca0b1ca4bc5977f2637c43"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "code_hash",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "Hash"
+              ],
+              "type": 9
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "upgraded_by",
+            "type": {
+              "displayName": [
+                "ink",
+                "primitives",
+                "AccountId"
+              ],
+              "type": 0
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when contract code is upgraded"
+        ],
+        "label": "CodeUpgraded",
+        "module_path": "bridge::events",
+        "signature_topic": "0xe335d4518f27bd2d839099a2f7cf9684072fa0d91b6d3bb84424baf379d87c75"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "deposit_request_id",
+            "type": {
+              "displayName": [
+                "DepositRequestId"
+              ],
+              "type": 9
+            }
+          }
+        ],
+        "docs": [
           "Emitted when a deposit request is cleaned up after TTL"
         ],
         "label": "DepositRequestCleanedUp",
         "module_path": "bridge::events",
         "signature_topic": "0x4da0f35b5af8c9819c8767ff0def32a9e42280411305c8c15a2db7a8e1b061f5"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": true,
+            "label": "withdrawal_id",
+            "type": {
+              "displayName": [
+                "WithdrawalId"
+              ],
+              "type": 9
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when a withdrawal is cleaned up after TTL"
+        ],
+        "label": "WithdrawalCleanedUp",
+        "module_path": "bridge::events",
+        "signature_topic": "0xf49cd5415894d6773022c3ad93a70ac2998fd7f872d353d47f48149a4b770beb"
+      },
+      {
+        "args": [
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "old_ttl",
+            "type": {
+              "displayName": [
+                "BlockNumber"
+              ],
+              "type": 7
+            }
+          },
+          {
+            "docs": [],
+            "indexed": false,
+            "label": "new_ttl",
+            "type": {
+              "displayName": [
+                "BlockNumber"
+              ],
+              "type": 7
+            }
+          }
+        ],
+        "docs": [
+          "Emitted when the cleanup TTL is updated"
+        ],
+        "label": "CleanupTTLUpdated",
+        "module_path": "bridge::events",
+        "signature_topic": "0xf98f81638ffd89acf466bcb3a1ddb425fe8eb6989c65ef1530925c7cfa762bc4"
       },
       {
         "args": [
@@ -742,15 +753,6 @@
               ],
               "type": 0
             }
-          },
-          {
-            "label": "netuid",
-            "type": {
-              "displayName": [
-                "NetUid"
-              ],
-              "type": 28
-            }
           }
         ],
         "default": false,
@@ -763,8 +765,7 @@
           "",
           " # Arguments",
           " * `amount` - Amount of Alpha to lock (in alphaRao)",
-          " * `hotkey` - Hotkey where the stake is currently held",
-          " * `netuid` - Network UID (must match chain_id)"
+          " * `hotkey` - Hotkey where the stake is currently held"
         ],
         "label": "deposit",
         "mutates": true,
@@ -774,7 +775,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 29
+          "type": 28
         },
         "selector": "0x2d10c9bd"
       },
@@ -829,7 +830,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0x8eed990f"
       },
@@ -864,7 +865,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0xf16c112c"
       },
@@ -894,7 +895,7 @@
               "displayName": [
                 "Option"
               ],
-              "type": 34
+              "type": 33
             }
           }
         ],
@@ -917,7 +918,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0xe0292c82"
       },
@@ -930,6 +931,15 @@
                 "WithdrawalId"
               ],
               "type": 9
+            }
+          },
+          {
+            "label": "reason",
+            "type": {
+              "displayName": [
+                "CancelReason"
+              ],
+              "type": 34
             }
           }
         ],
@@ -950,7 +960,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0x7f0515dd"
       },
@@ -987,7 +997,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0xd44f0e8f"
       },
@@ -1003,7 +1013,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0x81e0c604"
       },
@@ -1019,7 +1029,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0x67616649"
       },
@@ -1045,7 +1055,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0x22a8dc8f"
       },
@@ -1071,7 +1081,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0xbc05399e"
       },
@@ -1097,7 +1107,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0x694fb50f"
       },
@@ -1115,7 +1125,7 @@
         ],
         "default": false,
         "docs": [
-          " Anyone can cleanup a deposit request after TTL (no status check for source records)"
+          " Guardian can cleanup a deposit request after TTL (no status check for source records)"
         ],
         "label": "cleanup_deposit_request",
         "mutates": true,
@@ -1125,7 +1135,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0x60b8fdc2"
       },
@@ -1143,7 +1153,7 @@
         ],
         "default": false,
         "docs": [
-          " Anyone can cleanup a finalized withdrawal after TTL"
+          " Guardian can cleanup a finalized withdrawal after TTL"
         ],
         "label": "cleanup_withdrawal",
         "mutates": true,
@@ -1153,7 +1163,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0x0c41648e"
       },
@@ -1181,7 +1191,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0xe3e63347"
       },
@@ -1209,7 +1219,7 @@
             "ink",
             "MessageResult"
           ],
-          "type": 32
+          "type": 31
         },
         "selector": "0xa590344d"
       },
@@ -2423,32 +2433,12 @@
       "id": 28,
       "type": {
         "def": {
-          "composite": {
-            "fields": [
-              {
-                "type": 3,
-                "typeName": "u16"
-              }
-            ]
-          }
-        },
-        "path": [
-          "bridge",
-          "runtime",
-          "NetUid"
-        ]
-      }
-    },
-    {
-      "id": 29,
-      "type": {
-        "def": {
           "variant": {
             "variants": [
               {
                 "fields": [
                   {
-                    "type": 30
+                    "type": 29
                   }
                 ],
                 "index": 0,
@@ -2469,7 +2459,7 @@
         "params": [
           {
             "name": "T",
-            "type": 30
+            "type": 29
           },
           {
             "name": "E",
@@ -2482,7 +2472,7 @@
       }
     },
     {
-      "id": 30,
+      "id": 29,
       "type": {
         "def": {
           "variant": {
@@ -2499,7 +2489,7 @@
               {
                 "fields": [
                   {
-                    "type": 31
+                    "type": 30
                   }
                 ],
                 "index": 1,
@@ -2515,7 +2505,7 @@
           },
           {
             "name": "E",
-            "type": 31
+            "type": 30
           }
         ],
         "path": [
@@ -2524,7 +2514,7 @@
       }
     },
     {
-      "id": 31,
+      "id": 30,
       "type": {
         "def": {
           "variant": {
@@ -2559,74 +2549,70 @@
               },
               {
                 "index": 7,
-                "name": "InvalidNetUid"
-              },
-              {
-                "index": 8,
                 "name": "InvalidThresholds"
               },
               {
-                "index": 9,
+                "index": 8,
                 "name": "TooManyGuardians"
               },
               {
-                "index": 10,
+                "index": 9,
                 "name": "InvalidWithdrawalDetails"
               },
               {
-                "index": 11,
+                "index": 10,
                 "name": "InvalidTTL"
               },
               {
-                "index": 12,
+                "index": 11,
                 "name": "BridgePaused"
               },
               {
-                "index": 13,
+                "index": 12,
                 "name": "DepositRequestNotFound"
               },
               {
-                "index": 14,
+                "index": 13,
                 "name": "WithdrawalNotFound"
               },
               {
-                "index": 15,
+                "index": 14,
                 "name": "DepositRequestAlreadyFinalized"
               },
               {
-                "index": 16,
+                "index": 15,
                 "name": "WithdrawalAlreadyFinalized"
               },
               {
-                "index": 17,
+                "index": 16,
                 "name": "Overflow"
               },
               {
-                "index": 18,
+                "index": 17,
                 "name": "RuntimeCallFailed"
               },
               {
-                "index": 19,
+                "index": 18,
                 "name": "StakeQueryFailed"
               },
               {
-                "index": 20,
+                "index": 19,
                 "name": "TransferFailed"
               },
               {
-                "index": 21,
+                "index": 20,
                 "name": "StakeConsolidationFailed"
               },
               {
-                "index": 22,
+                "index": 21,
                 "name": "CodeUpgradeFailed"
               },
               {
-                "index": 23,
+                "index": 22,
                 "name": "RecordNotFinalized"
               },
               {
-                "index": 24,
+                "index": 23,
                 "name": "TTLNotExpired"
               }
             ]
@@ -2640,7 +2626,7 @@
       }
     },
     {
-      "id": 32,
+      "id": 31,
       "type": {
         "def": {
           "variant": {
@@ -2648,7 +2634,7 @@
               {
                 "fields": [
                   {
-                    "type": 33
+                    "type": 32
                   }
                 ],
                 "index": 0,
@@ -2669,7 +2655,7 @@
         "params": [
           {
             "name": "T",
-            "type": 33
+            "type": 32
           },
           {
             "name": "E",
@@ -2682,7 +2668,7 @@
       }
     },
     {
-      "id": 33,
+      "id": 32,
       "type": {
         "def": {
           "variant": {
@@ -2699,7 +2685,7 @@
               {
                 "fields": [
                   {
-                    "type": 31
+                    "type": 30
                   }
                 ],
                 "index": 1,
@@ -2715,7 +2701,7 @@
           },
           {
             "name": "E",
-            "type": 31
+            "type": 30
           }
         ],
         "path": [
@@ -2724,7 +2710,7 @@
       }
     },
     {
-      "id": 34,
+      "id": 33,
       "type": {
         "def": {
           "variant": {
@@ -2753,6 +2739,26 @@
         ],
         "path": [
           "Option"
+        ]
+      }
+    },
+    {
+      "id": 34,
+      "type": {
+        "def": {
+          "variant": {
+            "variants": [
+              {
+                "index": 0,
+                "name": "AdminEmergency"
+              }
+            ]
+          }
+        },
+        "path": [
+          "bridge",
+          "types",
+          "CancelReason"
         ]
       }
     },
@@ -2915,7 +2921,7 @@
               {
                 "fields": [
                   {
-                    "type": 34
+                    "type": 33
                   }
                 ],
                 "index": 0,
@@ -2936,7 +2942,7 @@
         "params": [
           {
             "name": "T",
-            "type": 34
+            "type": 33
           },
           {
             "name": "E",

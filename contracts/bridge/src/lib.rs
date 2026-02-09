@@ -117,19 +117,14 @@ mod bridge {
 		/// # Arguments
 		/// * `amount` - Amount of Alpha to lock (in alphaRao)
 		/// * `hotkey` - Hotkey where the stake is currently held
-		/// * `netuid` - Network UID (must match chain_id)
 		#[ink(message)]
 		pub fn deposit(
 			&mut self,
 			amount: Balance,
 			hotkey: AccountId,
-			netuid: NetUid,
 		) -> Result<DepositRequestId, Error> {
 			self.ensure_not_paused()?;
-
-			if netuid.as_u16() != self.chain_id {
-				return Err(Error::InvalidNetUid);
-			}
+			let netuid = NetUid::from(self.chain_id);
 
 			if amount < self.min_deposit_amount {
 				return Err(Error::AmountTooSmall);
@@ -227,7 +222,7 @@ mod bridge {
 				amount,
 				nonce: deposit_nonce,
 				hotkey,
-				netuid: netuid.as_u16(),
+				netuid: self.chain_id,
 				status: DepositRequestStatus::Requested,
 				created_at_block: self.env().block_number(),
 			};
@@ -404,7 +399,7 @@ mod bridge {
 		/// # Arguments
 		/// * `request_id` - The withdrawal ID to cancel
 		#[ink(message)]
-		pub fn admin_cancel_withdrawal(&mut self, request_id: WithdrawalId) -> Result<(), Error> {
+		pub fn admin_cancel_withdrawal(&mut self, request_id: WithdrawalId, reason: CancelReason) -> Result<(), Error> {
 			self.ensure_owner()?;
 
 			let mut withdrawal =
@@ -418,7 +413,7 @@ mod bridge {
 			withdrawal.status = WithdrawalStatus::Cancelled;
 			self.withdrawals.insert(request_id, &withdrawal);
 
-			self.env().emit_event(WithdrawalCancelled { withdrawal_id: request_id });
+			self.env().emit_event(WithdrawalCancelled { withdrawal_id: request_id, reason });
 
 			Ok(())
 		}
@@ -503,12 +498,14 @@ mod bridge {
 
 		// ============ Cleanup Functions ============
 
-		/// Anyone can cleanup a deposit request after TTL (no status check for source records)
+		/// Guardian can cleanup a deposit request after TTL (no status check for source records)
 		#[ink(message)]
 		pub fn cleanup_deposit_request(
 			&mut self,
 			request_id: DepositRequestId,
 		) -> Result<(), Error> {
+			self.ensure_guardian()?;
+
 			let request =
 				self.deposit_requests.get(request_id).ok_or(Error::DepositRequestNotFound)?;
 
@@ -527,9 +524,11 @@ mod bridge {
 			Ok(())
 		}
 
-		/// Anyone can cleanup a finalized withdrawal after TTL
+		/// Guardian can cleanup a finalized withdrawal after TTL
 		#[ink(message)]
 		pub fn cleanup_withdrawal(&mut self, withdrawal_id: WithdrawalId) -> Result<(), Error> {
+			self.ensure_guardian()?;
+
 			let withdrawal =
 				self.withdrawals.get(withdrawal_id).ok_or(Error::WithdrawalNotFound)?;
 
@@ -1070,7 +1069,7 @@ mod bridge {
 
 			// Admin cancels the withdrawal
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-			let result = bridge.admin_cancel_withdrawal(withdrawal_id);
+			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert!(result.is_ok());
 
 			// Verify the status changed
@@ -1096,7 +1095,7 @@ mod bridge {
 			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
 
 			// Try to cancel as non-owner
-			let result = bridge.admin_cancel_withdrawal(withdrawal_id);
+			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert_eq!(result, Err(Error::Unauthorized));
 		}
 
@@ -1106,7 +1105,7 @@ mod bridge {
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
 
 			let withdrawal_id = Hash::from([1u8; 32]);
-			let result = bridge.admin_cancel_withdrawal(withdrawal_id);
+			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert_eq!(result, Err(Error::WithdrawalNotFound));
 		}
 
@@ -1128,7 +1127,7 @@ mod bridge {
 			};
 			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
 
-			let result = bridge.admin_cancel_withdrawal(withdrawal_id);
+			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert_eq!(result, Err(Error::WithdrawalAlreadyFinalized));
 		}
 
@@ -1186,6 +1185,10 @@ mod bridge {
 			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
 
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 1).unwrap();
+
 			// Set a small TTL for testing
 			bridge.set_cleanup_ttl(10).unwrap();
 
@@ -1207,7 +1210,8 @@ mod bridge {
 			// Advance block number past TTL
 			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(11);
 
-			// Cleanup should succeed
+			// Cleanup as guardian
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
 			let result = bridge.cleanup_deposit_request(deposit_request_id);
 			assert!(result.is_ok());
 
@@ -1220,6 +1224,10 @@ mod bridge {
 		fn test_cleanup_deposit_request_before_ttl_fails() {
 			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 1).unwrap();
 
 			// Set a TTL
 			bridge.set_cleanup_ttl(100).unwrap();
@@ -1238,8 +1246,9 @@ mod bridge {
 			};
 			bridge.deposit_requests.insert(deposit_request_id, &request);
 
-			// Try to cleanup before TTL expires (block 50 < 0 + 100)
+			// Try to cleanup before TTL expires as guardian (block 50 < 0 + 100)
 			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(50);
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
 
 			let result = bridge.cleanup_deposit_request(deposit_request_id);
 			assert_eq!(result, Err(Error::TTLNotExpired));
@@ -1249,6 +1258,10 @@ mod bridge {
 		fn test_cleanup_withdrawal_after_ttl() {
 			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 1).unwrap();
 
 			// Set a small TTL for testing
 			bridge.set_cleanup_ttl(10).unwrap();
@@ -1269,7 +1282,8 @@ mod bridge {
 			// Advance block number past TTL from finalized_at_block (5 + 10 = 15)
 			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(16);
 
-			// Cleanup should succeed
+			// Cleanup as guardian
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
 			let result = bridge.cleanup_withdrawal(withdrawal_id);
 			assert!(result.is_ok());
 
@@ -1281,6 +1295,10 @@ mod bridge {
 		fn test_cleanup_withdrawal_before_ttl_fails() {
 			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 1).unwrap();
 
 			// Set a TTL
 			bridge.set_cleanup_ttl(100).unwrap();
@@ -1298,8 +1316,9 @@ mod bridge {
 			};
 			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
 
-			// Try to cleanup before TTL expires (block 50 < 10 + 100)
+			// Try to cleanup before TTL expires as guardian (block 50 < 10 + 100)
 			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(50);
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
 
 			let result = bridge.cleanup_withdrawal(withdrawal_id);
 			assert_eq!(result, Err(Error::TTLNotExpired));
@@ -1309,6 +1328,10 @@ mod bridge {
 		fn test_cleanup_pending_withdrawal_fails() {
 			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 1).unwrap();
 
 			// Set a small TTL
 			bridge.set_cleanup_ttl(10).unwrap();
@@ -1329,9 +1352,85 @@ mod bridge {
 			// Advance block number past any TTL
 			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(1000);
 
-			// Cleanup should fail because withdrawal is not finalized
+			// Cleanup should fail because withdrawal is not finalized (calling as guardian)
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
 			let result = bridge.cleanup_withdrawal(withdrawal_id);
 			assert_eq!(result, Err(Error::RecordNotFinalized));
+		}
+
+		#[ink::test]
+		fn test_cleanup_deposit_request_fails_if_not_guardian() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians (bob and charlie, but not django)
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 1).unwrap();
+
+			// Set a small TTL for testing
+			bridge.set_cleanup_ttl(10).unwrap();
+
+			// Insert a deposit request
+			let deposit_request_id = Hash::from([2u8; 32]);
+			let request = DepositRequest {
+				sender: accounts.bob,
+				recipient: accounts.charlie,
+				amount: 1_000_000_000,
+				nonce: 0,
+				hotkey: accounts.eve,
+				netuid: 1,
+				status: DepositRequestStatus::Requested,
+				created_at_block: 0,
+			};
+			bridge.deposit_requests.insert(deposit_request_id, &request);
+
+			// Advance block number past TTL
+			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(11);
+
+			// Try cleanup as non-guardian
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+			let result = bridge.cleanup_deposit_request(deposit_request_id);
+			assert_eq!(result, Err(Error::NotGuardian));
+
+			// Verify the deposit request was NOT removed
+			assert!(bridge.get_deposit_request(deposit_request_id).is_some());
+		}
+
+		#[ink::test]
+		fn test_cleanup_withdrawal_fails_if_not_guardian() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Set up guardians (bob and charlie, but not django)
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 1).unwrap();
+
+			// Set a small TTL for testing
+			bridge.set_cleanup_ttl(10).unwrap();
+
+			// Insert a completed withdrawal
+			let withdrawal_id = Hash::from([1u8; 32]);
+			let withdrawal = Withdrawal {
+				request_id: withdrawal_id,
+				recipient: accounts.eve,
+				amount: 1_000_000_000,
+				votes: vec![accounts.bob],
+				status: WithdrawalStatus::Completed,
+				created_at_block: 0,
+				finalized_at_block: Some(5),
+			};
+			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
+
+			// Advance block number past TTL from finalized_at_block (5 + 10 = 15)
+			ink::env::test::set_block_number::<ink::env::DefaultEnvironment>(16);
+
+			// Try cleanup as non-guardian
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
+			let result = bridge.cleanup_withdrawal(withdrawal_id);
+			assert_eq!(result, Err(Error::NotGuardian));
+
+			// Verify the withdrawal was NOT removed
+			assert!(bridge.get_withdrawal(withdrawal_id).is_some());
 		}
 
 		#[ink::test]

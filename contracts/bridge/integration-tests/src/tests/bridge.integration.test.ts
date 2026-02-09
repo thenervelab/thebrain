@@ -306,7 +306,6 @@ describe("Bridge Contract Integration", () => {
 				data: {
 					amount: bobDepositAmount,
 					hotkey: bobHotkey.address,
-					netuid,
 				},
 			});
 			const finalized = await signAndFinalize(tx, context.accounts.bob.signer);
@@ -372,7 +371,6 @@ describe("Bridge Contract Integration", () => {
 				data: {
 					amount: 1n,
 					hotkey: charlieHotkey.address,
-					netuid,
 				},
 			});
 
@@ -391,25 +389,6 @@ describe("Bridge Contract Integration", () => {
 				data: {
 					amount: MIN_DEPOSIT,
 					hotkey: randomWallet.address,
-					netuid,
-				},
-			});
-
-			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.value.type).toBe("FlagReverted");
-			}
-		});
-
-		it("rejects deposits with invalid netuid", async () => {
-			const invalidNetuid = netuid + 1;
-
-			const result = await contract.query("deposit", {
-				origin: context.accounts.charlie.address,
-				data: {
-					amount: MIN_DEPOSIT,
-					hotkey: charlieHotkey.address,
-					netuid: invalidNetuid,
 				},
 			});
 
@@ -579,7 +558,6 @@ describe("Bridge Contract Integration", () => {
 				data: {
 					amount: charlieDepositAmount,
 					hotkey: charlieHotkey.address,
-					netuid,
 				},
 			});
 			const depositFinalized = await signAndFinalize(depositTx, context.accounts.charlie.signer);
@@ -673,6 +651,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 			const cancelFinalized = await signAndFinalize(cancelTx, context.accounts.alice.signer);
@@ -716,7 +695,6 @@ describe("Bridge Contract Integration", () => {
 				data: {
 					amount: MIN_DEPOSIT,
 					hotkey: daveHotkey.address,
-					netuid,
 				},
 			});
 			expect(depositAttempt.success).toBe(false);
@@ -923,6 +901,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 			await signAndFinalize(cancelTx, context.accounts.alice.signer);
@@ -1012,6 +991,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.bob.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 
@@ -1025,6 +1005,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 			await signAndFinalize(cancelTx, context.accounts.alice.signer);
@@ -1131,6 +1112,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 			await signAndFinalize(cancelTx, context.accounts.alice.signer);
@@ -1140,6 +1122,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 
@@ -1200,6 +1183,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 
@@ -1214,6 +1198,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: randomHash("nonexistent-withdrawal"),
+					reason: { type: "AdminEmergency" },
 				},
 			});
 
@@ -1243,7 +1228,6 @@ describe("Bridge Contract Integration", () => {
 				data: {
 					amount: MIN_DEPOSIT * 2n,
 					hotkey: daveHotkey.address,
-					netuid,
 				},
 			});
 			const depositFinalized = await signAndFinalize(depositTx, context.accounts.dave.signer);
@@ -1265,14 +1249,14 @@ describe("Bridge Contract Integration", () => {
 			// Wait for TTL to expire
 			await waitForBlocks(context.api, SMALL_TTL + 2);
 
-			// Cleanup should succeed (anyone can call it)
+			// Cleanup should succeed (guardian can call it)
 			const cleanupTx = contract.send("cleanup_deposit_request", {
-				origin: context.accounts.eve.address,
+				origin: context.guardians[0].address,
 				data: {
 					request_id: depositRequestId,
 				},
 			});
-			const cleanupFinalized = await signAndFinalize(cleanupTx, context.accounts.eve.signer);
+			const cleanupFinalized = await signAndFinalize(cleanupTx, context.guardians[0].signer);
 			const cleanupEvent = findContractEvent(contract, cleanupFinalized, "DepositRequestCleanedUp");
 			expect(cleanupEvent).toBeDefined();
 
@@ -1296,7 +1280,6 @@ describe("Bridge Contract Integration", () => {
 				data: {
 					amount: MIN_DEPOSIT * 2n,
 					hotkey: eveHotkey.address,
-					netuid,
 				},
 			});
 			const depositFinalized = await signAndFinalize(depositTx, context.accounts.eve.signer);
@@ -1344,14 +1327,14 @@ describe("Bridge Contract Integration", () => {
 			// Wait for TTL to expire
 			await waitForBlocks(context.api, SMALL_TTL + 2);
 
-			// Cleanup should succeed
+			// Cleanup should succeed (guardian can call it)
 			const cleanupTx = contract.send("cleanup_withdrawal", {
-				origin: context.accounts.eve.address,
+				origin: context.guardians[0].address,
 				data: {
 					withdrawal_id: withdrawalId,
 				},
 			});
-			const cleanupFinalized = await signAndFinalize(cleanupTx, context.accounts.eve.signer);
+			const cleanupFinalized = await signAndFinalize(cleanupTx, context.guardians[0].signer);
 			const cleanupEvent = findContractEvent(contract, cleanupFinalized, "WithdrawalCleanedUp");
 			expect(cleanupEvent).toBeDefined();
 
@@ -1386,6 +1369,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 			await signAndFinalize(cancelTx, context.accounts.alice.signer);
@@ -1393,14 +1377,14 @@ describe("Bridge Contract Integration", () => {
 			// Wait for TTL to expire
 			await waitForBlocks(context.api, SMALL_TTL + 2);
 
-			// Cleanup should succeed
+			// Cleanup should succeed (guardian can call it)
 			const cleanupTx = contract.send("cleanup_withdrawal", {
-				origin: context.accounts.eve.address,
+				origin: context.guardians[0].address,
 				data: {
 					withdrawal_id: withdrawalId,
 				},
 			});
-			const cleanupFinalized = await signAndFinalize(cleanupTx, context.accounts.eve.signer);
+			const cleanupFinalized = await signAndFinalize(cleanupTx, context.guardians[0].signer);
 			const cleanupEvent = findContractEvent(contract, cleanupFinalized, "WithdrawalCleanedUp");
 			expect(cleanupEvent).toBeDefined();
 		}, 120000);
@@ -1440,6 +1424,7 @@ describe("Bridge Contract Integration", () => {
 				origin: context.accounts.alice.address,
 				data: {
 					request_id: withdrawalId,
+					reason: { type: "AdminEmergency" },
 				},
 			});
 			await signAndFinalize(cancelTx, context.accounts.alice.signer);

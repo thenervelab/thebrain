@@ -106,7 +106,7 @@ pub mod pallet {
 		/// Recipient who will receive hAlpha
 		pub recipient: T::AccountId,
 		/// Amount of hAlpha to credit (in halphaRao)
-		pub amount: u64,
+		pub amount: u128,
 		/// Guardian votes for success
 		pub votes: BTreeSet<T::AccountId>,
 		/// Current status
@@ -127,7 +127,7 @@ pub mod pallet {
 		/// Recipient on Bittensor who will receive Alpha
 		pub recipient: T::AccountId,
 		/// Amount of hAlpha burned (in halphaRao)
-		pub amount: u64,
+		pub amount: u128,
 		/// Nonce used for ID generation
 		pub nonce: u64,
 		/// Current status
@@ -238,6 +238,17 @@ pub mod pallet {
 	pub type CleanupTTLBlocks<T: Config> =
 		StorageValue<_, BlockNumberFor<T>, ValueQuery, DefaultCleanupTTL<T>>;
 
+	/// Default minimum withdrawal amount (1 hAlpha = 1_000_000_000 halphaRao)
+	#[pallet::type_value]
+	pub fn DefaultMinWithdrawal() -> u128 {
+		1_000_000_000
+	}
+
+	/// Minimum withdrawal amount (in halphaRao)
+	#[pallet::storage]
+	#[pallet::getter(fn min_withdrawal_amount)]
+	pub type MinWithdrawalAmount<T: Config> = StorageValue<_, u128, ValueQuery, DefaultMinWithdrawal>;
+
 	// ============ Events ============
 
 	#[pallet::event]
@@ -255,7 +266,7 @@ pub mod pallet {
 		DepositCompleted {
 			id: DepositId,
 			recipient: T::AccountId,
-			amount: u64,
+			amount: u128,
 		},
 
 		/// Deposit cancelled by admin after stuck
@@ -271,7 +282,7 @@ pub mod pallet {
 			id: WithdrawalRequestId,
 			sender: T::AccountId,
 			recipient: T::AccountId,
-			amount: u64,
+			amount: u128,
 		},
 
 		/// Withdrawal request marked as failed by admin (hAlpha manually minted back)
@@ -284,34 +295,32 @@ pub mod pallet {
 		/// Admin manually minted hAlpha to a recipient (for stuck withdrawals)
 		AdminManualMint {
 			recipient: T::AccountId,
-			amount: u64,
+			amount: u128,
 			/// Optional deposit ID for audit trail
 			deposit_id: Option<H256>,
 		},
 
-		/// Bridge pause state changed
-		BridgePaused {
-			paused: bool,
-		},
+		/// Bridge paused
+		Paused,
+
+		/// Bridge unpaused
+		Unpaused,
 
 		/// Global mint cap updated
 		GlobalMintCapUpdated {
 			new_cap: u128,
 		},
 
-		/// Approve threshold updated
-		ApproveThresholdUpdated {
-			new_threshold: u16,
+		/// Guardians and threshold updated atomically
+		GuardiansUpdated {
+			guardians: Vec<T::AccountId>,
+			approve_threshold: u16,
 		},
 
-		/// Guardian added to the set
-		GuardianAdded {
-			guardian: T::AccountId,
-		},
-
-		/// Guardian removed from the set
-		GuardianRemoved {
-			guardian: T::AccountId,
+		/// Minimum withdrawal amount updated
+		MinWithdrawalAmountUpdated {
+			old_amount: u128,
+			new_amount: u128,
 		},
 
 		// ============ Cleanup Events ============
@@ -357,10 +366,8 @@ pub mod pallet {
 		ThresholdTooLow,
 		/// Threshold exceeds guardian count
 		ThresholdTooHigh,
-		/// Guardian already exists in the set
-		GuardianAlreadyExists,
-		/// Guardian not found in the set
-		GuardianNotFound,
+		/// Too many guardians provided
+		TooManyGuardians,
 		/// Failed to convert between numeric balance types
 		AmountConversionFailed,
 		/// Failed to mint tokens
@@ -387,6 +394,9 @@ pub mod pallet {
 
 	// ============ Extrinsics ============
 
+	/// Maximum number of guardians allowed
+	pub const MAX_GUARDIANS: usize = 10;
+
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		// ============ User Actions ============
@@ -399,19 +409,19 @@ pub mod pallet {
 		///
 		/// # Arguments
 		/// * `origin` - Must be signed by the user
-		/// * `amount` - Amount of hAlpha to burn (in halphaRao)
+		/// * `amount` - Amount of hAlpha to burn (in halphaRao, u128)
 		#[pallet::call_index(0)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::request_unlock())]
 		pub fn withdraw(
 			origin: OriginFor<T>,
-			amount: u64,
+			amount: u128,
 		) -> DispatchResult {
 			let sender = ensure_signed(origin)?;
 			let recipient = sender.clone();
 			Self::ensure_not_paused()?;
 
-			// Reject zero amount
-			ensure!(amount > 0, Error::<T>::AmountTooSmall);
+			// Reject amounts below minimum
+			ensure!(amount >= MinWithdrawalAmount::<T>::get(), Error::<T>::AmountTooSmall);
 
 			// Burn hAlpha from user immediately
 			let balance_value = Self::amount_to_balance(amount)?;
@@ -425,7 +435,7 @@ pub mod pallet {
 
 			// Update total minted tracking (use checked_sub to catch accounting bugs)
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
-				*total = total.checked_sub(amount as u128).ok_or(Error::<T>::AccountingUnderflow)?;
+				*total = total.checked_sub(amount).ok_or(Error::<T>::AccountingUnderflow)?;
 				Ok(())
 			})?;
 
@@ -473,7 +483,7 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			request_id: DepositId,
 			recipient: T::AccountId,
-			amount: u64,
+			amount: u128,
 		) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
 			Self::ensure_guardian(&guardian)?;
@@ -596,8 +606,7 @@ pub mod pallet {
 			// Check and update mint cap (this is restoring burned hAlpha, so it must fit in cap)
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
-				let amount_u128 = request.amount as u128;
-				let new_total = total.checked_add(amount_u128).ok_or(Error::<T>::ArithmeticOverflow)?;
+				let new_total = total.checked_add(request.amount).ok_or(Error::<T>::ArithmeticOverflow)?;
 				ensure!(new_total <= mint_cap, Error::<T>::CapExceeded);
 				*total = new_total;
 				Ok(())
@@ -640,7 +649,7 @@ pub mod pallet {
 		pub fn admin_manual_mint(
 			origin: OriginFor<T>,
 			recipient: T::AccountId,
-			amount: u64,
+			amount: u128,
 			deposit_id: Option<H256>,
 		) -> DispatchResult {
 			ensure_root(origin)?;
@@ -648,8 +657,7 @@ pub mod pallet {
 			// Check and update mint cap
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
-				let amount_u128 = amount as u128;
-				let new_total = total.checked_add(amount_u128).ok_or(Error::<T>::ArithmeticOverflow)?;
+				let new_total = total.checked_add(amount).ok_or(Error::<T>::ArithmeticOverflow)?;
 				ensure!(new_total <= mint_cap, Error::<T>::CapExceeded);
 				*total = new_total;
 				Ok(())
@@ -662,90 +670,47 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Add a new guardian to the set (sudo/root only)
+		/// Atomically set the guardian set and threshold (sudo/root only)
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
-		/// * `guardian` - Account to add as guardian
+		/// * `guardians` - New guardian set
+		/// * `approve_threshold` - Minimum guardian votes needed
 		#[pallet::call_index(5)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::add_guardian(Guardians::<T>::get().len() as u32))]
-		pub fn add_guardian(origin: OriginFor<T>, guardian: T::AccountId) -> DispatchResult {
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_guardians_and_threshold(guardians.len() as u32))]
+		pub fn set_guardians_and_threshold(
+			origin: OriginFor<T>,
+			guardians: Vec<T::AccountId>,
+			approve_threshold: u16,
+		) -> DispatchResult {
 			ensure_root(origin)?;
-
-			Guardians::<T>::try_mutate(|guardians| -> DispatchResult {
-				ensure!(!guardians.contains(&guardian), Error::<T>::GuardianAlreadyExists);
-				guardians.push(guardian.clone());
-				Self::deposit_event(Event::GuardianAdded { guardian });
-				Ok(())
-			})
-		}
-
-		/// Remove a guardian from the set (sudo/root only)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `guardian` - Account to remove from guardians
-		#[pallet::call_index(6)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::remove_guardian(Guardians::<T>::get().len() as u32))]
-		pub fn remove_guardian(origin: OriginFor<T>, guardian: T::AccountId) -> DispatchResult {
-			ensure_root(origin)?;
-
-			Guardians::<T>::try_mutate(|guardians| -> DispatchResult {
-				let position = guardians
-					.iter()
-					.position(|g| g == &guardian)
-					.ok_or(Error::<T>::GuardianNotFound)?;
-
-				guardians.remove(position);
-
-				// Verify threshold is still achievable
-				let guardian_count = guardians.len() as u16;
-				let approve_threshold = ApproveThreshold::<T>::get();
-
-				ensure!(
-					guardian_count >= approve_threshold,
-					Error::<T>::ThresholdTooHigh
-				);
-
-				Self::deposit_event(Event::GuardianRemoved { guardian });
-				Ok(())
-			})
-		}
-
-		/// Set the approve threshold (sudo/root only)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `threshold` - Minimum number of guardian votes needed
-		#[pallet::call_index(7)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_approve_threshold())]
-		pub fn set_approve_threshold(origin: OriginFor<T>, threshold: u16) -> DispatchResult {
-			ensure_root(origin)?;
-
-			ensure!(threshold > 0, Error::<T>::ThresholdTooLow);
-
-			let guardian_count = Guardians::<T>::get().len() as u16;
-			ensure!(threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
-
-			ApproveThreshold::<T>::put(threshold);
-			Self::deposit_event(Event::ApproveThresholdUpdated { new_threshold: threshold });
-
+			ensure!(guardians.len() <= MAX_GUARDIANS, Error::<T>::TooManyGuardians);
+			let guardian_count = guardians.len() as u16;
+			ensure!(approve_threshold > 0, Error::<T>::ThresholdTooLow);
+			ensure!(approve_threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
+			Guardians::<T>::put(guardians.clone());
+			ApproveThreshold::<T>::put(approve_threshold);
+			Self::deposit_event(Event::GuardiansUpdated { guardians, approve_threshold });
 			Ok(())
 		}
 
-		/// Pause or unpause the bridge (sudo/root only)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `paused` - True to pause, false to unpause
+		/// Pause the bridge (sudo/root only)
 		#[pallet::call_index(8)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_paused())]
-		pub fn set_paused(origin: OriginFor<T>, paused: bool) -> DispatchResult {
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::pause())]
+		pub fn pause(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
+			Paused::<T>::put(true);
+			Self::deposit_event(Event::Paused);
+			Ok(())
+		}
 
-			Paused::<T>::put(paused);
-			Self::deposit_event(Event::BridgePaused { paused });
-
+		/// Unpause the bridge (sudo/root only)
+		#[pallet::call_index(14)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::unpause())]
+		pub fn unpause(origin: OriginFor<T>) -> DispatchResult {
+			ensure_root(origin)?;
+			Paused::<T>::put(false);
+			Self::deposit_event(Event::Unpaused);
 			Ok(())
 		}
 
@@ -770,10 +735,10 @@ pub mod pallet {
 
 		// ============ Cleanup Functions ============
 
-		/// Anyone can cleanup a finalized deposit after TTL
+		/// Guardian can cleanup a finalized deposit after TTL
 		///
 		/// # Arguments
-		/// * `origin` - Must be signed (anyone can call)
+		/// * `origin` - Must be signed by a guardian
 		/// * `deposit_id` - The deposit ID to cleanup
 		#[pallet::call_index(10)]
 		#[pallet::weight(10_000)]
@@ -781,7 +746,8 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			deposit_id: DepositId,
 		) -> DispatchResult {
-			ensure_signed(origin)?;  // Anyone can call
+			let caller = ensure_signed(origin)?;
+			Self::ensure_guardian(&caller)?;
 
 			let deposit = Deposits::<T>::get(deposit_id)
 				.ok_or(Error::<T>::DepositNotFound)?;
@@ -810,10 +776,10 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Anyone can cleanup a withdrawal request after TTL (no status check for source records)
+		/// Guardian can cleanup a withdrawal request after TTL (no status check for source records)
 		///
 		/// # Arguments
-		/// * `origin` - Must be signed (anyone can call)
+		/// * `origin` - Must be signed by a guardian
 		/// * `request_id` - The withdrawal request ID to cleanup
 		#[pallet::call_index(11)]
 		#[pallet::weight(10_000)]
@@ -821,7 +787,8 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			request_id: WithdrawalRequestId,
 		) -> DispatchResult {
-			ensure_signed(origin)?;  // Anyone can call
+			let caller = ensure_signed(origin)?;
+			Self::ensure_guardian(&caller)?;
 
 			let request = WithdrawalRequests::<T>::get(request_id)
 				.ok_or(Error::<T>::WithdrawalRequestNotFound)?;
@@ -860,6 +827,22 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		/// Admin sets the minimum withdrawal amount
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `amount` - Minimum amount of hAlpha to withdraw (in halphaRao)
+		#[pallet::call_index(13)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_min_withdrawal_amount())]
+		pub fn set_min_withdrawal_amount(origin: OriginFor<T>, amount: u128) -> DispatchResult {
+			ensure_root(origin)?;
+			ensure!(amount > 0, Error::<T>::AmountTooSmall);
+			let old = MinWithdrawalAmount::<T>::get();
+			MinWithdrawalAmount::<T>::put(amount);
+			Self::deposit_event(Event::MinWithdrawalAmountUpdated { old_amount: old, new_amount: amount });
+			Ok(())
+		}
 	}
 
 	// ============ Helper Functions ============
@@ -883,7 +866,7 @@ pub mod pallet {
 		}
 
 		/// Convert a raw amount into the runtime's balance type
-		pub fn amount_to_balance(amount: u64) -> Result<BalanceOf<T>, DispatchError> {
+		pub fn amount_to_balance(amount: u128) -> Result<BalanceOf<T>, DispatchError> {
 			amount.try_into().map_err(|_| Error::<T>::AmountConversionFailed.into())
 		}
 
@@ -891,7 +874,7 @@ pub mod pallet {
 		pub fn generate_withdrawal_request_id(
 			sender: &T::AccountId,
 			recipient: &T::AccountId,
-			amount: u64,
+			amount: u128,
 		) -> (WithdrawalRequestId, u64) {
 			let nonce = NextWithdrawalRequestNonce::<T>::get();
 			NextWithdrawalRequestNonce::<T>::put(nonce.saturating_add(1));
@@ -917,8 +900,7 @@ pub mod pallet {
 			// Check and update mint cap
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
-				let amount_u128 = amount as u128;
-				let new_total = total.checked_add(amount_u128).ok_or(Error::<T>::ArithmeticOverflow)?;
+				let new_total = total.checked_add(amount).ok_or(Error::<T>::ArithmeticOverflow)?;
 				ensure!(new_total <= mint_cap, Error::<T>::CapExceeded);
 				*total = new_total;
 				Ok(())
@@ -942,7 +924,7 @@ pub mod pallet {
 		}
 
 		/// Mint hAlpha to a recipient
-		fn mint_to_recipient(recipient: &T::AccountId, amount: u64) -> DispatchResult {
+		fn mint_to_recipient(recipient: &T::AccountId, amount: u128) -> DispatchResult {
 			let balance_amount = Self::amount_to_balance(amount)?;
 			pallet_balances::Pallet::<T>::mint_into(recipient, balance_amount)
 				.map_err(|_| Error::<T>::MintFailed)?;

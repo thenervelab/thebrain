@@ -10,7 +10,7 @@ fn test_first_attestation_creates_deposit_record() {
 	new_test_ext().execute_with(|| {
 		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
-		let amount = 1000u64;
+		let amount = 1000u128;
 
 		// First guardian attestation creates the deposit record
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
@@ -40,7 +40,7 @@ fn test_deposit_completes_when_threshold_reached() {
 		// Threshold is 2 by default
 		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
-		let amount = 1000u64;
+		let amount = 1000u128;
 		let initial_balance = Balances::free_balance(&recipient);
 
 		// First attestation
@@ -60,7 +60,7 @@ fn test_deposit_completes_when_threshold_reached() {
 		));
 
 		// Check that hAlpha was minted
-		assert_eq!(Balances::free_balance(&recipient), initial_balance + amount as u128);
+		assert_eq!(Balances::free_balance(&recipient), initial_balance + amount);
 
 		// Check deposit status
 		let deposit = crate::Deposits::<Test>::get(deposit_id).expect("Deposit should exist");
@@ -208,7 +208,7 @@ fn test_deposit_minting_to_new_account() {
 	new_test_ext().execute_with(|| {
 		let new_recipient = new_account();
 		let deposit_id = generate_deposit_id(1);
-		let amount = 1000u64;
+		let amount = 1000u128;
 
 		// Verify account doesn't exist yet
 		assert_eq!(Balances::free_balance(&new_recipient), 0);
@@ -228,10 +228,10 @@ fn test_deposit_minting_to_new_account() {
 		));
 
 		// Verify account was created with minted balance
-		assert_eq!(Balances::free_balance(&new_recipient), amount as u128);
+		assert_eq!(Balances::free_balance(&new_recipient), amount);
 
 		// Verify total minted tracking
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), amount as u128);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), amount);
 	});
 }
 
@@ -277,8 +277,8 @@ fn test_attestation_with_wrong_amount_fails() {
 	new_test_ext().execute_with(|| {
 		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
-		let original_amount = 1000u64;
-		let wrong_amount = 2000u64;
+		let original_amount = 1000u128;
+		let wrong_amount = 2000u128;
 
 		// First guardian creates the deposit
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
@@ -313,7 +313,7 @@ fn test_attestation_with_matching_details_succeeds() {
 
 		let deposit_id = generate_deposit_id(1);
 		let recipient = user1();
-		let amount = 1000u64;
+		let amount = 1000u128;
 
 		// All three guardians attest with same details
 		assert_ok!(AlphaBridge::<Test>::attest_deposit(
@@ -404,7 +404,7 @@ fn test_user_withdraw_burns_halpha() {
 fn test_withdraw_with_insufficient_balance_fails() {
 	new_test_ext().execute_with(|| {
 		let balance = Balances::free_balance(&user1());
-		let excessive_amount = (balance + 1000) as u64;
+		let excessive_amount = balance + 1000;
 
 		assert_noop!(
 			AlphaBridge::<Test>::withdraw(
@@ -429,26 +429,35 @@ fn test_withdraw_while_paused_fails() {
 }
 
 // ============================================================================
-// Zero Amount Rejection Tests (AmountTooSmall error)
+// Minimum Withdrawal Amount Tests (AmountTooSmall error)
 // ============================================================================
 
 #[test]
-fn test_withdraw_zero_amount_fails() {
+fn test_withdraw_below_minimum_fails() {
 	new_test_ext().execute_with(|| {
+		// Set a specific minimum for this test
+		crate::MinWithdrawalAmount::<Test>::put(1000u128);
+
 		assert_noop!(
 			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 0),
+			Error::<Test>::AmountTooSmall
+		);
+		assert_noop!(
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 999),
 			Error::<Test>::AmountTooSmall
 		);
 	});
 }
 
 #[test]
-fn test_withdraw_positive_amount_succeeds() {
+fn test_withdraw_at_minimum_succeeds() {
 	new_test_ext().execute_with(|| {
-		// First, make sure TotalMintedByBridge is set so the accounting works
-		crate::TotalMintedByBridge::<Test>::put(10000);
+		// Set a specific minimum for this test
+		crate::MinWithdrawalAmount::<Test>::put(1000u128);
+		// Set TotalMintedByBridge so the accounting works
+		crate::TotalMintedByBridge::<Test>::put(10_000_000u128);
 
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1000));
 	});
 }
 
@@ -645,96 +654,108 @@ fn test_admin_manual_mint_by_non_root_fails() {
 // ============================================================================
 
 #[test]
-fn test_add_guardian_by_root() {
+fn test_set_guardians_and_threshold() {
 	new_test_ext().execute_with(|| {
-		assert_ok!(AlphaBridge::<Test>::add_guardian(RuntimeOrigin::root(), dave()));
+		let new_guardians = vec![alice(), bob(), dave()];
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			new_guardians.clone(),
+			2,
+		));
 
-		assert!(crate::Guardians::<Test>::get().contains(&dave()));
+		assert_eq!(crate::Guardians::<Test>::get(), new_guardians);
+		assert_eq!(crate::ApproveThreshold::<Test>::get(), 2);
 
-		System::assert_has_event(Event::GuardianAdded { guardian: dave() }.into());
+		System::assert_has_event(
+			Event::GuardiansUpdated { guardians: new_guardians, approve_threshold: 2 }.into(),
+		);
 	});
 }
 
 #[test]
-fn test_add_guardian_by_non_root_fails() {
+fn test_set_guardians_and_threshold_non_root_fails() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			AlphaBridge::<Test>::add_guardian(RuntimeOrigin::signed(alice()), dave()),
+			AlphaBridge::<Test>::set_guardians_and_threshold(
+				RuntimeOrigin::signed(alice()),
+				vec![alice(), bob()],
+				1,
+			),
 			sp_runtime::DispatchError::BadOrigin
 		);
 	});
 }
 
 #[test]
-fn test_remove_guardian() {
-	new_test_ext().execute_with(|| {
-		// Add more guardians first to ensure thresholds are still achievable
-		assert_ok!(AlphaBridge::<Test>::add_guardian(RuntimeOrigin::root(), dave()));
-		assert_ok!(AlphaBridge::<Test>::add_guardian(RuntimeOrigin::root(), user2()));
-
-		assert_ok!(AlphaBridge::<Test>::remove_guardian(RuntimeOrigin::root(), charlie()));
-
-		assert!(!crate::Guardians::<Test>::get().contains(&charlie()));
-
-		System::assert_has_event(Event::GuardianRemoved { guardian: charlie() }.into());
-	});
-}
-
-#[test]
-fn test_duplicate_guardian_fails() {
+fn test_set_guardians_and_threshold_threshold_zero_fails() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			AlphaBridge::<Test>::add_guardian(RuntimeOrigin::root(), alice()),
-			Error::<Test>::GuardianAlreadyExists
+			AlphaBridge::<Test>::set_guardians_and_threshold(
+				RuntimeOrigin::root(),
+				vec![alice(), bob()],
+				0,
+			),
+			Error::<Test>::ThresholdTooLow
 		);
 	});
 }
 
 #[test]
-fn test_removing_non_existent_guardian_fails() {
+fn test_set_guardians_and_threshold_threshold_too_high_fails() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			AlphaBridge::<Test>::remove_guardian(RuntimeOrigin::root(), dave()),
-			Error::<Test>::GuardianNotFound
-		);
-	});
-}
-
-// ============================================================================
-// Threshold Tests
-// ============================================================================
-
-#[test]
-fn test_set_approve_threshold() {
-	new_test_ext().execute_with(|| {
-		assert_ok!(AlphaBridge::<Test>::set_approve_threshold(RuntimeOrigin::root(), 3));
-
-		assert_eq!(crate::ApproveThreshold::<Test>::get(), 3);
-
-		System::assert_has_event(Event::ApproveThresholdUpdated { new_threshold: 3 }.into());
-	});
-}
-
-#[test]
-fn test_threshold_exceeding_guardian_count_fails() {
-	new_test_ext().execute_with(|| {
-		// Only 3 guardians: alice(), bob(), charlie()
-		assert_noop!(
-			AlphaBridge::<Test>::set_approve_threshold(RuntimeOrigin::root(), 10),
+			AlphaBridge::<Test>::set_guardians_and_threshold(
+				RuntimeOrigin::root(),
+				vec![alice(), bob()],
+				3,
+			),
 			Error::<Test>::ThresholdTooHigh
 		);
 	});
 }
 
 #[test]
-fn test_threshold_zero_fails() {
+fn test_set_guardians_and_threshold_too_many_guardians_fails() {
 	new_test_ext().execute_with(|| {
+		let too_many: Vec<_> = (0..11u64).map(|i| {
+			use sp_core::Hasher;
+			use sp_runtime::traits::BlakeTwo256;
+			let hash = BlakeTwo256::hash(&i.to_le_bytes());
+			sp_runtime::AccountId32::new(hash.0)
+		}).collect();
 		assert_noop!(
-			AlphaBridge::<Test>::set_approve_threshold(RuntimeOrigin::root(), 0),
-			Error::<Test>::ThresholdTooLow
+			AlphaBridge::<Test>::set_guardians_and_threshold(
+				RuntimeOrigin::root(),
+				too_many,
+				1,
+			),
+			Error::<Test>::TooManyGuardians
 		);
 	});
 }
+
+#[test]
+fn test_set_guardians_and_threshold_replaces_existing() {
+	new_test_ext().execute_with(|| {
+		// Initial guardians are alice, bob, charlie with threshold 2
+		assert_eq!(crate::Guardians::<Test>::get().len(), 3);
+
+		// Replace with just alice, bob and threshold 1
+		let new_guardians = vec![alice(), bob()];
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			new_guardians.clone(),
+			1,
+		));
+
+		assert_eq!(crate::Guardians::<Test>::get(), new_guardians);
+		assert_eq!(crate::ApproveThreshold::<Test>::get(), 1);
+	});
+}
+
+// ============================================================================
+// Threshold Tests
+// ============================================================================
 
 #[test]
 fn test_single_guardian_threshold() {
@@ -768,11 +789,11 @@ fn test_single_guardian_threshold() {
 #[test]
 fn test_pause_bridge() {
 	new_test_ext().execute_with(|| {
-		assert_ok!(AlphaBridge::<Test>::set_paused(RuntimeOrigin::root(), true));
+		assert_ok!(AlphaBridge::<Test>::pause(RuntimeOrigin::root()));
 
 		assert!(crate::Paused::<Test>::get());
 
-		System::assert_has_event(Event::BridgePaused { paused: true }.into());
+		System::assert_has_event(Event::Paused.into());
 	});
 }
 
@@ -781,11 +802,11 @@ fn test_unpause_bridge() {
 	new_test_ext().execute_with(|| {
 		crate::Paused::<Test>::put(true);
 
-		assert_ok!(AlphaBridge::<Test>::set_paused(RuntimeOrigin::root(), false));
+		assert_ok!(AlphaBridge::<Test>::unpause(RuntimeOrigin::root()));
 
 		assert!(!crate::Paused::<Test>::get());
 
-		System::assert_has_event(Event::BridgePaused { paused: false }.into());
+		System::assert_has_event(Event::Unpaused.into());
 	});
 }
 
@@ -1081,9 +1102,9 @@ fn test_cleanup_deposit_after_ttl() {
 		let finalized_at = deposit.finalized_at_block.unwrap();
 		System::set_block_number(finalized_at + 11);
 
-		// Cleanup should succeed
+		// Cleanup should succeed (guardian only)
 		assert_ok!(AlphaBridge::<Test>::cleanup_deposit(
-			RuntimeOrigin::signed(user1()),  // Anyone can call
+			RuntimeOrigin::signed(alice()),
 			deposit_id,
 		));
 
@@ -1116,10 +1137,10 @@ fn test_cleanup_deposit_before_ttl_fails() {
 			1000,
 		));
 
-		// Try to cleanup immediately (before TTL expires)
+		// Try to cleanup immediately (before TTL expires) as guardian
 		assert_noop!(
 			AlphaBridge::<Test>::cleanup_deposit(
-				RuntimeOrigin::signed(user1()),
+				RuntimeOrigin::signed(alice()),
 				deposit_id,
 			),
 			Error::<Test>::TTLNotExpired
@@ -1152,10 +1173,10 @@ fn test_cleanup_pending_deposit_fails() {
 		// Advance past TTL so we hit RecordNotFinalized, not TTLNotExpired
 		System::set_block_number(100);
 
-		// Try to cleanup pending deposit
+		// Try to cleanup pending deposit as guardian
 		assert_noop!(
 			AlphaBridge::<Test>::cleanup_deposit(
-				RuntimeOrigin::signed(user1()),
+				RuntimeOrigin::signed(alice()),
 				deposit_id,
 			),
 			Error::<Test>::RecordNotFinalized
@@ -1197,9 +1218,9 @@ fn test_cleanup_withdrawal_request_after_ttl() {
 		// Advance block number past TTL
 		System::set_block_number(request.created_at_block + 11);
 
-		// Cleanup should succeed (no status check for withdrawal requests)
+		// Cleanup should succeed (guardian only, no status check for withdrawal requests)
 		assert_ok!(AlphaBridge::<Test>::cleanup_withdrawal_request(
-			RuntimeOrigin::signed(user2()),  // Anyone can call
+			RuntimeOrigin::signed(alice()),
 			request_id,
 		));
 
@@ -1240,13 +1261,101 @@ fn test_cleanup_withdrawal_request_before_ttl_fails() {
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
 
-		// Try to cleanup immediately (before TTL expires)
+		// Try to cleanup immediately (before TTL expires) as guardian
+		assert_noop!(
+			AlphaBridge::<Test>::cleanup_withdrawal_request(
+				RuntimeOrigin::signed(alice()),
+				request_id,
+			),
+			Error::<Test>::TTLNotExpired
+		);
+
+		// Request should still exist
+		assert!(crate::WithdrawalRequests::<Test>::get(request_id).is_some());
+	});
+}
+
+#[test]
+fn test_cleanup_deposit_non_guardian_fails() {
+	new_test_ext().execute_with(|| {
+		// Set a small TTL for testing
+		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 10));
+
+		// Create and complete a deposit
+		let deposit_id = generate_deposit_id(1);
+		assert_ok!(AlphaBridge::<Test>::attest_deposit(
+			RuntimeOrigin::signed(alice()),
+			deposit_id,
+			user1(),
+			1000,
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_deposit(
+			RuntimeOrigin::signed(bob()),
+			deposit_id,
+			user1(),
+			1000,
+		));
+
+		// Advance block number past TTL
+		let deposit = crate::Deposits::<Test>::get(deposit_id).expect("Deposit should exist");
+		let finalized_at = deposit.finalized_at_block.unwrap();
+		System::set_block_number(finalized_at + 11);
+
+		// Non-guardian should fail
+		assert_noop!(
+			AlphaBridge::<Test>::cleanup_deposit(
+				RuntimeOrigin::signed(user1()),
+				deposit_id,
+			),
+			Error::<Test>::NotGuardian
+		);
+
+		// Deposit should still exist
+		assert!(crate::Deposits::<Test>::get(deposit_id).is_some());
+	});
+}
+
+#[test]
+fn test_cleanup_withdrawal_request_non_guardian_fails() {
+	new_test_ext().execute_with(|| {
+		// Set a small TTL for testing
+		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 10));
+
+		// Setup: deposit first to get hAlpha
+		let deposit_id = generate_deposit_id(1);
+		assert_ok!(AlphaBridge::<Test>::attest_deposit(
+			RuntimeOrigin::signed(alice()),
+			deposit_id,
+			user1(),
+			5000,
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_deposit(
+			RuntimeOrigin::signed(bob()),
+			deposit_id,
+			user1(),
+			5000,
+		));
+
+		// Create a withdrawal request
+		assert_ok!(AlphaBridge::<Test>::withdraw(
+			RuntimeOrigin::signed(user1()),
+			1000,
+		));
+
+		// Get the request
+		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
+		let request = crate::WithdrawalRequests::<Test>::get(request_id).expect("Request should exist");
+
+		// Advance block number past TTL
+		System::set_block_number(request.created_at_block + 11);
+
+		// Non-guardian should fail
 		assert_noop!(
 			AlphaBridge::<Test>::cleanup_withdrawal_request(
 				RuntimeOrigin::signed(user1()),
 				request_id,
 			),
-			Error::<Test>::TTLNotExpired
+			Error::<Test>::NotGuardian
 		);
 
 		// Request should still exist
@@ -1289,6 +1398,46 @@ fn test_set_cleanup_ttl_non_root_fails() {
 		assert_noop!(
 			AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::signed(alice()), 100),
 			sp_runtime::DispatchError::BadOrigin
+		);
+	});
+}
+
+// ============================================================================
+// Min Withdrawal Amount Tests
+// ============================================================================
+
+#[test]
+fn test_set_min_withdrawal_amount() {
+	new_test_ext().execute_with(|| {
+		// Mock sets MinWithdrawalAmount to 1
+		assert_eq!(crate::MinWithdrawalAmount::<Test>::get(), 1);
+
+		assert_ok!(AlphaBridge::<Test>::set_min_withdrawal_amount(RuntimeOrigin::root(), 2_000_000_000));
+
+		assert_eq!(crate::MinWithdrawalAmount::<Test>::get(), 2_000_000_000);
+
+		System::assert_has_event(
+			Event::MinWithdrawalAmountUpdated { old_amount: 1, new_amount: 2_000_000_000 }.into(),
+		);
+	});
+}
+
+#[test]
+fn test_set_min_withdrawal_amount_non_root_fails() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			AlphaBridge::<Test>::set_min_withdrawal_amount(RuntimeOrigin::signed(alice()), 2_000_000_000),
+			sp_runtime::DispatchError::BadOrigin
+		);
+	});
+}
+
+#[test]
+fn test_set_min_withdrawal_amount_zero_fails() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			AlphaBridge::<Test>::set_min_withdrawal_amount(RuntimeOrigin::root(), 0),
+			Error::<Test>::AmountTooSmall
 		);
 	});
 }

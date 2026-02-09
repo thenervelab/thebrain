@@ -35,7 +35,7 @@ fn setup_guardians<T: Config>(count: u32) -> Vec<T::AccountId> {
 }
 
 /// Create a unique deposit ID from recipient and amount
-fn create_deposit_id(recipient: &[u8], amount: u64, nonce: u32) -> H256 {
+fn create_deposit_id(recipient: &[u8], amount: u128, nonce: u32) -> H256 {
 	let mut data = Vec::new();
 	data.extend_from_slice(recipient);
 	data.extend_from_slice(&amount.to_le_bytes());
@@ -46,7 +46,7 @@ fn create_deposit_id(recipient: &[u8], amount: u64, nonce: u32) -> H256 {
 /// Setup a pending deposit proposal
 fn setup_pending_deposit<T: Config>(
 	recipient: T::AccountId,
-	amount: u64,
+	amount: u128,
 ) -> (DepositId, DepositRecord<T::AccountId, BlockNumberFor<T>>) {
 	let deposit_id = create_deposit_id(recipient.encode().as_slice(), amount, 0);
 	let record = DepositRecord {
@@ -64,7 +64,7 @@ fn setup_pending_deposit<T: Config>(
 /// Setup a pending unlock request with escrowed funds
 fn setup_pending_unlock<T: Config>(
 	requester: T::AccountId,
-	amount: u64,
+	amount: u128,
 ) -> (BurnId, UnlockRecord<T::AccountId, BlockNumberFor<T>>) {
 	// Generate burn_id using the same logic as the pallet
 	let burn_id = Pallet::<T>::generate_burn_id(&requester, amount);
@@ -189,7 +189,7 @@ mod benchmarks {
 		setup_guardians::<T>(3);
 		Paused::<T>::put(false);
 		let requester = create_funded_user::<T>(0, 10000);
-		let amount = 500u64;
+		let amount = 500u128;
 
 		#[extrinsic_call]
 		request_unlock(RawOrigin::Signed(requester.clone()), amount);
@@ -255,73 +255,33 @@ mod benchmarks {
 	}
 
 	#[benchmark]
-	fn add_guardian(g: Linear<0, 100>) {
-		// Setup existing guardians
-		let existing_guardians = setup_guardians::<T>(g);
-		ApproveThreshold::<T>::put(2u16);
-		DenyThreshold::<T>::put(2u16);
-
-		let new_guardian: T::AccountId = account("new_guardian", 999, SEED);
+	fn set_guardians_and_threshold(g: Linear<1, 10>) {
+		let guardians: Vec<T::AccountId> = (0..g).map(|i| account("guardian", i, SEED)).collect();
+		let threshold = 1u16;
 
 		#[extrinsic_call]
-		add_guardian(RawOrigin::Root, new_guardian.clone());
+		set_guardians_and_threshold(RawOrigin::Root, guardians.clone(), threshold);
 
-		// Verify guardian was added
-		let guardians = Guardians::<T>::get();
-		assert!(guardians.contains(&new_guardian));
-		assert_eq!(guardians.len(), (g + 1) as usize);
+		assert_eq!(Guardians::<T>::get(), guardians);
+		assert_eq!(ApproveThreshold::<T>::get(), threshold);
 	}
 
 	#[benchmark]
-	fn remove_guardian(g: Linear<2, 100>) {
-		// Setup guardians (at least 2 to maintain valid thresholds)
-		let guardians = setup_guardians::<T>(g);
-		ApproveThreshold::<T>::put(1u16);
-		DenyThreshold::<T>::put(1u16);
-
-		let guardian_to_remove = guardians[0].clone();
-
+	fn pause() {
 		#[extrinsic_call]
-		remove_guardian(RawOrigin::Root, guardian_to_remove.clone());
+		pause(RawOrigin::Root);
 
-		// Verify guardian was removed
-		let remaining_guardians = Guardians::<T>::get();
-		assert!(!remaining_guardians.contains(&guardian_to_remove));
-		assert_eq!(remaining_guardians.len(), (g - 1) as usize);
+		assert_eq!(Paused::<T>::get(), true);
 	}
 
 	#[benchmark]
-	fn set_approve_threshold() {
-		// Setup
-		setup_guardians::<T>(10);
-		let new_threshold = 5u16;
+	fn unpause() {
+		Paused::<T>::put(true);
 
 		#[extrinsic_call]
-		set_approve_threshold(RawOrigin::Root, new_threshold);
+		unpause(RawOrigin::Root);
 
-		assert_eq!(ApproveThreshold::<T>::get(), new_threshold);
-	}
-
-	#[benchmark]
-	fn set_deny_threshold() {
-		// Setup
-		setup_guardians::<T>(10);
-		let new_threshold = 5u16;
-
-		#[extrinsic_call]
-		set_deny_threshold(RawOrigin::Root, new_threshold);
-
-		assert_eq!(DenyThreshold::<T>::get(), new_threshold);
-	}
-
-	#[benchmark]
-	fn set_paused() {
-		let paused = true;
-
-		#[extrinsic_call]
-		set_paused(RawOrigin::Root, paused);
-
-		assert_eq!(Paused::<T>::get(), paused);
+		assert_eq!(Paused::<T>::get(), false);
 	}
 
 	#[benchmark]
@@ -336,13 +296,13 @@ mod benchmarks {
 	}
 
 	#[benchmark]
-	fn set_signature_ttl() {
-		let new_ttl: BlockNumberFor<T> = 200u32.into();
+	fn set_min_withdrawal_amount() {
+		let amount = 2_000_000_000u128;
 
 		#[extrinsic_call]
-		set_signature_ttl(RawOrigin::Root, new_ttl);
+		set_min_withdrawal_amount(RawOrigin::Root, amount);
 
-		assert_eq!(SignatureTTLBlocks::<T>::get(), new_ttl);
+		assert_eq!(MinWithdrawalAmount::<T>::get(), amount);
 	}
 
 	impl_benchmark_test_suite!(AlphaBridge, crate::mock::new_test_ext(), crate::mock::Test);

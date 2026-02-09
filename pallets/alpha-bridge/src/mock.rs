@@ -144,6 +144,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 		pallet_alpha_bridge::ApproveThreshold::<Test>::put(DEFAULT_APPROVE_THRESHOLD);
 		pallet_alpha_bridge::GlobalMintCap::<Test>::put(DEFAULT_MINT_CAP);
 		pallet_alpha_bridge::Paused::<Test>::put(false);
+		pallet_alpha_bridge::MinWithdrawalAmount::<Test>::put(1u128);
 	});
 	ext
 }
