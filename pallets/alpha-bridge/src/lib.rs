@@ -53,7 +53,13 @@ pub use pallet::*;
 const STORAGE_VERSION: StorageVersion = StorageVersion::new(0);
 
 /// Domain separator for withdrawal request ID generation
-const DOMAIN_WITHDRAWAL_REQUEST: &[u8] = b"HIPPIUS-WITHDRAWAL-REQUEST-v1";
+const DOMAIN_WITHDRAWAL_REQUEST: &[u8] = b"WITHDRAWAL_REQUEST-V1";
+
+/// Domain separator for deposit request ID verification
+const DOMAIN_DEPOSIT_REQUEST: &[u8] = b"DEPOSIT_REQUEST-V1";
+
+/// Conversion factor: 1 alphaRao = 1_000_000_000 halphaRao
+const HALPHA_RAO_PER_ALPHA_RAO: u128 = 1_000_000_000;
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -378,8 +384,6 @@ pub mod pallet {
 		DepositAlreadyCompleted,
 		/// Withdrawal request already completed or failed
 		WithdrawalRequestAlreadyFinalized,
-		/// Deposit details do not match existing record
-		InvalidDepositDetails,
 		/// Amount must be greater than zero
 		AmountTooSmall,
 		/// Accounting underflow - indicates a bug
@@ -390,6 +394,10 @@ pub mod pallet {
 		TTLNotExpired,
 		/// TTL must be greater than zero
 		InvalidTTL,
+		/// Recomputed request ID does not match the provided one
+		InvalidRequestId,
+		/// Withdrawal amount must be divisible by the conversion factor (no dust)
+		AmountNotBridgeable,
 	}
 
 	// ============ Extrinsics ============
@@ -411,7 +419,7 @@ pub mod pallet {
 		/// * `origin` - Must be signed by the user
 		/// * `amount` - Amount of hAlpha to burn (in halphaRao, u128)
 		#[pallet::call_index(0)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::request_unlock())]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::withdraw())]
 		pub fn withdraw(
 			origin: OriginFor<T>,
 			amount: u128,
@@ -422,6 +430,9 @@ pub mod pallet {
 
 			// Reject amounts below minimum
 			ensure!(amount >= MinWithdrawalAmount::<T>::get(), Error::<T>::AmountTooSmall);
+
+			// Reject amounts that aren't cleanly divisible (prevents dust loss in conversion)
+			ensure!(amount % HALPHA_RAO_PER_ALPHA_RAO == 0, Error::<T>::AmountNotBridgeable);
 
 			// Burn hAlpha from user immediately
 			let balance_value = Self::amount_to_balance(amount)?;
@@ -440,7 +451,7 @@ pub mod pallet {
 			})?;
 
 			// Generate unique withdrawal request ID
-			let (request_id, nonce) = Self::generate_withdrawal_request_id(&sender, &recipient, amount);
+			let (request_id, nonce) = Self::generate_withdrawal_request_id(&sender, amount);
 
 			// Create withdrawal request
 			let request = WithdrawalRequest {
@@ -477,6 +488,7 @@ pub mod pallet {
 		/// * `request_id` - The deposit request ID from Bittensor
 		/// * `recipient` - Recipient to credit hAlpha to
 		/// * `amount` - Amount to credit (in halphaRao)
+		/// * `nonce` - Nonce from the deposit request (used for ID verification)
 		#[pallet::call_index(1)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_deposit())]
 		pub fn attest_deposit(
@@ -484,17 +496,24 @@ pub mod pallet {
 			request_id: DepositId,
 			recipient: T::AccountId,
 			amount: u128,
+			nonce: u64,
 		) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
 			Self::ensure_guardian(&guardian)?;
 			Self::ensure_not_paused()?;
 
+			// Verify request_id matches recomputed hash
+			let mut verify_data = Vec::new();
+			verify_data.extend_from_slice(DOMAIN_DEPOSIT_REQUEST);
+			verify_data.extend_from_slice(&recipient.encode());
+			verify_data.extend_from_slice(&amount.to_le_bytes());
+			verify_data.extend_from_slice(&nonce.to_le_bytes());
+
+			let expected_id = H256::from(sp_core::hashing::blake2_256(&verify_data));
+			ensure!(expected_id == request_id, Error::<T>::InvalidRequestId);
+
 			// Check if deposit already exists
 			if let Some(mut deposit) = Deposits::<T>::get(request_id) {
-				// Deposit exists - verify details match to prevent poisoning
-				ensure!(deposit.recipient == recipient, Error::<T>::InvalidDepositDetails);
-				ensure!(deposit.amount == amount, Error::<T>::InvalidDepositDetails);
-
 				// Check status and vote
 				ensure!(deposit.status == DepositStatus::Pending, Error::<T>::DepositAlreadyCompleted);
 				ensure!(!deposit.votes.contains(&guardian), Error::<T>::AlreadyVoted);
@@ -543,18 +562,195 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// ============ Admin Functions ============
+		/// Guardian can cleanup a finalized deposit after TTL
+		///
+		/// # Arguments
+		/// * `origin` - Must be signed by a guardian
+		/// * `deposit_id` - The deposit ID to cleanup
+		#[pallet::call_index(2)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::cleanup_deposit())]
+		pub fn cleanup_deposit(
+			origin: OriginFor<T>,
+			deposit_id: DepositId,
+		) -> DispatchResult {
+			let caller = ensure_signed(origin)?;
+			Self::ensure_guardian(&caller)?;
+
+			let deposit = Deposits::<T>::get(deposit_id)
+				.ok_or(Error::<T>::DepositNotFound)?;
+
+			// Must be finalized (Completed or Cancelled)
+			ensure!(
+				deposit.status == DepositStatus::Completed ||
+				deposit.status == DepositStatus::Cancelled,
+				Error::<T>::RecordNotFinalized
+			);
+
+			// Must have finalized_at_block set
+			let finalized_at = deposit.finalized_at_block
+				.ok_or(Error::<T>::RecordNotFinalized)?;
+
+			// TTL must have passed since finalization
+			let current_block = frame_system::Pallet::<T>::block_number();
+			let ttl = CleanupTTLBlocks::<T>::get();
+			ensure!(current_block >= finalized_at + ttl, Error::<T>::TTLNotExpired);
+
+			// Remove from storage
+			Deposits::<T>::remove(deposit_id);
+
+			Self::deposit_event(Event::DepositCleanedUp { id: deposit_id });
+
+			Ok(())
+		}
+
+		/// Guardian can cleanup a withdrawal request after TTL (no status check for source records)
+		///
+		/// # Arguments
+		/// * `origin` - Must be signed by a guardian
+		/// * `request_id` - The withdrawal request ID to cleanup
+		#[pallet::call_index(3)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::cleanup_withdrawal_request())]
+		pub fn cleanup_withdrawal_request(
+			origin: OriginFor<T>,
+			request_id: WithdrawalRequestId,
+		) -> DispatchResult {
+			let caller = ensure_signed(origin)?;
+			Self::ensure_guardian(&caller)?;
+
+			let request = WithdrawalRequests::<T>::get(request_id)
+				.ok_or(Error::<T>::WithdrawalRequestNotFound)?;
+
+			// TTL must have passed since creation (no status check for source records)
+			let current_block = frame_system::Pallet::<T>::block_number();
+			let ttl = CleanupTTLBlocks::<T>::get();
+			ensure!(current_block >= request.created_at_block + ttl, Error::<T>::TTLNotExpired);
+
+			// Remove from storage
+			WithdrawalRequests::<T>::remove(request_id);
+
+			Self::deposit_event(Event::WithdrawalRequestCleanedUp { id: request_id });
+
+			Ok(())
+		}
+
+		// ============ Admin Configuration ============
+
+		/// Atomically set the guardian set and threshold (sudo/root only)
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `guardians` - New guardian set
+		/// * `approve_threshold` - Minimum guardian votes needed
+		#[pallet::call_index(4)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_guardians_and_threshold(guardians.len() as u32))]
+		pub fn set_guardians_and_threshold(
+			origin: OriginFor<T>,
+			guardians: Vec<T::AccountId>,
+			approve_threshold: u16,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			ensure!(guardians.len() <= MAX_GUARDIANS, Error::<T>::TooManyGuardians);
+			let guardian_count = guardians.len() as u16;
+			ensure!(approve_threshold > 0, Error::<T>::ThresholdTooLow);
+			ensure!(approve_threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
+			Guardians::<T>::put(guardians.clone());
+			ApproveThreshold::<T>::put(approve_threshold);
+			Self::deposit_event(Event::GuardiansUpdated { guardians, approve_threshold });
+			Ok(())
+		}
+
+		/// Pause the bridge (sudo/root only)
+		#[pallet::call_index(5)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::pause())]
+		pub fn pause(origin: OriginFor<T>) -> DispatchResult {
+			ensure_root(origin)?;
+			Paused::<T>::put(true);
+			Self::deposit_event(Event::Paused);
+			Ok(())
+		}
+
+		/// Unpause the bridge (sudo/root only)
+		#[pallet::call_index(6)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::unpause())]
+		pub fn unpause(origin: OriginFor<T>) -> DispatchResult {
+			ensure_root(origin)?;
+			Paused::<T>::put(false);
+			Self::deposit_event(Event::Unpaused);
+			Ok(())
+		}
+
+		/// Set the global mint cap (sudo/root only)
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `cap` - Maximum total hAlpha that can be minted
+		#[pallet::call_index(7)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_global_mint_cap())]
+		pub fn set_global_mint_cap(origin: OriginFor<T>, cap: u128) -> DispatchResult {
+			ensure_root(origin)?;
+
+			let total_minted = TotalMintedByBridge::<T>::get();
+			ensure!(cap >= total_minted, Error::<T>::CapExceeded);
+
+			GlobalMintCap::<T>::put(cap);
+			Self::deposit_event(Event::GlobalMintCapUpdated { new_cap: cap });
+
+			Ok(())
+		}
+
+		/// Admin sets the cleanup TTL (in blocks)
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `ttl_blocks` - TTL in blocks before finalized records can be cleaned up
+		#[pallet::call_index(8)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_cleanup_ttl())]
+		pub fn set_cleanup_ttl(
+			origin: OriginFor<T>,
+			ttl_blocks: BlockNumberFor<T>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			ensure!(ttl_blocks > Zero::zero(), Error::<T>::InvalidTTL);
+
+			let old_ttl = CleanupTTLBlocks::<T>::get();
+			CleanupTTLBlocks::<T>::put(ttl_blocks);
+
+			Self::deposit_event(Event::CleanupTTLUpdated { old_ttl, new_ttl: ttl_blocks });
+
+			Ok(())
+		}
+
+		/// Admin sets the minimum withdrawal amount
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `amount` - Minimum amount of hAlpha to withdraw (in halphaRao)
+		#[pallet::call_index(9)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_min_withdrawal_amount())]
+		pub fn set_min_withdrawal_amount(origin: OriginFor<T>, amount: u128) -> DispatchResult {
+			ensure_root(origin)?;
+			ensure!(amount > 0, Error::<T>::AmountTooSmall);
+			let old = MinWithdrawalAmount::<T>::get();
+			MinWithdrawalAmount::<T>::put(amount);
+			Self::deposit_event(Event::MinWithdrawalAmountUpdated { old_amount: old, new_amount: amount });
+			Ok(())
+		}
+
+		// ============ Admin Emergency Functions ============
 
 		/// Admin cancels a deposit that is stuck (Pending but not reaching threshold)
 		///
-		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		/// # Pause Behavior
+		/// Intentionally does NOT check pause state. Admin emergency/recovery
+		/// functions must remain operational when the bridge is paused, since
+		/// pausing is the first step in incident response.
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
 		/// * `request_id` - The deposit ID to cancel
 		/// * `reason` - Reason for cancellation
-		#[pallet::call_index(2)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::expire_pending_deposit())]
+		#[pallet::call_index(10)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::admin_cancel_deposit())]
 		pub fn admin_cancel_deposit(
 			origin: OriginFor<T>,
 			request_id: DepositId,
@@ -583,13 +779,16 @@ pub mod pallet {
 		/// This restores the hAlpha that was burned during withdraw(). The mint cap
 		/// check and TotalMintedByBridge update are performed to maintain accounting.
 		///
-		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		/// # Pause Behavior
+		/// Intentionally does NOT check pause state. Admin emergency/recovery
+		/// functions must remain operational when the bridge is paused, since
+		/// pausing is the first step in incident response.
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
 		/// * `request_id` - The withdrawal request ID to fail
-		#[pallet::call_index(3)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::expire_pending_unlock())]
+		#[pallet::call_index(11)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::admin_fail_withdrawal_request())]
 		pub fn admin_fail_withdrawal_request(
 			origin: OriginFor<T>,
 			request_id: WithdrawalRequestId,
@@ -637,15 +836,18 @@ pub mod pallet {
 		/// WARNING: This mints new hAlpha that wasn't part of a deposit flow.
 		/// Only use for emergency recovery. The amount counts toward the mint cap.
 		///
-		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		/// # Pause Behavior
+		/// Intentionally does NOT check pause state. Admin emergency/recovery
+		/// functions must remain operational when the bridge is paused, since
+		/// pausing is the first step in incident response.
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
 		/// * `recipient` - Account to receive hAlpha
 		/// * `amount` - Amount to mint (in halphaRao)
 		/// * `deposit_id` - Optional deposit ID for audit trail
-		#[pallet::call_index(4)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_global_mint_cap())]
+		#[pallet::call_index(12)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::admin_manual_mint())]
 		pub fn admin_manual_mint(
 			origin: OriginFor<T>,
 			recipient: T::AccountId,
@@ -667,180 +869,6 @@ pub mod pallet {
 
 			Self::deposit_event(Event::AdminManualMint { recipient, amount, deposit_id });
 
-			Ok(())
-		}
-
-		/// Atomically set the guardian set and threshold (sudo/root only)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `guardians` - New guardian set
-		/// * `approve_threshold` - Minimum guardian votes needed
-		#[pallet::call_index(5)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_guardians_and_threshold(guardians.len() as u32))]
-		pub fn set_guardians_and_threshold(
-			origin: OriginFor<T>,
-			guardians: Vec<T::AccountId>,
-			approve_threshold: u16,
-		) -> DispatchResult {
-			ensure_root(origin)?;
-			ensure!(guardians.len() <= MAX_GUARDIANS, Error::<T>::TooManyGuardians);
-			let guardian_count = guardians.len() as u16;
-			ensure!(approve_threshold > 0, Error::<T>::ThresholdTooLow);
-			ensure!(approve_threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
-			Guardians::<T>::put(guardians.clone());
-			ApproveThreshold::<T>::put(approve_threshold);
-			Self::deposit_event(Event::GuardiansUpdated { guardians, approve_threshold });
-			Ok(())
-		}
-
-		/// Pause the bridge (sudo/root only)
-		#[pallet::call_index(8)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::pause())]
-		pub fn pause(origin: OriginFor<T>) -> DispatchResult {
-			ensure_root(origin)?;
-			Paused::<T>::put(true);
-			Self::deposit_event(Event::Paused);
-			Ok(())
-		}
-
-		/// Unpause the bridge (sudo/root only)
-		#[pallet::call_index(14)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::unpause())]
-		pub fn unpause(origin: OriginFor<T>) -> DispatchResult {
-			ensure_root(origin)?;
-			Paused::<T>::put(false);
-			Self::deposit_event(Event::Unpaused);
-			Ok(())
-		}
-
-		/// Set the global mint cap (sudo/root only)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `cap` - Maximum total hAlpha that can be minted
-		#[pallet::call_index(9)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_global_mint_cap())]
-		pub fn set_global_mint_cap(origin: OriginFor<T>, cap: u128) -> DispatchResult {
-			ensure_root(origin)?;
-
-			let total_minted = TotalMintedByBridge::<T>::get();
-			ensure!(cap >= total_minted, Error::<T>::CapExceeded);
-
-			GlobalMintCap::<T>::put(cap);
-			Self::deposit_event(Event::GlobalMintCapUpdated { new_cap: cap });
-
-			Ok(())
-		}
-
-		// ============ Cleanup Functions ============
-
-		/// Guardian can cleanup a finalized deposit after TTL
-		///
-		/// # Arguments
-		/// * `origin` - Must be signed by a guardian
-		/// * `deposit_id` - The deposit ID to cleanup
-		#[pallet::call_index(10)]
-		#[pallet::weight(10_000)]
-		pub fn cleanup_deposit(
-			origin: OriginFor<T>,
-			deposit_id: DepositId,
-		) -> DispatchResult {
-			let caller = ensure_signed(origin)?;
-			Self::ensure_guardian(&caller)?;
-
-			let deposit = Deposits::<T>::get(deposit_id)
-				.ok_or(Error::<T>::DepositNotFound)?;
-
-			// Must be finalized (Completed or Cancelled)
-			ensure!(
-				deposit.status == DepositStatus::Completed ||
-				deposit.status == DepositStatus::Cancelled,
-				Error::<T>::RecordNotFinalized
-			);
-
-			// Must have finalized_at_block set
-			let finalized_at = deposit.finalized_at_block
-				.ok_or(Error::<T>::RecordNotFinalized)?;
-
-			// TTL must have passed since finalization
-			let current_block = frame_system::Pallet::<T>::block_number();
-			let ttl = CleanupTTLBlocks::<T>::get();
-			ensure!(current_block >= finalized_at + ttl, Error::<T>::TTLNotExpired);
-
-			// Remove from storage
-			Deposits::<T>::remove(deposit_id);
-
-			Self::deposit_event(Event::DepositCleanedUp { id: deposit_id });
-
-			Ok(())
-		}
-
-		/// Guardian can cleanup a withdrawal request after TTL (no status check for source records)
-		///
-		/// # Arguments
-		/// * `origin` - Must be signed by a guardian
-		/// * `request_id` - The withdrawal request ID to cleanup
-		#[pallet::call_index(11)]
-		#[pallet::weight(10_000)]
-		pub fn cleanup_withdrawal_request(
-			origin: OriginFor<T>,
-			request_id: WithdrawalRequestId,
-		) -> DispatchResult {
-			let caller = ensure_signed(origin)?;
-			Self::ensure_guardian(&caller)?;
-
-			let request = WithdrawalRequests::<T>::get(request_id)
-				.ok_or(Error::<T>::WithdrawalRequestNotFound)?;
-
-			// TTL must have passed since creation (no status check for source records)
-			let current_block = frame_system::Pallet::<T>::block_number();
-			let ttl = CleanupTTLBlocks::<T>::get();
-			ensure!(current_block >= request.created_at_block + ttl, Error::<T>::TTLNotExpired);
-
-			// Remove from storage
-			WithdrawalRequests::<T>::remove(request_id);
-
-			Self::deposit_event(Event::WithdrawalRequestCleanedUp { id: request_id });
-
-			Ok(())
-		}
-
-		/// Admin sets the cleanup TTL (in blocks)
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `ttl_blocks` - TTL in blocks before finalized records can be cleaned up
-		#[pallet::call_index(12)]
-		#[pallet::weight(10_000)]
-		pub fn set_cleanup_ttl(
-			origin: OriginFor<T>,
-			ttl_blocks: BlockNumberFor<T>,
-		) -> DispatchResult {
-			ensure_root(origin)?;
-			ensure!(ttl_blocks > Zero::zero(), Error::<T>::InvalidTTL);
-
-			let old_ttl = CleanupTTLBlocks::<T>::get();
-			CleanupTTLBlocks::<T>::put(ttl_blocks);
-
-			Self::deposit_event(Event::CleanupTTLUpdated { old_ttl, new_ttl: ttl_blocks });
-
-			Ok(())
-		}
-
-		/// Admin sets the minimum withdrawal amount
-		///
-		/// # Arguments
-		/// * `origin` - Must be root
-		/// * `amount` - Minimum amount of hAlpha to withdraw (in halphaRao)
-		#[pallet::call_index(13)]
-		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_min_withdrawal_amount())]
-		pub fn set_min_withdrawal_amount(origin: OriginFor<T>, amount: u128) -> DispatchResult {
-			ensure_root(origin)?;
-			ensure!(amount > 0, Error::<T>::AmountTooSmall);
-			let old = MinWithdrawalAmount::<T>::get();
-			MinWithdrawalAmount::<T>::put(amount);
-			Self::deposit_event(Event::MinWithdrawalAmountUpdated { old_amount: old, new_amount: amount });
 			Ok(())
 		}
 	}
@@ -871,19 +899,23 @@ pub mod pallet {
 		}
 
 		/// Generate a unique withdrawal request ID using nonce
+		///
+		/// Uses the destination-chain amount (alphaRao) in the hash.
+		/// The conversion happens here at ID generation time.
 		pub fn generate_withdrawal_request_id(
-			sender: &T::AccountId,
-			recipient: &T::AccountId,
+			account: &T::AccountId,
 			amount: u128,
 		) -> (WithdrawalRequestId, u64) {
 			let nonce = NextWithdrawalRequestNonce::<T>::get();
 			NextWithdrawalRequestNonce::<T>::put(nonce.saturating_add(1));
 
+			// Hash uses the destination-chain amount (alphaRao)
+			let alpha_amount = amount / HALPHA_RAO_PER_ALPHA_RAO;
+
 			let mut data = Vec::new();
 			data.extend_from_slice(DOMAIN_WITHDRAWAL_REQUEST);
-			data.extend_from_slice(&sender.encode());
-			data.extend_from_slice(&recipient.encode());
-			data.extend_from_slice(&amount.to_le_bytes());
+			data.extend_from_slice(&account.encode());
+			data.extend_from_slice(&alpha_amount.to_le_bytes());
 			data.extend_from_slice(&nonce.to_le_bytes());
 
 			(H256::from(sp_core::hashing::blake2_256(&data)), nonce)

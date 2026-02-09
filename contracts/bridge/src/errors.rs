@@ -29,8 +29,6 @@ pub enum Error {
 	InvalidThresholds,
 	/// Too many guardians provided
 	TooManyGuardians,
-	/// Withdrawal details do not match existing record
-	InvalidWithdrawalDetails,
 	/// TTL must be greater than zero
 	InvalidTTL,
 
@@ -61,6 +59,10 @@ pub enum Error {
 	StakeConsolidationFailed,
 	/// Code upgrade failed
 	CodeUpgradeFailed,
+
+	// ============ Validation Errors (ID) ============
+	/// Recomputed request ID does not match the provided one
+	InvalidRequestId,
 
 	// ============ Cleanup Errors ============
 	/// Record is not finalized (must be Completed or Cancelled)

@@ -66,11 +66,11 @@ mod bridge {
 
 		// ============ Deposit Requests (Source Side) ============
 		/// Nonce for generating unique deposit request IDs
-		next_deposit_nonce: DepositNonce,
+		next_deposit_nonce: Nonce,
 		/// User-created deposit requests (Alpha locked, awaiting hAlpha on Hippius)
 		deposit_requests: Mapping<DepositRequestId, DepositRequest>,
 		/// Map nonce to deposit request ID for recovery
-		nonce_to_deposit_request_id: Mapping<DepositNonce, DepositRequestId>,
+		nonce_to_deposit_request_id: Mapping<Nonce, DepositRequestId>,
 
 		// ============ Withdrawals (Destination Side) ============
 		/// Guardian-created withdrawal records (Hippius withdrawal observed, release Alpha)
@@ -200,14 +200,16 @@ mod bridge {
 			self.next_deposit_nonce =
 				self.next_deposit_nonce.checked_add(1).ok_or(Error::Overflow)?;
 
+			// Hash uses the destination-chain amount (halphaRao)
+			let halpha_amount = (amount as u128)
+				.checked_mul(HALPHA_RAO_PER_ALPHA_RAO)
+				.ok_or(Error::Overflow)?;
+
 			let mut canonical_bytes = Vec::new();
 			canonical_bytes.extend_from_slice(DOMAIN_DEPOSIT_REQUEST);
-			canonical_bytes.extend_from_slice(&self.chain_id.to_le_bytes());
-			canonical_bytes.extend_from_slice(contract_account.as_ref());
-			canonical_bytes.extend_from_slice(&deposit_nonce.to_le_bytes());
 			canonical_bytes.extend_from_slice(sender.as_ref());
-			canonical_bytes.extend_from_slice(recipient.as_ref());
-			canonical_bytes.extend_from_slice(&amount.to_le_bytes());
+			canonical_bytes.extend_from_slice(&halpha_amount.to_le_bytes());
+			canonical_bytes.extend_from_slice(&deposit_nonce.to_le_bytes());
 
 			let deposit_request_id = {
 				let mut hash_output = <<Blake2x256 as HashOutput>::Type as Default>::default();
@@ -231,11 +233,8 @@ mod bridge {
 			self.nonce_to_deposit_request_id.insert(deposit_nonce, &deposit_request_id);
 
 			self.env().emit_event(DepositRequestCreated {
-				chain_id: self.chain_id,
-				escrow_contract: contract_account,
 				deposit_nonce,
 				sender,
-				recipient,
 				amount,
 				deposit_request_id,
 			});
@@ -255,6 +254,7 @@ mod bridge {
 		/// * `request_id` - The withdrawal request ID from Hippius
 		/// * `recipient` - Recipient to release Alpha to
 		/// * `amount` - Amount to release (in alphaRao)
+		/// * `nonce` - Nonce from the withdrawal request (used for ID verification)
 		#[ink(message)]
 		#[allow(clippy::cast_possible_truncation)] // vote_count bounded by MAX_GUARDIANS (10)
 		pub fn attest_withdrawal(
@@ -262,21 +262,31 @@ mod bridge {
 			request_id: WithdrawalId,
 			recipient: AccountId,
 			amount: Balance,
+			nonce: Nonce,
 		) -> Result<(), Error> {
 			self.ensure_not_paused()?;
 			self.ensure_guardian()?;
 
+			// Verify request_id matches recomputed hash
+			let mut verify_bytes = Vec::new();
+			verify_bytes.extend_from_slice(DOMAIN_WITHDRAWAL_REQUEST);
+			verify_bytes.extend_from_slice(recipient.as_ref());
+			verify_bytes.extend_from_slice(&(amount as u128).to_le_bytes());
+			verify_bytes.extend_from_slice(&nonce.to_le_bytes());
+
+			let expected_id = {
+				let mut hash_output = <<Blake2x256 as HashOutput>::Type as Default>::default();
+				<Blake2x256 as CryptoHash>::hash(&verify_bytes, &mut hash_output);
+				Hash::from(hash_output)
+			};
+
+			if expected_id != request_id {
+				return Err(Error::InvalidRequestId);
+			}
+
 			let caller = self.env().caller();
 
 			if let Some(mut withdrawal) = self.withdrawals.get(request_id) {
-				// Withdrawal exists - verify details match to prevent poisoning
-				if withdrawal.recipient != recipient {
-					return Err(Error::InvalidWithdrawalDetails);
-				}
-				if withdrawal.amount != amount {
-					return Err(Error::InvalidWithdrawalDetails);
-				}
-
 				// Check status and vote
 				if withdrawal.status != WithdrawalStatus::Pending {
 					return Err(Error::WithdrawalAlreadyFinalized);
@@ -334,7 +344,10 @@ mod bridge {
 		///
 		/// After calling this, admin should manually release Alpha via admin_manual_release.
 		///
-		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		/// # Pause Behavior
+		/// Intentionally does NOT check pause state. Admin emergency/recovery
+		/// functions must remain operational when the bridge is paused, since
+		/// pausing is the first step in incident response.
 		///
 		/// # Arguments
 		/// * `request_id` - The deposit request ID to fail
@@ -364,12 +377,20 @@ mod bridge {
 
 		/// Admin manually releases Alpha to a recipient (for stuck deposits)
 		///
-		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		/// # Pause Behavior
+		/// Intentionally does NOT check pause state. Admin emergency/recovery
+		/// functions must remain operational when the bridge is paused, since
+		/// pausing is the first step in incident response.
+		///
+		/// The `deposit_request_id` parameter is intentionally optional and is NOT
+		/// validated against storage — it exists solely for the audit trail in
+		/// emitted events. This allows emergency releases even when the deposit
+		/// request record may be missing or corrupted.
 		///
 		/// # Arguments
 		/// * `recipient` - Account to receive Alpha
 		/// * `amount` - Amount to release (in alphaRao)
-		/// * `deposit_request_id` - Optional deposit request ID for audit trail
+		/// * `deposit_request_id` - Optional deposit request ID for audit trail (not validated)
 		#[ink(message)]
 		pub fn admin_manual_release(
 			&mut self,
@@ -394,7 +415,10 @@ mod bridge {
 
 		/// Admin cancels a withdrawal that is stuck
 		///
-		/// NOTE: Intentionally does not check pause state — admin must operate during emergencies.
+		/// # Pause Behavior
+		/// Intentionally does NOT check pause state. Admin emergency/recovery
+		/// functions must remain operational when the bridge is paused, since
+		/// pausing is the first step in incident response.
 		///
 		/// # Arguments
 		/// * `request_id` - The withdrawal ID to cancel
@@ -597,7 +621,7 @@ mod bridge {
 		#[ink(message)]
 		pub fn get_deposit_request_id_by_nonce(
 			&self,
-			nonce: DepositNonce,
+			nonce: Nonce,
 		) -> Option<DepositRequestId> {
 			self.nonce_to_deposit_request_id.get(nonce)
 		}
@@ -618,7 +642,7 @@ mod bridge {
 		}
 
 		#[ink(message)]
-		pub fn next_deposit_nonce(&self) -> DepositNonce {
+		pub fn next_deposit_nonce(&self) -> Nonce {
 			self.next_deposit_nonce
 		}
 
@@ -735,6 +759,19 @@ mod bridge {
 	mod tests {
 		use super::*;
 
+		/// Generate a valid withdrawal request ID using the same hash format as the contract verifies.
+		fn generate_withdrawal_id(recipient: AccountId, amount: Balance, nonce: Nonce) -> Hash {
+			let mut data = Vec::new();
+			data.extend_from_slice(DOMAIN_WITHDRAWAL_REQUEST);
+			data.extend_from_slice(recipient.as_ref());
+			data.extend_from_slice(&(amount as u128).to_le_bytes());
+			data.extend_from_slice(&nonce.to_le_bytes());
+
+			let mut hash_output = <<Blake2x256 as HashOutput>::Type as Default>::default();
+			<Blake2x256 as CryptoHash>::hash(&data, &mut hash_output);
+			Hash::from(hash_output)
+		}
+
 		#[ink::test]
 		fn constructor_works() {
 			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
@@ -827,11 +864,12 @@ mod bridge {
 
 			// Call attest_withdrawal as guardian bob
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let recipient = accounts.django;
 			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
 
-			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce);
 			assert!(result.is_ok());
 
 			// Verify the withdrawal record was created
@@ -854,17 +892,18 @@ mod bridge {
 			let guardians = vec![accounts.bob, accounts.charlie, accounts.django];
 			bridge.set_guardians_and_threshold(guardians, 3).unwrap();
 
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let recipient = accounts.eve;
 			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
 
 			// First attestation by bob
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce).unwrap();
 
 			// Second attestation by charlie
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
-			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce);
 			assert!(result.is_ok());
 
 			// Verify the withdrawal record has 2 votes
@@ -884,19 +923,22 @@ mod bridge {
 			let guardians = vec![accounts.bob, accounts.charlie];
 			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
 
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let recipient = accounts.eve;
 			let wrong_recipient = accounts.django;
 			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
 
 			// First attestation by bob with correct recipient
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce).unwrap();
 
-			// Second attestation by charlie with wrong recipient
+			// Second attestation by charlie with wrong recipient — fails ID verification
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
-			let result = bridge.attest_withdrawal(withdrawal_id, wrong_recipient, amount);
-			assert_eq!(result, Err(Error::InvalidWithdrawalDetails));
+			let wrong_id = generate_withdrawal_id(wrong_recipient, amount, nonce);
+			// Using the original withdrawal_id but wrong recipient should fail ID check
+			let result = bridge.attest_withdrawal(withdrawal_id, wrong_recipient, amount, nonce);
+			assert_eq!(result, Err(Error::InvalidRequestId));
 		}
 
 		#[ink::test]
@@ -908,19 +950,20 @@ mod bridge {
 			let guardians = vec![accounts.bob, accounts.charlie];
 			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
 
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let recipient = accounts.eve;
 			let amount: Balance = 1_000_000_000;
 			let wrong_amount: Balance = 2_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
 
 			// First attestation by bob with correct amount
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce).unwrap();
 
-			// Second attestation by charlie with wrong amount
+			// Second attestation by charlie with wrong amount — fails ID verification
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
-			let result = bridge.attest_withdrawal(withdrawal_id, recipient, wrong_amount);
-			assert_eq!(result, Err(Error::InvalidWithdrawalDetails));
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, wrong_amount, nonce);
+			assert_eq!(result, Err(Error::InvalidRequestId));
 		}
 
 		#[ink::test]
@@ -932,16 +975,17 @@ mod bridge {
 			let guardians = vec![accounts.bob, accounts.charlie];
 			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
 
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let recipient = accounts.eve;
 			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
 
 			// First attestation by bob
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce).unwrap();
 
 			// Try to vote again as bob
-			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce);
 			assert_eq!(result, Err(Error::AlreadyVoted));
 		}
 
@@ -954,13 +998,14 @@ mod bridge {
 			let guardians = vec![accounts.bob, accounts.charlie];
 			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
 
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let recipient = accounts.eve;
 			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
 
 			// Try to attest as django (not a guardian)
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
-			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce);
 			assert_eq!(result, Err(Error::NotGuardian));
 		}
 
@@ -1060,12 +1105,13 @@ mod bridge {
 			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
 
 			// Create a withdrawal via attest_withdrawal
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let recipient = accounts.eve;
 			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
 
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce).unwrap();
 
 			// Admin cancels the withdrawal
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
@@ -1087,12 +1133,13 @@ mod bridge {
 			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
 
 			// Create a withdrawal
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let recipient = accounts.eve;
 			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
 
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-			bridge.attest_withdrawal(withdrawal_id, recipient, amount).unwrap();
+			bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce).unwrap();
 
 			// Try to cancel as non-owner
 			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
@@ -1145,8 +1192,11 @@ mod bridge {
 
 			// Try to attest
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
-			let withdrawal_id = Hash::from([1u8; 32]);
-			let result = bridge.attest_withdrawal(withdrawal_id, accounts.eve, 1_000_000_000);
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce);
 			assert_eq!(result, Err(Error::BridgePaused));
 		}
 
@@ -1159,12 +1209,16 @@ mod bridge {
 			let guardians = vec![accounts.bob, accounts.charlie, accounts.django];
 			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
 
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
+
 			// Insert a completed withdrawal directly
-			let withdrawal_id = Hash::from([1u8; 32]);
 			let withdrawal = Withdrawal {
 				request_id: withdrawal_id,
-				recipient: accounts.eve,
-				amount: 1_000_000_000,
+				recipient,
+				amount,
 				votes: vec![accounts.bob, accounts.charlie],
 				status: WithdrawalStatus::Completed,
 				created_at_block: 0,
@@ -1174,7 +1228,7 @@ mod bridge {
 
 			// Try to attest on a completed withdrawal
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
-			let result = bridge.attest_withdrawal(withdrawal_id, accounts.eve, 1_000_000_000);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce);
 			assert_eq!(result, Err(Error::WithdrawalAlreadyFinalized));
 		}
 
@@ -1490,6 +1544,64 @@ mod bridge {
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
 			let result = bridge.set_min_deposit_amount(2_000_000_000);
 			assert_eq!(result, Err(Error::Unauthorized));
+		}
+
+		// ============ Request ID Verification Tests ============
+
+		#[ink::test]
+		fn attest_withdrawal_with_wrong_nonce_fails() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+			let correct_nonce: Nonce = 5;
+			let wrong_nonce: Nonce = 99;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, correct_nonce);
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, wrong_nonce);
+			assert_eq!(result, Err(Error::InvalidRequestId));
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_with_correct_nonce_passes() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 42;
+			let withdrawal_id = generate_withdrawal_id(recipient, amount, nonce);
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce);
+			assert!(result.is_ok());
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_with_fabricated_id_fails() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			let guardians = vec![accounts.bob, accounts.charlie];
+			bridge.set_guardians_and_threshold(guardians, 2).unwrap();
+
+			let recipient = accounts.eve;
+			let amount: Balance = 1_000_000_000;
+			let nonce: Nonce = 0;
+			// Use a random hash that doesn't match the computed ID
+			let fabricated_id = Hash::from([0xABu8; 32]);
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let result = bridge.attest_withdrawal(fabricated_id, recipient, amount, nonce);
+			assert_eq!(result, Err(Error::InvalidRequestId));
 		}
 	}
 }

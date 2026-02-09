@@ -42,7 +42,7 @@ Users can:
 2. **First-attestation-creates-record** — No separate propose step; first guardian vote creates the record
 3. **Symmetric recovery** — Both directions have admin recovery paths for stuck transactions
 4. **Nonce-based unique IDs** — Monotonic nonces prevent hash collisions
-5. **Poisoning prevention** — Subsequent attestations verify recipient/amount match existing record
+5. **Hash-based ID verification** — Request IDs are deterministic blake2_256 hashes of (domain, recipient, amount, nonce), so any parameter mismatch produces a different ID
 
 ## Architecture
 
@@ -261,7 +261,7 @@ Users can:
 | **Amount too small** | `AmountTooSmall` | `AmountTooSmall` |
 | **Invalid thresholds** | `InvalidThresholds` | `ThresholdTooLow` / `ThresholdTooHigh` |
 | **Too many guardians** | `TooManyGuardians` | `TooManyGuardians` |
-| **Detail mismatch** | `InvalidWithdrawalDetails` | `InvalidDepositDetails` |
+| **Invalid request ID** | `InvalidRequestId` | `InvalidRequestId` |
 | **Bridge paused** | `BridgePaused` | `BridgePaused` |
 | **Record not found** | `DepositRequestNotFound` / `WithdrawalNotFound` | `DepositNotFound` / `WithdrawalRequestNotFound` |
 | **Already finalized** | `DepositRequestAlreadyFinalized` / `WithdrawalAlreadyFinalized` | `DepositAlreadyCompleted` / `WithdrawalRequestAlreadyFinalized` |
@@ -306,25 +306,21 @@ ID = blake2_256(
 
 ## Security Considerations
 
-### Poisoning Prevention
+### Poisoning Prevention (Hash-Based ID Verification)
 
-When a record already exists, subsequent attestations verify that `recipient` and `amount` match:
+Request IDs are deterministic blake2_256 hashes over (domain, recipient, amount, nonce). Both `attest_deposit` (pallet) and `attest_withdrawal` (contract) recompute the expected ID from the supplied parameters and reject if it doesn't match:
 
 ```rust
-// Bittensor contract - attest_withdrawal
-if withdrawal.recipient != recipient {
-    return Err(Error::InvalidWithdrawalDetails);
-}
-if withdrawal.amount != amount {
-    return Err(Error::InvalidWithdrawalDetails);
-}
-
 // Hippius pallet - attest_deposit
-ensure!(deposit.recipient == recipient, Error::<T>::InvalidDepositDetails);
-ensure!(deposit.amount == amount, Error::<T>::InvalidDepositDetails);
+let expected_id = H256::from(sp_core::hashing::blake2_256(&verify_data));
+ensure!(expected_id == request_id, Error::<T>::InvalidRequestId);
+
+// Bittensor contract - attest_withdrawal
+let expected_id = Hash::from(ink::env::hash_bytes::<Blake2x256>(&data));
+if expected_id != request_id { return Err(Error::InvalidRequestId); }
 ```
 
-This prevents a malicious guardian from creating a record with wrong parameters that other guardians then vote on.
+This makes poisoning impossible — a malicious guardian cannot create a record with wrong parameters because any change to recipient, amount, or nonce produces a different ID. Subsequent guardians attesting the same ID are guaranteed to agree on the parameters.
 
 ### Mint Cap Enforcement
 

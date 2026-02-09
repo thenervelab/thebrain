@@ -32,155 +32,97 @@ use core::marker::PhantomData;
 
 /// Weight functions needed for `pallet_alpha_bridge`.
 pub trait WeightInfo {
-	fn propose_deposits(d: u32, ) -> Weight;
+	fn withdraw() -> Weight;
 	fn attest_deposit() -> Weight;
-	fn attest_unlock() -> Weight;
-	fn request_unlock() -> Weight;
-	fn expire_pending_deposit() -> Weight;
-	fn expire_pending_unlock() -> Weight;
-	fn set_guardians_and_threshold(g: u32, ) -> Weight;
+	fn cleanup_deposit() -> Weight;
+	fn cleanup_withdrawal_request() -> Weight;
+	fn set_guardians_and_threshold(g: u32) -> Weight;
 	fn pause() -> Weight;
 	fn unpause() -> Weight;
 	fn set_global_mint_cap() -> Weight;
+	fn set_cleanup_ttl() -> Weight;
 	fn set_min_withdrawal_amount() -> Weight;
+	fn admin_cancel_deposit() -> Weight;
+	fn admin_fail_withdrawal_request() -> Weight;
+	fn admin_manual_mint() -> Weight;
 }
 
 /// Weights for `pallet_alpha_bridge` using the Substrate node and recommended hardware.
 pub struct SubstrateWeight<T>(PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
 	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::LastCheckpointNonce` (r:1 w:1)
-	/// Proof: `AlphaBridge::LastCheckpointNonce` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ProcessedDeposits` (r:100 w:0)
-	/// Proof: `AlphaBridge::ProcessedDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::PendingDeposits` (r:100 w:100)
-	/// Proof: `AlphaBridge::PendingDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:0)
-	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
-	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// The range of component `d` is `[1, 100]`.
-	fn propose_deposits(d: u32, ) -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `238`
-		//  Estimated: `1723 + d * (2475 ±0)`
-		// Minimum execution time: 34_759_000 picoseconds.
-		Weight::from_parts(27_115_541, 1723)
-			// Standard Error: 7_102
-			.saturating_add(Weight::from_parts(8_897_006, 0).saturating_mul(d.into()))
-			.saturating_add(T::DbWeight::get().reads(7_u64))
-			.saturating_add(T::DbWeight::get().reads((2_u64).saturating_mul(d.into())))
-			.saturating_add(T::DbWeight::get().writes(1_u64))
-			.saturating_add(T::DbWeight::get().writes((1_u64).saturating_mul(d.into())))
-			.saturating_add(Weight::from_parts(0, 2475).saturating_mul(d.into()))
-	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
-	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::PendingDeposits` (r:1 w:1)
-	/// Proof: `AlphaBridge::PendingDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:1 w:0)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::MinWithdrawalAmount` (r:1 w:0)
+	/// Proof: `AlphaBridge::MinWithdrawalAmount` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
 	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
-	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `System::Account` (r:1 w:1)
-	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
-	/// Storage: `AlphaBridge::ProcessedDeposits` (r:0 w:1)
-	/// Proof: `AlphaBridge::ProcessedDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	fn attest_deposit() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `454`
-		//  Estimated: `3919`
-		// Minimum execution time: 60_411_000 picoseconds.
-		Weight::from_parts(61_580_000, 3919)
-			.saturating_add(T::DbWeight::get().reads(9_u64))
-			.saturating_add(T::DbWeight::get().writes(4_u64))
-	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
-	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::PendingUnlocks` (r:1 w:1)
-	/// Proof: `AlphaBridge::PendingUnlocks` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:1 w:0)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `System::Account` (r:1 w:1)
-	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
-	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
-	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn attest_unlock() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `585`
-		//  Estimated: `4050`
-		// Minimum execution time: 71_526_000 picoseconds.
-		Weight::from_parts(72_670_000, 4050)
-			.saturating_add(T::DbWeight::get().reads(8_u64))
-			.saturating_add(T::DbWeight::get().writes(3_u64))
-	}
-	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
-	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::NextWithdrawalRequestNonce` (r:1 w:1)
+	/// Proof: `AlphaBridge::NextWithdrawalRequestNonce` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// Storage: `System::Account` (r:2 w:2)
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
-	/// Storage: `AlphaBridge::NextBurnId` (r:1 w:1)
-	/// Proof: `AlphaBridge::NextBurnId` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::PendingUnlocks` (r:0 w:1)
-	/// Proof: `AlphaBridge::PendingUnlocks` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	fn request_unlock() -> Weight {
+	/// Storage: `AlphaBridge::WithdrawalRequests` (r:0 w:1)
+	/// Proof: `AlphaBridge::WithdrawalRequests` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	fn withdraw() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `94`
 		//  Estimated: `6196`
 		// Minimum execution time: 68_533_000 picoseconds.
 		Weight::from_parts(69_357_000, 6196)
-			.saturating_add(T::DbWeight::get().reads(4_u64))
-			.saturating_add(T::DbWeight::get().writes(4_u64))
+			.saturating_add(T::DbWeight::get().reads(6_u64))
+			.saturating_add(T::DbWeight::get().writes(5_u64))
 	}
-	/// Storage: `AlphaBridge::PendingDeposits` (r:1 w:1)
-	/// Proof: `AlphaBridge::PendingDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:1 w:0)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ProcessedDeposits` (r:0 w:1)
-	/// Proof: `AlphaBridge::ProcessedDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	fn expire_pending_deposit() -> Weight {
+	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
+	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
+	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::Deposits` (r:1 w:1)
+	/// Proof: `AlphaBridge::Deposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
+	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
+	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
+	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `System::Account` (r:1 w:1)
+	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
+	fn attest_deposit() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `454`
+		//  Estimated: `3919`
+		// Minimum execution time: 61_580_000 picoseconds.
+		Weight::from_parts(61_580_000, 3919)
+			.saturating_add(T::DbWeight::get().reads(7_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
+	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
+	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::Deposits` (r:1 w:1)
+	/// Proof: `AlphaBridge::Deposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::CleanupTTLBlocks` (r:1 w:0)
+	/// Proof: `AlphaBridge::CleanupTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn cleanup_deposit() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
 		//  Estimated: `3645`
-		// Minimum execution time: 21_804_000 picoseconds.
+		// Minimum execution time: 22_285_000 picoseconds.
 		Weight::from_parts(22_285_000, 3645)
-			.saturating_add(T::DbWeight::get().reads(2_u64))
-			.saturating_add(T::DbWeight::get().writes(2_u64))
+			.saturating_add(T::DbWeight::get().reads(3_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
-	/// Storage: `AlphaBridge::PendingUnlocks` (r:1 w:1)
-	/// Proof: `AlphaBridge::PendingUnlocks` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:1 w:0)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `System::Account` (r:2 w:2)
-	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
-	fn expire_pending_unlock() -> Weight {
+	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
+	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::WithdrawalRequests` (r:1 w:1)
+	/// Proof: `AlphaBridge::WithdrawalRequests` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::CleanupTTLBlocks` (r:1 w:0)
+	/// Proof: `AlphaBridge::CleanupTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn cleanup_withdrawal_request() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `454`
-		//  Estimated: `6196`
-		// Minimum execution time: 78_216_000 picoseconds.
-		Weight::from_parts(78_617_000, 6196)
-			.saturating_add(T::DbWeight::get().reads(4_u64))
-			.saturating_add(T::DbWeight::get().writes(3_u64))
+		//  Measured:  `180`
+		//  Estimated: `3645`
+		// Minimum execution time: 22_285_000 picoseconds.
+		Weight::from_parts(22_285_000, 3645)
+			.saturating_add(T::DbWeight::get().reads(3_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 	/// Storage: `AlphaBridge::Guardians` (r:0 w:1)
 	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
@@ -214,150 +156,140 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
+	/// Storage: `AlphaBridge::CleanupTTLBlocks` (r:1 w:1)
+	/// Proof: `AlphaBridge::CleanupTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn set_cleanup_ttl() -> Weight {
+		Weight::from_parts(10_090_000, 1505)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
 	/// Storage: `AlphaBridge::MinWithdrawalAmount` (r:1 w:1)
 	/// Proof: `AlphaBridge::MinWithdrawalAmount` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	fn set_min_withdrawal_amount() -> Weight {
 		Weight::from_parts(10_090_000, 1505)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
+	/// Storage: `AlphaBridge::Deposits` (r:1 w:1)
+	/// Proof: `AlphaBridge::Deposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	fn admin_cancel_deposit() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `180`
+		//  Estimated: `3645`
+		// Minimum execution time: 22_285_000 picoseconds.
+		Weight::from_parts(22_285_000, 3645)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
+	/// Storage: `AlphaBridge::WithdrawalRequests` (r:1 w:1)
+	/// Proof: `AlphaBridge::WithdrawalRequests` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
+	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
+	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `System::Account` (r:1 w:1)
+	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
+	fn admin_fail_withdrawal_request() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `454`
+		//  Estimated: `6196`
+		// Minimum execution time: 78_617_000 picoseconds.
+		Weight::from_parts(78_617_000, 6196)
+			.saturating_add(T::DbWeight::get().reads(4_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
+	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
+	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
+	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `System::Account` (r:1 w:1)
+	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
+	fn admin_manual_mint() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `94`
+		//  Estimated: `3559`
+		// Minimum execution time: 30_000_000 picoseconds.
+		Weight::from_parts(30_000_000, 3559)
+			.saturating_add(T::DbWeight::get().reads(3_u64))
+			.saturating_add(T::DbWeight::get().writes(2_u64))
 	}
 }
 
 // For backwards compatibility and tests.
 impl WeightInfo for () {
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
 	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::LastCheckpointNonce` (r:1 w:1)
-	/// Proof: `AlphaBridge::LastCheckpointNonce` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ProcessedDeposits` (r:100 w:0)
-	/// Proof: `AlphaBridge::ProcessedDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::PendingDeposits` (r:100 w:100)
-	/// Proof: `AlphaBridge::PendingDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:0)
-	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
-	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// The range of component `d` is `[1, 100]`.
-	fn propose_deposits(d: u32, ) -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `238`
-		//  Estimated: `1723 + d * (2475 ±0)`
-		// Minimum execution time: 34_759_000 picoseconds.
-		Weight::from_parts(27_115_541, 1723)
-			// Standard Error: 7_102
-			.saturating_add(Weight::from_parts(8_897_006, 0).saturating_mul(d.into()))
-			.saturating_add(RocksDbWeight::get().reads(7_u64))
-			.saturating_add(RocksDbWeight::get().reads((2_u64).saturating_mul(d.into())))
-			.saturating_add(RocksDbWeight::get().writes(1_u64))
-			.saturating_add(RocksDbWeight::get().writes((1_u64).saturating_mul(d.into())))
-			.saturating_add(Weight::from_parts(0, 2475).saturating_mul(d.into()))
-	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
-	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::PendingDeposits` (r:1 w:1)
-	/// Proof: `AlphaBridge::PendingDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:1 w:0)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::MinWithdrawalAmount` (r:1 w:0)
+	/// Proof: `AlphaBridge::MinWithdrawalAmount` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
 	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
-	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `System::Account` (r:1 w:1)
-	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
-	/// Storage: `AlphaBridge::ProcessedDeposits` (r:0 w:1)
-	/// Proof: `AlphaBridge::ProcessedDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	fn attest_deposit() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `454`
-		//  Estimated: `3919`
-		// Minimum execution time: 60_411_000 picoseconds.
-		Weight::from_parts(61_580_000, 3919)
-			.saturating_add(RocksDbWeight::get().reads(9_u64))
-			.saturating_add(RocksDbWeight::get().writes(4_u64))
-	}
-	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
-	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
-	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::PendingUnlocks` (r:1 w:1)
-	/// Proof: `AlphaBridge::PendingUnlocks` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:1 w:0)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::DenyThreshold` (r:1 w:0)
-	/// Proof: `AlphaBridge::DenyThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `System::Account` (r:1 w:1)
-	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
-	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
-	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	fn attest_unlock() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `585`
-		//  Estimated: `4050`
-		// Minimum execution time: 71_526_000 picoseconds.
-		Weight::from_parts(72_670_000, 4050)
-			.saturating_add(RocksDbWeight::get().reads(8_u64))
-			.saturating_add(RocksDbWeight::get().writes(3_u64))
-	}
-	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
-	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::NextWithdrawalRequestNonce` (r:1 w:1)
+	/// Proof: `AlphaBridge::NextWithdrawalRequestNonce` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// Storage: `System::Account` (r:2 w:2)
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
-	/// Storage: `AlphaBridge::NextBurnId` (r:1 w:1)
-	/// Proof: `AlphaBridge::NextBurnId` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::PendingUnlocks` (r:0 w:1)
-	/// Proof: `AlphaBridge::PendingUnlocks` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	fn request_unlock() -> Weight {
+	/// Storage: `AlphaBridge::WithdrawalRequests` (r:0 w:1)
+	/// Proof: `AlphaBridge::WithdrawalRequests` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	fn withdraw() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `94`
 		//  Estimated: `6196`
 		// Minimum execution time: 68_533_000 picoseconds.
 		Weight::from_parts(69_357_000, 6196)
-			.saturating_add(RocksDbWeight::get().reads(4_u64))
-			.saturating_add(RocksDbWeight::get().writes(4_u64))
+			.saturating_add(RocksDbWeight::get().reads(6_u64))
+			.saturating_add(RocksDbWeight::get().writes(5_u64))
 	}
-	/// Storage: `AlphaBridge::PendingDeposits` (r:1 w:1)
-	/// Proof: `AlphaBridge::PendingDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:1 w:0)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::ProcessedDeposits` (r:0 w:1)
-	/// Proof: `AlphaBridge::ProcessedDeposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	fn expire_pending_deposit() -> Weight {
+	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
+	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::Paused` (r:1 w:0)
+	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::Deposits` (r:1 w:1)
+	/// Proof: `AlphaBridge::Deposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::ApproveThreshold` (r:1 w:0)
+	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
+	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
+	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `System::Account` (r:1 w:1)
+	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
+	fn attest_deposit() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `454`
+		//  Estimated: `3919`
+		// Minimum execution time: 61_580_000 picoseconds.
+		Weight::from_parts(61_580_000, 3919)
+			.saturating_add(RocksDbWeight::get().reads(7_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
+	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::Deposits` (r:1 w:1)
+	/// Proof: `AlphaBridge::Deposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::CleanupTTLBlocks` (r:1 w:0)
+	/// Proof: `AlphaBridge::CleanupTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn cleanup_deposit() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
 		//  Estimated: `3645`
-		// Minimum execution time: 21_804_000 picoseconds.
+		// Minimum execution time: 22_285_000 picoseconds.
 		Weight::from_parts(22_285_000, 3645)
-			.saturating_add(RocksDbWeight::get().reads(2_u64))
-			.saturating_add(RocksDbWeight::get().writes(2_u64))
+			.saturating_add(RocksDbWeight::get().reads(3_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
-	/// Storage: `AlphaBridge::PendingUnlocks` (r:1 w:1)
-	/// Proof: `AlphaBridge::PendingUnlocks` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `AlphaBridge::SignatureTTLBlocks` (r:1 w:0)
-	/// Proof: `AlphaBridge::SignatureTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `System::Account` (r:2 w:2)
-	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
-	fn expire_pending_unlock() -> Weight {
+	/// Storage: `AlphaBridge::Guardians` (r:1 w:0)
+	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::WithdrawalRequests` (r:1 w:1)
+	/// Proof: `AlphaBridge::WithdrawalRequests` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::CleanupTTLBlocks` (r:1 w:0)
+	/// Proof: `AlphaBridge::CleanupTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn cleanup_withdrawal_request() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `454`
-		//  Estimated: `6196`
-		// Minimum execution time: 78_216_000 picoseconds.
-		Weight::from_parts(78_617_000, 6196)
-			.saturating_add(RocksDbWeight::get().reads(4_u64))
-			.saturating_add(RocksDbWeight::get().writes(3_u64))
+		//  Measured:  `180`
+		//  Estimated: `3645`
+		// Minimum execution time: 22_285_000 picoseconds.
+		Weight::from_parts(22_285_000, 3645)
+			.saturating_add(RocksDbWeight::get().reads(3_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 	/// Storage: `AlphaBridge::Guardians` (r:0 w:1)
 	/// Proof: `AlphaBridge::Guardians` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
@@ -391,11 +323,61 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
+	/// Storage: `AlphaBridge::CleanupTTLBlocks` (r:1 w:1)
+	/// Proof: `AlphaBridge::CleanupTTLBlocks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	fn set_cleanup_ttl() -> Weight {
+		Weight::from_parts(10_090_000, 1505)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
 	/// Storage: `AlphaBridge::MinWithdrawalAmount` (r:1 w:1)
 	/// Proof: `AlphaBridge::MinWithdrawalAmount` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	fn set_min_withdrawal_amount() -> Weight {
 		Weight::from_parts(10_090_000, 1505)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
+	/// Storage: `AlphaBridge::Deposits` (r:1 w:1)
+	/// Proof: `AlphaBridge::Deposits` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	fn admin_cancel_deposit() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `180`
+		//  Estimated: `3645`
+		// Minimum execution time: 22_285_000 picoseconds.
+		Weight::from_parts(22_285_000, 3645)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
+	/// Storage: `AlphaBridge::WithdrawalRequests` (r:1 w:1)
+	/// Proof: `AlphaBridge::WithdrawalRequests` (`max_values`: None, `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
+	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
+	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `System::Account` (r:1 w:1)
+	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
+	fn admin_fail_withdrawal_request() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `454`
+		//  Estimated: `6196`
+		// Minimum execution time: 78_617_000 picoseconds.
+		Weight::from_parts(78_617_000, 6196)
+			.saturating_add(RocksDbWeight::get().reads(4_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+	/// Storage: `AlphaBridge::TotalMintedByBridge` (r:1 w:1)
+	/// Proof: `AlphaBridge::TotalMintedByBridge` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `AlphaBridge::GlobalMintCap` (r:1 w:0)
+	/// Proof: `AlphaBridge::GlobalMintCap` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
+	/// Storage: `System::Account` (r:1 w:1)
+	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
+	fn admin_manual_mint() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `94`
+		//  Estimated: `3559`
+		// Minimum execution time: 30_000_000 picoseconds.
+		Weight::from_parts(30_000_000, 3559)
+			.saturating_add(RocksDbWeight::get().reads(3_u64))
+			.saturating_add(RocksDbWeight::get().writes(2_u64))
 	}
 }
