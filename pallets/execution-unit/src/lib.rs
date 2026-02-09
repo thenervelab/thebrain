@@ -333,8 +333,6 @@ pub mod pallet {
 				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 			}
 
-			Self::handle_incorrect_registration(_n);
-
 			// Clean up NodeMetrics if not registered
 			for (node_id, _) in NodeMetrics::<T>::iter() {
 				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
@@ -1273,49 +1271,6 @@ pub mod pallet {
 			let mut bytes = [0u8; 32];
 			bytes.copy_from_slice(&random_seed[..32]);
 			bytes
-		}
-
-		fn handle_incorrect_registration(current_block_number: BlockNumberFor<T>) {
-			let unregistration_period: BlockNumberFor<T> = T::UnregistrationBuffer::get().into();
-			let min_period = 50u32;
-			let max_period = 70u32;
-			let range = max_period - min_period;
-
-			// Use block number to create a pseudo-random offset
-			let pseudo_random_offset = (current_block_number % range.into()) + min_period.into();
-			let adjusted_period = unregistration_period + pseudo_random_offset - (range / 2).into();
-
-			// Check if current block matches the adjusted period
-			if current_block_number % adjusted_period == 0u32.into() {
-				let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
-				for miner in active_miners {
-					// Check if the miner has been registered for more than 36 blocks
-					if current_block_number - miner.registered_at > 36u32.into() {
-						let blocks_online = Self::block_numbers(miner.node_id.clone());
-
-						match blocks_online {
-							Some(blocks) => {
-								if let Some(&last_block) = blocks.last() {
-									let difference = current_block_number - last_block;
-									// Check if the difference exceeds 1500 for deregistration
-									if difference > 1500u32.into() {
-										// Call your deregistration logic here
-										Self::unregister_and_remove_metrics(miner.node_id.clone());
-									}
-								}
-							},
-							None => {
-								// Miner has never submitted any blocks - check if registered long enough
-								// If registered for more than 1500 blocks without any submission, deregister
-								let blocks_since_registration = current_block_number - miner.registered_at;
-								if blocks_since_registration > 1500u32.into() {
-									Self::unregister_and_remove_metrics(miner.node_id.clone());
-								}
-							}
-						}
-					}
-				}
-			}
 		}
 
 		/// Get node metrics for multiple node IDs
