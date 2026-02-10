@@ -242,7 +242,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9146,
+	spec_version: 9147,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -282,7 +282,7 @@ parameter_types! {
 	// Maximum node weight
 	pub const MaxNodeWeight: u16 = 1000;
 	// Maximum family weight
-	pub const MaxFamilyWeight: u16 = 1000;
+	pub const MaxFamilyWeight: u16 = 65_535;
 	// Number of top nodes to consider per family
 	pub const FamilyTopN: u32 = 10;
 	// Decay factor for family rank (permille)

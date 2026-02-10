@@ -1195,6 +1195,12 @@ pub mod pallet {
             sum.min(max_family as u128) as u16
         }
 
+        pub fn get_total_family_weight() -> u128 {
+            FamilyWeight::<T>::iter()
+                .map(|(_, w)| w as u128)
+                .sum()
+        }
+
         fn ilog2_u128(x: u128) -> u32 {
             if x == 0 {
                 0
