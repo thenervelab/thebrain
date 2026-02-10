@@ -96,7 +96,8 @@ pub mod pallet {
 					  pallet_credits::Config + 
 					  ipfs_pallet::Config + 
 					  pallet_balances::Config +
-					  pallet_rankings::Config
+					  pallet_rankings::Config +
+					  pallet_arion::Config
 		{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 

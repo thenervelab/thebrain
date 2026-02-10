@@ -8831,6 +8831,7 @@ dependencies = [
  "log",
  "num-traits",
  "num_cpus",
+ "pallet-arion",
  "pallet-babe 37.0.0",
  "pallet-balances 38.0.1",
  "pallet-credits",

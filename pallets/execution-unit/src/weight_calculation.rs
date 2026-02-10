@@ -91,7 +91,8 @@ impl NodeMetricsData {
             + pallet_registration::Config
             + crate::Config
             + pallet_rankings::Config
-            + pallet_credits::Config,
+            + pallet_credits::Config
+            + pallet_arion::Config,
     >(
         node_type: NodeType,
         miner_id: &Vec<u8>,
@@ -107,7 +108,7 @@ impl NodeMetricsData {
         }
 
         let price_per_gb = pallet_marketplace::Pallet::<T>::get_price_per_gb();
-        let total_network_storage = ipfs_pallet::Pallet::<T>::get_total_network_storage();
+        let total_network_storage = pallet_arion::CurrentNetworkTotals::<T>::get().total_shard_data_bytes;
         let alpha_price = pallet_credits::Pallet::<T>::alpha_price();
 
         let context = if let Some(ctx) = Self::pool_context(total_network_storage, price_per_gb, alpha_price) {
@@ -169,10 +170,10 @@ impl NodeMetricsData {
     }
 
     pub fn uid_zero_weight<
-        T: pallet_marketplace::Config + ipfs_pallet::Config + pallet_credits::Config,
+        T: pallet_marketplace::Config + ipfs_pallet::Config + pallet_credits::Config + pallet_arion::Config,
     >() -> u16 {
         let price_per_gb = pallet_marketplace::Pallet::<T>::get_price_per_gb();
-        let total_network_storage = ipfs_pallet::Pallet::<T>::get_total_network_storage();
+        let total_network_storage = pallet_arion::CurrentNetworkTotals::<T>::get().total_shard_data_bytes;
         let alpha_price = pallet_credits::Pallet::<T>::alpha_price();
 
         let context = if let Some(ctx) = Self::pool_context(total_network_storage, price_per_gb, alpha_price) {
