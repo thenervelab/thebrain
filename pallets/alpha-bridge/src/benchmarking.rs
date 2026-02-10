@@ -2,16 +2,14 @@
 #![cfg(feature = "runtime-benchmarks")]
 
 use super::*;
+#[allow(unused_imports)]
 use crate::Pallet as AlphaBridge;
+use codec::Encode;
 use frame_benchmarking::v2::*;
-use frame_support::{
-	assert_ok,
-	traits::{fungible::Mutate, Currency, Get},
-};
+use frame_support::traits::Currency;
 use frame_system::RawOrigin;
-use sp_core::{Hasher, H256};
-use sp_runtime::traits::{BlakeTwo256, Saturating};
-use sp_std::vec;
+use sp_core::H256;
+use sp_std::{collections::btree_set::BTreeSet, vec::Vec};
 
 const SEED: u32 = 0;
 
@@ -34,63 +32,81 @@ fn setup_guardians<T: Config>(count: u32) -> Vec<T::AccountId> {
 	guardians
 }
 
-/// Create a unique deposit ID from recipient and amount
-fn create_deposit_id(recipient: &[u8], amount: u64, nonce: u32) -> H256 {
+/// Generate a deposit ID using the same domain separator and hash the pallet verifies.
+fn generate_deposit_id<T: Config>(recipient: &T::AccountId, amount: u128, nonce: u64) -> H256 {
 	let mut data = Vec::new();
-	data.extend_from_slice(recipient);
+	data.extend_from_slice(DOMAIN_DEPOSIT_REQUEST);
+	data.extend_from_slice(&recipient.encode());
 	data.extend_from_slice(&amount.to_le_bytes());
 	data.extend_from_slice(&nonce.to_le_bytes());
-	BlakeTwo256::hash(&data)
+	H256::from(sp_core::hashing::blake2_256(&data))
 }
 
-/// Setup a pending deposit proposal
-fn setup_pending_deposit<T: Config>(
+/// Insert a pending deposit directly into storage.
+fn insert_pending_deposit<T: Config>(
+	deposit_id: pallet::DepositId,
 	recipient: T::AccountId,
-	amount: u64,
-) -> (DepositId, DepositRecord<T::AccountId, BlockNumberFor<T>>) {
-	let deposit_id = create_deposit_id(recipient.encode().as_slice(), amount, 0);
-	let record = DepositRecord {
-		recipient: recipient.clone(),
+	amount: u128,
+	votes: BTreeSet<T::AccountId>,
+	created_at_block: BlockNumberFor<T>,
+) {
+	let deposit = pallet::Deposit::<T> {
+		request_id: deposit_id,
+		recipient,
 		amount,
-		approve_votes: Default::default(),
-		deny_votes: Default::default(),
-		proposed_at_block: frame_system::Pallet::<T>::block_number(),
-		status: VoteStatus::Pending,
+		votes,
+		status: pallet::DepositStatus::Pending,
+		created_at_block,
+		finalized_at_block: None,
 	};
-	PendingDeposits::<T>::insert(deposit_id, record.clone());
-	(deposit_id, record)
+	Deposits::<T>::insert(deposit_id, deposit);
 }
 
-/// Setup a pending unlock request with escrowed funds
-fn setup_pending_unlock<T: Config>(
-	requester: T::AccountId,
-	amount: u64,
-) -> (BurnId, UnlockRecord<T::AccountId, BlockNumberFor<T>>) {
-	// Generate burn_id using the same logic as the pallet
-	let burn_id = Pallet::<T>::generate_burn_id(&requester, amount);
-
-	// Transfer funds to pallet escrow
-	let balance_value: BalanceOf<T> =
-		amount.try_into().ok().expect("Balance conversion should work");
-	let pallet_account = Pallet::<T>::account_id();
-	<pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
-		&requester,
-		&pallet_account,
-		balance_value,
-		frame_support::traits::ExistenceRequirement::AllowDeath,
-	)
-	.expect("Transfer should succeed");
-
-	let record = UnlockRecord {
-		requester: requester.clone(),
+/// Insert a completed deposit directly into storage (for cleanup benchmarks).
+fn insert_completed_deposit<T: Config>(
+	deposit_id: pallet::DepositId,
+	recipient: T::AccountId,
+	amount: u128,
+	finalized_at_block: BlockNumberFor<T>,
+) {
+	let deposit = pallet::Deposit::<T> {
+		request_id: deposit_id,
+		recipient,
 		amount,
-		approve_votes: Default::default(),
-		deny_votes: Default::default(),
-		requested_at_block: frame_system::Pallet::<T>::block_number(),
-		status: VoteStatus::Pending,
+		votes: BTreeSet::new(),
+		status: pallet::DepositStatus::Completed,
+		created_at_block: finalized_at_block,
+		finalized_at_block: Some(finalized_at_block),
 	};
-	PendingUnlocks::<T>::insert(burn_id, record.clone());
-	(burn_id, record)
+	Deposits::<T>::insert(deposit_id, deposit);
+}
+
+/// Insert a withdrawal request directly into storage.
+fn insert_withdrawal_request<T: Config>(
+	sender: T::AccountId,
+	amount: u128,
+	nonce: u64,
+	created_at_block: BlockNumberFor<T>,
+) -> pallet::WithdrawalRequestId {
+	let mut data = Vec::new();
+	data.extend_from_slice(DOMAIN_WITHDRAWAL_REQUEST);
+	data.extend_from_slice(&sender.encode());
+	// Use alphaRao amount for hash (amount / HALPHA_RAO_PER_ALPHA_RAO)
+	let alpha_amount = amount / HALPHA_RAO_PER_ALPHA_RAO;
+	data.extend_from_slice(&alpha_amount.to_le_bytes());
+	data.extend_from_slice(&nonce.to_le_bytes());
+	let request_id = H256::from(sp_core::hashing::blake2_256(&data));
+
+	let request = pallet::WithdrawalRequest::<T> {
+		sender: sender.clone(),
+		recipient: sender,
+		amount,
+		nonce,
+		status: pallet::WithdrawalRequestStatus::Requested,
+		created_at_block,
+	};
+	WithdrawalRequests::<T>::insert(request_id, request);
+	request_id
 }
 
 #[benchmarks]
@@ -98,230 +114,146 @@ mod benchmarks {
 	use super::*;
 
 	#[benchmark]
-	fn propose_deposits(d: Linear<1, 100>) {
+	fn withdraw() {
 		// Setup
-		let guardians = setup_guardians::<T>(3);
-		let guardian = guardians[0].clone();
-		ApproveThreshold::<T>::put(2u16);
-		DenyThreshold::<T>::put(2u16);
-		GlobalMintCap::<T>::put(1_000_000_000u128);
 		Paused::<T>::put(false);
-		let ttl: BlockNumberFor<T> = 100u32.into();
-		SignatureTTLBlocks::<T>::put(ttl);
+		MinWithdrawalAmount::<T>::put(1u128);
+		GlobalMintCap::<T>::put(1_000_000_000_000u128);
+		// Amount must be divisible by HALPHA_RAO_PER_ALPHA_RAO
+		let amount = 1_000_000_000u128;
+		// Pre-seed TotalMintedByBridge so the burn accounting doesn't underflow
+		TotalMintedByBridge::<T>::put(amount);
 
-		// Create d deposit proposals
-		let mut deposits = Vec::new();
-		for i in 0..d {
-			let recipient = create_funded_user::<T>(i, 1000);
-			let deposit_id = create_deposit_id(recipient.encode().as_slice(), 100, i);
-			deposits.push(DepositProposal { id: deposit_id, recipient, amount: 100 });
-		}
-
-		let checkpoint_nonce = 0u64;
+		let user = create_funded_user::<T>(0, 10_000_000_000);
 
 		#[extrinsic_call]
-		propose_deposits(RawOrigin::Signed(guardian.clone()), deposits.clone(), checkpoint_nonce);
+		withdraw(RawOrigin::Signed(user.clone()), amount);
 
-		// Verify first deposit was created
-		assert!(PendingDeposits::<T>::contains_key(deposits[0].id));
-		assert_eq!(LastCheckpointNonce::<T>::get(), Some(checkpoint_nonce));
+		// Verify withdrawal request was created
+		assert!(WithdrawalRequests::<T>::iter().count() == 1);
 	}
 
 	#[benchmark]
 	fn attest_deposit() {
-		// Setup
+		// Setup 3 guardians, threshold=2 (worst case: this vote triggers finalization)
 		let guardians = setup_guardians::<T>(3);
 		ApproveThreshold::<T>::put(2u16);
-		DenyThreshold::<T>::put(2u16);
-		GlobalMintCap::<T>::put(1_000_000_000u128);
+		GlobalMintCap::<T>::put(1_000_000_000_000u128);
 		Paused::<T>::put(false);
-		let ttl: BlockNumberFor<T> = 100u32.into();
-		SignatureTTLBlocks::<T>::put(ttl);
 
 		let recipient = create_funded_user::<T>(0, 1000);
-		let (deposit_id, mut record) = setup_pending_deposit::<T>(recipient.clone(), 500);
+		let amount = 1_000_000_000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id::<T>(&recipient, amount, nonce);
 
-		// Add one approval vote (need one more to reach threshold of 2)
-		record.approve_votes.insert(guardians[0].clone());
-		PendingDeposits::<T>::insert(deposit_id, record);
+		// Insert pending deposit with 1 pre-existing vote from guardian[0]
+		let mut votes = BTreeSet::new();
+		votes.insert(guardians[0].clone());
+		insert_pending_deposit::<T>(
+			deposit_id,
+			recipient.clone(),
+			amount,
+			votes,
+			frame_system::Pallet::<T>::block_number(),
+		);
 
+		// Guardian[1] calls attest_deposit (triggers finalization = worst case)
 		let guardian = guardians[1].clone();
 
 		#[extrinsic_call]
-		attest_deposit(RawOrigin::Signed(guardian.clone()), deposit_id, true);
+		attest_deposit(RawOrigin::Signed(guardian), deposit_id, recipient, amount, nonce);
 
-		// Should be approved and processed (threshold reached)
-		assert!(ProcessedDeposits::<T>::get(deposit_id));
-		assert!(!PendingDeposits::<T>::contains_key(deposit_id));
+		// Verify deposit was completed
+		let deposit = Deposits::<T>::get(deposit_id).expect("Deposit should exist");
+		assert_eq!(deposit.status, pallet::DepositStatus::Completed);
 	}
 
 	#[benchmark]
-	fn attest_unlock() {
-		// Setup
+	fn cleanup_deposit() {
+		// Setup guardians
 		let guardians = setup_guardians::<T>(3);
-		ApproveThreshold::<T>::put(2u16);
-		DenyThreshold::<T>::put(2u16);
-		Paused::<T>::put(false);
-		let ttl: BlockNumberFor<T> = 100u32.into();
-		SignatureTTLBlocks::<T>::put(ttl);
-		GlobalMintCap::<T>::put(1_000_000_000u128);
-		TotalMintedByBridge::<T>::put(1000u128);
-
-		let requester = create_funded_user::<T>(0, 10000);
-		let (burn_id, mut record) = setup_pending_unlock::<T>(requester.clone(), 500);
-
-		// Add one approval vote (need one more to reach threshold of 2)
-		record.approve_votes.insert(guardians[0].clone());
-		PendingUnlocks::<T>::insert(burn_id, record);
-
-		let guardian = guardians[1].clone();
-
-		#[extrinsic_call]
-		attest_unlock(RawOrigin::Signed(guardian.clone()), burn_id, true);
-
-		// Should be approved and finalized (threshold reached)
-		assert!(!PendingUnlocks::<T>::contains_key(burn_id));
-	}
-
-	#[benchmark]
-	fn request_unlock() {
-		// Setup
-		setup_guardians::<T>(3);
-		Paused::<T>::put(false);
-		let requester = create_funded_user::<T>(0, 10000);
-		let amount = 500u64;
-
-		#[extrinsic_call]
-		request_unlock(RawOrigin::Signed(requester.clone()), amount);
-
-		// Verify unlock request was created (check that there's a pending unlock)
-		assert!(PendingUnlocks::<T>::iter().count() == 1);
-	}
-
-	#[benchmark]
-	fn expire_pending_deposit() {
-		// Setup
-		setup_guardians::<T>(3);
-		ApproveThreshold::<T>::put(2u16);
-		let ttl: BlockNumberFor<T> = 10u32.into();
-		SignatureTTLBlocks::<T>::put(ttl);
 
 		let recipient = create_funded_user::<T>(0, 1000);
-		let (deposit_id, _) = setup_pending_deposit::<T>(recipient, 500);
+		let deposit_id = generate_deposit_id::<T>(&recipient, 1_000_000_000u128, 0);
 
-		// Advance blocks past TTL
-		let current_block = frame_system::Pallet::<T>::block_number();
-		frame_system::Pallet::<T>::set_block_number(current_block + 20u32.into());
+		// Insert completed deposit at block 1
+		let created_block: BlockNumberFor<T> = 1u32.into();
+		insert_completed_deposit::<T>(deposit_id, recipient, 1_000_000_000u128, created_block);
 
-		let caller: T::AccountId = whitelisted_caller();
+		// Set short TTL
+		CleanupTTLBlocks::<T>::put(BlockNumberFor::<T>::from(1u32));
+
+		// Advance to block 10
+		frame_system::Pallet::<T>::set_block_number(10u32.into());
+
+		let guardian = guardians[0].clone();
 
 		#[extrinsic_call]
-		expire_pending_deposit(RawOrigin::Signed(caller), deposit_id);
+		cleanup_deposit(RawOrigin::Signed(guardian), deposit_id);
 
-		// Verify deposit was removed and marked processed
-		assert!(!PendingDeposits::<T>::contains_key(deposit_id));
-		assert!(ProcessedDeposits::<T>::get(deposit_id));
+		// Verify deposit was removed
+		assert!(!Deposits::<T>::contains_key(deposit_id));
 	}
 
 	#[benchmark]
-	fn expire_pending_unlock() {
-		// Setup
-		setup_guardians::<T>(3);
-		ApproveThreshold::<T>::put(2u16);
-		let ttl: BlockNumberFor<T> = 10u32.into();
-		SignatureTTLBlocks::<T>::put(ttl);
-		Paused::<T>::put(false);
+	fn cleanup_withdrawal_request() {
+		// Setup guardians
+		let guardians = setup_guardians::<T>(3);
 
-		let requester = create_funded_user::<T>(0, 10000);
-		let initial_balance =
-			<pallet_balances::Pallet<T> as Currency<T::AccountId>>::free_balance(&requester);
-		let (burn_id, _) = setup_pending_unlock::<T>(requester.clone(), 500);
+		let sender = create_funded_user::<T>(0, 1000);
 
-		// Advance blocks past TTL
-		let current_block = frame_system::Pallet::<T>::block_number();
-		frame_system::Pallet::<T>::set_block_number(current_block + 20u32.into());
+		// Insert withdrawal request at block 1
+		frame_system::Pallet::<T>::set_block_number(1u32.into());
+		let request_id = insert_withdrawal_request::<T>(
+			sender,
+			1_000_000_000u128,
+			0,
+			1u32.into(),
+		);
 
-		let caller: T::AccountId = whitelisted_caller();
+		// Set short TTL
+		CleanupTTLBlocks::<T>::put(BlockNumberFor::<T>::from(1u32));
+
+		// Advance to block 10
+		frame_system::Pallet::<T>::set_block_number(10u32.into());
+
+		let guardian = guardians[0].clone();
 
 		#[extrinsic_call]
-		expire_pending_unlock(RawOrigin::Signed(caller), burn_id);
+		cleanup_withdrawal_request(RawOrigin::Signed(guardian), request_id);
 
-		// Verify unlock was removed and funds restored
-		assert!(!PendingUnlocks::<T>::contains_key(burn_id));
-		// Funds should be restored (within existential deposit tolerance)
-		let final_balance =
-			<pallet_balances::Pallet<T> as Currency<T::AccountId>>::free_balance(&requester);
-		assert!(final_balance >= initial_balance - 10u32.into());
+		// Verify withdrawal request was removed
+		assert!(!WithdrawalRequests::<T>::contains_key(request_id));
 	}
 
 	#[benchmark]
-	fn add_guardian(g: Linear<0, 100>) {
-		// Setup existing guardians
-		let existing_guardians = setup_guardians::<T>(g);
-		ApproveThreshold::<T>::put(2u16);
-		DenyThreshold::<T>::put(2u16);
-
-		let new_guardian: T::AccountId = account("new_guardian", 999, SEED);
+	fn set_guardians_and_threshold(g: Linear<1, 10>) {
+		let guardians: Vec<T::AccountId> = (0..g).map(|i| account("guardian", i, SEED)).collect();
+		let threshold = 1u16;
 
 		#[extrinsic_call]
-		add_guardian(RawOrigin::Root, new_guardian.clone());
+		set_guardians_and_threshold(RawOrigin::Root, guardians.clone(), threshold);
 
-		// Verify guardian was added
-		let guardians = Guardians::<T>::get();
-		assert!(guardians.contains(&new_guardian));
-		assert_eq!(guardians.len(), (g + 1) as usize);
+		assert_eq!(Guardians::<T>::get(), guardians);
+		assert_eq!(ApproveThreshold::<T>::get(), threshold);
 	}
 
 	#[benchmark]
-	fn remove_guardian(g: Linear<2, 100>) {
-		// Setup guardians (at least 2 to maintain valid thresholds)
-		let guardians = setup_guardians::<T>(g);
-		ApproveThreshold::<T>::put(1u16);
-		DenyThreshold::<T>::put(1u16);
-
-		let guardian_to_remove = guardians[0].clone();
-
+	fn pause() {
 		#[extrinsic_call]
-		remove_guardian(RawOrigin::Root, guardian_to_remove.clone());
+		pause(RawOrigin::Root);
 
-		// Verify guardian was removed
-		let remaining_guardians = Guardians::<T>::get();
-		assert!(!remaining_guardians.contains(&guardian_to_remove));
-		assert_eq!(remaining_guardians.len(), (g - 1) as usize);
+		assert_eq!(Paused::<T>::get(), true);
 	}
 
 	#[benchmark]
-	fn set_approve_threshold() {
-		// Setup
-		setup_guardians::<T>(10);
-		let new_threshold = 5u16;
+	fn unpause() {
+		Paused::<T>::put(true);
 
 		#[extrinsic_call]
-		set_approve_threshold(RawOrigin::Root, new_threshold);
+		unpause(RawOrigin::Root);
 
-		assert_eq!(ApproveThreshold::<T>::get(), new_threshold);
-	}
-
-	#[benchmark]
-	fn set_deny_threshold() {
-		// Setup
-		setup_guardians::<T>(10);
-		let new_threshold = 5u16;
-
-		#[extrinsic_call]
-		set_deny_threshold(RawOrigin::Root, new_threshold);
-
-		assert_eq!(DenyThreshold::<T>::get(), new_threshold);
-	}
-
-	#[benchmark]
-	fn set_paused() {
-		let paused = true;
-
-		#[extrinsic_call]
-		set_paused(RawOrigin::Root, paused);
-
-		assert_eq!(Paused::<T>::get(), paused);
+		assert_eq!(Paused::<T>::get(), false);
 	}
 
 	#[benchmark]
@@ -336,13 +268,87 @@ mod benchmarks {
 	}
 
 	#[benchmark]
-	fn set_signature_ttl() {
-		let new_ttl: BlockNumberFor<T> = 200u32.into();
+	fn set_cleanup_ttl() {
+		let ttl: BlockNumberFor<T> = 50_000u32.into();
 
 		#[extrinsic_call]
-		set_signature_ttl(RawOrigin::Root, new_ttl);
+		set_cleanup_ttl(RawOrigin::Root, ttl);
 
-		assert_eq!(SignatureTTLBlocks::<T>::get(), new_ttl);
+		assert_eq!(CleanupTTLBlocks::<T>::get(), ttl);
+	}
+
+	#[benchmark]
+	fn set_min_withdrawal_amount() {
+		let amount = 2_000_000_000u128;
+
+		#[extrinsic_call]
+		set_min_withdrawal_amount(RawOrigin::Root, amount);
+
+		assert_eq!(MinWithdrawalAmount::<T>::get(), amount);
+	}
+
+	#[benchmark]
+	fn admin_cancel_deposit() {
+		let recipient = create_funded_user::<T>(0, 1000);
+		let deposit_id = generate_deposit_id::<T>(&recipient, 1_000_000_000u128, 0);
+
+		// Insert pending deposit
+		insert_pending_deposit::<T>(
+			deposit_id,
+			recipient,
+			1_000_000_000u128,
+			BTreeSet::new(),
+			frame_system::Pallet::<T>::block_number(),
+		);
+
+		#[extrinsic_call]
+		admin_cancel_deposit(
+			RawOrigin::Root,
+			deposit_id,
+			pallet::CancelReason::AdminEmergency,
+		);
+
+		// Verify deposit was cancelled
+		let deposit = Deposits::<T>::get(deposit_id).expect("Deposit should exist");
+		assert_eq!(deposit.status, pallet::DepositStatus::Cancelled);
+	}
+
+	#[benchmark]
+	fn admin_fail_withdrawal_request() {
+		// Setup mint cap and tracking
+		GlobalMintCap::<T>::put(1_000_000_000_000u128);
+		TotalMintedByBridge::<T>::put(0u128);
+
+		let sender = create_funded_user::<T>(0, 10_000_000_000);
+		let request_id = insert_withdrawal_request::<T>(
+			sender,
+			1_000_000_000u128,
+			0,
+			frame_system::Pallet::<T>::block_number(),
+		);
+
+		#[extrinsic_call]
+		admin_fail_withdrawal_request(RawOrigin::Root, request_id);
+
+		// Verify withdrawal request was failed
+		let request = WithdrawalRequests::<T>::get(request_id).expect("Request should exist");
+		assert_eq!(request.status, pallet::WithdrawalRequestStatus::Failed);
+	}
+
+	#[benchmark]
+	fn admin_manual_mint() {
+		// Setup mint cap
+		GlobalMintCap::<T>::put(1_000_000_000_000u128);
+		TotalMintedByBridge::<T>::put(0u128);
+
+		let recipient = create_funded_user::<T>(0, 1000);
+		let amount = 1_000_000_000u128;
+
+		#[extrinsic_call]
+		admin_manual_mint(RawOrigin::Root, recipient.clone(), amount, None);
+
+		// Verify total minted was updated
+		assert_eq!(TotalMintedByBridge::<T>::get(), amount);
 	}
 
 	impl_benchmark_test_suite!(AlphaBridge, crate::mock::new_test_ext(), crate::mock::Test);
