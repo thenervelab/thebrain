@@ -185,7 +185,10 @@ pub mod pallet {
 
 				// Calculate weight
 				let mut weight: u32 = 0;
-				weight = pallet_arion::FamilyWeight::<T>::get(miner.owner.clone()) as u32;
+				weight = WeightCalculation::calculate_weight::<T>(
+					NodeType::StorageMiner,
+					&miner.node_id,
+				);
 
 				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
 				if let Some(reg_block) = registration_block {
