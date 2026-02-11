@@ -19,24 +19,8 @@ use pallet_im_online::sr25519::AuthorityId as ImOnlineId;
 use sc_consensus_grandpa::AuthorityId as GrandpaId;
 use sc_service::ChainType;
 use sp_consensus_babe::AuthorityId as BabeId;
-use sp_core::{crypto::Ss58Codec, ed25519, sr25519, Pair, Public, H160, U256};
+use sp_core::{crypto::Ss58Codec, ed25519, sr25519, H160, U256};
 use std::{collections::BTreeMap, str::FromStr};
-
-/// Helper function to generate a crypto pair from seed.
-pub fn get_from_seed<TPublic: Public>(seed: &str) -> <TPublic::Pair as Pair>::Public {
-	TPublic::Pair::from_string(&format!("//{seed}"), None)
-		.expect("static values are valid; qed")
-		.public()
-}
-
-/// Generate authority keys for development (Alice)
-pub fn get_development_authority_keys(seed: &str) -> (AccountId, BabeId, GrandpaId, ImOnlineId) {
-	let sr25519_key = get_from_seed::<sr25519::Public>(seed);
-	let ed25519_key = get_from_seed::<ed25519::Public>(seed);
-	let account = AccountId::from(sr25519_key.clone());
-
-	(account, sr25519_key.clone().into(), ed25519_key.into(), sr25519_key.into())
-}
 // use sc_network::config::MultiaddrWithPeerId;
 // use hex::FromHex;
 
@@ -150,39 +134,6 @@ pub fn local_benchmarking_config(chain_id: u64) -> Result<ChainSpec, String> {
 			],
 			// Sudo account
 			get_sudo_account(),
-			chain_id,
-			vec![],
-			vec![],
-		))
-		.build())
-}
-
-/// Development chainspec with Alice as sole authority
-/// This uses ChainType::Development which allows automatic key insertion
-pub fn development_config(chain_id: u64) -> Result<ChainSpec, String> {
-	let mut properties = sc_chain_spec::Properties::new();
-	properties.insert("tokenSymbol".into(), "hALPHA".into());
-	properties.insert("tokenDecimals".into(), 18u32.into());
-	properties.insert("ss58Format".into(), 42.into());
-
-	// Use Alice as the sole authority - keys derived from seed "Alice"
-	let alice = get_development_authority_keys("Alice");
-	let alice_account = alice.0.clone();
-
-	Ok(ChainSpec::builder(WASM_BINARY.expect("WASM not available"), Default::default())
-		.with_name("Development")
-		.with_id("development")
-		.with_chain_type(ChainType::Development)
-		.with_properties(properties)
-		.with_genesis_config_patch(mainnet_genesis(
-			// Alice as the sole authority
-			vec![alice.clone()],
-			// Alice is endowed and is sudo
-			vec![
-				(alice_account.clone(), ENDOWMENT * 1000),
-			],
-			// Alice is sudo
-			alice_account,
 			chain_id,
 			vec![],
 			vec![],
