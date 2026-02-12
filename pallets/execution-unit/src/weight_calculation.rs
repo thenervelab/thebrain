@@ -13,6 +13,7 @@ use num_traits::One;
 use log::{info, warn};
 use num_traits::CheckedDiv;
 use num_traits::Zero;
+use num_traits::float::FloatCore;
 
 #[derive(Clone, Copy)]
 struct PoolContext {
@@ -126,41 +127,35 @@ impl NodeMetricsData {
             return 0;
         }
 
-        // Get miner owner and their family's actual storage
-        let node_info = pallet_registration::Pallet::<T>::get_node_registration_info(miner_id.clone());
-        if node_info.is_none() {
-            warn!("Node registration info not found for miner");
-            return 0;
-        }
-        let owner = node_info.unwrap().owner;
-        
-        // Get all children nodes in this family and sum their storage from NodeQuality
-        let children = pallet_arion::FamilyChildren::<T>::get(owner);
-        let mut miner_total_storage: u128 = 0;
-        
-        for child_id in children.iter() {
-            if let Some(quality) = pallet_arion::NodeQualityByChild::<T>::get(child_id) {
-                miner_total_storage = miner_total_storage.saturating_add(quality.shard_data_bytes);
-            }
-        }
+      // Get miner owner and their Arion weight
+      let node_info = pallet_registration::Pallet::<T>::get_node_registration_info(miner_id.clone());
+      if node_info.is_none() {
+          warn!("Node registration info not found for miner");
+          return 0;
+      }
+      let owner = node_info.unwrap().owner;
+      let arion_weight = pallet_arion::FamilyWeight::<T>::get(owner);
+      let total_arion_weight = pallet_arion::Pallet::<T>::get_total_family_weight();
 
-        if miner_total_storage == 0 {
-            warn!("miner_total_storage is 0, returning 0 weight");
-            return 0;
-        }
+      if total_arion_weight == 0 {
+          warn!("Total Arion weight is 0");
+          return 0;
+      }
 
-        info!("miner_total_storage: {}, total_network_storage: {}", miner_total_storage, total_network_storage);
+      // Calculate share based on Arion weight
+      let share = (arion_weight as f64 / total_arion_weight as f64).min(1.0);
+      info!("miner arion weight: {}, total: {}, share: {}", arion_weight, total_arion_weight, share);
+      
+      // Miner weight
+      let miner_weight = (miners_pool_inner * share).ceil();
 
-        // Calculate share based on actual storage (like old IPFS logic)
-        let share = (miner_total_storage as f64 / total_network_storage as f64).min(1.0);
-        info!("miner storage share: {}", share);
-        
-        // Miner weight
-        let miner_weight = context.miners_pool * share; 
-        let final_weight = miner_weight.min(Self::MAX_SCORE as f64) as u32;
-        info!("final miner weight: {}", final_weight);        
+      let final_weight = if arion_weight > 0 {
+            (miner_weight as u32).max(1).min(miners_pool_inner as u32)
+        } else {
+            0
+        };
 
-        final_weight
+      final_weight
     }
 
     pub fn uid_zero_weight<

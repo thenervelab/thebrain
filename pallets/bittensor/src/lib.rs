@@ -168,7 +168,6 @@ pub mod pallet {
 				}
 			}
 
-
 			for miner in all_miners {
 				if miner.node_type != NodeType::StorageMiner {
 					continue;
@@ -194,18 +193,12 @@ pub mod pallet {
 				if let Some(reg_block) = registration_block {
 					let blocks_since_registration =
 						current_block_number.saturating_sub(reg_block);
-					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
+					let has_children = !pallet_arion::FamilyChildren::<T>::get(&miner.owner).is_empty();
+					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() && !has_children {
 						// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
 						weight = ((weight as u64) * 20 / 100).max(1) as u32;
 					}
-				} else {
-					// If no registration block is found, assume invalid or unregistered miner
-					weight = 1; // Set to minimal non-zero weight
-					log::info!(
-						"No registration block found for miner: {:?}. Weight set to 1.",
-						String::from_utf8_lossy(&miner.node_id)
-					);
-				}
+				} 
 
 				let buffer = 3000u32;
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
