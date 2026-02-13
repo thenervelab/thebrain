@@ -60,7 +60,7 @@ impl NodeMetricsData {
         info!("alpha_price_token: {}", alpha_price_token);
     
         // ---- 3) Calculate COST and EMISSIONS ----
-        let cost = total_resource_gb * price_per_gb_token * 10.0;
+        let cost = total_resource_gb * price_per_gb_token * 250.0;
         info!("cost: {}", cost);
         let emissions = alpha_price_token * (Self::EMISSION_PERIOD as f64);
         info!("emissions: {}", emissions);
@@ -142,19 +142,7 @@ impl NodeMetricsData {
           return 0;
       }
 
-      // Calculate share based on Arion weight
-      let share = (arion_weight as f64 / total_arion_weight as f64).min(1.0);
-      info!("miner arion weight: {}, total: {}, share: {}", arion_weight, total_arion_weight, share);
-      
-      // Miner weight
-      let miner_weight = (miners_pool_inner * share).ceil();
-
-      let final_weight = if arion_weight > 0 {
-            (miner_weight as u32).max(1).min(miners_pool_inner as u32)
-        } else {
-            0
-        };
-
+      let final_weight = Self::calculate_final_weight(arion_weight as u32, total_arion_weight as u32, miners_pool_inner as u32);
       final_weight
     }
 
@@ -181,5 +169,14 @@ impl NodeMetricsData {
         
         info!("final UID zero weight: {}", final_weight);
         final_weight
+    }
+
+    fn calculate_final_weight(miner_points: u32, total_points: u32, pool_amount: u32) -> u32 {
+        if total_points > 0 {
+            let exact = (miner_points as f64 / total_points as f64) * pool_amount as f64;
+            exact.round() as u32
+        } else {
+            0
+        }
     }
 }
