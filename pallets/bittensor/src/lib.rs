@@ -231,6 +231,30 @@ pub mod pallet {
 				}
 			}
 
+			// 1) Sum all *miners* weights (everything that is NOT a validator)
+			let sum_miners: u32 = storage_weights.iter()
+				.zip(storage_miners_node_types.iter())
+				.filter(|(_, &ref t)| *t != NodeType::Validator)
+				.map(|(&w, _)| w as u32)
+				.sum();
+
+			// 2) Calculate final UID 0 weight to ensure total sum <= 65535
+			let final_uid_zero = if sum_miners >= 65535 {
+				0
+			} else {
+				(uid_zero_weight as u32).min(65535 - sum_miners)
+			} as u16;
+
+			// 3) Update storage_weights if UID 0 was added
+			if let Some(pos) = storage_miners_node_types.iter().position(|t| *t == NodeType::Validator) {
+				storage_weights[pos] = final_uid_zero;
+			}
+
+			// 4) Update all_weights_on_bitensor for UID 0
+			if let Some(pos) = all_uids_on_bittensor.iter().position(|&id| id == uid_zero) {
+				all_weights_on_bitensor[pos] = final_uid_zero;
+			}
+
 			(
 				storage_weights,
 				storage_nodes_ss58,
