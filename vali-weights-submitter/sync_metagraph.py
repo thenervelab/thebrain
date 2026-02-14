@@ -58,6 +58,7 @@ class StorageMonitor:
         self.last_processed_block = 0
         self.net_uid = self.config['bittensor']['subnet_id']
         self.block_interval = 85  # submit every 85 blocks
+        self._metagraph = None
         
         # Initialize keypair from environment variable
         mnemonic = os.getenv('BITTENSOR_MNEMONIC')
@@ -106,10 +107,18 @@ class StorageMonitor:
                     )
                 logger.info("✅ Connected to your chain")
 
-                logger.info(f"Connecting to Bittensor chain using Bittensor library...")
+                logger.info("Connecting to Bittensor chain using Bittensor library...")
                 # Use Bittensor library for Bittensor connection (same as run_continuous.py)
                 self.bittensor_chain = bt.subtensor(network="finney")  # Use mainnet
                 logger.info("✅ Connected to Bittensor chain using Bittensor library")
+
+                # Create metagraph once to avoid scalecodec type registration leak
+                logger.info(f"Creating metagraph for subnet {self.net_uid}...")
+                self._metagraph = bt.metagraph(
+                    netuid=self.net_uid,
+                    subtensor=self.bittensor_chain
+                )
+                logger.info("✅ Created persistent metagraph (will use sync() to refresh)")
 
                 return True
 
@@ -167,17 +176,21 @@ class StorageMonitor:
             updated_uids.append(updated_uid)
         return updated_uids
 
-    def get_uids_from_bittensor(self):
-        """Fetch UIDs from Bittensor chain for net_uid 75"""
-        try:
-            # Use Bittensor library's metagraph method (same as run_continuous.py)
-            metagraph = bt.metagraph(
+    def _sync_metagraph(self):
+        """Sync or lazily create the persistent metagraph."""
+        if self._metagraph is None:
+            self._metagraph = bt.metagraph(
                 netuid=self.net_uid,
                 subtensor=self.bittensor_chain
             )
-            
-            # Get active neurons
-            active_neurons = metagraph.neurons
+        else:
+            self._metagraph.sync(subtensor=self.bittensor_chain)
+
+    def get_uids_from_bittensor(self):
+        """Fetch UIDs from Bittensor chain for net_uid 75"""
+        try:
+            self._sync_metagraph()
+            active_neurons = self._metagraph.neurons
             
             # Create mapping of UID to hotkey
             uids = []
@@ -200,14 +213,8 @@ class StorageMonitor:
     def get_dividends_from_bittensor(self):
         """Fetch dividends from Bittensor chain for net_uid 75"""
         try:
-            # Use Bittensor library's metagraph method to get dividends
-            metagraph = bt.metagraph(
-                netuid=self.net_uid,
-                subtensor=self.bittensor_chain
-            )
-            
-            # Get dividends from the metagraph
-            dividends = metagraph.dividends
+            self._sync_metagraph()
+            dividends = self._metagraph.dividends
             if dividends is not None:
                 logger.info(f"Fetched {len(dividends)} dividends from Bittensor")
                 return list(dividends)
