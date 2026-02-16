@@ -1217,16 +1217,20 @@ pub mod pallet {
             let bw_s = Self::ilog2_u128(q.bandwidth_bytes.saturating_add(1));
             let st_s = Self::ilog2_u128(q.shard_data_bytes.saturating_add(1));
 
-            // Weighted blend in [0..127] (approx), using permille weights.
+            // Weighted blend scaled to u16 range, using permille weights.
+            // Multiply by NodeScoreScale BEFORE dividing by denom to
+            // preserve fractional precision (integer division last).
             let bw_w = T::NodeBandwidthWeightPermille::get().min(1000) as u128;
             let st_w = T::NodeStorageWeightPermille::get().min(1000) as u128;
             let denom = (bw_w + st_w).max(1);
-            let blended = ((bw_s as u128).saturating_mul(bw_w)
-                .saturating_add((st_s as u128).saturating_mul(st_w)))
-                / denom; // 0..127-ish
-
-            // Scale to u16 range.
-            let mut score: u128 = blended.saturating_mul(T::NodeScoreScale::get() as u128);
+            let weighted_sum = (bw_s as u128).saturating_mul(bw_w)
+                .saturating_add((st_s as u128).saturating_mul(st_w));
+            // Max weighted_sum = 127 * 1000 = 127_000.
+            // Max after scale  = 127_000 * 65_535 = ~8.3 billion — fits u128.
+            let scale = T::NodeScoreScale::get() as u128;
+            let mut score: u128 = weighted_sum
+                .saturating_mul(scale)
+                / denom;
             if score > u16::MAX as u128 {
                 score = u16::MAX as u128;
             }
