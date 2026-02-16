@@ -189,16 +189,16 @@ pub mod pallet {
 					&miner.node_id,
 				);
 
-				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
-				if let Some(reg_block) = registration_block {
-					let blocks_since_registration =
-						current_block_number.saturating_sub(reg_block);
-					let has_children = !pallet_arion::FamilyChildren::<T>::get(&miner.owner).is_empty();
-					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() && !has_children {
-						// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
-						weight = ((weight as u64) * 20 / 100).max(1) as u32;
-					}
-				} 
+				// // Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
+				// if let Some(reg_block) = registration_block {
+				// 	let blocks_since_registration =
+				// 		current_block_number.saturating_sub(reg_block);
+				// 	let has_children = !pallet_arion::FamilyChildren::<T>::get(&miner.owner).is_empty();
+				// 	if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() && !has_children {
+				// 		// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
+				// 		weight = ((weight as u64) * 20 / 100).max(1) as u32;
+				// 	}
+				// } 
 
 				let buffer = 3000u32;
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());

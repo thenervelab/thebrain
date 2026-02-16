@@ -242,7 +242,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9155,
+	spec_version: 9157,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -280,7 +280,7 @@ parameter_types! {
 	// Maximum number of node weight updates per submission
 	pub const MaxNodeWeightUpdates: u32 = 100;
 	// Maximum node weight
-	pub const MaxNodeWeight: u16 = 1000;
+	pub const MaxNodeWeight: u16 = 50_000;
 	// Maximum family weight
 	pub const MaxFamilyWeight: u16 = 65_535;
 	// Number of top nodes to consider per family
@@ -300,7 +300,7 @@ parameter_types! {
 	// Storage weight (permille)
 	pub const NodeStorageWeightPermille: u32 = 300;
 	// Node score scale factor
-	pub const NodeScoreScale: u16 = 512;
+	pub const NodeScoreScale: u16 = 1_000;
 	// Strike penalty
 	pub const StrikePenalty: u16 = 50;
 	// Integrity fail penalty

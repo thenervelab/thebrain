@@ -1201,21 +1201,42 @@ pub mod pallet {
                 .sum()
         }
 
-        fn ilog2_u128(x: u128) -> u32 {
-            if x == 0 {
-                0
-            } else {
-                127u32.saturating_sub(x.leading_zeros())
-            }
-        }
+        fn log2_fixed_u128(x: u128) -> u32 {
 
+            if x == 0 {
+      
+                return 0;
+      
+            }
+      
+            let int_part = 127u32.saturating_sub(x.leading_zeros());
+      
+            // Shift so the leading 1 sits at bit 8, exposing 8 fractional
+      
+            // mantissa bits below it. Max result is 0x1FF (511).
+      
+            let shifted = if int_part >= 8 {
+      
+                (x >> (int_part - 8)) as u32
+      
+            } else {
+      
+                (x << (8 - int_part)) as u32
+      
+            };
+      
+            let frac = shifted & 0xFF;
+      
+            (int_part << 8) | frac
+      
+        }
         /// Deterministically compute a `u16` node weight from validator-reported metrics.
         ///
         /// Uses concave `log2(1+x)` scoring to avoid “rich get richer” runaway.
         fn compute_node_weight_from_quality(q: &NodeQuality) -> u16 {
             // Concave scores in [0..127]
-            let bw_s = Self::ilog2_u128(q.bandwidth_bytes.saturating_add(1));
-            let st_s = Self::ilog2_u128(q.shard_data_bytes.saturating_add(1));
+            let bw_s = Self::log2_fixed_u128(q.bandwidth_bytes.saturating_add(1));
+            let st_s = Self::log2_fixed_u128(q.shard_data_bytes.saturating_add(1));
 
             // Weighted blend scaled to u16 range, using permille weights.
             // Multiply by NodeScoreScale BEFORE dividing by denom to
@@ -1230,7 +1251,7 @@ pub mod pallet {
             let scale = T::NodeScoreScale::get() as u128;
             let mut score: u128 = weighted_sum
                 .saturating_mul(scale)
-                / denom;
+                / (denom *127);
             if score > u16::MAX as u128 {
                 score = u16::MAX as u128;
             }
