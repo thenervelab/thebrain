@@ -867,6 +867,11 @@ pub mod pallet {
 	#[pallet::getter(fn user_total_files_size)]
 	pub type UserTotalFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
 
+    // the file size where the key is encoded file hash
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_files_count)]
+	pub type UserTotalFilesCount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -928,9 +933,10 @@ pub mod pallet {
             pruned_count: u32,
             oldest_remaining: u32,
         },
-        UserFileSizeUpdated {
+        UserFilesUpdated {
             user: T::AccountId,
             size: u128,
+            count: u128,
         },
     }
 
@@ -2020,6 +2026,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             account_id: T::AccountId,
             file_size: u128,
+            file_count: u128,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
 
@@ -2045,9 +2052,15 @@ pub mod pallet {
                 *size = Some(size.unwrap_or_default().saturating_add(file_size));
             });
 
-            Self::deposit_event(Event::UserFileSizeUpdated {
+            // Update the user's total file count
+            UserTotalFilesCount::<T>::mutate(&account_id, |count| {
+                *count = Some(count.unwrap_or_default().saturating_add(file_count));
+            });
+
+            Self::deposit_event(Event::UserFilesUpdated {
                 user: account_id,
                 size: file_size,
+                count: file_count,
             });
 
             Ok(())
