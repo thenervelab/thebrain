@@ -60,7 +60,7 @@ impl NodeMetricsData {
         info!("alpha_price_token: {}", alpha_price_token);
     
         // ---- 3) Calculate COST and EMISSIONS ----
-        let cost = total_resource_gb * price_per_gb_token * 250.0;
+        let cost = total_resource_gb * price_per_gb_token * 10.0;
         info!("cost: {}", cost);
         let emissions = alpha_price_token * (Self::EMISSION_PERIOD as f64);
         info!("emissions: {}", emissions);
