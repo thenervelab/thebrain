@@ -895,25 +895,72 @@ pub mod pallet {
 		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
 		pub fn clear_all_data(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?; // Only root (sudo) can call this
-
+		
 			// Clear MinerProfile
 			for (node_id, _) in <MinerProfile<T>>::iter() {
 				<MinerProfile<T>>::remove(node_id);
 			}
-
+		
 			// Clear UserProfile
 			for (account_id, _) in <UserProfile<T>>::iter() {
 				<UserProfile<T>>::remove(account_id);
 			}
-
+		
+			// Clear UserTotalFilesSize
 			for (user, _) in UserTotalFilesSize::<T>::iter() {
 				UserTotalFilesSize::<T>::insert(user, 0u128);
 			}
+		
+			// Clear MinerTotalFilesSize and MinerTotalFilesPinned
 			for (miner, _) in MinerTotalFilesSize::<T>::iter() {
 				MinerTotalFilesSize::<T>::insert(miner.clone(), 0u128);
 				MinerTotalFilesPinned::<T>::insert(miner, 0u32);
 			}
-
+		
+			// Clear UserStorageRequests
+			for (account, file_hash, _) in UserStorageRequests::<T>::iter() {
+				UserStorageRequests::<T>::remove(account, file_hash);
+			}
+		
+			// Clear BlacklistedUsers
+			for (account_id, _) in BlacklistedUsers::<T>::iter() {
+				BlacklistedUsers::<T>::remove(account_id);
+			}
+		
+			// Clear UserUnpinRequests
+			UserUnpinRequests::<T>::kill();
+		
+			// Clear ReputationPoints
+			for (account_id, _) in ReputationPoints::<T>::iter() {
+				ReputationPoints::<T>::remove(account_id);
+			}
+		
+			// Clear RebalanceRequest
+			RebalanceRequest::<T>::kill();
+		
+			// Clear Blacklist
+			Blacklist::<T>::kill();
+		
+			// Clear UnpinRequests
+			UnpinRequests::<T>::kill();
+		
+			// Clear RequestsCount
+			for (node_id, _) in RequestsCount::<T>::iter() {
+				RequestsCount::<T>::remove(node_id);
+			}
+		
+			// Clear CurrentEpochValidator
+			CurrentEpochValidator::<T>::kill();
+		
+			// Reset PinningEnabled to default (false)
+			PinningEnabled::<T>::put(false);
+		
+			// Reset AssignmentEnabled to default (false)
+			AssignmentEnabled::<T>::put(false);
+		
+			// Reset RotationWhitelistingEnabled to default (false)
+			RotationWhitelistingEnabled::<T>::put(false);
+		
 			Ok(())
 		}
 

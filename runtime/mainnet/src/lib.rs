@@ -242,7 +242,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9157,
+	spec_version: 9158,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -300,7 +300,7 @@ parameter_types! {
 	// Storage weight (permille)
 	pub const NodeStorageWeightPermille: u32 = 300;
 	// Node score scale factor
-	pub const NodeScoreScale: u16 = 1_000;
+	pub const NodeScoreScale: u16 = 700;
 	// Strike penalty
 	pub const StrikePenalty: u16 = 50;
 	// Integrity fail penalty

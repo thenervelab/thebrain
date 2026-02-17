@@ -31,11 +31,16 @@ use scale_info::TypeInfo;
 use sp_core::{ed25519, H256};
 use sp_std::prelude::*;
 
+
 pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
+	use pallet_registration::{
+		NodeType, 
+		Pallet as RegistrationPallet, 
+	};    
 
     /// Domain separator for attestation signing.
     ///
@@ -857,6 +862,11 @@ pub mod pallet {
     pub type FamilyFirstSeenBucket<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, u32, OptionQuery>;
 
+	// the file size where the key is encoded file hash
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_files_size)]
+	pub type UserTotalFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -917,6 +927,10 @@ pub mod pallet {
         AttestationBucketsPruned {
             pruned_count: u32,
             oldest_remaining: u32,
+        },
+        UserFileSizeUpdated {
+            user: T::AccountId,
+            size: u128,
         },
     }
 
@@ -990,6 +1004,8 @@ pub mod pallet {
         UnregisteredWarden,
         /// Cannot prune buckets within retention period.
         PruningWithinRetentionPeriod,
+        NodeNotRegistered,
+        InvalidNodeType,
     }
 
     impl<T: Config> Pallet<T> {
@@ -1113,6 +1129,39 @@ pub mod pallet {
             let sig = ed25519::Signature::from_raw(sig_bytes);
             sig.verify(&message[..], &pk)
         }
+
+        pub fn get_primary_account(proxy: &T::AccountId) -> Result<Option<T::AccountId>, DispatchError> {
+			// First check if this is actually a main account
+			let (proxy_definitions, _) = pallet_proxy::Pallet::<T>::proxies(proxy);
+			if !proxy_definitions.is_empty() {
+				return Ok(Some(proxy.clone()));
+			}
+		
+			// Get all validator nodes and their owners
+			let validator_nodes = pallet_registration::Pallet::<T>::get_all_nodes_by_node_type(
+				pallet_registration::NodeType::Validator
+			);
+			
+			let mut main_account = None;
+		
+			// Iterate through validator owners
+			for node_info in validator_nodes {
+				let (proxies, _) = pallet_proxy::Pallet::<T>::proxies(&node_info.owner);
+				
+				for p in proxies.iter() {
+					if &p.delegate == proxy {
+						main_account = Some(node_info.owner.clone());
+						break;
+					}
+				}
+				
+				if main_account.is_some() {
+					break;
+				}
+			}
+		
+			Ok(main_account)
+		}
 
         fn ensure_miner_records_registered(
             miners: &BoundedVec<
@@ -1959,6 +2008,47 @@ pub mod pallet {
                     oldest_remaining: before_bucket,
                 });
             }
+
+            Ok(())
+        }
+
+        /// Update the total file size for a user.
+        /// Can only be called by a registered validator proxy account.
+        #[pallet::call_index(35)]
+		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+        pub fn update_user_file_size(
+            origin: OriginFor<T>,
+            account_id: T::AccountId,
+            file_size: u128,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+
+            // Get the main account if this is a proxy, otherwise use the account itself
+            let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+                primary
+            } else {
+                who.clone()
+            };
+
+            // Check if the node is registered
+            let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+                .ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Verify the node type is Validator
+            ensure!(
+                node_info.node_type == pallet_registration::NodeType::Validator,
+                Error::<T>::InvalidNodeType
+            );
+
+            // Update the user's total file size
+            UserTotalFilesSize::<T>::mutate(&account_id, |size| {
+                *size = Some(size.unwrap_or_default().saturating_add(file_size));
+            });
+
+            Self::deposit_event(Event::UserFileSizeUpdated {
+                user: account_id,
+                size: file_size,
+            });
 
             Ok(())
         }
