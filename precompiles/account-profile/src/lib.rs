@@ -25,9 +25,12 @@ pub struct AccountProfilePrecompile<Runtime>(PhantomData<Runtime>);
 impl<Runtime> AccountProfilePrecompile<Runtime>
 where
     Runtime: pallet_account_profile::Config + pallet_evm::Config + frame_system::Config,
-    Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
-    <Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
-    Runtime::RuntimeCall: From<AccountProfileCall<Runtime>>,
+    <Runtime as frame_system::Config>::RuntimeCall: 
+    Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+    <<Runtime as frame_system::Config>::RuntimeCall as Dispatchable>::RuntimeOrigin: 
+    From<Option<<Runtime as frame_system::Config>::AccountId>>,
+    <Runtime as frame_system::Config>::RuntimeCall: 
+    From<AccountProfileCall<Runtime>>,
     Runtime::Hash: From<H256>,
     <Runtime as pallet_evm::Config>::AddressMapping: AddressMapping<Runtime::AccountId>,
 {
@@ -60,7 +63,7 @@ where
         Ok(())
     }
 
-    // Precompile for adding a private item
+    // Precompile for adding a private item 
     #[precompile::public("addPrivateItem(bytes)")]
     #[precompile::public("add_private_item(bytes)")]
     fn add_private_item(

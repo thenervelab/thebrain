@@ -19,7 +19,7 @@ pub mod pallet {
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config {
+	pub trait Config: frame_system::Config + pallet_arion::Config + pallet_registration::Config {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 	}
 
@@ -29,7 +29,18 @@ pub mod pallet {
 	pub type UserPublicStorage<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, Vec<u8>, ValueQuery>;
 
-	/// Storage for Data Public Keys
+	/// Struct to hold account profile information.
+	#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+	pub struct AccountProfile {
+		pub node_id: Vec<u8>,
+		pub encryption_key: Vec<u8>,
+	}
+
+	#[pallet::storage]
+	#[pallet::getter(fn account_profiles)]
+	pub type AccountProfiles<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, AccountProfile, OptionQuery>;
+
 	/// Maps an AccountId to their Data Public Key
 	#[pallet::storage]
 	#[pallet::getter(fn get_data_public_key)]
@@ -70,7 +81,10 @@ pub mod pallet {
 		PrivateItemSet(T::AccountId, Vec<u8>),
 		/// A username was set. [who, username]
 		UsernameSet(T::AccountId, Vec<u8>),
+		/// An account profile was updated. [who]
+		AccountProfileUpdated(T::AccountId),
 		DataPublicKeySet(T::AccountId),
+		AccountProfileSet(T::AccountId),
 		/// A message public key was set. [who]
 		MessagePublicKeySet(T::AccountId),
 	}
@@ -83,6 +97,10 @@ pub mod pallet {
 		UsernameAlreadySet,
 
 		UsernameAlreadyTaken,
+
+		NodeNotRegistered,
+
+		InvalidNodeType,
 	}
 
 	#[pallet::call]
@@ -93,6 +111,21 @@ pub mod pallet {
 		pub fn set_public_item(origin: OriginFor<T>, item: Vec<u8>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
+			let main_account = if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+            // Check if the node is registered
+            let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+                .ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Verify the node type is Validator
+            ensure!(
+                node_info.node_type == pallet_registration::NodeType::Validator,
+                Error::<T>::InvalidNodeType
+            );
 			// Strip "0x" prefix if present
 			let stripped_item = Self::strip_prefix(item.clone());
 
@@ -115,6 +148,22 @@ pub mod pallet {
 		pub fn set_private_item(origin: OriginFor<T>, item: Vec<u8>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
+			let main_account = if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+            // Check if the node is registered
+            let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+                .ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Verify the node type is Validator
+            ensure!(
+                node_info.node_type == pallet_registration::NodeType::Validator,
+                Error::<T>::InvalidNodeType
+            );
+
 			// Strip "0x" prefix if present
 			let stripped_item = Self::strip_prefix(item.clone());
 
@@ -136,6 +185,22 @@ pub mod pallet {
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_username(origin: OriginFor<T>, username: Vec<u8>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
+
+			let main_account = if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+            // Check if the node is registered
+            let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+                .ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Verify the node type is Validator
+            ensure!(
+                node_info.node_type == pallet_registration::NodeType::Validator,
+                Error::<T>::InvalidNodeType
+            );
 
 			// Convert the username to lowercase
 			let lower_username = Self::to_lowercase(username.clone());
@@ -164,6 +229,22 @@ pub mod pallet {
 		pub fn set_data_public_key(origin: OriginFor<T>, key: Vec<u8>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
+			let main_account = if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+            // Check if the node is registered
+            let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+                .ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Verify the node type is Validator
+            ensure!(
+                node_info.node_type == pallet_registration::NodeType::Validator,
+                Error::<T>::InvalidNodeType
+            );
+
 			// Strip "0x" prefix if present
 			let stripped_key = Self::strip_prefix(key.clone());
 
@@ -180,11 +261,26 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Set the Message Public Key for an account
 		#[pallet::call_index(4)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_message_public_key(origin: OriginFor<T>, key: Vec<u8>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
+
+			let main_account = if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+            // Check if the node is registered
+            let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+                .ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Verify the node type is Validator
+            ensure!(
+                node_info.node_type == pallet_registration::NodeType::Validator,
+                Error::<T>::InvalidNodeType
+            );
 
 			// Strip "0x" prefix if present
 			let stripped_key = Self::strip_prefix(key.clone());
@@ -199,6 +295,77 @@ pub mod pallet {
 
 			// Emit an event
 			Self::deposit_event(Event::MessagePublicKeySet(who));
+			Ok(())
+		}
+
+		/// Update the account profile for the user.
+		#[pallet::call_index(6)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn update_account_profile(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+			encryption_key: Vec<u8>,
+		) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+
+            // Get the main account if this is a proxy, otherwise use the account itself
+			let main_account = if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+            // Check if the node is registered
+            let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+                .ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Verify the node type is Validator
+            ensure!(
+                node_info.node_type == pallet_registration::NodeType::Validator,
+                Error::<T>::InvalidNodeType
+            );
+			
+			// Create or update the account profile
+			let profile = AccountProfile { node_id, encryption_key };
+			AccountProfiles::<T>::insert(&who, profile);
+
+			// Emit an event (optional)
+			Self::deposit_event(Event::AccountProfileUpdated(who));
+			Ok(())
+		}
+
+		#[pallet::call_index(5)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn set_account_profile(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+			encryption_key: Vec<u8>,
+		) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+
+            // Get the main account if this is a proxy, otherwise use the account itself
+			let main_account = if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+            // Check if the node is registered
+            let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+                .ok_or(Error::<T>::NodeNotRegistered)?;
+
+            // Verify the node type is Validator
+            ensure!(
+                node_info.node_type == pallet_registration::NodeType::Validator,
+                Error::<T>::InvalidNodeType
+            );
+
+			// Create or update the account profile
+			let profile = AccountProfile { node_id, encryption_key };
+			AccountProfiles::<T>::insert(&who, profile);
+
+			// Emit an event (optional)
+			Self::deposit_event(Event::AccountProfileSet(who));
 			Ok(())
 		}
 	}

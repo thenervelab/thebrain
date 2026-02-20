@@ -7714,6 +7714,8 @@ dependencies = [
  "frame-benchmarking 37.0.0",
  "frame-support 37.1.0",
  "frame-system 37.1.0",
+ "pallet-arion",
+ "pallet-registration",
  "parity-scale-codec",
  "scale-info",
  "serde",

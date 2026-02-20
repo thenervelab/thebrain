@@ -18,6 +18,8 @@ frame-support = { default-features = false, workspace = true }
 frame-system = { default-features = false, workspace = true }
 frame-benchmarking = { default-features = false, workspace = true, optional = true }
 sp-std = { default-features = false, workspace = true }
+pallet-arion = { workspace = true }
+pallet-registration = { workspace = true }
 
 [dev-dependencies]
 serde  = { workspace = true }
@@ -37,5 +39,7 @@ std = [
 	"frame-support/std",
 	"frame-system/std",
 	"sp-std/std",
+	"pallet-arion/std",
+	"pallet-registration/std",
 ]
 try-runtime = [ "frame-support/try-runtime" ]
