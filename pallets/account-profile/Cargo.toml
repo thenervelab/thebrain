@@ -20,13 +20,11 @@ frame-benchmarking = { default-features = false, workspace = true, optional = tr
 sp-std = { default-features = false, workspace = true }
 pallet-arion = { workspace = true }
 pallet-registration = { workspace = true }
-
-[dev-dependencies]
-serde  = { workspace = true }
-
-# Substrate
 sp-core = { default-features = false, workspace = true }
 sp-io = { default-features = false, workspace = true }
+log = { version = "0.4.22", default-features = false }
+[dev-dependencies]
+serde  = { workspace = true }
 sp-runtime = { default-features = false, workspace = true }
 
 [features]
@@ -41,5 +39,7 @@ std = [
 	"sp-std/std",
 	"pallet-arion/std",
 	"pallet-registration/std",
+	"sp-core/std",
+	"sp-io/std",
 ]
 try-runtime = [ "frame-support/try-runtime" ]

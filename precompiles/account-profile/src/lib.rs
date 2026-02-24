@@ -136,7 +136,7 @@ where
         let origin = Runtime::AddressMapping::into_account_id(caller);
 
         let username = username.into();
-        let call = AccountProfileCall::<Runtime>::set_username { username };
+        let call = AccountProfileCall::<Runtime>::set_username { account: origin.clone(), username };
         
         RuntimeHelper::<Runtime>::try_dispatch(handle, Some(origin).into(), call)?;
         Ok(())
