@@ -1,7 +1,6 @@
 use crate as pallet_account_profile;
 use frame_support::{
-	derive_impl,
-	parameter_types,
+	derive_impl, parameter_types,
 	traits::{ConstU16, ConstU32, ConstU64, Everything},
 };
 use frame_system::offchain::SendTransactionTypes;
@@ -23,7 +22,7 @@ frame_support::construct_runtime!(
 		Registration: pallet_registration,
 		Metagraph: pallet_metagraph,
 		ExecutionUnit: pallet_execution_unit,
-		Ipfs: ipfs_pallet,
+
 	}
 );
 
@@ -73,7 +72,6 @@ impl pallet_registration::Config for Test {
 	// Use Pallet instead of the crate name
 	type MetagraphInfo = pallet_metagraph::Pallet<Test>;
 	type MetricsInfo = pallet_execution_unit::Pallet<Test>;
-	type IpfsInfo = ipfs_pallet::Pallet<Test>;
 	type MinerStakeThreshold = ConstU32<0>;
 	type ChainDecimals = ConstU32<18>;
 	type PalletId = RegisterPalletId;

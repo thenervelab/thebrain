@@ -1,4 +1,3 @@
-
 // This file is part of The Brain.
 // Copyright (C) 2022-2024 The Nerve Lab
 //
@@ -50,7 +49,6 @@ pub const ENDOWMENT: Balance = 100 * UNIT;
 const VALIDATOR_SR25519: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
 // Our validator's ed25519 key for GRANDPA
 const VALIDATOR_ED25519: &str = "5CnJrbg2PTeL3jkKc8ozaGpjKMerXx1M1Y4uc8ByNxBceauD";
-
 
 // Our validator's sr25519 key for BABE
 const TESTNET_VALIDATOR_SR25519: &str = "5CP9wzk9G3kMdJmNyAsWGWVWDQE7Goe1dUvKtMv51EoXs563";
@@ -109,7 +107,6 @@ const TESTNET_SUDO_ACCOUNT: &str = "5CP9wzk9G3kMdJmNyAsWGWVWDQE7Goe1dUvKtMv51EoX
 fn get_testnet_sudo_account() -> AccountId {
 	get_account_from_ss58(TESTNET_SUDO_ACCOUNT)
 }
-
 
 /// Generate the session keys from individual elements.
 fn generate_session_keys(
@@ -179,9 +176,7 @@ pub fn development_config(chain_id: u64) -> Result<ChainSpec, String> {
 			// Alice as the sole authority
 			vec![alice.clone()],
 			// Alice is endowed and is sudo
-			vec![
-				(alice_account.clone(), ENDOWMENT * 1000),
-			],
+			vec![(alice_account.clone(), ENDOWMENT * 1000)],
 			// Alice is sudo
 			alice_account,
 			chain_id,
@@ -269,37 +264,34 @@ pub fn local_mainnet_config(chain_id: u64) -> Result<ChainSpec, String> {
 }
 
 pub fn hippius_mainnet_config(_chain_id: u64) -> Result<ChainSpec, String> {
-    // Load the custom chainspec from JSON file
-    let custom_chainspec_bytes = include_bytes!("../../../chainspecs/mainnet/hippius_raw_bak.json");
-    let mut chain_spec_json: serde_json::Value = serde_json::from_slice(custom_chainspec_bytes)
-        .map_err(|e| e.to_string())?;
+	// Load the custom chainspec from JSON file
+	let custom_chainspec_bytes = include_bytes!("../../../chainspecs/mainnet/hippius_raw_bak.json");
+	let mut chain_spec_json: serde_json::Value =
+		serde_json::from_slice(custom_chainspec_bytes).map_err(|e| e.to_string())?;
 
-		println!(
-			"Switching runtime: Code, Block number = 68900"
-		);
+	println!("Switching runtime: Code, Block number = 68900");
 
-		let code_substitute_68900 = include_bytes!("hippius_mainnet_runtime.compact.compressed.wasm");
-		sc_chain_spec::set_code_substitute_in_json_chain_spec(
-			&mut chain_spec_json,
-			code_substitute_68900,
-			68899,
-		);
+	let code_substitute_68900 = include_bytes!("hippius_mainnet_runtime.compact.compressed.wasm");
+	sc_chain_spec::set_code_substitute_in_json_chain_spec(
+		&mut chain_spec_json,
+		code_substitute_68900,
+		68899,
+	);
 
-    // // Load and set the code substitute
-    // let code_substitute_68900_hex = include_bytes!("code_substitute_68900.txt");
+	// // Load and set the code substitute
+	// let code_substitute_68900_hex = include_bytes!("code_substitute_68900.txt");
 
+	// sc_chain_spec::set_code_substitute_in_json_chain_spec(
+	//     &mut chain_spec_json,
+	//     Vec::from_hex(code_substitute_68900_hex)
+	//         .map_err(|e| e.to_string())?
+	//         .as_slice(),
+	//     68899,
+	// );
 
-    // sc_chain_spec::set_code_substitute_in_json_chain_spec(
-    //     &mut chain_spec_json,
-    //     Vec::from_hex(code_substitute_68900_hex)
-    //         .map_err(|e| e.to_string())?
-    //         .as_slice(),
-    //     68899,
-    // );
-
-    // Convert the modified JSON back to a ChainSpec
-    let chain_spec_bytes = chain_spec_json.to_string().into_bytes();
-    ChainSpec::from_json_bytes(chain_spec_bytes).map_err(|e| e.to_string())
+	// Convert the modified JSON back to a ChainSpec
+	let chain_spec_bytes = chain_spec_json.to_string().into_bytes();
+	ChainSpec::from_json_bytes(chain_spec_bytes).map_err(|e| e.to_string())
 }
 
 /// Configure initial storage state for FRAME modules.
@@ -399,76 +391,76 @@ fn get_fully_funded_accounts_for<'a, T: AsRef<[&'a str]>>(
 		.collect()
 }
 
-
 /// Configure initial storage state for FRAME modules.
 #[allow(clippy::too_many_arguments)]
 fn testnet_genesis(
-    initial_authorities: Vec<(AccountId, BabeId, GrandpaId, ImOnlineId)>,
-    endowed_accounts: Vec<(AccountId, Balance)>,
-    root_key: AccountId,
-    chain_id: u64,
-    _genesis_non_airdrop: Vec<(u128, u64, u64, u128)>,
-    genesis_evm_distribution: Vec<(H160, fp_evm::GenesisAccount)>,
+	initial_authorities: Vec<(AccountId, BabeId, GrandpaId, ImOnlineId)>,
+	endowed_accounts: Vec<(AccountId, Balance)>,
+	root_key: AccountId,
+	chain_id: u64,
+	_genesis_non_airdrop: Vec<(u128, u64, u64, u128)>,
+	genesis_evm_distribution: Vec<(H160, fp_evm::GenesisAccount)>,
 ) -> serde_json::Value {
-    let stakers: Vec<(AccountId, AccountId, Balance, StakerStatus<AccountId>)> =
-        initial_authorities
-            .iter()
-            .map(|x| (x.0.clone(), x.0.clone(), 3 * UNIT, StakerStatus::<AccountId>::Validator))
-            .collect::<Vec<_>>();
+	let stakers: Vec<(AccountId, AccountId, Balance, StakerStatus<AccountId>)> =
+		initial_authorities
+			.iter()
+			.map(|x| (x.0.clone(), x.0.clone(), 3 * UNIT, StakerStatus::<AccountId>::Validator))
+			.collect::<Vec<_>>();
 
-    let evm_accounts = {
-        let mut map = BTreeMap::new();
-        for (address, account) in genesis_evm_distribution {
-            map.insert(address, account);
-        }
-        let fully_loaded_accounts = get_fully_funded_accounts_for([]);
-        map.extend(fully_loaded_accounts);
-        map
-    };
+	let evm_accounts = {
+		let mut map = BTreeMap::new();
+		for (address, account) in genesis_evm_distribution {
+			map.insert(address, account);
+		}
+		let fully_loaded_accounts = get_fully_funded_accounts_for([]);
+		map.extend(fully_loaded_accounts);
+		map
+	};
 
-    let council_members: Vec<AccountId> = vec![root_key.clone()];
-    
-    // Generate session keys for both session.keys and session.nextKeys
-    let session_keys: Vec<(AccountId, AccountId, hippius_mainnet_runtime::opaque::SessionKeys)> = initial_authorities
-        .iter()
-        .map(|x| {
-            (
-                x.0.clone(),
-                x.0.clone(),
-                generate_session_keys(x.1.clone(), x.2.clone(), x.3.clone()),
-            )
-        })
-        .collect::<Vec<_>>();
+	let council_members: Vec<AccountId> = vec![root_key.clone()];
 
-    serde_json::json!({
-        "balances": {
-            "balances": endowed_accounts.to_vec(),
-        },
-        "sudo": {
-            "key": Some(root_key)
-        },
-        "session": {
-            "keys": session_keys.clone(),
-        },
-        "staking": {
-            "validatorCount": initial_authorities.len() as u32,
-            "minimumValidatorCount": 1,
-            "invulnerables": initial_authorities.iter().map(|x| x.0.clone()).collect::<Vec<_>>(),
-            "slashRewardFraction": Perbill::from_percent(10),
-            "stakers": stakers,
-        },
-        "council": {
-            "members": council_members,
-        },
-        "babe": {
-            "epochConfig": hippius_mainnet_runtime::BABE_GENESIS_EPOCH_CONFIG,
-        },
-        "evm": {
-            "accounts": evm_accounts
-        },
-        "evmChainId": { "chainId": chain_id },
-        "vesting": {
-            "vesting": Vec::<(AccountId, u64, u64, u128)>::new(),
-        }
-    })
+	// Generate session keys for both session.keys and session.nextKeys
+	let session_keys: Vec<(AccountId, AccountId, hippius_mainnet_runtime::opaque::SessionKeys)> =
+		initial_authorities
+			.iter()
+			.map(|x| {
+				(
+					x.0.clone(),
+					x.0.clone(),
+					generate_session_keys(x.1.clone(), x.2.clone(), x.3.clone()),
+				)
+			})
+			.collect::<Vec<_>>();
+
+	serde_json::json!({
+		"balances": {
+			"balances": endowed_accounts.to_vec(),
+		},
+		"sudo": {
+			"key": Some(root_key)
+		},
+		"session": {
+			"keys": session_keys.clone(),
+		},
+		"staking": {
+			"validatorCount": initial_authorities.len() as u32,
+			"minimumValidatorCount": 1,
+			"invulnerables": initial_authorities.iter().map(|x| x.0.clone()).collect::<Vec<_>>(),
+			"slashRewardFraction": Perbill::from_percent(10),
+			"stakers": stakers,
+		},
+		"council": {
+			"members": council_members,
+		},
+		"babe": {
+			"epochConfig": hippius_mainnet_runtime::BABE_GENESIS_EPOCH_CONFIG,
+		},
+		"evm": {
+			"accounts": evm_accounts
+		},
+		"evmChainId": { "chainId": chain_id },
+		"vesting": {
+			"vesting": Vec::<(AccountId, u64, u64, u128)>::new(),
+		}
+	})
 }

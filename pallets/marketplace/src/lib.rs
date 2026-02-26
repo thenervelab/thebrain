@@ -84,9 +84,7 @@ pub mod pallet {
     use frame_system::offchain::SendUnsignedTransaction;
     use frame_support::traits::ExistenceRequirement;
     use sp_runtime::traits::Zero;
-    use ipfs_pallet::FileInput;
     use sp_core::U256;
-    use ipfs_pallet::FileHash;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -103,7 +101,7 @@ pub mod pallet {
 
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
-                Self::handle_storage_ipfs_charging(current_block);
+                Self::handle_arion_storage_charging(current_block);
                 Self::handle_all_subscription_charging(current_block);
             }
 
@@ -116,7 +114,7 @@ pub mod pallet {
     pub trait Config: frame_system::Config + 
                     pallet_registration::Config + 
                     pallet_credits::Config + 
-                    ipfs_pallet::Config +
+                    pallet_arion::Config +
                     pallet_balances::Config + 
                     pallet_notifications::Config +
                     // pallet_storage_s3::Config +
@@ -328,21 +326,6 @@ pub mod pallet {
             amount: BalanceOf<T>,
         },
         PackageSuspensionSet(T::Hash, bool),
-        PinRequested {
-			who: T::AccountId,
-			file_hash: FileHash,
-			replicas: u32
-		},
-        UnpinRequestAdded { 
-            caller: T::AccountId,
-            owner: T::AccountId,
-            file_hash: FileHash,
-        },
-        StorageRequestAdded {
-            caller: T::AccountId,
-            owner: T::AccountId,
-            files_input: Vec<FileInput>,
-        },
         StoragePlanPriceUpdated {
             plan_id: T::Hash,
             new_price_per_gb: u32,
@@ -359,10 +342,6 @@ pub mod pallet {
             location_id: Option<u32>,
             selected_image_name: Option<Vec<u8>>,
             cloud_init_cid: Option<Vec<u8>>,
-        },
-        FileHashCleanedUp {
-            subscription_id: SubscriptionId,
-            file_hash: FileHash,
         },
         PricePerGbUpdated { price: u128 },
         PricePerBandwidthUpdated { price: u128 },
@@ -383,7 +362,7 @@ pub mod pallet {
         PlanPriceUpdated(T::Hash, u128),
         /// Specific miner request fee updated
         SpecificMinerRequestFeeUpdated { fee: BalanceOf<T> },
-        BatchDeposited { owner: T::AccountId, batch_id: u64 },   // (owner, batch_id)
+        BatchDeposited { owner: T::AccountId, batch_id: u64 },
         CreditsConsumed { owner: T::AccountId, credits: u128 },
 	    StorageOperationsStatusChanged { enabled: bool },
         /// Purchase plan status was changed
@@ -514,160 +493,6 @@ pub mod pallet {
 
             // Emit an event
             Self::deposit_event(Event::PackageSuspensionSet(plan_id, is_suspended));
-            Ok(())
-        }
-
-        // file owner request to save their files given replicas and file hashes 
-		#[pallet::call_index(4)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn storage_request(
-			origin: OriginFor<T>,
-			files_input: Vec<FileInput>,
-            miner_ids: Option<Vec<Vec<u8>>>,
-            owner: T::AccountId
-		) -> DispatchResult {
-			let caller = ensure_signed(origin)?;
-
-            // Check if user has any credits
-            let user_credits = CreditsPallet::<T>::get_free_credits(&caller);
-            ensure!(user_credits > 0, Error::<T>::InsufficientFreeCredits);
-
-            // Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxRequestsPerBlock::get();
-			let user_requests_count = UserRequestsCount::<T>::get(&caller);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-            // Check if storage operations are enabled
-            ensure!(
-                Self::is_storage_operations_enabled(),
-                Error::<T>::StorageOperationsDisabled
-            );
-
-            // Check if the StorageMiner node type is disabled
-            ensure!(
-                !RegistrationPallet::<T>::is_node_type_disabled(NodeType::StorageMiner),
-                Error::<T>::NodeTypeDisabled
-            );
-
-            // Check if this is a proxy account and get the main account
-			let main_account = if let Some(primary) = ipfs_pallet::Pallet::<T>::get_primary_account(&caller)? {
-				primary
-			} else {
-				caller.clone()
-			};
-
-			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
-			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
-
-			// Unwrap safely after checking it's Some
-			let node_info = node_info.unwrap();
-
-			// Check if the node type is Validator
-			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
-            
-            // Check if a specific miner is requested and charge an additional fee
-            if miner_ids.is_some() {
-                // Define a fixed fee for requesting a specific miner
-                let specific_miner_fee = Self::specific_miner_request_fee();
-
-                let length_as_balance: <T as pallet::Config>::Balance = TryFrom::try_from(miner_ids.len() as u128)
-                .unwrap_or_else(|_| Zero::zero());
-            
-                let total_fee = specific_miner_fee.saturating_mul(length_as_balance.into());
-
-                // Ensure the payer has sufficient balance
-                ensure!(
-                    <pallet_balances::Pallet<T>>::free_balance(&owner) >= total_fee,
-                    Error::<T>::InsufficientBalance
-                );
-
-                // Charge the specific miner request fee
-                <pallet_balances::Pallet<T>>::transfer(
-                    &owner.clone(), 
-                    &Self::account_id(), 
-                    total_fee, 
-                    ExistenceRequirement::AllowDeath
-                )?;
-            }
-
-            Self::process_storage_requests(&owner.clone(), &files_input.clone(), miner_ids)?;
-
-            // Emit an event for the storage request
-            Self::deposit_event(Event::StorageRequestAdded {
-                caller,
-                owner,
-                files_input,
-            });
-
-			Ok(())
-		}
-
-        #[pallet::call_index(5)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn storage_unpin_request(
-            origin: OriginFor<T>,
-            file_hash: FileHash,
-            owner: T::AccountId
-        ) -> DispatchResult {
-            let caller = ensure_signed(origin)?;
-
-            // Check if user has any credits
-            let user_credits = CreditsPallet::<T>::get_free_credits(&caller);
-            ensure!(user_credits > 0, Error::<T>::InsufficientFreeCredits);
-
-            // Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxRequestsPerBlock::get();
-			let user_requests_count = UserRequestsCount::<T>::get(&caller);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-            // Check if storage operations are enabled
-            ensure!(
-                Self::is_storage_operations_enabled(),
-                Error::<T>::StorageOperationsDisabled
-            );
-
-            // Check if user has any credits
-            let user_credits = CreditsPallet::<T>::get_free_credits(&caller);
-            ensure!(user_credits > 0, Error::<T>::InsufficientFreeCredits);
-
-            // Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = T::MaxRequestsPerBlock::get();
-			let user_requests_count = UserRequestsCount::<T>::get(&caller);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-            // Check if storage operations are enabled
-            ensure!(
-                Self::is_storage_operations_enabled(),
-                Error::<T>::StorageOperationsDisabled
-            );
-
-            // Check if the StorageMiner node type is disabled
-            ensure!(
-                !RegistrationPallet::<T>::is_node_type_disabled(NodeType::StorageMiner),
-                Error::<T>::NodeTypeDisabled
-            );
-
-            // Check if this is a proxy account and get the main account
-			let main_account = if let Some(primary) = ipfs_pallet::Pallet::<T>::get_primary_account(&caller)? {
-				primary
-			} else {
-				caller.clone()
-			};
-
-            // Convert file hash to a hex-encoded string
-            let file_hash_encoded = hex::encode(file_hash.clone());
-            let encoded_file_hash: Vec<u8> = file_hash_encoded.clone().into();
-
-            let _ = ipfs_pallet::Pallet::<T>::process_unpin_request(file_hash.clone(), owner.clone())?;
-
-            // Emit the event for unpin request
-            Self::deposit_event(Event::UnpinRequestAdded {
-                caller,
-                owner,
-                file_hash,
-            });
-
             Ok(())
         }
 
@@ -1360,10 +1185,10 @@ pub mod pallet {
             }
         }
         
-        // charges users that does purchased plan but using s3 or ipfs stroage
-        fn handle_storage_ipfs_charging(current_block: BlockNumberFor<T>) {
+        // charges users for storage
+        fn handle_arion_storage_charging(current_block: BlockNumberFor<T>) {
             // Get all users who requested storage
-            let all_users_who_requested_storage = ipfs_pallet::Pallet::<T>::get_storage_request_users();
+            let all_users_who_requested_storage = pallet_arion::Pallet::<T>::get_all_users();
             for user in all_users_who_requested_storage {
                 // Check if user has any active storage plan subscription
                 let subscriptions = UserAllSubscriptionPlans::<T>::get(&user);
@@ -1377,7 +1202,7 @@ pub mod pallet {
                 let block_difference = current_block.saturating_sub(last_charged_at);
                 if block_difference > T::BlocksPerHour::get().into() {
                     // Variables to track total file size and fulfilled requests for updating
-                    let total_file_size_in_bs: u128 = ipfs_pallet::Pallet::<T>::user_total_files_size(&user).unwrap_or(0);
+                    let total_file_size_in_bs: u128 = pallet_arion::Pallet::<T>::user_total_files_size(&user).unwrap_or(0);
             
                     // Skip if no files to charge
                     if total_file_size_in_bs == 0 {
@@ -1424,9 +1249,8 @@ pub mod pallet {
                                 user
                             );
                         } else {
-    
                             // remove user storage request and unpin
-                            let _ = ipfs_pallet::Pallet::<T>::clear_user_storage_and_add_to_unpin_requests(user.clone());
+                            let _ = pallet_arion::Pallet::<T>::delete_user_entries(user.clone());
 
                             Self::remove_storage_last_charged_at(&user);
                         }
@@ -1434,7 +1258,7 @@ pub mod pallet {
                 }
             }
         }
-        
+
         // // charge user for buckets and bandwidth 
         // fn handle_storage_s3_subscription_charging(current_block: BlockNumberFor<T>) {
         //     // get total files stores , charge users every hour
@@ -1547,22 +1371,6 @@ pub mod pallet {
                         .map(move |sub| (account_id.clone(), sub))
                 })
                 .collect()
-        }
-
-        /// Process storage requests for given file hashes
-        pub fn process_storage_requests(
-            owner: &T::AccountId, 
-            file_inputs: &[FileInput],
-            miner_ids: Option<Vec<Vec<u8>>>
-        ) -> DispatchResult {
-            
-            ipfs_pallet::Pallet::<T>::process_storage_request(
-                owner.clone(), 
-                file_inputs.to_vec(),
-                miner_ids.clone()
-            )?;
-
-            Ok(())
         }
 
         /// Cancel a user's subscription

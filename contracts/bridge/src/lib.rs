@@ -201,9 +201,8 @@ mod bridge {
 				self.next_deposit_nonce.checked_add(1).ok_or(Error::Overflow)?;
 
 			// Hash uses the destination-chain amount (halphaRao)
-			let halpha_amount = (amount as u128)
-				.checked_mul(HALPHA_RAO_PER_ALPHA_RAO)
-				.ok_or(Error::Overflow)?;
+			let halpha_amount =
+				(amount as u128).checked_mul(HALPHA_RAO_PER_ALPHA_RAO).ok_or(Error::Overflow)?;
 
 			let mut canonical_bytes = Vec::new();
 			canonical_bytes.extend_from_slice(DOMAIN_DEPOSIT_REQUEST);
@@ -358,10 +357,8 @@ mod bridge {
 		) -> Result<(), Error> {
 			self.ensure_owner()?;
 
-			let mut request = self
-				.deposit_requests
-				.get(request_id)
-				.ok_or(Error::DepositRequestNotFound)?;
+			let mut request =
+				self.deposit_requests.get(request_id).ok_or(Error::DepositRequestNotFound)?;
 
 			if request.status != DepositRequestStatus::Requested {
 				return Err(Error::DepositRequestAlreadyFinalized);
@@ -408,7 +405,8 @@ mod bridge {
 				.transfer_stake(recipient, contract_hk, netuid, netuid, AlphaCurrency::from(amount))
 				.map_err(|_| Error::TransferFailed)?;
 
-			self.env().emit_event(AdminManualRelease { recipient, amount, deposit_request_id });
+			self.env()
+				.emit_event(AdminManualRelease { recipient, amount, deposit_request_id });
 
 			Ok(())
 		}
@@ -423,7 +421,11 @@ mod bridge {
 		/// # Arguments
 		/// * `request_id` - The withdrawal ID to cancel
 		#[ink(message)]
-		pub fn admin_cancel_withdrawal(&mut self, request_id: WithdrawalId, reason: CancelReason) -> Result<(), Error> {
+		pub fn admin_cancel_withdrawal(
+			&mut self,
+			request_id: WithdrawalId,
+			reason: CancelReason,
+		) -> Result<(), Error> {
 			self.ensure_owner()?;
 
 			let mut withdrawal =
@@ -543,7 +545,8 @@ mod bridge {
 			self.deposit_requests.remove(request_id);
 			self.nonce_to_deposit_request_id.remove(request.nonce);
 
-			self.env().emit_event(DepositRequestCleanedUp { deposit_request_id: request_id });
+			self.env()
+				.emit_event(DepositRequestCleanedUp { deposit_request_id: request_id });
 
 			Ok(())
 		}
@@ -599,17 +602,15 @@ mod bridge {
 			self.ensure_owner()?;
 			let old_amount = self.min_deposit_amount;
 			self.min_deposit_amount = amount;
-			self.env().emit_event(MinDepositAmountUpdated { old_amount, new_amount: amount });
+			self.env()
+				.emit_event(MinDepositAmountUpdated { old_amount, new_amount: amount });
 			Ok(())
 		}
 
 		// ============ Query Functions ============
 
 		#[ink(message)]
-		pub fn get_deposit_request(
-			&self,
-			request_id: DepositRequestId,
-		) -> Option<DepositRequest> {
+		pub fn get_deposit_request(&self, request_id: DepositRequestId) -> Option<DepositRequest> {
 			self.deposit_requests.get(request_id)
 		}
 
@@ -619,10 +620,7 @@ mod bridge {
 		}
 
 		#[ink(message)]
-		pub fn get_deposit_request_id_by_nonce(
-			&self,
-			nonce: Nonce,
-		) -> Option<DepositRequestId> {
+		pub fn get_deposit_request_id_by_nonce(&self, nonce: Nonce) -> Option<DepositRequestId> {
 			self.nonce_to_deposit_request_id.get(nonce)
 		}
 
@@ -1115,7 +1113,8 @@ mod bridge {
 
 			// Admin cancels the withdrawal
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
-			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
+			let result =
+				bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert!(result.is_ok());
 
 			// Verify the status changed
@@ -1142,7 +1141,8 @@ mod bridge {
 			bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce).unwrap();
 
 			// Try to cancel as non-owner
-			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
+			let result =
+				bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert_eq!(result, Err(Error::Unauthorized));
 		}
 
@@ -1152,7 +1152,8 @@ mod bridge {
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
 
 			let withdrawal_id = Hash::from([1u8; 32]);
-			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
+			let result =
+				bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert_eq!(result, Err(Error::WithdrawalNotFound));
 		}
 
@@ -1174,7 +1175,8 @@ mod bridge {
 			};
 			bridge.withdrawals.insert(withdrawal_id, &withdrawal);
 
-			let result = bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
+			let result =
+				bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert_eq!(result, Err(Error::WithdrawalAlreadyFinalized));
 		}
 

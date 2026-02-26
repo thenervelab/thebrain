@@ -80,20 +80,24 @@ pub mod pallet {
 	pub const DEFAULT_CLEANUP_TTL_BLOCKS: u32 = 100_800;
 
 	/// Status of a deposit record (destination side)
-	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
+	#[derive(
+		Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default,
+	)]
 	pub enum DepositStatus {
 		#[default]
-		Pending,     // Collecting votes for success
-		Completed,   // hAlpha credited to recipient
-		Cancelled,   // Admin cancelled after stuck
+		Pending, // Collecting votes for success
+		Completed, // hAlpha credited to recipient
+		Cancelled, // Admin cancelled after stuck
 	}
 
 	/// Status of a withdrawal request (source side)
-	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
+	#[derive(
+		Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default,
+	)]
 	pub enum WithdrawalRequestStatus {
 		#[default]
-		Requested,   // hAlpha burned, awaiting Alpha release on Bittensor
-		Failed,      // Admin marked after stuck (hAlpha manually minted back)
+		Requested, // hAlpha burned, awaiting Alpha release on Bittensor
+		Failed, // Admin marked after stuck (hAlpha manually minted back)
 	}
 
 	/// Reason for cancellation (for audit trail)
@@ -204,13 +208,8 @@ pub mod pallet {
 	/// Key: DepositId (same as Bittensor deposit_request ID)
 	#[pallet::storage]
 	#[pallet::getter(fn deposits)]
-	pub type Deposits<T: Config> = StorageMap<
-		_,
-		Blake2_128Concat,
-		DepositId,
-		Deposit<T>,
-		OptionQuery,
-	>;
+	pub type Deposits<T: Config> =
+		StorageMap<_, Blake2_128Concat, DepositId, Deposit<T>, OptionQuery>;
 
 	// ============ Withdrawal Request Storage (Source Side) ============
 
@@ -218,13 +217,8 @@ pub mod pallet {
 	/// Key: WithdrawalRequestId
 	#[pallet::storage]
 	#[pallet::getter(fn withdrawal_requests)]
-	pub type WithdrawalRequests<T: Config> = StorageMap<
-		_,
-		Blake2_128Concat,
-		WithdrawalRequestId,
-		WithdrawalRequest<T>,
-		OptionQuery,
-	>;
+	pub type WithdrawalRequests<T: Config> =
+		StorageMap<_, Blake2_128Concat, WithdrawalRequestId, WithdrawalRequest<T>, OptionQuery>;
 
 	/// Nonce for generating unique withdrawal request IDs
 	#[pallet::storage]
@@ -253,7 +247,8 @@ pub mod pallet {
 	/// Minimum withdrawal amount (in halphaRao)
 	#[pallet::storage]
 	#[pallet::getter(fn min_withdrawal_amount)]
-	pub type MinWithdrawalAmount<T: Config> = StorageValue<_, u128, ValueQuery, DefaultMinWithdrawal>;
+	pub type MinWithdrawalAmount<T: Config> =
+		StorageValue<_, u128, ValueQuery, DefaultMinWithdrawal>;
 
 	// ============ Events ============
 
@@ -261,28 +256,16 @@ pub mod pallet {
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
 		// ============ Deposit Flow Events (Destination) ============
-
 		/// Guardian attested a deposit (vote for success)
-		DepositAttested {
-			id: DepositId,
-			guardian: T::AccountId,
-		},
+		DepositAttested { id: DepositId, guardian: T::AccountId },
 
 		/// Deposit completed - hAlpha credited to recipient
-		DepositCompleted {
-			id: DepositId,
-			recipient: T::AccountId,
-			amount: u128,
-		},
+		DepositCompleted { id: DepositId, recipient: T::AccountId, amount: u128 },
 
 		/// Deposit cancelled by admin after stuck
-		DepositCancelled {
-			id: DepositId,
-			reason: CancelReason,
-		},
+		DepositCancelled { id: DepositId, reason: CancelReason },
 
 		// ============ Withdrawal Flow Events (Source) ============
-
 		/// User created a withdrawal request (hAlpha burned)
 		WithdrawalRequestCreated {
 			id: WithdrawalRequestId,
@@ -292,12 +275,9 @@ pub mod pallet {
 		},
 
 		/// Withdrawal request marked as failed by admin (hAlpha manually minted back)
-		WithdrawalRequestFailed {
-			id: WithdrawalRequestId,
-		},
+		WithdrawalRequestFailed { id: WithdrawalRequestId },
 
 		// ============ Admin Events ============
-
 		/// Admin manually minted hAlpha to a recipient (for stuck withdrawals)
 		AdminManualMint {
 			recipient: T::AccountId,
@@ -313,39 +293,23 @@ pub mod pallet {
 		Unpaused,
 
 		/// Global mint cap updated
-		GlobalMintCapUpdated {
-			new_cap: u128,
-		},
+		GlobalMintCapUpdated { new_cap: u128 },
 
 		/// Guardians and threshold updated atomically
-		GuardiansUpdated {
-			guardians: Vec<T::AccountId>,
-			approve_threshold: u16,
-		},
+		GuardiansUpdated { guardians: Vec<T::AccountId>, approve_threshold: u16 },
 
 		/// Minimum withdrawal amount updated
-		MinWithdrawalAmountUpdated {
-			old_amount: u128,
-			new_amount: u128,
-		},
+		MinWithdrawalAmountUpdated { old_amount: u128, new_amount: u128 },
 
 		// ============ Cleanup Events ============
-
 		/// Deposit record cleaned up after TTL
-		DepositCleanedUp {
-			id: DepositId,
-		},
+		DepositCleanedUp { id: DepositId },
 
 		/// Withdrawal request record cleaned up after TTL
-		WithdrawalRequestCleanedUp {
-			id: WithdrawalRequestId,
-		},
+		WithdrawalRequestCleanedUp { id: WithdrawalRequestId },
 
 		/// Cleanup TTL updated
-		CleanupTTLUpdated {
-			old_ttl: BlockNumberFor<T>,
-			new_ttl: BlockNumberFor<T>,
-		},
+		CleanupTTLUpdated { old_ttl: BlockNumberFor<T>, new_ttl: BlockNumberFor<T> },
 	}
 
 	// ============ Errors ============
@@ -420,10 +384,7 @@ pub mod pallet {
 		/// * `amount` - Amount of hAlpha to burn (in halphaRao, u128)
 		#[pallet::call_index(0)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::withdraw())]
-		pub fn withdraw(
-			origin: OriginFor<T>,
-			amount: u128,
-		) -> DispatchResult {
+		pub fn withdraw(origin: OriginFor<T>, amount: u128) -> DispatchResult {
 			let sender = ensure_signed(origin)?;
 			let recipient = sender.clone();
 			Self::ensure_not_paused()?;
@@ -442,7 +403,8 @@ pub mod pallet {
 				Preservation::Expendable,
 				Precision::Exact,
 				Fortitude::Polite,
-			).map_err(|_| Error::<T>::InsufficientBalance)?;
+			)
+			.map_err(|_| Error::<T>::InsufficientBalance)?;
 
 			// Update total minted tracking (use checked_sub to catch accounting bugs)
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
@@ -515,15 +477,15 @@ pub mod pallet {
 			// Check if deposit already exists
 			if let Some(mut deposit) = Deposits::<T>::get(request_id) {
 				// Check status and vote
-				ensure!(deposit.status == DepositStatus::Pending, Error::<T>::DepositAlreadyCompleted);
+				ensure!(
+					deposit.status == DepositStatus::Pending,
+					Error::<T>::DepositAlreadyCompleted
+				);
 				ensure!(!deposit.votes.contains(&guardian), Error::<T>::AlreadyVoted);
 
 				deposit.votes.insert(guardian.clone());
 
-				Self::deposit_event(Event::DepositAttested {
-					id: request_id,
-					guardian,
-				});
+				Self::deposit_event(Event::DepositAttested { id: request_id, guardian });
 
 				// Check if threshold reached
 				if deposit.votes.len() >= ApproveThreshold::<T>::get() as usize {
@@ -546,10 +508,7 @@ pub mod pallet {
 					finalized_at_block: None,
 				};
 
-				Self::deposit_event(Event::DepositAttested {
-					id: request_id,
-					guardian,
-				});
+				Self::deposit_event(Event::DepositAttested { id: request_id, guardian });
 
 				// Check if threshold reached immediately (single guardian setup)
 				if deposit.votes.len() >= ApproveThreshold::<T>::get() as usize {
@@ -569,26 +528,21 @@ pub mod pallet {
 		/// * `deposit_id` - The deposit ID to cleanup
 		#[pallet::call_index(2)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::cleanup_deposit())]
-		pub fn cleanup_deposit(
-			origin: OriginFor<T>,
-			deposit_id: DepositId,
-		) -> DispatchResult {
+		pub fn cleanup_deposit(origin: OriginFor<T>, deposit_id: DepositId) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
 			Self::ensure_guardian(&caller)?;
 
-			let deposit = Deposits::<T>::get(deposit_id)
-				.ok_or(Error::<T>::DepositNotFound)?;
+			let deposit = Deposits::<T>::get(deposit_id).ok_or(Error::<T>::DepositNotFound)?;
 
 			// Must be finalized (Completed or Cancelled)
 			ensure!(
-				deposit.status == DepositStatus::Completed ||
-				deposit.status == DepositStatus::Cancelled,
+				deposit.status == DepositStatus::Completed
+					|| deposit.status == DepositStatus::Cancelled,
 				Error::<T>::RecordNotFinalized
 			);
 
 			// Must have finalized_at_block set
-			let finalized_at = deposit.finalized_at_block
-				.ok_or(Error::<T>::RecordNotFinalized)?;
+			let finalized_at = deposit.finalized_at_block.ok_or(Error::<T>::RecordNotFinalized)?;
 
 			// TTL must have passed since finalization
 			let current_block = frame_system::Pallet::<T>::block_number();
@@ -732,7 +686,10 @@ pub mod pallet {
 			ensure!(amount > 0, Error::<T>::AmountTooSmall);
 			let old = MinWithdrawalAmount::<T>::get();
 			MinWithdrawalAmount::<T>::put(amount);
-			Self::deposit_event(Event::MinWithdrawalAmountUpdated { old_amount: old, new_amount: amount });
+			Self::deposit_event(Event::MinWithdrawalAmountUpdated {
+				old_amount: old,
+				new_amount: amount,
+			});
 			Ok(())
 		}
 
@@ -765,10 +722,7 @@ pub mod pallet {
 				deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
 				deposit.status = DepositStatus::Cancelled;
 
-				Self::deposit_event(Event::DepositCancelled {
-					id: request_id,
-					reason,
-				});
+				Self::deposit_event(Event::DepositCancelled { id: request_id, reason });
 
 				Ok(())
 			})
@@ -805,7 +759,8 @@ pub mod pallet {
 			// Check and update mint cap (this is restoring burned hAlpha, so it must fit in cap)
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
-				let new_total = total.checked_add(request.amount).ok_or(Error::<T>::ArithmeticOverflow)?;
+				let new_total =
+					total.checked_add(request.amount).ok_or(Error::<T>::ArithmeticOverflow)?;
 				ensure!(new_total <= mint_cap, Error::<T>::CapExceeded);
 				*total = new_total;
 				Ok(())
@@ -922,10 +877,7 @@ pub mod pallet {
 		}
 
 		/// Finalize a deposit by minting hAlpha to the recipient
-		fn finalize_deposit(
-			deposit_id: DepositId,
-			mut deposit: Deposit<T>,
-		) -> DispatchResult {
+		fn finalize_deposit(deposit_id: DepositId, mut deposit: Deposit<T>) -> DispatchResult {
 			let recipient = deposit.recipient.clone();
 			let amount = deposit.amount;
 
@@ -946,11 +898,7 @@ pub mod pallet {
 			deposit.status = DepositStatus::Completed;
 			Deposits::<T>::insert(deposit_id, deposit);
 
-			Self::deposit_event(Event::DepositCompleted {
-				id: deposit_id,
-				recipient,
-				amount,
-			});
+			Self::deposit_event(Event::DepositCompleted { id: deposit_id, recipient, amount });
 
 			Ok(())
 		}

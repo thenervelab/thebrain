@@ -1608,10 +1608,7 @@ pub mod pallet {
 		/// Toggle the de-registration switch (root only)
 		#[pallet::call_index(20)]
 		#[pallet::weight((10_000, Pays::No))]
-		pub fn set_deregistration_enabled(
-			origin: OriginFor<T>,
-			enabled: bool,
-		) -> DispatchResult {
+		pub fn set_deregistration_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
 			// Only root can call this function
 			ensure_root(origin)?;
 
@@ -1622,7 +1619,7 @@ pub mod pallet {
 			Self::deposit_event(Event::DeregistrationStatusChanged { enabled });
 
 			Ok(())
-		}		
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -2441,6 +2438,5 @@ pub mod pallet {
 				}
 			}
 		}
-	
 	}
 }

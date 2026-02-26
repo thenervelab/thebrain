@@ -3,11 +3,11 @@ use frame_support::pallet_prelude::RuntimeDebug;
 use frame_system::{offchain::SignedPayload, pallet_prelude::BlockNumberFor};
 use pallet_registration::NodeType;
 use scale_codec::{Decode, Encode};
+use scale_info::prelude::string::String;
 use scale_info::prelude::vec::Vec;
 use scale_info::TypeInfo;
-use sp_std::{marker::PhantomData, prelude::*};
 use serde::{Deserialize, Serialize};
-use scale_info::prelude::string::String;
+use sp_std::{marker::PhantomData, prelude::*};
 
 #[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, PartialEq, Default)]
 pub struct BenchmarkMetrics {
@@ -58,7 +58,7 @@ pub struct NetworkInterfaceInfo {
 	pub network_details: Option<NetworkDetails>,
 }
 
-#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq,Deserialize)]
+#[derive(Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq, Deserialize)]
 pub struct DiskInfo {
 	pub name: Vec<u8>,
 	pub disk_type: Vec<u8>,
@@ -307,23 +307,22 @@ pub struct ApiStorageRequest<AccountId> {
 	pub is_assigned: bool,
 }
 
-
 // Structs to match the API's expected JSON format
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ApiUnpinItem {
-    pub cid: String,
-    pub owner: String,
+	pub cid: String,
+	pub owner: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ApiUnpinRequest {
-    pub items: Vec<ApiUnpinItem>,
+	pub items: Vec<ApiUnpinItem>,
 }
 
 // Define the struct for miner metrics
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 pub struct MinerPinMetrics {
-    pub node_id: Vec<u8>,
-    pub total_pin_checks: u32,
-    pub successful_pin_checks: u32,
+	pub node_id: Vec<u8>,
+	pub total_pin_checks: u32,
+	pub successful_pin_checks: u32,
 }

@@ -139,17 +139,22 @@ pub mod pallet {
 				// Initialize with 0 weight, we'll update it later
 				all_weights_on_bitensor.push(0);
 			}
-			
+
 			let uid_zero_weight = WeightCalculation::uid_zero_weight::<T>();
 			// Update Bittensor UIDs
 			for uid in uids.iter() {
 				if uid.id == uid_zero {
-					let miner_ss58 =
-					AccountId32::new(uid.substrate_address.encode().try_into().unwrap_or_default())
-						.to_ss58check();
-						let validator_account = match T::AccountId::decode(&mut &uid.substrate_address.encode()[..]) {
+					let miner_ss58 = AccountId32::new(
+						uid.substrate_address.encode().try_into().unwrap_or_default(),
+					)
+					.to_ss58check();
+					let validator_account =
+						match T::AccountId::decode(&mut &uid.substrate_address.encode()[..]) {
 							Ok(account) => {
-								let node_info = pallet_registration::Pallet::<T>::get_registered_node_for_owner(&account);
+								let node_info =
+									pallet_registration::Pallet::<T>::get_registered_node_for_owner(
+										&account,
+									);
 								if let Some(info) = node_info {
 									storage_miners_node_id.push(info.node_id.clone());
 								} else {
@@ -177,10 +182,9 @@ pub mod pallet {
 				let current_block_number = <frame_system::Pallet<T>>::block_number();
 
 				// Get registration block number
-				let registration_block =
-					pallet_registration::Pallet::<T>::get_registration_block(
-						&miner.node_id.clone(),
-					);
+				let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+					&miner.node_id.clone(),
+				);
 
 				// Calculate weight
 				let mut weight: u32 = 0;
@@ -198,7 +202,7 @@ pub mod pallet {
 				// 		// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
 				// 		weight = ((weight as u64) * 20 / 100).max(1) as u32;
 				// 	}
-				// } 
+				// }
 
 				let buffer = 3000u32;
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
@@ -213,7 +217,7 @@ pub mod pallet {
 				}
 
 				storage_weights.push(weight as u16);
-				
+
 				let miner_ss58 =
 					AccountId32::new(miner.owner.encode().try_into().unwrap_or_default())
 						.to_ss58check();
@@ -232,7 +236,8 @@ pub mod pallet {
 			}
 
 			// 1) Sum all *miners* weights (everything that is NOT a validator)
-			let sum_miners: u32 = storage_weights.iter()
+			let sum_miners: u32 = storage_weights
+				.iter()
 				.zip(storage_miners_node_types.iter())
 				.filter(|(_, &ref t)| *t != NodeType::Validator)
 				.map(|(&w, _)| w as u32)
@@ -246,7 +251,9 @@ pub mod pallet {
 			} as u16;
 
 			// 3) Update storage_weights if UID 0 was added
-			if let Some(pos) = storage_miners_node_types.iter().position(|t| *t == NodeType::Validator) {
+			if let Some(pos) =
+				storage_miners_node_types.iter().position(|t| *t == NodeType::Validator)
+			{
 				storage_weights[pos] = final_uid_zero;
 			}
 
@@ -289,10 +296,9 @@ pub mod pallet {
 				let current_block_number = <frame_system::Pallet<T>>::block_number();
 
 				// Get registration block number
-				let registration_block =
-					pallet_registration::Pallet::<T>::get_registration_block(
-						&miner.node_id.clone(),
-					);
+				let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+					&miner.node_id.clone(),
+				);
 
 				// Calculate weight
 				let mut weight = WeightCalculation::calculate_weight::<T>(
@@ -302,8 +308,7 @@ pub mod pallet {
 
 				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
 				if let Some(reg_block) = registration_block {
-					let blocks_since_registration =
-						current_block_number.saturating_sub(reg_block);
+					let blocks_since_registration = current_block_number.saturating_sub(reg_block);
 					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
 						// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
 						weight = ((weight as u64) * 20 / 100).max(1) as u32;
@@ -328,7 +333,6 @@ pub mod pallet {
 					}
 				}
 				storage_s3_weights.push(weight as u16);
-			
 
 				// Other logic remains the same...
 				let miner_ss58 =
@@ -382,10 +386,9 @@ pub mod pallet {
 				let current_block_number = <frame_system::Pallet<T>>::block_number();
 
 				// Get registration block number
-				let registration_block =
-					pallet_registration::Pallet::<T>::get_registration_block(
-						&miner.node_id.clone(),
-					);
+				let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+					&miner.node_id.clone(),
+				);
 
 				// Calculate weight
 				let mut weight = WeightCalculation::calculate_weight::<T>(
@@ -395,8 +398,7 @@ pub mod pallet {
 
 				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
 				if let Some(reg_block) = registration_block {
-					let blocks_since_registration =
-						current_block_number.saturating_sub(reg_block);
+					let blocks_since_registration = current_block_number.saturating_sub(reg_block);
 					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
 						// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
 						weight = ((weight as u64) * 20 / 100).max(1) as u32;
@@ -421,7 +423,6 @@ pub mod pallet {
 					}
 				}
 				validator_weights.push(weight as u16);
-			
 
 				// Other logic remains the same...
 				let miner_ss58 =
@@ -471,15 +472,13 @@ pub mod pallet {
 					continue;
 				}
 
-			
 				// Get current block number
 				let current_block_number = <frame_system::Pallet<T>>::block_number();
 
 				// Get registration block number
-				let registration_block =
-					pallet_registration::Pallet::<T>::get_registration_block(
-						&miner.node_id.clone(),
-					);
+				let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+					&miner.node_id.clone(),
+				);
 
 				// Calculate weight
 				let mut weight = WeightCalculation::calculate_weight::<T>(
@@ -489,8 +488,7 @@ pub mod pallet {
 
 				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
 				if let Some(reg_block) = registration_block {
-					let blocks_since_registration =
-						current_block_number.saturating_sub(reg_block);
+					let blocks_since_registration = current_block_number.saturating_sub(reg_block);
 					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
 						// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
 						weight = ((weight as u64) * 20 / 100).max(1) as u32;
@@ -568,10 +566,9 @@ pub mod pallet {
 				let current_block_number = <frame_system::Pallet<T>>::block_number();
 
 				// Get registration block number
-				let registration_block =
-					pallet_registration::Pallet::<T>::get_registration_block(
-						&miner.node_id.clone(),
-					);
+				let registration_block = pallet_registration::Pallet::<T>::get_registration_block(
+					&miner.node_id.clone(),
+				);
 
 				// Calculate weight
 				let mut weight = WeightCalculation::calculate_weight::<T>(
@@ -581,8 +578,7 @@ pub mod pallet {
 
 				// Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
 				if let Some(reg_block) = registration_block {
-					let blocks_since_registration =
-						current_block_number.saturating_sub(reg_block);
+					let blocks_since_registration = current_block_number.saturating_sub(reg_block);
 					if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() {
 						// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
 						weight = ((weight as u64) * 20 / 100).max(1) as u32;
@@ -608,7 +604,7 @@ pub mod pallet {
 					}
 				}
 				compute_weights.push(weight as u16);
-				
+
 				let miner_ss58 =
 					AccountId32::new(miner.owner.encode().try_into().unwrap_or_default())
 						.to_ss58check();

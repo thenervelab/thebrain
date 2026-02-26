@@ -79,9 +79,7 @@ pub mod pallet {
 	use serde_json::Value;
 	use sp_runtime::{format, offchain::http};
 	use sp_runtime::{
-		offchain::{
-			Duration,
-		},
+		offchain::Duration,
 		traits::{AccountIdConversion, Get, Zero},
 	};
 	use sp_std::collections::btree_map::BTreeMap;

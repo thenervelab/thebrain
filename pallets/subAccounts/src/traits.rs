@@ -10,7 +10,7 @@ pub trait SubAccounts<AccountId> {
 	fn already_sub_account(who: AccountId) -> Result<(), DispatchError>;
 
 	fn can_upload(who: AccountId) -> bool;
-	
+
 	fn can_delete(who: AccountId) -> bool;
 }
 

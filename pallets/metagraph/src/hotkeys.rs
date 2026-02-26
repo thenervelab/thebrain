@@ -117,7 +117,7 @@ pub fn update_uids_with_roles(mut uids: Vec<UID>, dividends: &[u16]) -> Vec<UID>
 		} else if uid.id == 0 {
 			// Assign role as Validator if uid.id is 0
 			uid.role = Role::Validator;
-		}  else if dividends[uid.id as usize] > 0 {
+		} else if dividends[uid.id as usize] > 0 {
 			uid.role = Role::Validator;
 		} else {
 			uid.role = Role::Miner;

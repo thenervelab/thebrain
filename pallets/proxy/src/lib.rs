@@ -37,6 +37,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, vec};
 use codec::{Decode, Encode, MaxEncodedLen};
+use frame_support::traits::ExistenceRequirement;
 use frame_support::{
 	dispatch::GetDispatchInfo,
 	ensure,
@@ -51,7 +52,6 @@ use sp_runtime::{
 	DispatchError, DispatchResult, RuntimeDebug,
 };
 pub use weights::WeightInfo;
-use frame_support::traits::ExistenceRequirement;
 type CallHashOf<T> = <<T as Config>::CallHasher as Hash>::Output;
 
 type BalanceOf<T> =
@@ -234,7 +234,7 @@ pub mod pallet {
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			let delegate = T::Lookup::lookup(delegate)?;
-		    // Auto-fund proxy
+			// Auto-fund proxy
 			let delegate_balance = T::Currency::free_balance(&delegate);
 			if delegate_balance < T::ExistentialDeposit::get() {
 				T::Currency::transfer(
@@ -516,9 +516,9 @@ pub mod pallet {
 			let call_hash = T::CallHasher::hash_of(&call);
 			let now = system::Pallet::<T>::block_number();
 			Self::edit_announcements(&delegate, |ann| {
-				ann.real != real ||
-					ann.call_hash != call_hash ||
-					now.saturating_sub(ann.height) < def.delay
+				ann.real != real
+					|| ann.call_hash != call_hash
+					|| now.saturating_sub(ann.height) < def.delay
 			})
 			.map_err(|_| Error::<T>::Unannounced)?;
 
@@ -778,8 +778,8 @@ impl<T: Config> Pallet<T> {
 		force_proxy_type: Option<T::ProxyType>,
 	) -> Result<ProxyDefinition<T::AccountId, T::ProxyType, BlockNumberFor<T>>, DispatchError> {
 		let f = |x: &ProxyDefinition<T::AccountId, T::ProxyType, BlockNumberFor<T>>| -> bool {
-			&x.delegate == delegate &&
-				force_proxy_type.as_ref().map_or(true, |y| &x.proxy_type == y)
+			&x.delegate == delegate
+				&& force_proxy_type.as_ref().map_or(true, |y| &x.proxy_type == y)
 		};
 		Ok(Proxies::<T>::get(real).0.into_iter().find(f).ok_or(Error::<T>::NotProxy)?)
 	}
@@ -797,15 +797,19 @@ impl<T: Config> Pallet<T> {
 			match c.is_sub_type() {
 				// Proxy call cannot add or remove a proxy with more permissions than it already
 				// has.
-				Some(Call::add_proxy { ref proxy_type, .. }) |
-				Some(Call::remove_proxy { ref proxy_type, .. })
+				Some(Call::add_proxy { ref proxy_type, .. })
+				| Some(Call::remove_proxy { ref proxy_type, .. })
 					if !def.proxy_type.is_superset(proxy_type) =>
-					false,
+				{
+					false
+				},
 				// Proxy call cannot remove all proxies or kill pure proxies unless it has full
 				// permissions.
 				Some(Call::remove_proxies { .. }) | Some(Call::kill_pure { .. })
 					if def.proxy_type != T::ProxyType::default() =>
-					false,
+				{
+					false
+				},
 				_ => def.proxy_type.filter(c),
 			}
 		});

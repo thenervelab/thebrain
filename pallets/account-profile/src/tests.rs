@@ -1,11 +1,11 @@
-use crate::{mock::*, Error, Event, AccountProfileChallenge};
-use frame_support::{assert_noop, assert_ok};
-use sp_runtime::AccountId32;
-use sp_core::{H256, ed25519};
-use sp_io::hashing::blake2_256;
-use frame_system::pallet_prelude::*;
 use crate::AccountProfile;
+use crate::{mock::*, AccountProfileChallenge, Error, Event};
+use frame_support::{assert_noop, assert_ok};
 use frame_system::pallet_prelude::BlockNumberFor;
+use frame_system::pallet_prelude::*;
+use sp_core::{ed25519, H256};
+use sp_io::hashing::blake2_256;
+use sp_runtime::AccountId32;
 
 // Helper function to create a test account
 fn create_account(seed: u8) -> AccountId32 {
@@ -200,14 +200,11 @@ fn set_account_profile_works() {
 		let node_id = create_node_id(1);
 		let encryption_key = b"0xencryptionkey123".to_vec();
 		let node_id_hex = node_id.clone(); // In real scenario, this would be hex encoding
-		
+
 		let current_block = System::block_number();
-		let challenge_bytes = create_valid_challenge::<Test>(
-			account.clone(),
-			&node_id_hex,
-			current_block + 100,
-		);
-		
+		let challenge_bytes =
+			create_valid_challenge::<Test>(account.clone(), &node_id_hex, current_block + 100);
+
 		let (_, public_key, signature) = create_test_keypair();
 
 		// Mock registration pallet to return node info with matching node_id
@@ -240,21 +237,16 @@ fn update_account_profile_works() {
 		let node_id = create_node_id(1);
 		let encryption_key = b"0xnewencryptionkey456".to_vec();
 		let node_id_hex = node_id.clone();
-		
+
 		let current_block = System::block_number();
-		let challenge_bytes = create_valid_challenge::<Test>(
-			account.clone(),
-			&node_id_hex,
-			current_block + 100,
-		);
-		
+		let challenge_bytes =
+			create_valid_challenge::<Test>(account.clone(), &node_id_hex, current_block + 100);
+
 		let (_, public_key, signature) = create_test_keypair();
 
 		// First set a profile
-		let initial_profile = AccountProfile {
-			node_id: node_id.clone(),
-			encryption_key: b"0xoldkey".to_vec(),
-		};
+		let initial_profile =
+			AccountProfile { node_id: node_id.clone(), encryption_key: b"0xoldkey".to_vec() };
 		AccountProfiles::<Test>::insert(&account, initial_profile);
 
 		// Now update it
@@ -283,15 +275,12 @@ fn set_account_profile_fails_with_expired_challenge() {
 		let node_id = create_node_id(1);
 		let encryption_key = b"0xencryptionkey123".to_vec();
 		let node_id_hex = node_id.clone();
-		
+
 		let current_block = System::block_number();
 		// Challenge expires in the past
-		let challenge_bytes = create_valid_challenge::<Test>(
-			account.clone(),
-			&node_id_hex,
-			current_block - 1,
-		);
-		
+		let challenge_bytes =
+			create_valid_challenge::<Test>(account.clone(), &node_id_hex, current_block - 1);
+
 		let (_, public_key, signature) = create_test_keypair();
 
 		assert_noop!(
@@ -317,14 +306,14 @@ fn set_account_profile_fails_with_node_id_mismatch() {
 		let wrong_node_id = create_node_id(2);
 		let encryption_key = b"0xencryptionkey123".to_vec();
 		let node_id_hex = wrong_node_id.clone(); // Wrong hex
-		
+
 		let current_block = System::block_number();
 		let challenge_bytes = create_valid_challenge::<Test>(
 			account.clone(),
 			&node_id_hex, // This will create hash of wrong_node_id
 			current_block + 100,
 		);
-		
+
 		let (_, public_key, signature) = create_test_keypair();
 
 		assert_noop!(
@@ -349,14 +338,11 @@ fn set_account_profile_fails_with_reused_challenge() {
 		let node_id = create_node_id(1);
 		let encryption_key = b"0xencryptionkey123".to_vec();
 		let node_id_hex = node_id.clone();
-		
+
 		let current_block = System::block_number();
-		let challenge_bytes = create_valid_challenge::<Test>(
-			account.clone(),
-			&node_id_hex,
-			current_block + 100,
-		);
-		
+		let challenge_bytes =
+			create_valid_challenge::<Test>(account.clone(), &node_id_hex, current_block + 100);
+
 		let (_, public_key, signature) = create_test_keypair();
 
 		// First use should work
@@ -393,7 +379,7 @@ fn set_account_profile_fails_with_invalid_challenge_domain() {
 		let node_id = create_node_id(1);
 		let encryption_key = b"0xencryptionkey123".to_vec();
 		let node_id_hex = node_id.clone();
-		
+
 		let current_block = System::block_number();
 		let mut challenge = AccountProfileChallenge::<AccountId32, u64> {
 			domain: *b"WRONG::DOMAIN::v1\0\0\0\0\0\0", // Wrong domain
@@ -403,7 +389,7 @@ fn set_account_profile_fails_with_invalid_challenge_domain() {
 			node_id_hash: H256::from(blake2_256(&node_id_hex)),
 		};
 		let challenge_bytes = challenge.encode();
-		
+
 		let (_, public_key, signature) = create_test_keypair();
 
 		assert_noop!(
@@ -429,7 +415,7 @@ fn set_account_profile_fails_with_wrong_account_in_challenge() {
 		let node_id = create_node_id(1);
 		let encryption_key = b"0xencryptionkey123".to_vec();
 		let node_id_hex = node_id.clone();
-		
+
 		let current_block = System::block_number();
 		let mut challenge = AccountProfileChallenge::<AccountId32, u64> {
 			domain: *b"HIPPIUS::PROFILE::v1\0\0\0\0",
@@ -439,7 +425,7 @@ fn set_account_profile_fails_with_wrong_account_in_challenge() {
 			node_id_hash: H256::from(blake2_256(&node_id_hex)),
 		};
 		let challenge_bytes = challenge.encode();
-		
+
 		let (_, public_key, signature) = create_test_keypair();
 
 		assert_noop!(
@@ -464,14 +450,11 @@ fn set_account_profile_fails_without_registered_node() {
 		let node_id = create_node_id(1);
 		let encryption_key = b"0xencryptionkey123".to_vec();
 		let node_id_hex = node_id.clone();
-		
+
 		let current_block = System::block_number();
-		let challenge_bytes = create_valid_challenge::<Test>(
-			account.clone(),
-			&node_id_hex,
-			current_block + 100,
-		);
-		
+		let challenge_bytes =
+			create_valid_challenge::<Test>(account.clone(), &node_id_hex, current_block + 100);
+
 		let (_, public_key, signature) = create_test_keypair();
 
 		// Don't set up registration - should fail
@@ -494,21 +477,18 @@ fn set_account_profile_fails_without_registered_node() {
 fn hex_strip_prefix_works() {
 	new_test_ext().execute_with(|| {
 		let account = create_account(1);
-		
+
 		// Test with 0x prefix
 		let with_prefix = b"0x1234".to_vec();
 		assert_ok!(AccountProfile::set_public_item(
 			RuntimeOrigin::signed(account.clone()),
 			with_prefix
 		));
-		
+
 		// Test without prefix
 		let without_prefix = b"5678".to_vec();
-		assert_ok!(AccountProfile::set_public_item(
-			RuntimeOrigin::signed(account),
-			without_prefix
-		));
-		
+		assert_ok!(AccountProfile::set_public_item(RuntimeOrigin::signed(account), without_prefix));
+
 		// Both should work
 	});
 }
@@ -539,24 +519,18 @@ fn multiple_users_with_different_usernames_works() {
 	new_test_ext().execute_with(|| {
 		let account1 = create_account(1);
 		let account2 = create_account(2);
-		
+
 		assert_ok!(AccountProfile::set_username(
 			RuntimeOrigin::signed(account1.clone()),
 			b"user1".to_vec()
 		));
-		
+
 		assert_ok!(AccountProfile::set_username(
 			RuntimeOrigin::signed(account2.clone()),
 			b"user2".to_vec()
 		));
 
-		assert_eq!(
-			AccountProfile::get_account_id_by_username(&b"user1".to_vec()),
-			Some(account1)
-		);
-		assert_eq!(
-			AccountProfile::get_account_id_by_username(&b"user2".to_vec()),
-			Some(account2)
-		);
+		assert_eq!(AccountProfile::get_account_id_by_username(&b"user1".to_vec()), Some(account1));
+		assert_eq!(AccountProfile::get_account_id_by_username(&b"user2".to_vec()), Some(account2));
 	});
 }

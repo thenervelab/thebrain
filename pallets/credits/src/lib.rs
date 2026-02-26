@@ -162,8 +162,7 @@ pub mod pallet {
 	// Storage for the alpha price
 	#[pallet::storage]
 	#[pallet::getter(fn alpha_price)]
-	pub type AlphaPrice<T: Config> =
-			StorageValue<_, u128, ValueQuery>;
+	pub type AlphaPrice<T: Config> = StorageValue<_, u128, ValueQuery>;
 
 	// Storage for the current active lock period
 	#[pallet::storage]
@@ -636,11 +635,8 @@ pub mod pallet {
 
 			let current_price = AlphaPrice::<T>::get();
 
-			let new_price = if current_price == 0 {
-				price
-			} else {
-				current_price.saturating_add(price) / 2
-			};
+			let new_price =
+				if current_price == 0 { price } else { current_price.saturating_add(price) / 2 };
 
 			AlphaPrice::<T>::put(new_price);
 
