@@ -27,7 +27,9 @@ class ContinuousWeightSubmitter:
         self.logger = logging.getLogger(__name__)
         self.running = False
         self.subtensor = None
-        
+        self.config_path = config_path
+        self._weight_submitter = None
+
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from YAML file."""
         try:
@@ -151,16 +153,20 @@ class ContinuousWeightSubmitter:
             self.logger.info(f"Current block {current_block} is not a submission block, waiting for next one")
             current_block = await self.wait_for_next_submission_block()
         
+        # Initialize reusable WeightSubmitter once to avoid metagraph/scalecodec memory leak
+        if self._weight_submitter is None:
+            self._weight_submitter = WeightSubmitter(self.config_path)
+            await self._weight_submitter.initialize_connections()
+            self.logger.info("Initialized reusable WeightSubmitter")
+
         while self.running:
             try:
                 submission_count += 1
                 start_time = datetime.now()
                 self.logger.info(f"=== SUBMISSION #{submission_count} ===")
                 self.logger.info(f"Starting weight submission at {start_time} (block {current_block})")
-                
-                # Run the weight submission
-                submitter = WeightSubmitter()
-                success = await submitter.run()
+
+                success = await self._weight_submitter.run_submission()
                 
                 end_time = datetime.now()
                 duration = (end_time - start_time).total_seconds()
@@ -194,6 +200,9 @@ class ContinuousWeightSubmitter:
         self.logger.info("Stopping continuous weight submission...")
         if self.subtensor:
             self.subtensor.close()
+        if self._weight_submitter:
+            self._weight_submitter.cleanup()
+            self._weight_submitter = None
 
 
 async def main():
