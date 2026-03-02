@@ -1762,29 +1762,29 @@ pub mod pallet {
 			};
 
 			// Check if the node is registered
-			let node_info =
+			let vali_node_info =
 				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
 					.ok_or(Error::<T>::NodeNotRegistered)?;
 
 			// Verify the node type is Validator
 			ensure!(
-				node_info.node_type == pallet_registration::NodeType::Validator,
+				vali_node_info.node_type == pallet_registration::NodeType::Validator,
 				Error::<T>::InvalidNodeType
 			);
 
 			let mut reg =
 				ChildRegistrations::<T>::get(&child).ok_or(Error::<T>::ChildNotRegistered)?;
+
+			// here we should checkk 
+			ensure!(reg.status == ChildStatus::Active, Error::<T>::ChildNotActive);
 			
 			if FamilyActiveChildren::<T>::get(&reg.family) == 1 {
 				let node_info =
-				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&reg.family)
 					.ok_or(Error::<T>::NodeNotRegistered)?;
 
 				pallet_registration::Pallet::<T>::do_unregister_main_node(node_info.node_id);
 			} 
-			
-			// here we should checkk 
-			ensure!(reg.status == ChildStatus::Active, Error::<T>::ChildNotActive);
 
 			let now = Self::now();
 			let lockup_enabled = LockupEnabled::<T>::get();
