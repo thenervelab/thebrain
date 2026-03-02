@@ -1748,10 +1748,93 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// Force deregister a child node.
+		#[pallet::call_index(12)]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::deregister_child(), Pays::No))]
+		pub fn force_deregister_child(origin: OriginFor<T>, child: T::AccountId) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Get the main account if this is a proxy, otherwise use the account itself
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			// Check if the node is registered
+			let node_info =
+				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+					.ok_or(Error::<T>::NodeNotRegistered)?;
+
+			// Verify the node type is Validator
+			ensure!(
+				node_info.node_type == pallet_registration::NodeType::Validator,
+				Error::<T>::InvalidNodeType
+			);
+
+			let mut reg =
+				ChildRegistrations::<T>::get(&child).ok_or(Error::<T>::ChildNotRegistered)?;
+			
+			if FamilyActiveChildren::<T>::get(&reg.family) == 1 {
+				let node_info =
+				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+					.ok_or(Error::<T>::NodeNotRegistered)?;
+
+				pallet_registration::Pallet::<T>::do_unregister_main_node(node_info.node_id);
+			} 
+			
+			// here we should checkk 
+			ensure!(reg.status == ChildStatus::Active, Error::<T>::ChildNotActive);
+
+			let now = Self::now();
+			let lockup_enabled = LockupEnabled::<T>::get();
+			let unbonding_end = if !lockup_enabled || reg.deposit.is_zero() {
+				now
+			} else {
+				now.saturating_add(T::UnbondingPeriodBlocks::get())
+			};
+			let cooldown_end = now.saturating_add(T::UnregisterCooldownBlocks::get());
+
+			// Remove from active set
+			NodeIdToChild::<T>::remove(reg.node_id);
+			TotalActiveChildren::<T>::put(TotalActiveChildren::<T>::get().saturating_sub(1));
+			let fam_active = FamilyActiveChildren::<T>::get(&reg.family);
+			FamilyActiveChildren::<T>::insert(&reg.family, fam_active.saturating_sub(1));
+			// Maintain family children index
+			FamilyChildren::<T>::mutate(&reg.family, |v| {
+				if let Some(pos) = v.iter().position(|c| c == &child) {
+					v.swap_remove(pos);
+				}
+			});
+
+			// Cooldowns
+			ChildCooldownUntil::<T>::insert(&child, cooldown_end);
+			NodeIdCooldownUntil::<T>::insert(reg.node_id, cooldown_end);
+
+			// Flip status to Unbonding
+			reg.status = ChildStatus::Unbonding;
+			reg.unbonding_end = unbonding_end;
+			ChildRegistrations::<T>::insert(&child, &reg);
+
+			// Prevent replay with old signatures after deregistration.
+			let nonce = NodeIdNonce::<T>::get(reg.node_id);
+			NodeIdNonce::<T>::insert(reg.node_id, nonce.saturating_add(1));
+
+			Self::deposit_event(Event::ChildDeregistered {
+				family: reg.family,
+				child,
+				node_id: reg.node_id,
+				unbonding_end,
+				cooldown_end,
+			});
+			Ok(())
+		}
+
+
 		/// Claim (unbond) the deposit for a deregistered child after the unbonding period.
 		///
 		/// Note: this does NOT bypass cooldown; cooldown is enforced on `register_child`.
-		#[pallet::call_index(12)]
+		#[pallet::call_index(13)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::claim_unbonded(), Pays::No))]
 		pub fn claim_unbonded(origin: OriginFor<T>, child: T::AccountId) -> DispatchResult {
 			let who = ensure_signed(origin)?;
