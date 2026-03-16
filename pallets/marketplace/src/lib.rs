@@ -99,11 +99,11 @@ pub mod pallet {
                 let result = UserRequestsCount::<T>::clear(u32::MAX, None);
             }
 
-            // // Only execute on blocks divisible by the configured interval
-            // if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
-            //     Self::handle_arion_storage_charging(current_block);
-            //     Self::handle_all_subscription_charging(current_block);
-            // }
+            // Only execute on blocks divisible by the configured interval
+            if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
+                Self::handle_arion_storage_charging(current_block);
+                Self::handle_all_subscription_charging(current_block);
+            }
 
             // Return some weight (adjust based on actual implementation)
             T::DbWeight::get().reads_writes(1, 1)
