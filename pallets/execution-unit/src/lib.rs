@@ -7,8 +7,8 @@ mod system_info;
 pub mod types;
 use sp_runtime::SaturatedConversion;
 pub mod weight_calculation;
-use sp_core::offchain::KeyTypeId;
 use pallet_utils::MetricsInfoProvider;
+use sp_core::offchain::KeyTypeId;
 
 /// Defines application identifier for crypto keys of this module.
 ///
@@ -53,62 +53,58 @@ pub mod crypto {
 pub mod pallet {
 	use super::*;
 	use crate::weights::WeightInfo;
-	use scale_codec::alloc::string::ToString;
-	use scale_info::prelude::string::String;
 	use frame_support::{pallet_prelude::*, traits::Randomness};
 	use frame_system::{
-		offchain::{
-			AppCrypto, SendTransactionTypes,
-		},
+		offchain::{AppCrypto, SendTransactionTypes},
 		pallet_prelude::*,
 	};
 	use num_traits::float::FloatCore;
 	use pallet_babe::RandomnessFromOneEpochAgo;
 	use pallet_metagraph::UIDs;
+	use pallet_registration::pallet::ColdkeyNodeRegistration;
+	use pallet_registration::pallet::NodeRegistration;
 	use pallet_registration::NodeType;
 	use pallet_registration::Pallet as RegistrationPallet;
 	use pallet_utils::Pallet as UtilsPallet;
+	use scale_codec::alloc::string::ToString;
+	use scale_info::prelude::string::String;
+	use serde_json::Value;
 	use sp_core::crypto::Ss58Codec;
 	use sp_core::offchain::StorageKind;
+	use sp_runtime::Saturating;
 	use sp_runtime::{
 		format,
-		offchain::{
-			http,
-			Duration,
-		},
+		offchain::{http, Duration},
 		traits::Zero,
 		AccountId32,
 	};
 	use sp_std::prelude::*;
-	use sp_runtime::Saturating;
-	use serde_json::Value;
-	use pallet_registration::pallet::ColdkeyNodeRegistration;
-	use pallet_registration::pallet::NodeRegistration;
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config + 
-					  pallet_metagraph::Config + 
-					  pallet_babe::Config + 
-					  pallet_marketplace::Config +
-					  pallet_timestamp::Config + 
-					  SendTransactionTypes<Call<Self>> + 
-					  frame_system::offchain::SigningTypes +
-					  pallet_credits::Config + 
-					  ipfs_pallet::Config + 
-					  pallet_balances::Config +
-					  pallet_rankings::Config
-		{
+	pub trait Config:
+		frame_system::Config
+		+ pallet_metagraph::Config
+		+ pallet_babe::Config
+		+ pallet_marketplace::Config
+		+ pallet_timestamp::Config
+		+ SendTransactionTypes<Call<Self>>
+		+ frame_system::offchain::SigningTypes
+		+ pallet_credits::Config
+		+ pallet_balances::Config
+		+ pallet_rankings::Config
+		+ pallet_arion::Config
+	{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		/// The identifier type for an offchain worker.
 		type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
-		
+
 		/// The identifier type for an offchain worker.
 		type WeightInfo: WeightInfo;
 
 		#[pallet::constant]
 		type LocalRpcUrl: Get<&'static str>;
-		
+
 		#[pallet::constant]
 		type SystemInfoRpcMethod: Get<&'static str>;
 
@@ -117,9 +113,9 @@ pub mod pallet {
 
 		// Define block time as a runtime parameter
 		type BlockCheckInterval: Get<u32>;
-		
+
 		#[pallet::constant]
-		type GetReadProofRpcMethod: Get<&'static str>; 
+		type GetReadProofRpcMethod: Get<&'static str>;
 
 		#[pallet::constant]
 		type SystemHealthRpcMethod: Get<&'static str>;
@@ -130,28 +126,28 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxOffchainRequestsPerPeriod: Get<u32>;
 
-	    #[pallet::constant]
-	    type RequestsClearInterval: Get<u32>;
+		#[pallet::constant]
+		type RequestsClearInterval: Get<u32>;
 
 		#[pallet::constant]
 		type MaxOffchainHardwareSubmitRequestsPerPeriod: Get<u32>;
 
-	    #[pallet::constant]
-	    type HardwareSubmitRequestsClearInterval: Get<u32>;
+		#[pallet::constant]
+		type HardwareSubmitRequestsClearInterval: Get<u32>;
 
 		#[pallet::constant]
 		type IpfsServiceUrl: Get<&'static str>;
 
 		#[pallet::constant]
-        type LocalDefaultSpecVersion: Get<u32>;
-    
-        #[pallet::constant]
-        type LocalDefaultGenesisHash: Get<&'static str>;
+		type LocalDefaultSpecVersion: Get<u32>;
+
+		#[pallet::constant]
+		type LocalDefaultGenesisHash: Get<&'static str>;
 
 		type ConsensusPeriod: Get<BlockNumberFor<Self>>;
-		
+
 		#[pallet::constant]
-        type ConsensusThreshold: Get<u32>;
+		type ConsensusThreshold: Get<u32>;
 
 		#[pallet::constant]
 		type ConsensusSimilarityThreshold: Get<u32>; // Percentage (e.g., 85 for 85%)
@@ -199,14 +195,28 @@ pub mod pallet {
 			enabled: bool,
 		},
 		/// Emitted when storage size is below 2TB.
-		StorageBelowTwoTB { node_id: Vec<u8> },
+		StorageBelowTwoTB {
+			node_id: Vec<u8>,
+		},
 		/// Emitted when primary network interface is not provided.
-		NoPrimaryNetworkInterface { node_id: Vec<u8> },
+		NoPrimaryNetworkInterface {
+			node_id: Vec<u8>,
+		},
 		/// Emitted when disks array is empty.
-		EmptyDisksArray { node_id: Vec<u8> },
-		MemoryExceedsFiveTB { node_id: Vec<u8> },
-		ConsensusReached { miner_id: Vec<u8>, total_pin_checks: u32, successful_pin_checks: u32 },
-        ConsensusFailed { miner_id: Vec<u8> },
+		EmptyDisksArray {
+			node_id: Vec<u8>,
+		},
+		MemoryExceedsFiveTB {
+			node_id: Vec<u8>,
+		},
+		ConsensusReached {
+			miner_id: Vec<u8>,
+			total_pin_checks: u32,
+			successful_pin_checks: u32,
+		},
+		ConsensusFailed {
+			miner_id: Vec<u8>,
+		},
 	}
 
 	#[derive(Debug, Encode, Decode, Clone, PartialEq, Eq, TypeInfo)]
@@ -215,7 +225,6 @@ pub mod pallet {
 		HardwareCheckFailed,
 		BenchmarkExecutionFailed,
 		MetricsNotFound,
-		
 	}
 
 	#[pallet::storage]
@@ -233,8 +242,15 @@ pub mod pallet {
 	pub type PurgeDeregisteredNodesEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
 	#[pallet::storage]
-    pub(super) type TemporaryPinReports<T: Config> =
-        StorageDoubleMap<_, Blake2_128Concat, Vec<u8>, Blake2_128Concat, T::AccountId, MinerPinMetrics, OptionQuery>;
+	pub(super) type TemporaryPinReports<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		Vec<u8>,
+		Blake2_128Concat,
+		T::AccountId,
+		MinerPinMetrics,
+		OptionQuery,
+	>;
 
 	#[pallet::error]
 	pub enum Error<T> {
@@ -253,7 +269,7 @@ pub mod pallet {
 		EmptyDisksArray,
 		MemoryExceedsFiveTB,
 		ConsensusNotReached,
-		SuccessfulPinsExceedTotal
+		SuccessfulPinsExceedTotal,
 	}
 
 	#[pallet::storage]
@@ -262,27 +278,33 @@ pub mod pallet {
 
 	#[pallet::storage]
 	#[pallet::getter(fn hardware_requests_count)]
-	pub type HardwareRequestsCount<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+	pub type HardwareRequestsCount<T: Config> =
+		StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn total_pin_checks_per_epoch)]
-	pub type TotalPinChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+	pub type TotalPinChecksPerEpoch<T: Config> =
+		StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn successful_pin_checks_per_epoch)]
-	pub type SuccessfulPinChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+	pub type SuccessfulPinChecksPerEpoch<T: Config> =
+		StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn total_ping_checks_per_epoch)]
-	pub type TotalPingChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+	pub type TotalPingChecksPerEpoch<T: Config> =
+		StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn successful_ping_checks_per_epoch)]
-	pub type SuccessfulPingChecksPerEpoch<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
+	pub type SuccessfulPingChecksPerEpoch<T: Config> =
+		StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn hardware_requests_last_block)]
-	pub type HardwareRequestsLastBlock<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, BlockNumberFor<T>, ValueQuery>;
+	pub type HardwareRequestsLastBlock<T: Config> =
+		StorageMap<_, Blake2_128Concat, Vec<u8>, BlockNumberFor<T>, ValueQuery>;
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -295,14 +317,15 @@ pub mod pallet {
 				let _result = RequestsCount::<T>::clear(u32::MAX, None);
 			}
 
-			let hardware_clear_interval = <T as pallet::Config>::HardwareSubmitRequestsClearInterval::get();
+			let hardware_clear_interval =
+				<T as pallet::Config>::HardwareSubmitRequestsClearInterval::get();
 
 			// Clear entries every 1500 blocks
 			if _n % hardware_clear_interval.into() == 0u32.into() {
 				// Iterate through all entries in HardwareRequestsCount
 				HardwareRequestsCount::<T>::iter().for_each(|(node_id, _count)| {
 					let last_request_block = HardwareRequestsLastBlock::<T>::get(&node_id);
-					
+
 					// Check if 1500 blocks have passed since the last request
 					if _n.saturating_sub(last_request_block) >= hardware_clear_interval.into() {
 						// Reset the requests count and last block for this node
@@ -318,9 +341,9 @@ pub mod pallet {
 			}
 
 			let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
-            if _n % consensus_period == 0u32.into() {
-                Self::apply_consensus();
-            }
+			if _n % consensus_period == 0u32.into() {
+				Self::apply_consensus();
+			}
 
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			let first_epoch_block = 38u32.into(); // hardcoded or derived
@@ -332,8 +355,6 @@ pub mod pallet {
 				let _ = TotalPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 			}
-
-			Self::handle_incorrect_registration(_n);
 
 			// Clean up NodeMetrics if not registered
 			for (node_id, _) in NodeMetrics::<T>::iter() {
@@ -351,11 +372,6 @@ pub mod pallet {
 				if !is_registered {
 					BlockNumbers::<T>::remove(&node_id);
 				}
-			}
-
-			let reputation_update_interval = T::ReputationUpdateInterval::get();
-			if _n % reputation_update_interval.into() == 0u32.into() {
-				Self::update_all_active_miners_reputation();
 			}
 
 			Weight::zero()
@@ -381,7 +397,6 @@ pub mod pallet {
 							);
 							let _ = Self::save_hardware_info(node_id.clone(), node_type.clone());
 						}
-
 					}
 				},
 				Err(e) => {
@@ -413,7 +428,8 @@ pub mod pallet {
 			ensure!(node_info.node_id == node_id, Error::<T>::NodeNotRegistered);
 
 			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = <T as pallet::Config>::MaxOffchainHardwareSubmitRequestsPerPeriod::get();
+			let max_requests_per_block =
+				<T as pallet::Config>::MaxOffchainHardwareSubmitRequestsPerPeriod::get();
 			let user_requests_count = HardwareRequestsCount::<T>::get(&node_id);
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
@@ -421,7 +437,10 @@ pub mod pallet {
 			HardwareRequestsCount::<T>::insert(&node_id, user_requests_count + 1);
 
 			// Update last request block
-			HardwareRequestsLastBlock::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());
+			HardwareRequestsLastBlock::<T>::insert(
+				&node_id,
+				<frame_system::Pallet<T>>::block_number(),
+			);
 
 			// Check if specs already exist and are the same
 			// if let Some(existing_specs) = NodeSpecs::<T>::get(&node_id) {
@@ -441,7 +460,7 @@ pub mod pallet {
 			// let current_storage_bytes = (system_info.storage_total_mb * 1024 * 1024)
 			// - (system_info.storage_free_mb * 1024 * 1024);
 			// let total_storage_bytes = system_info.storage_total_mb * 1024 * 1024;
-		
+
 			// if current_storage_bytes < TWO_TB_IN_BYTES || total_storage_bytes < TWO_TB_IN_BYTES {
 			// 	Self::deposit_event(Event::StorageBelowTwoTB { node_id: node_id.clone() });
 			// 	return Err(Error::<T>::StorageBelowTwoTB.into());
@@ -452,7 +471,7 @@ pub mod pallet {
 			// 	Self::deposit_event(Event::NoPrimaryNetworkInterface { node_id: node_id.clone() });
 			// 	return Err(Error::<T>::NoPrimaryNetworkInterface.into());
 			// }
-		
+
 			// // Check if disks array is empty
 			// if system_info.disks.is_empty() {
 			// 	Self::deposit_event(Event::EmptyDisksArray { node_id: node_id.clone() });
@@ -478,7 +497,7 @@ pub mod pallet {
 					bandwidth_mbps: system_info.network_bandwidth_mb_s,
 					// converting mbs into bytes
 					current_storage_bytes: (system_info.storage_total_mb * 1024 * 1024)
-					- (system_info.storage_free_mb * 1024 * 1024),
+						- (system_info.storage_free_mb * 1024 * 1024),
 					total_storage_bytes: system_info.storage_total_mb * 1024 * 1024,
 					geolocation: geolocation.unwrap_or_default(),
 					primary_network_interface: system_info.primary_network_interface.clone(),
@@ -643,7 +662,7 @@ pub mod pallet {
 			// // Convert the existing blocks into a BTreeMap to remove duplicates
 			// let mut blocks: BTreeMap<BlockNumberFor<T>, ()> =
 			// 	blocks_vec.into_iter().map(|block| (block, ())).collect();
-					
+
 			// let check_interval = <T as pallet::Config>::BlockCheckInterval::get();
 			// // Push the current block number and the preceding ones
 			// for i in (0..check_interval).rev() {
@@ -659,62 +678,10 @@ pub mod pallet {
 			// BlockNumbers::<T>::insert(node_id, unique_blocks);
 
 			// Store only the latest block number as a single-element vector
-			let block_vec : Vec<BlockNumberFor<T>> = vec![block_number.into()];
+			let block_vec: Vec<BlockNumberFor<T>> = vec![block_number.into()];
 			BlockNumbers::<T>::insert(node_id, block_vec);
 			log::info!("✅ Successfully updated metrics");
 			log::info!("✅ Successfully updated block numbers");
-			Ok(().into())
-		}
-
-		#[pallet::call_index(2)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn update_pin_check_metrics(
-			origin: OriginFor<T>,
-			miners_metrics: Vec<MinerPinMetrics>,
-		) -> DispatchResultWithPostInfo {
-			let who = ensure_signed(origin)?;
-
-			// Check if this is a proxy account and get the main account
-			let main_account = if let Some(primary) = ipfs_pallet::Pallet::<T>::get_primary_account(&who)? {
-				primary
-			} else {
-				who.clone() // If not a proxy, use the account itself
-			};
-
-			// Check if the node is registered
-			let node_info = RegistrationPallet::<T>::get_registered_node_for_owner(&main_account);
-			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
-		
-			// Unwrap safely after checking it's Some
-			let node_info = node_info.unwrap();
-		
-			// Check if the node type is Validator
-			ensure!(node_info.node_type == NodeType::Validator, Error::<T>::InvalidNodeType);
-		
-			// Rate limit: maximum storage requests per block per user
-			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
-			let user_requests_count = RequestsCount::<T>::get(node_info.node_id.clone());
-			ensure!(
-				user_requests_count + 1u32 <= max_requests_per_block,
-				Error::<T>::TooManyRequests
-			);
-			
-			// Validate metrics and update storage
-			for miner in miners_metrics.iter() {
-				ensure!(
-					miner.successful_pin_checks <= miner.total_pin_checks,
-					Error::<T>::SuccessfulPinsExceedTotal
-				);
-			}
-		
-			// Update user's storage requests count
-			RequestsCount::<T>::insert(node_info.node_id.clone(), user_requests_count + miners_metrics.len() as u32);
-		
-            for miner in miners_metrics {
-				log::info!("submitting miner id {}", String::from_utf8_lossy(&miner.node_id));
-                TemporaryPinReports::<T>::insert(&miner.node_id, &who, miner.clone());
-            }
-		
 			Ok(().into())
 		}
 
@@ -857,7 +824,7 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			node_type: NodeType,
 			block_number: BlockNumberFor<T>,
-		)  -> Result<(), &'static str> {
+		) -> Result<(), &'static str> {
 			// Initialize counters
 			let mut failed_challenges_count = 0;
 			let mut successful_challenges = 0;
@@ -971,49 +938,69 @@ pub mod pallet {
 			consecutive_reliable_days: u32,
 			recent_downtime_hours: u32,
 			block_number: BlockNumberFor<T>,
-		)  -> Result<(), &'static str> {
-
+		) -> Result<(), &'static str> {
 			// Call fn to get Signed Hex
-			let hex_result = Self::get_hex_for_submit_metrics(node_id, storage_proof_time_ms, latency_ms, peer_count, failed_challenges_count, successful_challenges, total_challenges, uptime_minutes, total_minutes, consecutive_reliable_days, recent_downtime_hours, block_number).map_err(|e| {
+			let hex_result = Self::get_hex_for_submit_metrics(
+				node_id,
+				storage_proof_time_ms,
+				latency_ms,
+				peer_count,
+				failed_challenges_count,
+				successful_challenges,
+				total_challenges,
+				uptime_minutes,
+				total_minutes,
+				consecutive_reliable_days,
+				recent_downtime_hours,
+				block_number,
+			)
+			.map_err(|e| {
 				log::error!("❌ Failed to get signed metrics hex: {:?}", e);
 				"Failed to get signed metrics hex"
 			})?;
 
 			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
 			// Now use the hex_result in the function
-			UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)
-				.map_err(|e| {
-					log::error!("❌ Failed to submit the extrinsic for hardware info: {:?}", e);
-					"Failed to submit the extrinsic for hardware info"
-				})?;
+			UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result).map_err(|e| {
+				log::error!("❌ Failed to submit the extrinsic for hardware info: {:?}", e);
+				"Failed to submit the extrinsic for hardware info"
+			})?;
 			Ok(())
 		}
 
 		// update_block_time_update
-		pub fn save_hardware_info(node_id: Vec<u8>, node_type: NodeType) -> Result<(), &'static str> {
+		pub fn save_hardware_info(
+			node_id: Vec<u8>,
+			node_type: NodeType,
+		) -> Result<(), &'static str> {
 			match Self::fetch_hardware_info(node_type.clone()) {
 				Ok(hardware_info) => {
 					// Call fn to get Signed Hex
-					let hex_result = Self::get_hex_for_submit_hardware(node_id, hardware_info).map_err(|e| {
-						log::error!("❌ Failed to get signed weight hex: {:?}", e);
-						"Failed to get signed weight hex"
-					})?;
-		
+					let hex_result = Self::get_hex_for_submit_hardware(node_id, hardware_info)
+						.map_err(|e| {
+							log::error!("❌ Failed to get signed weight hex: {:?}", e);
+							"Failed to get signed weight hex"
+						})?;
+
 					let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
 					// Now use the hex_result in the function
-					UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result)
-						.map_err(|e| {
-							log::error!("❌ Failed to submit the extrinsic for hardware info: {:?}", e);
+					UtilsPallet::<T>::submit_to_chain(&local_rpc_url, &hex_result).map_err(
+						|e| {
+							log::error!(
+								"❌ Failed to submit the extrinsic for hardware info: {:?}",
+								e
+							);
 							"Failed to submit the extrinsic for hardware info"
-						})?;
-						
+						},
+					)?;
+
 					log::info!("✅ Successfully submitted the signed extrinsic for hardware info");
 					Ok(())
-				}
+				},
 				Err(e) => {
 					log::error!("❌ Error fetching hardware info: {:?}", e);
 					Err("Error fetching hardware info")
-				}
+				},
 			}
 		}
 
@@ -1192,19 +1179,13 @@ pub mod pallet {
 			let block_time_secs = Self::block_time() as u64;
 
 			let elapsed_blocks = current_block.saturating_sub(node_info.registered_at);
-			let elapsed_seconds = elapsed_blocks
-				.saturated_into::<u64>()
-				.saturating_mul(block_time_secs);
+			let elapsed_seconds =
+				elapsed_blocks.saturated_into::<u64>().saturating_mul(block_time_secs);
 
 			let uptime_minutes = (elapsed_seconds / 60).min(u32::MAX as u64) as u32;
 			let consecutive_reliable_days = (elapsed_seconds / 86_400).min(u32::MAX as u64) as u32;
 
-			Some((
-				uptime_minutes,
-				uptime_minutes,
-				consecutive_reliable_days,
-				0,
-			))
+			Some((uptime_minutes, uptime_minutes, consecutive_reliable_days, 0))
 		}
 
 		// Helper function purge miners if deregistered on bittensor
@@ -1222,10 +1203,12 @@ pub mod pallet {
 				// update storage request and remove files
 				if !is_registered {
 					// unRegister and check if storage miner than unpin and update storage
-					let _ = ipfs_pallet::Pallet::<T>::clear_miner_profile(miner.node_id.clone());
+					let _ = pallet_arion::Pallet::<T>::deregister_family(miner.owner.clone());
 
 					// unregister node , Hotkey nodes and LinkedNodes
-					pallet_registration::Pallet::<T>::do_unregister_main_node(miner.node_id.clone());
+					pallet_registration::Pallet::<T>::do_unregister_main_node(
+						miner.node_id.clone(),
+					);
 					// Remove node metrics and block numbers
 					Self::do_remove_metrics(miner.node_id.clone());
 				}
@@ -1238,7 +1221,7 @@ pub mod pallet {
 			TotalPinChecksPerEpoch::<T>::remove(&node_id.clone());
 			SuccessfulPinChecksPerEpoch::<T>::remove(&node_id.clone());
 			TotalPingChecksPerEpoch::<T>::remove(&node_id.clone());
-			SuccessfulPingChecksPerEpoch::<T>::remove(&node_id.clone());		
+			SuccessfulPingChecksPerEpoch::<T>::remove(&node_id.clone());
 		}
 
 		pub fn is_owner_in_uids(owner: &T::AccountId) -> bool {
@@ -1273,49 +1256,6 @@ pub mod pallet {
 			let mut bytes = [0u8; 32];
 			bytes.copy_from_slice(&random_seed[..32]);
 			bytes
-		}
-
-		fn handle_incorrect_registration(current_block_number: BlockNumberFor<T>) {
-			let unregistration_period: BlockNumberFor<T> = T::UnregistrationBuffer::get().into();
-			let min_period = 50u32;
-			let max_period = 70u32;
-			let range = max_period - min_period;
-
-			// Use block number to create a pseudo-random offset
-			let pseudo_random_offset = (current_block_number % range.into()) + min_period.into();
-			let adjusted_period = unregistration_period + pseudo_random_offset - (range / 2).into();
-
-			// Check if current block matches the adjusted period
-			if current_block_number % adjusted_period == 0u32.into() {
-				let active_miners = pallet_registration::Pallet::<T>::get_all_active_nodes();
-				for miner in active_miners {
-					// Check if the miner has been registered for more than 36 blocks
-					if current_block_number - miner.registered_at > 36u32.into() {
-						let blocks_online = Self::block_numbers(miner.node_id.clone());
-
-						match blocks_online {
-							Some(blocks) => {
-								if let Some(&last_block) = blocks.last() {
-									let difference = current_block_number - last_block;
-									// Check if the difference exceeds 1500 for deregistration
-									if difference > 1500u32.into() {
-										// Call your deregistration logic here
-										Self::unregister_and_remove_metrics(miner.node_id.clone());
-									}
-								}
-							},
-							None => {
-								// Miner has never submitted any blocks - check if registered long enough
-								// If registered for more than 1500 blocks without any submission, deregister
-								let blocks_since_registration = current_block_number - miner.registered_at;
-								if blocks_since_registration > 1500u32.into() {
-									Self::unregister_and_remove_metrics(miner.node_id.clone());
-								}
-							}
-						}
-					}
-				}
-			}
 		}
 
 		/// Get node metrics for multiple node IDs
@@ -1449,7 +1389,7 @@ pub mod pallet {
 					.collect::<Vec<_>>().join(", ")
 			)
 		}
-		
+
 		pub fn get_hex_for_submit_metrics(
 			node_id: Vec<u8>,
 			storage_proof_time_ms: u32,
@@ -1467,15 +1407,12 @@ pub mod pallet {
 			let local_default_spec_version = <T as pallet::Config>::LocalDefaultSpecVersion::get();
 			let local_default_genesis_hash = <T as pallet::Config>::LocalDefaultGenesisHash::get();
 			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
-		
+
 			// Convert node_id to a comma-separated string of numbers
-			let node_id_string = node_id
-				.iter()
-				.map(|&b| b.to_string())
-				.collect::<Vec<_>>()
-				.join(", ");
+			let node_id_string =
+				node_id.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ");
 			let block_number_updated: u32 = block_number.try_into().unwrap_or(0);
-		
+
 			let rpc_payload = format!(
 				r#"{{
 					"jsonrpc": "2.0",
@@ -1515,10 +1452,10 @@ pub mod pallet {
 				local_default_genesis_hash,
 				local_rpc_url
 			);
-		
+
 			// Convert the JSON value to a string
 			let rpc_payload_string = rpc_payload.to_string();
-		
+
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 
 			let body = vec![rpc_payload_string];
@@ -1565,24 +1502,21 @@ pub mod pallet {
 				})?;
 
 			// Return the hex string
-			Ok(hex_result.to_string())		
+			Ok(hex_result.to_string())
 		}
-		
+
 		pub fn get_hex_for_submit_hardware(
 			node_id: Vec<u8>,
-			system_info: SystemInfo
+			system_info: SystemInfo,
 		) -> Result<String, http::Error> {
 			let local_default_spec_version = <T as pallet::Config>::LocalDefaultSpecVersion::get();
 			let local_default_genesis_hash = <T as pallet::Config>::LocalDefaultGenesisHash::get();
 			let local_rpc_url = <T as pallet::Config>::LocalRpcUrl::get();
-		
+
 			// Convert node_id to a comma-separated string of numbers
-			let node_id_string = node_id
-				.iter()
-				.map(|&b| b.to_string())
-				.collect::<Vec<_>>()
-				.join(", ");
-		
+			let node_id_string =
+				node_id.iter().map(|&b| b.to_string()).collect::<Vec<_>>().join(", ");
+
 			let rpc_payload = format!(
 				r#"{{
 					"jsonrpc": "2.0",
@@ -1602,10 +1536,10 @@ pub mod pallet {
 				local_default_genesis_hash,
 				local_rpc_url
 			);
-		
+
 			// Convert the JSON value to a string
 			let rpc_payload_string = rpc_payload.to_string();
-		
+
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 
 			let body = vec![rpc_payload_string];
@@ -1652,7 +1586,7 @@ pub mod pallet {
 				})?;
 
 			// Return the hex string
-			Ok(hex_result.to_string())		
+			Ok(hex_result.to_string())
 		}
 
 		fn apply_consensus() {
@@ -1660,19 +1594,21 @@ pub mod pallet {
 				.map(|(miner_id, _)| miner_id)
 				.collect::<Vec<_>>();
 			let threshold = <T as pallet::Config>::ConsensusThreshold::get();
-		
+
 			for miner_id in all_miners {
-				let reports: Vec<MinerPinMetrics> = TemporaryPinReports::<T>::iter_prefix(&miner_id)
-					.map(|(_, report)| report)
-					.collect();
-		
+				let reports: Vec<MinerPinMetrics> =
+					TemporaryPinReports::<T>::iter_prefix(&miner_id)
+						.map(|(_, report)| report)
+						.collect();
+
 				if reports.is_empty() {
 					continue;
 				}
 				let total_reports = reports.len() as u32;
 				if total_reports >= threshold {
-					let similarity_percentage = <T as pallet::Config>::ConsensusSimilarityThreshold::get(); // e.g., 85 for 85%
-		
+					let similarity_percentage =
+						<T as pallet::Config>::ConsensusSimilarityThreshold::get(); // e.g., 85 for 85%
+
 					// Calculate sums for averaging
 					let mut total_pin_checks_sum = 0u64;
 					let mut successful_pin_checks_sum = 0u64;
@@ -1680,13 +1616,15 @@ pub mod pallet {
 						total_pin_checks_sum += report.total_pin_checks as u64;
 						successful_pin_checks_sum += report.successful_pin_checks as u64;
 					}
-		
+
 					// Calculate averages (as u128 for precise arithmetic)
-					let avg_total_pin_checks = (total_pin_checks_sum as u128 / total_reports as u128) as u32;
-					let avg_successful_pin_checks = (successful_pin_checks_sum as u128 / total_reports as u128) as u32;
-		
+					let avg_total_pin_checks =
+						(total_pin_checks_sum as u128 / total_reports as u128) as u32;
+					let avg_successful_pin_checks =
+						(successful_pin_checks_sum as u128 / total_reports as u128) as u32;
+
 					let similarity = similarity_percentage as u128;
-		
+
 					// Define acceptable ranges with proper zero handling
 					let total_pin_checks_min = if avg_total_pin_checks == 0 {
 						0
@@ -1698,7 +1636,7 @@ pub mod pallet {
 					} else {
 						((avg_total_pin_checks as u128 * 115) / 100).max(1)
 					};
-		
+
 					let successful_pin_checks_min = if avg_successful_pin_checks == 0 {
 						0
 					} else {
@@ -1709,18 +1647,21 @@ pub mod pallet {
 					} else {
 						((avg_successful_pin_checks as u128 * 115) / 100).max(1)
 					};
-		
+
 					// Count validators with reports within acceptable ranges
-					let agreeing_validators = reports.iter().filter(|report| {
-						let total_pin = report.total_pin_checks as u128;
-						let successful_pin = report.successful_pin_checks as u128;
-		
-						total_pin >= total_pin_checks_min &&
-						total_pin <= total_pin_checks_max &&
-						successful_pin >= successful_pin_checks_min &&
-						successful_pin <= successful_pin_checks_max
-					}).count() as u32;
-		
+					let agreeing_validators = reports
+						.iter()
+						.filter(|report| {
+							let total_pin = report.total_pin_checks as u128;
+							let successful_pin = report.successful_pin_checks as u128;
+
+							total_pin >= total_pin_checks_min
+								&& total_pin <= total_pin_checks_max
+								&& successful_pin >= successful_pin_checks_min
+								&& successful_pin <= successful_pin_checks_max
+						})
+						.count() as u32;
+
 					// Debug logging
 					log::info!(
 						"Miner: {:?}, Reports: {}, Avg Total: {}, Avg Success: {}, Total Range: [{}, {}], Success Range: [{}, {}], Agreeing: {}, Threshold: {}, Similarity: {}",
@@ -1736,30 +1677,39 @@ pub mod pallet {
 						threshold,
 						similarity_percentage
 					);
-		
+
 					if agreeing_validators >= threshold {
 						let mut metrics = NodeMetrics::<T>::get(&miner_id).unwrap_or_default();
 						metrics.total_pin_checks += avg_total_pin_checks;
 						metrics.successful_pin_checks += avg_successful_pin_checks;
 						NodeMetrics::<T>::insert(&miner_id, metrics);
-		
+
 						// Update total pin checks per epoch
 						let total_pin = TotalPinChecksPerEpoch::<T>::get(&miner_id);
-						TotalPinChecksPerEpoch::<T>::insert(&miner_id, total_pin + avg_total_pin_checks);
-						
+						TotalPinChecksPerEpoch::<T>::insert(
+							&miner_id,
+							total_pin + avg_total_pin_checks,
+						);
+
 						// Update total ping checks per epoch
 						let total_ping = TotalPingChecksPerEpoch::<T>::get(&miner_id);
 						TotalPingChecksPerEpoch::<T>::insert(&miner_id, total_ping + 1);
 
 						// Update successful pin checks per epoch
 						let successful_pin = SuccessfulPinChecksPerEpoch::<T>::get(&miner_id);
-						SuccessfulPinChecksPerEpoch::<T>::insert(&miner_id, successful_pin + avg_successful_pin_checks);
+						SuccessfulPinChecksPerEpoch::<T>::insert(
+							&miner_id,
+							successful_pin + avg_successful_pin_checks,
+						);
 
-						// if there is any successful pin check means miner is online 
+						// if there is any successful pin check means miner is online
 						let successful_ping = SuccessfulPingChecksPerEpoch::<T>::get(&miner_id);
 						if avg_successful_pin_checks > 0 {
-							SuccessfulPingChecksPerEpoch::<T>::insert(&miner_id, successful_ping + 1);
-						}else{
+							SuccessfulPingChecksPerEpoch::<T>::insert(
+								&miner_id,
+								successful_ping + 1,
+							);
+						} else {
 							SuccessfulPingChecksPerEpoch::<T>::insert(&miner_id, successful_ping);
 						}
 
@@ -1771,93 +1721,12 @@ pub mod pallet {
 					} else {
 						Self::deposit_event(Event::ConsensusFailed { miner_id: miner_id.clone() });
 					}
-		
+
 					// Clear temporary reports for this miner
 					TemporaryPinReports::<T>::remove_prefix(&miner_id, None);
 				}
 			}
 		}
-
-		// Update reputation points (called externally by pallet logic)
-		fn update_reputation_points(
-			metrics: &NodeMetricsData,
-			coldkey: &T::AccountId,		
-		) -> u32 {
-			const MIN_PIN_CHECKS: u32 = 1; // Minimum pin checks for valid scoring
-			const SLASH_THRESHOLD: u32 = 1; // Number of failed storage proofs before slashing
-			let mut reputation_points = ipfs_pallet::Pallet::<T>::reputation_points(coldkey);
-	
-			let linked_nodes = pallet_registration::Pallet::<T>::linked_nodes(metrics.miner_id.clone());
-			// calculate total pin checks per epoch
-			let (mut total_pin_checks, mut successful_pin_checks) = linked_nodes.clone().into_iter().fold(
-				(0u32, 0u32),
-				|(total, successful), node_id| {
-					let total_epoch = Self::total_pin_checks_per_epoch(&node_id);
-					let success_epoch = Self::successful_pin_checks_per_epoch(&node_id);
-			
-					(
-						total.saturating_add(total_epoch),
-						successful.saturating_add(success_epoch),
-					)
-				},
-			);
-
-			total_pin_checks = total_pin_checks + Self::total_pin_checks_per_epoch(&metrics.miner_id);
-			successful_pin_checks = successful_pin_checks + Self::successful_pin_checks_per_epoch(&metrics.miner_id);
-
-			// Increase points for successful storage proofs
-			if total_pin_checks >= MIN_PIN_CHECKS {
-				let success_rate = (successful_pin_checks * 100) / total_pin_checks;
-				if success_rate >= 95 {
-					reputation_points = reputation_points.saturating_add(50); // +50 for high success
-				} else if success_rate >= 80 {
-					reputation_points = reputation_points.saturating_add(20); // +20 for good success
-				}
-			}
-		
-			// Slash points for failed storage proofs
-			let failed_count = total_pin_checks - successful_pin_checks;
-			if failed_count >= SLASH_THRESHOLD {
-				reputation_points = reputation_points.saturating_mul(9).saturating_div(10); // 10% slash
-			}
-		
-			// Slash points for significant downtime
-			if metrics.recent_downtime_hours > 24 {
-				reputation_points = reputation_points.saturating_mul(8).saturating_div(10); // 20% slash
-			}
-		
-			// Slash points for false capacity claims
-			if metrics.ipfs_storage_max as u128 > metrics.ipfs_zfs_pool_size
-				|| (metrics.ipfs_storage_max > 0
-					&& metrics.current_storage_bytes < metrics.ipfs_storage_max / 20)
-			{
-				reputation_points = reputation_points.saturating_mul(5).saturating_div(10); // 50% slash
-			}
-		
-			// Cap reputation points
-			reputation_points = reputation_points.min(3000).max(100);
-	
-			// Store updated points
-			let _ = ipfs_pallet::Pallet::<T>::set_reputation_points(coldkey, reputation_points);
-			reputation_points
-		}	
-		
-		// Function to update reputation points for all active miners
-		fn update_all_active_miners_reputation() {
-			// Get all active miners
-			let active_miners = pallet_registration::Pallet::<T>::get_all_coldkey_active_nodes();
-			
-			// Iterate through each miner
-			for miner in active_miners.iter() {
-				// Get node
-				//  metrics for this miner
-				if let Some(metrics) = Self::get_node_metrics(miner.node_id.clone()) {
-					// Update reputation points if metrics exist
-					Self::update_reputation_points(&metrics, &miner.owner);
-				}
-			}
-		}
-				
 	}
 }
 

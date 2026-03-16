@@ -170,3 +170,10 @@ docker run -d --name hippius-miner \
   -v /opt/hippius/data/chains/hippius-testnet/network/secret_ed25519:/data/node-key \
   hippius-node
 ```
+
+
+get all users for arion
+
+get size of each user
+
+clear users data 

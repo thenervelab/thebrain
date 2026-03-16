@@ -1,6 +1,8 @@
 pub use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 pub mod types;
-pub use crate::types::{SubmitWeightsParams, SubmitHardwareParams, SubmitMetricsParams, SubmitRankingsParams};
+pub use crate::types::{
+	SubmitHardwareParams, SubmitMetricsParams, SubmitRankingsParams, SubmitWeightsParams,
+};
 
 /// Net rpc interface.
 #[rpc(server)]

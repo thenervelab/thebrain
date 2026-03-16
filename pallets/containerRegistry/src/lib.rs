@@ -8,7 +8,6 @@ pub mod pallet {
 	use crate::types::*;
 	use frame_support::{pallet_prelude::*, Blake2_128Concat};
 	use frame_system::pallet_prelude::*;
-	use ipfs_pallet::FileInput;
 	use sp_std::{vec, vec::Vec};
 
 	#[pallet::pallet]
@@ -318,17 +317,17 @@ pub mod pallet {
 			// Store CID mapping
 			ImageDigestToCid::<T>::insert(&image_name, &digest, &cid);
 
-			// adding req inside marketplace pallet
-			let file_input = FileInput {
-				file_name: "Image Mainfest Digest".as_bytes().to_vec(),
-				file_hash: cid.clone(),
-			};
+			// // adding req inside marketplace pallet
+			// let file_input = FileInput {
+			// 	file_name: "Image Mainfest Digest".as_bytes().to_vec(),
+			// 	file_hash: cid.clone(),
+			// };
 
-			let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
-				&who.clone(),
-				&vec![file_input.clone()],
-				None
-			);
+			// let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
+			// 	&who.clone(),
+			// 	&vec![file_input.clone()],
+			// 	None
+			// );
 
 			// Emit both events
 			Self::deposit_event(Event::ManifestDigestUpdated(
@@ -374,15 +373,15 @@ pub mod pallet {
 			// Store in the map
 			DigestInfoStorage::<T>::insert(&digest, digest_info);
 
-			let file_input =
-				FileInput { file_name: "Digest Info".as_bytes().to_vec(), file_hash: cid.clone() };
+			// let file_input =
+			// 	FileInput { file_name: "Digest Info".as_bytes().to_vec(), file_hash: cid.clone() };
 
-			// adding req inside marketplace pallet
-			let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
-				&who.clone(),
-				&vec![file_input.clone()],
-				None,
-			);
+			// // adding req inside marketplace pallet
+			// let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
+			// 	&who.clone(),
+			// 	&vec![file_input.clone()],
+			// 	None,
+			// );
 
 			// Emit an event for successful storage
 			Self::deposit_event(Event::DigestInfoStored { who, digest, digest_type, cid });

@@ -417,16 +417,16 @@ fn test_user_withdraw_burns_halpha() {
 		let withdraw_amount = 1_000_000_000_000u128; // Must be divisible by 1e9
 
 		// Now user withdraws (recipient = sender automatically)
-		assert_ok!(AlphaBridge::<Test>::withdraw(
-			RuntimeOrigin::signed(user1()),
-			withdraw_amount,
-		));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount,));
 
 		// Balance should be reduced
 		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit - withdraw_amount);
 
 		// Total minted should be reduced
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), total_minted_after_deposit - withdraw_amount);
+		assert_eq!(
+			crate::TotalMintedByBridge::<Test>::get(),
+			total_minted_after_deposit - withdraw_amount
+		);
 
 		// Check that withdrawal request was created
 		let requests: Vec<_> = crate::WithdrawalRequests::<Test>::iter().collect();
@@ -457,10 +457,7 @@ fn test_withdraw_with_insufficient_balance_fails() {
 		let excessive_amount = ((balance + 1000 + 999_999_999) / 1_000_000_000) * 1_000_000_000;
 
 		assert_noop!(
-			AlphaBridge::<Test>::withdraw(
-				RuntimeOrigin::signed(user1()),
-				excessive_amount,
-			),
+			AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), excessive_amount,),
 			Error::<Test>::InsufficientBalance
 		);
 	});
@@ -661,13 +658,19 @@ fn test_admin_fail_withdrawal_request_mints_back() {
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
 
 		// Admin fails the withdrawal
-		assert_ok!(AlphaBridge::<Test>::admin_fail_withdrawal_request(RuntimeOrigin::root(), request_id));
+		assert_ok!(AlphaBridge::<Test>::admin_fail_withdrawal_request(
+			RuntimeOrigin::root(),
+			request_id
+		));
 
 		// Balance should be restored
 		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit);
 
 		// TotalMintedByBridge should increase back
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), total_minted_after_withdraw + withdraw_amount);
+		assert_eq!(
+			crate::TotalMintedByBridge::<Test>::get(),
+			total_minted_after_withdraw + withdraw_amount
+		);
 
 		// Check status
 		let request = crate::WithdrawalRequests::<Test>::get(request_id).unwrap();
@@ -676,7 +679,12 @@ fn test_admin_fail_withdrawal_request_mints_back() {
 		// Check events
 		System::assert_has_event(Event::WithdrawalRequestFailed { id: request_id }.into());
 		System::assert_has_event(
-			Event::AdminManualMint { recipient: user1(), amount: withdraw_amount, deposit_id: None }.into(),
+			Event::AdminManualMint {
+				recipient: user1(),
+				amount: withdraw_amount,
+				deposit_id: None,
+			}
+			.into(),
 		);
 	});
 }
@@ -686,7 +694,10 @@ fn test_admin_fail_withdrawal_respects_mint_cap() {
 	new_test_ext().execute_with(|| {
 		// Setup: mint and withdraw
 		crate::TotalMintedByBridge::<Test>::put(5_000_000_000_000u128);
-		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), 1_000_000_000_000));
+		assert_ok!(AlphaBridge::<Test>::withdraw(
+			RuntimeOrigin::signed(user1()),
+			1_000_000_000_000
+		));
 
 		// Now set a low cap that would be exceeded by minting back
 		crate::GlobalMintCap::<Test>::put(4_500_000_000_000u128); // Below what would be needed
@@ -707,7 +718,12 @@ fn test_admin_manual_mint() {
 		let initial_balance = Balances::free_balance(&user1());
 		let initial_total_minted = crate::TotalMintedByBridge::<Test>::get();
 
-		assert_ok!(AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::root(), user1(), 500, None));
+		assert_ok!(AlphaBridge::<Test>::admin_manual_mint(
+			RuntimeOrigin::root(),
+			user1(),
+			500,
+			None
+		));
 
 		// Balance should increase
 		assert_eq!(Balances::free_balance(&user1()), initial_balance + 500);
@@ -716,7 +732,9 @@ fn test_admin_manual_mint() {
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), initial_total_minted + 500);
 
 		// Check event
-		System::assert_has_event(Event::AdminManualMint { recipient: user1(), amount: 500, deposit_id: None }.into());
+		System::assert_has_event(
+			Event::AdminManualMint { recipient: user1(), amount: 500, deposit_id: None }.into(),
+		);
 	});
 }
 
@@ -733,7 +751,12 @@ fn test_admin_manual_mint_respects_cap() {
 		);
 
 		// Mint exactly up to cap should succeed
-		assert_ok!(AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::root(), user1(), 50, None));
+		assert_ok!(AlphaBridge::<Test>::admin_manual_mint(
+			RuntimeOrigin::root(),
+			user1(),
+			50,
+			None
+		));
 		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 100);
 	});
 }
@@ -742,7 +765,12 @@ fn test_admin_manual_mint_respects_cap() {
 fn test_admin_manual_mint_by_non_root_fails() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			AlphaBridge::<Test>::admin_manual_mint(RuntimeOrigin::signed(alice()), user1(), 500, None),
+			AlphaBridge::<Test>::admin_manual_mint(
+				RuntimeOrigin::signed(alice()),
+				user1(),
+				500,
+				None
+			),
 			sp_runtime::DispatchError::BadOrigin
 		);
 	});
@@ -816,18 +844,16 @@ fn test_set_guardians_and_threshold_threshold_too_high_fails() {
 #[test]
 fn test_set_guardians_and_threshold_too_many_guardians_fails() {
 	new_test_ext().execute_with(|| {
-		let too_many: Vec<_> = (0..11u64).map(|i| {
-			use sp_core::Hasher;
-			use sp_runtime::traits::BlakeTwo256;
-			let hash = BlakeTwo256::hash(&i.to_le_bytes());
-			sp_runtime::AccountId32::new(hash.0)
-		}).collect();
+		let too_many: Vec<_> = (0..11u64)
+			.map(|i| {
+				use sp_core::Hasher;
+				use sp_runtime::traits::BlakeTwo256;
+				let hash = BlakeTwo256::hash(&i.to_le_bytes());
+				sp_runtime::AccountId32::new(hash.0)
+			})
+			.collect();
 		assert_noop!(
-			AlphaBridge::<Test>::set_guardians_and_threshold(
-				RuntimeOrigin::root(),
-				too_many,
-				1,
-			),
+			AlphaBridge::<Test>::set_guardians_and_threshold(RuntimeOrigin::root(), too_many, 1,),
 			Error::<Test>::TooManyGuardians
 		);
 	});
@@ -1064,12 +1090,18 @@ fn test_multiple_deposits_and_withdrawals_accounting() {
 		// Withdraw 1
 		let withdraw_1 = 1_000_000_000_000u128;
 		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_1));
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount_1 + deposit_amount_2 - withdraw_1);
+		assert_eq!(
+			crate::TotalMintedByBridge::<Test>::get(),
+			deposit_amount_1 + deposit_amount_2 - withdraw_1
+		);
 
 		// Withdraw 2
 		let withdraw_2 = 1_000_000_000_000u128;
 		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user2()), withdraw_2));
-		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), deposit_amount_1 + deposit_amount_2 - withdraw_1 - withdraw_2);
+		assert_eq!(
+			crate::TotalMintedByBridge::<Test>::get(),
+			deposit_amount_1 + deposit_amount_2 - withdraw_1 - withdraw_2
+		);
 	});
 }
 
@@ -1197,7 +1229,10 @@ fn test_failed_withdrawal_recovery_cycle() {
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
 
 		// Withdrawal fails on Bittensor side, admin recovers
-		assert_ok!(AlphaBridge::<Test>::admin_fail_withdrawal_request(RuntimeOrigin::root(), request_id));
+		assert_ok!(AlphaBridge::<Test>::admin_fail_withdrawal_request(
+			RuntimeOrigin::root(),
+			request_id
+		));
 
 		// Verify recovery - user gets hAlpha back
 		assert_eq!(Balances::free_balance(&user1()), balance_after_deposit);
@@ -1289,10 +1324,7 @@ fn test_cleanup_deposit_before_ttl_fails() {
 
 		// Try to cleanup immediately (before TTL expires) as guardian
 		assert_noop!(
-			AlphaBridge::<Test>::cleanup_deposit(
-				RuntimeOrigin::signed(alice()),
-				deposit_id,
-			),
+			AlphaBridge::<Test>::cleanup_deposit(RuntimeOrigin::signed(alice()), deposit_id,),
 			Error::<Test>::TTLNotExpired
 		);
 
@@ -1329,10 +1361,7 @@ fn test_cleanup_pending_deposit_fails() {
 
 		// Try to cleanup pending deposit as guardian
 		assert_noop!(
-			AlphaBridge::<Test>::cleanup_deposit(
-				RuntimeOrigin::signed(alice()),
-				deposit_id,
-			),
+			AlphaBridge::<Test>::cleanup_deposit(RuntimeOrigin::signed(alice()), deposit_id,),
 			Error::<Test>::RecordNotFinalized
 		);
 	});
@@ -1366,14 +1395,12 @@ fn test_cleanup_withdrawal_request_after_ttl() {
 
 		// Create a withdrawal request
 		let withdraw_amount = 1_000_000_000_000u128;
-		assert_ok!(AlphaBridge::<Test>::withdraw(
-			RuntimeOrigin::signed(user1()),
-			withdraw_amount,
-		));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount,));
 
 		// Get the request
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
-		let request = crate::WithdrawalRequests::<Test>::get(request_id).expect("Request should exist");
+		let request =
+			crate::WithdrawalRequests::<Test>::get(request_id).expect("Request should exist");
 
 		// Advance block number past TTL
 		System::set_block_number(request.created_at_block + 11);
@@ -1420,10 +1447,7 @@ fn test_cleanup_withdrawal_request_before_ttl_fails() {
 
 		// Create a withdrawal request
 		let withdraw_amount = 1_000_000_000_000u128;
-		assert_ok!(AlphaBridge::<Test>::withdraw(
-			RuntimeOrigin::signed(user1()),
-			withdraw_amount,
-		));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount,));
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
 
@@ -1474,10 +1498,7 @@ fn test_cleanup_deposit_non_guardian_fails() {
 
 		// Non-guardian should fail
 		assert_noop!(
-			AlphaBridge::<Test>::cleanup_deposit(
-				RuntimeOrigin::signed(user1()),
-				deposit_id,
-			),
+			AlphaBridge::<Test>::cleanup_deposit(RuntimeOrigin::signed(user1()), deposit_id,),
 			Error::<Test>::NotGuardian
 		);
 
@@ -1514,14 +1535,12 @@ fn test_cleanup_withdrawal_request_non_guardian_fails() {
 
 		// Create a withdrawal request
 		let withdraw_amount = 1_000_000_000_000u128;
-		assert_ok!(AlphaBridge::<Test>::withdraw(
-			RuntimeOrigin::signed(user1()),
-			withdraw_amount,
-		));
+		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount,));
 
 		// Get the request
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
-		let request = crate::WithdrawalRequests::<Test>::get(request_id).expect("Request should exist");
+		let request =
+			crate::WithdrawalRequests::<Test>::get(request_id).expect("Request should exist");
 
 		// Advance block number past TTL
 		System::set_block_number(request.created_at_block + 11);
@@ -1589,7 +1608,10 @@ fn test_set_min_withdrawal_amount() {
 		// Mock sets MinWithdrawalAmount to 1
 		assert_eq!(crate::MinWithdrawalAmount::<Test>::get(), 1);
 
-		assert_ok!(AlphaBridge::<Test>::set_min_withdrawal_amount(RuntimeOrigin::root(), 2_000_000_000));
+		assert_ok!(AlphaBridge::<Test>::set_min_withdrawal_amount(
+			RuntimeOrigin::root(),
+			2_000_000_000
+		));
 
 		assert_eq!(crate::MinWithdrawalAmount::<Test>::get(), 2_000_000_000);
 
@@ -1603,7 +1625,10 @@ fn test_set_min_withdrawal_amount() {
 fn test_set_min_withdrawal_amount_non_root_fails() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			AlphaBridge::<Test>::set_min_withdrawal_amount(RuntimeOrigin::signed(alice()), 2_000_000_000),
+			AlphaBridge::<Test>::set_min_withdrawal_amount(
+				RuntimeOrigin::signed(alice()),
+				2_000_000_000
+			),
 			sp_runtime::DispatchError::BadOrigin
 		);
 	});

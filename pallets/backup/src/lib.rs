@@ -75,7 +75,6 @@
 //     use scale_info::prelude::string::String;
 //     use pallet_compute::TechnicalDescription;
 //     use frame_system::offchain::SigningTypes;
-//     use ipfs_pallet::FileInput;
 
 //     const LOCK_BLOCK_EXPIRATION: u32 = 3;
 //     const LOCK_TIMEOUT_EXPIRATION: u32 = 10000;

@@ -3,6 +3,8 @@ use codec::{Decode, Encode};
 use fp_rpc::EthereumRuntimeRPCApi;
 use lite_json::json::JsonValue;
 use reqwest::blocking::Client;
+use rpc_core_weight::types::NodeType;
+use rpc_core_weight::types::SystemInfo;
 pub use rpc_core_weight::WeightsInfoApiServer;
 use serde_json::json;
 use sp_api::ProvideRuntimeApi;
@@ -18,8 +20,6 @@ use sp_runtime::AccountId32;
 use sp_runtime::RuntimeDebug;
 use sp_runtime::{MultiAddress, MultiSignature};
 use std::sync::Arc;
-use rpc_core_weight::types::SystemInfo;
-use rpc_core_weight::types::NodeType;
 
 /// An identifier used to match public keys against sr25519 keys
 pub const CRYPTO_ID: CryptoTypeId = CryptoTypeId(*b"sr25");
@@ -339,12 +339,12 @@ pub fn create_signed_extrinsic_rankings(
 	let rpc_url = local_rpc_url;
 
 	let bittensor_subtensor_module_pallet_index = match ranking_instance_id {
-		1 => 0x3Fu8,   // RankingStorage
-		2 => 0x44u8,   // RankingCompute (commented out in original)
-		3 => 0x46u8,   // RankingValidators
-		4 => 0x47u8,   // RankingGpu (commented out in original)
-		5 => 0x4Du8,   // RankingS3 (commented out in original)
-		_ => 0x46u8,   // Default to RankingValidators
+		1 => 0x3Fu8, // RankingStorage
+		2 => 0x44u8, // RankingCompute (commented out in original)
+		3 => 0x46u8, // RankingValidators
+		4 => 0x47u8, // RankingGpu (commented out in original)
+		5 => 0x4Du8, // RankingS3 (commented out in original)
+		_ => 0x46u8, // Default to RankingValidators
 	};
 	let bittensor_set_rankings_extrinsci_index = 0x00u8;
 
@@ -493,7 +493,6 @@ pub fn create_signed_extrinsic_hardware(
 	default_genesis_hash: &str,
 	local_rpc_url: &str,
 ) -> Vec<u8> {
-
 	let data = (node_id, system_info);
 	let rpc_url = local_rpc_url;
 	let bittensor_subtensor_module_pallet_index = 0x36u8;
@@ -635,27 +634,39 @@ pub fn create_signed_extrinsic_hardware(
 	extrinsic
 }
 
-
 /// Creates a signed extrinsic for metrics
 pub fn create_signed_extrinsic_metrics(
 	node_id: Vec<u8>,
-    storage_proof_time_ms: u32,
-    latency_ms: u32,
-    peer_count: u32,
-    failed_challenges_count: u32,
-    successful_challenges: u32,
-    total_challenges: u32,
-    uptime_minutes: u32,
-    total_minutes: u32,
-    consecutive_reliable_days: u32,
-    recent_downtime_hours: u32,
-    block_number: u32,
+	storage_proof_time_ms: u32,
+	latency_ms: u32,
+	peer_count: u32,
+	failed_challenges_count: u32,
+	successful_challenges: u32,
+	total_challenges: u32,
+	uptime_minutes: u32,
+	total_minutes: u32,
+	consecutive_reliable_days: u32,
+	recent_downtime_hours: u32,
+	block_number: u32,
 	keystore: KeystorePtr,
 	default_spec_version: u32,
 	default_genesis_hash: &str,
 	local_rpc_url: &str,
 ) -> Vec<u8> {
-	let data = (node_id, storage_proof_time_ms, latency_ms, peer_count, failed_challenges_count, successful_challenges, total_challenges, uptime_minutes, total_minutes, consecutive_reliable_days, recent_downtime_hours, block_number);
+	let data = (
+		node_id,
+		storage_proof_time_ms,
+		latency_ms,
+		peer_count,
+		failed_challenges_count,
+		successful_challenges,
+		total_challenges,
+		uptime_minutes,
+		total_minutes,
+		consecutive_reliable_days,
+		recent_downtime_hours,
+		block_number,
+	);
 	let rpc_url = local_rpc_url;
 	let bittensor_subtensor_module_pallet_index = 0x36u8;
 	let bittensor_set_metrics_extrinsci_index = 0x01u8;
@@ -827,12 +838,7 @@ pub struct UnsignedMetricsExtrinsic {
 }
 
 // Define the RankingsTransactionData type as a tuple
-pub type RankingsTransactionData = (
-	Vec<u16>,
-	Vec<Vec<u8>>,
-	Vec<Vec<u8>>,
-	Vec<NodeType>,
-);
+pub type RankingsTransactionData = (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>);
 
 #[derive(Encode, Decode, RuntimeDebug)]
 pub struct UnsignedRankingsExtrinsic {
@@ -956,4 +962,3 @@ fn fetch_spec_version(rpc_url: &str) -> Result<u32, Box<dyn std::error::Error>> 
 
 	Ok(spec_version)
 }
-

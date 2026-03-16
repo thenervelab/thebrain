@@ -5,7 +5,6 @@ use sp_runtime::AccountId32;
 
 use rpc_primitives_node_metrics::{
 	Batch, MinerRewardSummary, NodeMetricsData, NodeType, Status, UserFile,
-	
 };
 
 /// Net rpc interface.

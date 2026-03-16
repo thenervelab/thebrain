@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use codec::{Decode, Encode};
 use scale_info::TypeInfo;
-use codec::{Encode, Decode};
+use serde::Deserialize;
 use sp_runtime::RuntimeDebug;
 
 #[derive(Deserialize)]
@@ -87,42 +87,42 @@ pub struct DiskInfo {
 // RPC parameters
 #[derive(Deserialize, Debug)]
 pub struct SubmitHardwareParams {
-    pub node_id: Vec<u8>,
-    pub system_info: SystemInfo,
-    pub default_spec_version: u32,
-    pub default_genesis_hash: String,
-    pub local_rpc_url: String,
+	pub node_id: Vec<u8>,
+	pub system_info: SystemInfo,
+	pub default_spec_version: u32,
+	pub default_genesis_hash: String,
+	pub local_rpc_url: String,
 }
 
 #[derive(Deserialize, Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
 pub struct SubmitMetricsParams {
-    pub node_id: Vec<u8>,
-    pub storage_proof_time_ms: u32,
-    pub latency_ms: u32,
-    pub peer_count: u32,
-    pub failed_challenges_count: u32,
-    pub successful_challenges: u32,
-    pub total_challenges: u32,
-    pub uptime_minutes: u32,
-    pub total_minutes: u32,
-    pub consecutive_reliable_days: u32,
-    pub recent_downtime_hours: u32,
-    pub block_number: u32,
-    pub default_spec_version: u32,
-    pub default_genesis_hash: String,
-    pub local_rpc_url: String,
+	pub node_id: Vec<u8>,
+	pub storage_proof_time_ms: u32,
+	pub latency_ms: u32,
+	pub peer_count: u32,
+	pub failed_challenges_count: u32,
+	pub successful_challenges: u32,
+	pub total_challenges: u32,
+	pub uptime_minutes: u32,
+	pub total_minutes: u32,
+	pub consecutive_reliable_days: u32,
+	pub recent_downtime_hours: u32,
+	pub block_number: u32,
+	pub default_spec_version: u32,
+	pub default_genesis_hash: String,
+	pub local_rpc_url: String,
 }
 
 #[derive(Deserialize, Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default, PartialEq)]
 pub struct SubmitRankingsParams {
-    pub weights: Vec<u16>,
-    pub all_nodes_ss58: Vec<Vec<u8>>,
-    pub node_ids: Vec<Vec<u8>>,
-    pub node_types: Vec<NodeType>,
-    pub ranking_instance_id: u32,
-    pub default_spec_version: u32,
-    pub default_genesis_hash: String,
-    pub local_rpc_url: String,
+	pub weights: Vec<u16>,
+	pub all_nodes_ss58: Vec<Vec<u8>>,
+	pub node_ids: Vec<Vec<u8>>,
+	pub node_types: Vec<NodeType>,
+	pub ranking_instance_id: u32,
+	pub default_spec_version: u32,
+	pub default_genesis_hash: String,
+	pub local_rpc_url: String,
 }
 
 #[derive(Deserialize, Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]

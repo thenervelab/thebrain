@@ -60,7 +60,7 @@ use pallet_tx_pause::RuntimeCallNameOf;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use precompiles::HipiusPrecompiles;
 // use scale_info::TypeInfo;
-use frame_support::traits::{ConstU32, KeyOwnerProofSystem, ConstBool};
+use frame_support::traits::{ConstBool, ConstU32, KeyOwnerProofSystem};
 use serde::{Deserialize, Serialize};
 use sp_api::impl_runtime_apis;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata, H160, H256, U256};
@@ -88,32 +88,32 @@ use sp_runtime::{
 };
 use sp_std::{prelude::*, vec::Vec};
 
-
 // Arion pallet configuration
 parameter_types! {
-    pub const ArionPalletId: PalletId = PalletId(*b"py/arion");
-    pub const BaseChildDeposit: Balance = 10 * DOLLAR;
-    pub const GlobalDepositHalvingPeriodBlocks: BlockNumber = 14_400; // ~24 hours at 6s/block
-    pub const UnregisterCooldownBlocks: BlockNumber = 7200; // ~12 hours at 6s/block
-    pub const UnbondingPeriodBlocks: BlockNumber = 100_800; // ~7 days at 6s/block
+	pub const ArionPalletId: PalletId = PalletId(*b"py/arion");
+	pub const BaseChildDeposit: Balance = 10 * DOLLAR;
+	pub const GlobalDepositHalvingPeriodBlocks: BlockNumber = 14_400; // ~24 hours at 6s/block
+	pub const UnregisterCooldownBlocks: BlockNumber = 7200; // ~12 hours at 6s/block
+	pub const UnbondingPeriodBlocks: BlockNumber = 100_800; // ~7 days at 6s/block
 }
 
 pub struct ArionAdminMembers;
 impl frame_support::traits::SortedMembers<AccountId> for ArionAdminMembers {
 	fn sorted_members() -> Vec<AccountId> {
-		let account = AccountId32::from_ss58check("5CP9wzk9G3kMdJmNyAsWGWVWDQE7Goe1dUvKtMv51EoXs563")
-			.expect("Invalid SS58 address");
+		let account =
+			AccountId32::from_ss58check("5CVXqxb7mhFTtZVw5BJ8M2ujND9PFymSDxF8bkod6Sm4XJTW")
+				.expect("Invalid SS58 address");
 		vec![account]
 	}
 }
 
 // Implement Arion pallet configuration
 impl pallet_arion::Config for Runtime {
-    type RuntimeEvent = RuntimeEvent;
+	type RuntimeEvent = RuntimeEvent;
 	type ArionAdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
 	type MapAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
-    type StatsAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
-    type WeightAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type StatsAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type WeightAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
 	type AttestationAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
 	type MaxContentHashLen = ConstU32<32>;
 	type AttestationRetentionBuckets = ConstU32<168>;
@@ -124,49 +124,50 @@ impl pallet_arion::Config for Runtime {
 	type MaxSignatureLen = ConstU32<100>;
 	type MaxMerkleProofLen = ConstU32<100>;
 	type MaxWardenIdLen = ConstU32<100>;
-    type DepositCurrency = Balances;
-    type FamilyRegistry = pallet_registration::Pallet<Runtime>;
-    type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
-    type EnforceRegisteredMinersInMap = ConstBool<false>;
-    type MaxMiners = MaxMiners;
-    type MaxEndpointLen = MaxEndpointLen;
-    type MaxHttpAddrLen = MaxHttpAddrLen;
-    type MaxStatsUpdates = MaxStatsUpdates;
-    type MaxFamilies = ConstU32<100>;
-    type MaxChildrenTotal = ConstU32<1000>;
-    type MaxChildrenPerFamily = ConstU32<35>;
-    type BaseChildDeposit = BaseChildDeposit;
-    type GlobalDepositHalvingPeriodBlocks = GlobalDepositHalvingPeriodBlocks;
-    type UnregisterCooldownBlocks = UnregisterCooldownBlocks;
-    type UnbondingPeriodBlocks = UnbondingPeriodBlocks;
-    type MaxNodeWeightUpdates = MaxNodeWeightUpdates;
-    type MaxNodeWeight = MaxNodeWeight;
-    type MaxFamilyWeight = MaxFamilyWeight;
-    type FamilyTopN = FamilyTopN;
-    type FamilyRankDecayPermille = FamilyRankDecayPermille;
-    type FamilyWeightEmaAlphaPermille = FamilyWeightEmaAlphaPermille;
-    type MaxFamilyWeightDeltaPerBucket = MaxFamilyWeightDeltaPerBucket;
-    type NewcomerGraceBuckets = NewcomerGraceBuckets;
-    type NewcomerFloorWeight = NewcomerFloorWeight;
-    type NodeBandwidthWeightPermille = NodeBandwidthWeightPermille;
-    type NodeStorageWeightPermille = NodeStorageWeightPermille;
-    type NodeScoreScale = NodeScoreScale;
-    type StrikePenalty = StrikePenalty;
-    type IntegrityFailPenalty = IntegrityFailPenalty;
+	type DepositCurrency = Balances;
+	type FamilyRegistry = pallet_registration::Pallet<Runtime>;
+	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
+	type EnforceRegisteredMinersInMap = ConstBool<false>;
+	type MaxMiners = MaxMiners;
+	type MaxEndpointLen = MaxEndpointLen;
+	type MaxHttpAddrLen = MaxHttpAddrLen;
+	type MaxStatsUpdates = MaxStatsUpdates;
+	type MaxFamilies = ConstU32<350>;
+	type MaxChildrenTotal = ConstU32<1000>;
+	type MaxChildrenPerFamily = ConstU32<35>;
+	type BaseChildDeposit = BaseChildDeposit;
+	type GlobalDepositHalvingPeriodBlocks = GlobalDepositHalvingPeriodBlocks;
+	type UnregisterCooldownBlocks = UnregisterCooldownBlocks;
+	type UnbondingPeriodBlocks = UnbondingPeriodBlocks;
+	type MaxNodeWeightUpdates = MaxNodeWeightUpdates;
+	type MaxNodeWeight = MaxNodeWeight;
+	type MaxFamilyWeight = MaxFamilyWeight;
+	type FamilyTopN = FamilyTopN;
+	type FamilyRankDecayPermille = FamilyRankDecayPermille;
+	type FamilyWeightEmaAlphaPermille = FamilyWeightEmaAlphaPermille;
+	type MaxFamilyWeightDeltaPerBucket = MaxFamilyWeightDeltaPerBucket;
+	type NewcomerGraceBuckets = NewcomerGraceBuckets;
+	type NewcomerFloorWeight = NewcomerFloorWeight;
+	type NodeBandwidthWeightPermille = NodeBandwidthWeightPermille;
+	type NodeStorageWeightPermille = NodeStorageWeightPermille;
+	type NodeScoreScale = NodeScoreScale;
+	type StrikePenalty = StrikePenalty;
+	type IntegrityFailPenalty = IntegrityFailPenalty;
 }
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
 use static_assertions::const_assert;
 
+use frame_support::traits::ExistenceRequirement;
 pub use frame_support::{
 	construct_runtime,
 	dispatch::DispatchClass,
 	pallet_prelude::Get,
 	parameter_types,
 	traits::{
-		ConstU16, Currency, EitherOfDiverse, EqualPrivilegeOnly, Everything,
-		Imbalance, InstanceFilter, LockIdentifier, OnUnbalanced,
+		ConstU16, Currency, EitherOfDiverse, EqualPrivilegeOnly, Everything, Imbalance,
+		InstanceFilter, LockIdentifier, OnUnbalanced,
 	},
 	weights::{
 		constants::{
@@ -216,7 +217,6 @@ use sp_runtime::generic::Era;
 pub use sp_runtime::BuildStorage;
 pub use sp_runtime::{MultiAddress, Perbill, Percent, Permill};
 use sp_staking::currency_to_vote::U128CurrencyToVote;
-use frame_support::traits::ExistenceRequirement;
 // use hex_literal::hex;
 // pub use hippius_services::PalletServicesConstraints;
 
@@ -242,7 +242,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9143,
+	spec_version: 9171,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -280,9 +280,9 @@ parameter_types! {
 	// Maximum number of node weight updates per submission
 	pub const MaxNodeWeightUpdates: u32 = 100;
 	// Maximum node weight
-	pub const MaxNodeWeight: u16 = 1000;
+	pub const MaxNodeWeight: u16 = 50_000;
 	// Maximum family weight
-	pub const MaxFamilyWeight: u16 = 1000;
+	pub const MaxFamilyWeight: u16 = 65_535;
 	// Number of top nodes to consider per family
 	pub const FamilyTopN: u32 = 10;
 	// Decay factor for family rank (permille)
@@ -300,7 +300,7 @@ parameter_types! {
 	// Storage weight (permille)
 	pub const NodeStorageWeightPermille: u32 = 300;
 	// Node score scale factor
-	pub const NodeScoreScale: u16 = 512;
+	pub const NodeScoreScale: u16 = 700;
 	// Strike penalty
 	pub const StrikePenalty: u16 = 50;
 	// Integrity fail penalty

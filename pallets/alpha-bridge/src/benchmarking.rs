@@ -204,12 +204,7 @@ mod benchmarks {
 
 		// Insert withdrawal request at block 1
 		frame_system::Pallet::<T>::set_block_number(1u32.into());
-		let request_id = insert_withdrawal_request::<T>(
-			sender,
-			1_000_000_000u128,
-			0,
-			1u32.into(),
-		);
+		let request_id = insert_withdrawal_request::<T>(sender, 1_000_000_000u128, 0, 1u32.into());
 
 		// Set short TTL
 		CleanupTTLBlocks::<T>::put(BlockNumberFor::<T>::from(1u32));
@@ -302,11 +297,7 @@ mod benchmarks {
 		);
 
 		#[extrinsic_call]
-		admin_cancel_deposit(
-			RawOrigin::Root,
-			deposit_id,
-			pallet::CancelReason::AdminEmergency,
-		);
+		admin_cancel_deposit(RawOrigin::Root, deposit_id, pallet::CancelReason::AdminEmergency);
 
 		// Verify deposit was cancelled
 		let deposit = Deposits::<T>::get(deposit_id).expect("Deposit should exist");

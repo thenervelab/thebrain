@@ -162,8 +162,7 @@ pub mod pallet {
 	// Storage for the alpha price
 	#[pallet::storage]
 	#[pallet::getter(fn alpha_price)]
-	pub type AlphaPrice<T: Config> =
-			StorageValue<_, u128, ValueQuery>;
+	pub type AlphaPrice<T: Config> = StorageValue<_, u128, ValueQuery>;
 
 	// Storage for the current active lock period
 	#[pallet::storage]
@@ -349,9 +348,9 @@ pub mod pallet {
 			ensure!(free >= amount, Error::<T>::InsufficientFreeCredits);
 
 			// Update free credits
-			FreeCredits::<T>::insert(&who, free - amount);
+			FreeCredits::<T>::insert(&who, free.saturating_sub(amount));
 
-			Self::deposit_event(Event::BurnedAccountCredits { who, amount: free - amount });
+			Self::deposit_event(Event::BurnedAccountCredits { who, amount: free.saturating_sub(amount) });
 
 			Ok(())
 		}
@@ -371,7 +370,7 @@ pub mod pallet {
 
 			// Increase the user's credits
 			FreeCredits::<T>::mutate(&user_to_credit, |credits| {
-				*credits += marketplace_credit_amount
+				*credits = credits.saturating_add(marketplace_credit_amount)
 			});
 
 			// Emit event for balance increase
@@ -575,7 +574,7 @@ pub mod pallet {
 			})?;
 
 			// Increment the total successful credits transfers
-			TotalSucessfullCreditsTransfers::<T>::mutate(|total| *total += amount_fulfilled);
+			TotalSucessfullCreditsTransfers::<T>::mutate(|total| *total = total.saturating_add(amount_fulfilled));
 
 			// Deposit an event for the fulfillment
 			Self::deposit_event(Event::CreditFulfilled {
@@ -636,11 +635,8 @@ pub mod pallet {
 
 			let current_price = AlphaPrice::<T>::get();
 
-			let new_price = if current_price == 0 {
-				price
-			} else {
-				current_price.saturating_add(price) / 2
-			};
+			let new_price =
+				if current_price == 0 { price } else { current_price.saturating_add(price) / 2 };
 
 			AlphaPrice::<T>::put(new_price);
 
@@ -656,10 +652,10 @@ pub mod pallet {
 			let free = FreeCredits::<T>::get(&who);
 
 			// Update free credits
-			FreeCredits::<T>::insert(&who, free + amount);
+			FreeCredits::<T>::insert(&who, free.saturating_add(amount));
 
 			// Increase total credits purchased
-			TotalCreditsPurchased::<T>::mutate(|total| *total += amount);
+			TotalCreditsPurchased::<T>::mutate(|total| *total = total.saturating_add(amount));
 
 			// Helper function to insert a referral code for a user
 			Self::insert_referral_code(&who.clone(), code)?;
@@ -685,7 +681,7 @@ pub mod pallet {
 		}
 
 		pub fn increase_user_credits(account: &T::AccountId, credits_to_increase: u128) {
-			FreeCredits::<T>::mutate(&account, |credits| *credits += credits_to_increase);
+			FreeCredits::<T>::mutate(&account, |credits| *credits = credits.saturating_add(credits_to_increase));
 
 			Self::deposit_event(Event::MintedAccountCredits {
 				who: account.clone(),
@@ -694,7 +690,7 @@ pub mod pallet {
 		}
 
 		pub fn decrease_user_credits(account: &T::AccountId, credits_to_decrease: u128) {
-			FreeCredits::<T>::mutate(&account, |credits| *credits -= credits_to_decrease);
+			FreeCredits::<T>::mutate(&account, |credits| *credits = credits.saturating_sub(credits_to_decrease));
 
 			Self::deposit_event(Event::BurnedAccountCredits {
 				who: account.clone(),

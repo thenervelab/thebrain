@@ -23,14 +23,10 @@ The pallet provides several key extrinsics:
    - Track latency, peer count, challenges, and uptime
    - Calculates performance scores and reliability metrics
 
-3. [update_pin_check_metrics](cci:1://file:///home/faiz/Documents/GitHub/thebrain/pallets/execution-unit/src/lib.rs:464:2-488:3): Update IPFS pin checking metrics
-   - Track total and successful pin checks
-   - Helps in assessing storage reliability
-
-4. [update_block_time](cci:1://file:///home/faiz/Documents/GitHub/thebrain/pallets/execution-unit/src/lib.rs:551:2-575:3): Record block processing times
+3. [update_block_time](cci:1://file:///home/faiz/Documents/GitHub/thebrain/pallets/execution-unit/src/lib.rs:551:2-575:3): Record block processing times
    - Helps in tracking node performance over time
 
-5. [store_offline_status_of_miner](cci:1://file:///home/faiz/Documents/GitHub/thebrain/pallets/execution-unit/src/lib.rs:577:2-606:3): Record offline status for miners
+4. [store_offline_status_of_miner](cci:1://file:///home/faiz/Documents/GitHub/thebrain/pallets/execution-unit/src/lib.rs:577:2-606:3): Record offline status for miners
    - Tracks node availability and reliability
 
 ## Design Principles
