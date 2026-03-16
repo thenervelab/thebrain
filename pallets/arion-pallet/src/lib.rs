@@ -2196,12 +2196,12 @@ pub mod pallet {
 
 			// Update the user's total file size
 			UserTotalFilesSize::<T>::mutate(&account_id, |size| {
-				*size = Some(size.unwrap_or_default().saturating_add(file_size));
+				*size = Some(file_size);
 			});
 
 			// Update the user's total file count
 			UserTotalFilesCount::<T>::mutate(&account_id, |count| {
-				*count = Some(count.unwrap_or_default().saturating_add(file_count));
+				*count = Some(file_count);
 			});
 
 			Self::deposit_event(Event::UserFilesUpdated {
