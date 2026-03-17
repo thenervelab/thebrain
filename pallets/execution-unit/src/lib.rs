@@ -356,24 +356,6 @@ pub mod pallet {
 				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 			}
 
-			// Clean up NodeMetrics if not registered
-			for (node_id, _) in NodeMetrics::<T>::iter() {
-				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
-					|| NodeRegistration::<T>::contains_key(&node_id);
-				if !is_registered {
-					NodeMetrics::<T>::remove(&node_id);
-				}
-			}
-
-			// Clean up BlockNumbers if node not registered
-			for (node_id, _) in BlockNumbers::<T>::iter() {
-				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
-					|| NodeRegistration::<T>::contains_key(&node_id);
-				if !is_registered {
-					BlockNumbers::<T>::remove(&node_id);
-				}
-			}
-
 			Weight::zero()
 		}
 
