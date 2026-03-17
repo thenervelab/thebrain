@@ -1541,8 +1541,9 @@ pub mod pallet {
 
             Batches::<T>::insert(batch_id, batch);
             UserBatches::<T>::append(&sender, batch_id);
-            NextBatchId::<T>::put(batch_id + 1);
-
+            let next = batch_id.saturating_add(1);
+            NextBatchId::<T>::put(next);
+            
             AlphaBalances::<T>::mutate(&sender, |alpha| *alpha += alpha_amount);
             let _ = CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code);
 
