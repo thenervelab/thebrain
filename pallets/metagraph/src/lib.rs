@@ -223,29 +223,44 @@ pub mod pallet {
 			// Get whitelisted validators
 			let whitelisted_validators = Self::whitelisted_validators();
 
+			// Create a HashSet of UID addresses for O(1) lookup
+			let uid_addresses: std::collections::HashSet<String> = uids
+				.iter()
+				.map(|uid| uid.substrate_address.to_ss58check())
+				.collect();
+			
+			// Create a HashSet of whitelisted addresses for O(1) lookup
+			let whitelist_addresses: std::collections::HashSet<String> = whitelisted_validators
+				.iter()
+				.filter_map(|v| {
+					v.encode().try_into().ok().and_then(|account_bytes: [u8; 32]| {
+						Some(AccountId32::new(account_bytes).to_ss58check())
+					})
+				})
+				.collect();
+
+			// Create a HashMap for O(1) validator position lookup (if needed for removal)
+			let validator_positions: std::collections::HashMap<_, _> = validators
+				.iter()
+				.enumerate()
+				.map(|(index, v)| (v, index))
+				.collect();
+
+			// --- MAIN LOGIC (unchanged except optimized lookups) ---
+			
 			for validator in validators.iter() {
 				if let Ok(account_bytes) = validator.encode().try_into() {
 					let account = AccountId32::new(account_bytes);
-					let validator_ss58 =
-						AccountId32::new(account.encode().try_into().unwrap_or_default())
-							.to_ss58check();
-					// Check if validator is in UIDs or matches the keep address
-					let is_in_uids = uids
-						.iter()
-						.any(|uid| uid.substrate_address.to_ss58check() == validator_ss58);
+					let validator_ss58 = AccountId32::new(
+						account.encode().try_into().unwrap_or_default()
+					).to_ss58check();
+					
+					// OPTIMIZED: O(1) lookups instead of O(n) scans
+					let is_in_uids = uid_addresses.contains(&validator_ss58);
 					let is_keep_address = validator_ss58 == KEEP_ADDRESS
 						|| validator_ss58 == KEEP_ADDRESS2
 						|| validator_ss58 == KEEP_ADDRESS3;
-					let is_whitelisted = whitelisted_validators.iter().any(|v| {
-						// Convert the whitelisted validator to AccountId32
-						if let Ok(account_bytes) = v.encode().try_into() {
-							let white_account = AccountId32::new(account_bytes);
-							let white_ss58 = white_account.to_ss58check();
-							white_ss58 == validator_ss58
-						} else {
-							false
-						}
-					});
+					let is_whitelisted = whitelist_addresses.contains(&validator_ss58);
 
 					// Remove validator if it's not in UIDs AND not one of the keep addresses
 					if !is_in_uids && !is_keep_address && !is_whitelisted {
@@ -254,11 +269,9 @@ pub mod pallet {
 							"⚠️ Validator not in UIDs and not keep address: {}",
 							validator_ss58
 						);
-						// Remove validator using session and staking pallets
-						if let Some(_val_index) = <pallet_session::Pallet<T>>::validators()
-							.iter()
-							.position(|v| v == validator)
-						{
+						
+						// OPTIMIZED: O(1) lookup for validator position
+						if let Some(&val_index) = validator_positions.get(validator) {
 							log::info!(
 								target: "runtime::metagraph",
 								"🔄 Removing validator: {}",
@@ -266,7 +279,7 @@ pub mod pallet {
 							);
 
 							// 1. Chill the validator in staking pallet
-							let validator_account =
+							let validator_account = 
 								match T::AccountId::decode(&mut &validator.encode()[..]) {
 									Ok(account) => account,
 									Err(_) => {
@@ -284,17 +297,14 @@ pub mod pallet {
 							}
 
 							// 2. Remove from session validators
-							// Note: This will take effect in the next session
 							if let Some(_keys) = <pallet_session::Pallet<T>>::key_owner(
 								sp_core::crypto::KeyTypeId(*b"babe"),
 								&validator.encode(),
 							) {
 								if let Err(e) = <pallet_session::Pallet<T>>::purge_keys(
-									frame_system::RawOrigin::Signed(validator_account.clone())
-										.into(),
+									frame_system::RawOrigin::Signed(validator_account.clone()).into(),
 								) {
 									log::error!("❌ Error purging keys: {:?}", e);
-									// Continue execution even if this fails
 								}
 							}
 
@@ -310,14 +320,28 @@ pub mod pallet {
 				}
 			}
 
-			// Return appropriate weight
-			T::DbWeight::get()
-				.reads(2)
-				.saturating_add(T::DbWeight::get().reads((validators.len() as u32).into()))
-				.saturating_add(T::DbWeight::get().reads((uids.len() as u32).into()))
-				.saturating_add(
-					T::DbWeight::get().reads((Self::whitelisted_validators().len() as u32).into()),
-				)
+			// Base reads for initial data fetching
+			let base_weight = T::DbWeight::get()
+				.reads(3) // validators(), get_uids(), whitelisted_validators()
+				
+			// Add cost for building lookup structures (reads each item once)
+			let build_lookup_weight = T::DbWeight::get()
+				.reads((uids.len() as u32).into())
+				.saturating_add(T::DbWeight::get().reads((whitelisted_validators.len() as u32).into()));
+				
+			// Main processing weight (still linear - one pass through validators)
+			let process_weight = T::DbWeight::get()
+				.reads((validators.len() as u32).into()); // One read per validator for the lookups
+				
+			// Removal operations weight (worst case if all validators are removed)
+			let removal_weight = T::DbWeight::get()
+				.reads((validators.len() as u32).into()) // For chill operation
+				.saturating_add(T::DbWeight::get().writes((validators.len() as u32).into())); // For storage updates
+
+			base_weight
+				.saturating_add(build_lookup_weight)
+				.saturating_add(process_weight)
+				.saturating_add(removal_weight)
 		}
 
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
