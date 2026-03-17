@@ -470,7 +470,7 @@ pub mod pallet {
 				challenges.remove(0); // Remove oldest
 			}
 			let _ = challenges.try_push(ch_hash); // Should not fail due to logic above
-			UsedChallenges::<T>::put(challenges);
+			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
 
 			// Create or update the account profile
 			let profile = AccountProfile { node_id, encryption_key };
