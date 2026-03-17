@@ -1558,26 +1558,26 @@ pub mod pallet {
             marketplace_account: T::AccountId,
             ranking_account: T::AccountId
         ) -> DispatchResult {
-        
+            
             let mut remaining = credits;
             let block_number = <frame_system::Pallet<T>>::block_number();
-        
+            
             if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
                 for batch_id in batch_ids {
-        
+                    
                     if remaining == 0 {
                         break;
                     }
-        
+                    
                     if let Some(mut batch) = Batches::<T>::get(batch_id) {
-        
+                        
                         ensure!(batch.owner == sender, "Not your batch");
-        
+                        
                         let credits_to_take = remaining.min(batch.remaining_credits);
-        
-                     
+                        
+                        // Decrease user credits
                         CreditsPallet::<T>::decrease_user_credits(&batch.owner, credits_to_take);
-        
+                        
                         // Referral logic
                         let mut total_discount = 0u128;
                         if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&batch.owner) {
@@ -1587,63 +1587,74 @@ pub mod pallet {
                                 &mut total_discount
                             );
                         }
-        
-                        // Safe alpha calculation
+                        
+                        // FIXED: Use remaining amounts for accurate alpha calculation
+                        // This ensures the ratio reflects the current batch state
                         let credits_to_take_u256 = U256::from(credits_to_take);
-                        let alpha_amount_u256 = U256::from(batch.alpha_amount);
-                        let credit_amount_u256 = U256::from(batch.credit_amount.max(1));
-        
+                        let remaining_alpha_u256 = U256::from(batch.remaining_alpha);
+                        let remaining_credits_u256 = U256::from(batch.remaining_credits.max(1));
+                        
+                        // Calculate alpha based on remaining proportion
                         let alpha_to_release =
-                            (credits_to_take_u256 * alpha_amount_u256) / credit_amount_u256;
-        
-                        let alpha_to_release_u128 =
-                            alpha_to_release.min(U256::from(u128::MAX)).as_u128();
-        
-                        batch.remaining_credits =
-                            batch.remaining_credits.saturating_sub(credits_to_take);
-        
-                        batch.remaining_alpha =
-                            batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
-        
+                            (credits_to_take_u256 * remaining_alpha_u256) / remaining_credits_u256;
+                        
+                        // Safety: Ensure we don't release more alpha than remaining
+                        let alpha_to_release_u128 = alpha_to_release
+                            .min(U256::from(batch.remaining_alpha))
+                            .as_u128();
+                        
+                        // Update batch credits first (needed for future calculations in this batch)
+                        batch.remaining_credits = batch.remaining_credits.saturating_sub(credits_to_take);
+                        
+                        // Handle frozen/unfrozen logic
                         if batch.is_frozen && block_number < batch.release_time {
-        
-                            batch.pending_alpha += alpha_to_release_u128;
-        
+                            
+                            // Batch is still frozen - add to pending
+                            batch.pending_alpha = batch.pending_alpha.saturating_add(alpha_to_release_u128);
+                            
                         } else {
-        
-                            // If batch just unfroze
+                            
+                            // Check if batch just unfroze in this block
                             if batch.is_frozen && block_number >= batch.release_time {
-        
+       
+                                // Batch just unfroze - distribute all pending alpha first
                                 batch.is_frozen = false;
+ 
+                                if batch.pending_alpha > 0 {
+                                    AlphaBalances::<T>::mutate(
+                                        &batch.owner,
+                                        |alpha| *alpha = alpha.saturating_sub(batch.pending_alpha)
+                                    );
         
+                                    Self::distribute_alpha(
+                                        batch.pending_alpha,
+                                        ranking_account.clone(),
+                                        marketplace_account.clone(),
+                                    )?;
+        
+                                    batch.pending_alpha = 0;
+                                }
+                            }
+        
+                            // Distribute current alpha
+                            if alpha_to_release_u128 > 0 {
                                 AlphaBalances::<T>::mutate(
                                     &batch.owner,
-                                    |alpha| *alpha = alpha.saturating_sub(batch.pending_alpha)
+                                    |alpha| *alpha = alpha.saturating_sub(alpha_to_release_u128)
                                 );
-        
+            
                                 Self::distribute_alpha(
-                                    batch.pending_alpha,
+                                    alpha_to_release_u128,
                                     ranking_account.clone(),
                                     marketplace_account.clone(),
                                 )?;
-        
-                                batch.pending_alpha = 0;
-                            }
-        
-                            AlphaBalances::<T>::mutate(
-                                &batch.owner,
-                                |alpha| *alpha = alpha.saturating_sub(alpha_to_release_u128)
-                            );
-        
-                            Self::distribute_alpha(
-                                alpha_to_release_u128,
-                                ranking_account.clone(),
-                                marketplace_account.clone(),
-                            )?;
+                        }
                         }
         
+                        // Update remaining alpha after all operations
+                        batch.remaining_alpha = batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
+                        // Save updated batch
                         Batches::<T>::insert(batch_id, batch);
-        
                         remaining -= credits_to_take;
                     }
                 }
