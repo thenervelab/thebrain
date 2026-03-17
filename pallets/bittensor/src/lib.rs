@@ -208,7 +208,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
+						let difference = current_block_number - last_block;
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -325,7 +325,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
+						let difference = current_block_number - last_block;
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -415,7 +415,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
+						let difference = current_block_number - last_block;
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -506,7 +506,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
+						let difference = current_block_number - last_block;
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -596,7 +596,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
+						let difference = current_block_number - last_block;
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight

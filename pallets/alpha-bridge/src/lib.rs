@@ -578,7 +578,7 @@ pub mod pallet {
 			let current_block = frame_system::Pallet::<T>::block_number();
 			let ttl = CleanupTTLBlocks::<T>::get();
 			ensure!(current_block >= request.created_at_block + ttl, Error::<T>::TTLNotExpired);
-			ensure!(request.status == WithdrawalRequestStatus::Failed, Error::<T>::RecordNotFinalized);
+
 			// Remove from storage
 			WithdrawalRequests::<T>::remove(request_id);
 

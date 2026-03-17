@@ -585,7 +585,11 @@ pub mod pallet {
 						.checked_mul(total_balance.saturated_into())
 						.and_then(|r| r.checked_div(compute_miner_total_weight))
 					{
-						ratio
+						let decimal_factor: u128 =
+							10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+						let reward_with_decimals =
+							ratio.checked_mul(decimal_factor).unwrap_or_default();
+						reward_with_decimals
 					} else {
 						0
 					};
@@ -594,7 +598,7 @@ pub mod pallet {
 				}
 			} else if T::InstanceID::get() == 4 && !gpu_miner_node.is_empty() {
 				let gpu_miner_total_weight: u128 =
-					gpu_miner_node.iter().map(|(_, weight, _node_id)| *weight as u128).sum();
+					gpu_miner_node.iter().map(|(_, weight, _)| *weight as u128).sum();
 
 				for (owner, weight, _) in gpu_miner_node {
 					let weight_u128 = weight as u128;
@@ -602,7 +606,11 @@ pub mod pallet {
 						.checked_mul(total_balance.saturated_into())
 						.and_then(|r| r.checked_div(gpu_miner_total_weight))
 					{
-						ratio
+						let decimal_factor: u128 =
+							10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+						let reward_with_decimals =
+							ratio.checked_mul(decimal_factor).unwrap_or_default();
+						reward_with_decimals
 					} else {
 						0
 					};
@@ -611,7 +619,7 @@ pub mod pallet {
 				}
 			} else if T::InstanceID::get() == 5 && !storage_s3_miner_node.is_empty() {
 				let s3_miner_total_weight: u128 =
-					storage_s3_miner_node.iter().map(|(_, weight, _node_id)| *weight as u128).sum();
+					storage_s3_miner_node.iter().map(|(_, weight, _)| *weight as u128).sum();
 
 				for (owner, weight, _) in storage_s3_miner_node {
 					let weight_u128 = weight as u128;
@@ -619,7 +627,11 @@ pub mod pallet {
 						.checked_mul(total_balance.saturated_into())
 						.and_then(|r| r.checked_div(s3_miner_total_weight))
 					{
-						ratio
+						let decimal_factor: u128 =
+							10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+						let reward_with_decimals =
+							ratio.checked_mul(decimal_factor).unwrap_or_default();
+						reward_with_decimals
 					} else {
 						0
 					};
@@ -628,7 +640,7 @@ pub mod pallet {
 				}
 			} else if T::InstanceID::get() == 1 && !storage_miner_node.is_empty() {
 				let storage_miner_total_weight: u128 =
-					storage_miner_node.iter().map(|(_, weight, _node_id)| *weight as u128).sum();
+					storage_miner_node.iter().map(|(_, weight, _)| *weight as u128).sum();
 
 				for (owner, weight, _) in storage_miner_node {
 					let weight_u128 = weight as u128;
@@ -636,7 +648,11 @@ pub mod pallet {
 						.checked_mul(total_balance.saturated_into())
 						.and_then(|r| r.checked_div(storage_miner_total_weight))
 					{
-						ratio
+						let decimal_factor: u128 =
+							10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+						let reward_with_decimals =
+							ratio.checked_mul(decimal_factor).unwrap_or_default();
+						reward_with_decimals
 					} else {
 						0
 					};
@@ -696,7 +712,11 @@ pub mod pallet {
 					.checked_mul(total_balance.saturated_into())
 					.and_then(|r| r.checked_div(total_weight))
 				{
-					ratio
+					let decimal_factor: u128 =
+						10_u128.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+					let reward_with_decimals =
+						ratio.checked_mul(decimal_factor).unwrap_or_default();
+					reward_with_decimals
 				} else {
 					0
 				};
@@ -797,9 +817,15 @@ pub mod pallet {
 									.checked_mul(total_balance.saturated_into())
 									.and_then(|r| r.checked_div(compute_miner_total_weight))
 								{
-									ratio
+									// Convert to proper decimal representation
+									// If your chain uses 18 decimals, the reward should be multiplied by 10^18
+									let decimal_factor: u128 = 10_u128
+										.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+									let reward_with_decimals =
+										ratio.checked_mul(decimal_factor).unwrap_or_default();
+									BalanceOf::<T>::saturated_from(reward_with_decimals)
 								} else {
-									0
+									BalanceOf::<T>::zero()
 								};
 
 								if !reward.is_zero() {
@@ -807,7 +833,7 @@ pub mod pallet {
 									let _ = pallet_balances::Pallet::<T>::burn(
 										frame_system::RawOrigin::Signed(pallet_account.clone())
 											.into(),
-										reward.saturated_into(),
+										reward,
 										false, // keep_alive set to false to allow burning entire balance
 									);
 
@@ -827,7 +853,7 @@ pub mod pallet {
 											);
 											Self::deposit_event(Event::RewardDistributed {
 												account: account.clone(),
-												amount: reward.saturated_into(),
+												amount: reward,
 											});
 										}
 									} else {
@@ -841,7 +867,7 @@ pub mod pallet {
 											);
 											Self::deposit_event(Event::RewardDistributed {
 												account: account.clone(),
-												amount: reward.saturated_into(),
+												amount: reward,
 											});
 										}
 									}
@@ -886,9 +912,15 @@ pub mod pallet {
 									.checked_mul(total_balance.saturated_into())
 									.and_then(|r| r.checked_div(gpu_miner_total_weight))
 								{
-									ratio
+									// Convert to proper decimal representation
+									// If your chain uses 18 decimals, the reward should be multiplied by 10^18
+									let decimal_factor: u128 = 10_u128
+										.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+									let reward_with_decimals =
+										ratio.checked_mul(decimal_factor).unwrap_or_default();
+									BalanceOf::<T>::saturated_from(reward_with_decimals)
 								} else {
-									0
+									BalanceOf::<T>::zero()
 								};
 
 								if !reward.is_zero() {
@@ -896,7 +928,7 @@ pub mod pallet {
 									let _ = pallet_balances::Pallet::<T>::burn(
 										frame_system::RawOrigin::Signed(pallet_account.clone())
 											.into(),
-										reward.saturated_into(),
+										reward,
 										false, // keep_alive set to false to allow burning entire balance
 									);
 
@@ -916,7 +948,7 @@ pub mod pallet {
 											);
 											Self::deposit_event(Event::RewardDistributed {
 												account: account.clone(),
-												amount: reward.saturated_into(),
+												amount: reward,
 											});
 										}
 									} else {
@@ -930,7 +962,7 @@ pub mod pallet {
 											);
 											Self::deposit_event(Event::RewardDistributed {
 												account: account.clone(),
-												amount: reward.saturated_into(),
+												amount: reward,
 											});
 										}
 									}
@@ -975,9 +1007,15 @@ pub mod pallet {
 									.checked_mul(total_balance.saturated_into())
 									.and_then(|r| r.checked_div(s3_miner_total_weight))
 								{
-									ratio
+									// Convert to proper decimal representation
+									// If your chain uses 18 decimals, the reward should be multiplied by 10^18
+									let decimal_factor: u128 = 10_u128
+										.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+									let reward_with_decimals =
+										ratio.checked_mul(decimal_factor).unwrap_or_default();
+									BalanceOf::<T>::saturated_from(reward_with_decimals)
 								} else {
-									0
+									BalanceOf::<T>::zero()
 								};
 
 								if !reward.is_zero() {
@@ -985,7 +1023,7 @@ pub mod pallet {
 									let _ = pallet_balances::Pallet::<T>::burn(
 										frame_system::RawOrigin::Signed(pallet_account.clone())
 											.into(),
-										reward.saturated_into(),
+										reward,
 										false, // keep_alive set to false to allow burning entire balance
 									);
 
@@ -1005,7 +1043,7 @@ pub mod pallet {
 											);
 											Self::deposit_event(Event::RewardDistributed {
 												account: account.clone(),
-												amount: reward.saturated_into(),
+												amount: reward,
 											});
 										}
 									} else {
@@ -1019,7 +1057,7 @@ pub mod pallet {
 											);
 											Self::deposit_event(Event::RewardDistributed {
 												account: account.clone(),
-												amount: reward.saturated_into(),
+												amount: reward,
 											});
 										}
 									}
@@ -1063,9 +1101,14 @@ pub mod pallet {
 									.checked_mul(total_balance.saturated_into())
 									.and_then(|r| r.checked_div(storage_miner_total_weight))
 								{
-									ratio
+									// Convert to proper decimal representation
+									let decimal_factor: u128 = 10_u128
+										.pow(pallet_registration::Pallet::<T>::get_chain_decimals());
+									let reward_with_decimals =
+										ratio.checked_mul(decimal_factor).unwrap_or_default();
+									BalanceOf::<T>::saturated_from(reward_with_decimals)
 								} else {
-									0
+									BalanceOf::<T>::zero()
 								};
 
 								if !reward.is_zero() {
@@ -1073,7 +1116,7 @@ pub mod pallet {
 									let _ = pallet_balances::Pallet::<T>::burn(
 										frame_system::RawOrigin::Signed(pallet_account.clone())
 											.into(),
-										reward.saturated_into(),
+										reward,
 										false, // keep_alive set to false to allow burning entire balance
 									);
 
@@ -1093,7 +1136,7 @@ pub mod pallet {
 											);
 											Self::deposit_event(Event::RewardDistributed {
 												account: account.clone(),
-												amount: reward.saturated_into(),
+												amount: reward,
 											});
 										}
 									} else {
@@ -1107,7 +1150,7 @@ pub mod pallet {
 											);
 											Self::deposit_event(Event::RewardDistributed {
 												account: account.clone(),
-												amount: reward.saturated_into(),
+												amount: reward,
 											});
 										}
 									}
