@@ -20,6 +20,7 @@ polkadot.*
 .DS_Store
 .idea/
 .cargo-remote.toml
+SECURITY_AUDIT_REPORT.md
 
 # Added by cargo
 /target
