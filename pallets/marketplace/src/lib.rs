@@ -1558,58 +1558,92 @@ pub mod pallet {
             marketplace_account: T::AccountId,
             ranking_account: T::AccountId
         ) -> DispatchResult {
-            
+        
             let mut remaining = credits;
+            let block_number = <frame_system::Pallet<T>>::block_number();
         
             if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
                 for batch_id in batch_ids {
-                    if remaining == 0 { break; }
+        
+                    if remaining == 0 {
+                        break;
+                    }
         
                     if let Some(mut batch) = Batches::<T>::get(batch_id) {
+        
                         ensure!(batch.owner == sender, "Not your batch");
         
                         let credits_to_take = remaining.min(batch.remaining_credits);
         
-                        // Convert values to U256 to prevent overflow
+                     
+                        CreditsPallet::<T>::decrease_user_credits(&batch.owner, credits_to_take);
+        
+                        // Referral logic
+                        let mut total_discount = 0u128;
+                        if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&batch.owner) {
+                            let _ = CreditsPallet::<T>::apply_referral_discount(
+                                &previous_referral,
+                                credits_to_take,
+                                &mut total_discount
+                            );
+                        }
+        
+                        // Safe alpha calculation
                         let credits_to_take_u256 = U256::from(credits_to_take);
                         let alpha_amount_u256 = U256::from(batch.alpha_amount);
-                        let credit_amount_u256 = U256::from(batch.credit_amount.max(1)); // Avoid division by zero
+                        let credit_amount_u256 = U256::from(batch.credit_amount.max(1));
         
-                        // Perform safe division with U256
-                        let alpha_to_release = (credits_to_take_u256 * alpha_amount_u256) / credit_amount_u256;
-                        let alpha_to_release_u128 = alpha_to_release.min(U256::from(u128::MAX)).as_u128(); // Convert back safely
+                        let alpha_to_release =
+                            (credits_to_take_u256 * alpha_amount_u256) / credit_amount_u256;
         
-                        batch.remaining_credits -= credits_to_take;
-                        batch.remaining_alpha -= alpha_to_release_u128;
+                        let alpha_to_release_u128 =
+                            alpha_to_release.min(U256::from(u128::MAX)).as_u128();
         
-                        if batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time {
+                        batch.remaining_credits =
+                            batch.remaining_credits.saturating_sub(credits_to_take);
+        
+                        batch.remaining_alpha =
+                            batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
+        
+                        if batch.is_frozen && block_number < batch.release_time {
+        
                             batch.pending_alpha += alpha_to_release_u128;
+        
                         } else {
-                            if batch.is_frozen && <frame_system::Pallet<T>>::block_number() >= batch.release_time {
+        
+                            // If batch just unfroze
+                            if batch.is_frozen && block_number >= batch.release_time {
+        
                                 batch.is_frozen = false;
-                                AlphaBalances::<T>::mutate(&batch.owner, |alpha| *alpha -= batch.pending_alpha);
+        
+                                AlphaBalances::<T>::mutate(
+                                    &batch.owner,
+                                    |alpha| *alpha = alpha.saturating_sub(batch.pending_alpha)
+                                );
         
                                 Self::distribute_alpha(
-                                    batch.owner.clone(),
                                     batch.pending_alpha,
-                                    credits_to_take,
                                     ranking_account.clone(),
                                     marketplace_account.clone(),
                                 )?;
+        
                                 batch.pending_alpha = 0;
                             }
         
-                            AlphaBalances::<T>::mutate(&batch.owner, |alpha| *alpha -= alpha_to_release_u128);
+                            AlphaBalances::<T>::mutate(
+                                &batch.owner,
+                                |alpha| *alpha = alpha.saturating_sub(alpha_to_release_u128)
+                            );
+        
                             Self::distribute_alpha(
-                                batch.owner.clone(),
                                 alpha_to_release_u128,
-                                credits_to_take,
                                 ranking_account.clone(),
                                 marketplace_account.clone(),
                             )?;
                         }
         
                         Batches::<T>::insert(batch_id, batch);
+        
                         remaining -= credits_to_take;
                     }
                 }
@@ -1617,45 +1651,37 @@ pub mod pallet {
         
             ensure!(remaining == 0, "Not enough credits");
         
-            Self::deposit_event(Event::CreditsConsumed { owner: sender, credits });
+            Self::deposit_event(Event::CreditsConsumed {
+                owner: sender,
+                credits
+            });
         
             Ok(())
         }
 
         fn distribute_alpha(
-            batch_owner: T::AccountId,
             alpha_to_release: u128,
-            credits_to_take: u128,
             ranking_account: T::AccountId,
             marketplace_account: T::AccountId,
         ) -> DispatchResult {
-            // Decrease credits for the batch owner
-            CreditsPallet::<T>::decrease_user_credits(&batch_owner, credits_to_take);
         
-            // Handle referral logic
-            let mut total_discount = 0u128;
-            if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&batch_owner) {
-                let _ = CreditsPallet::<T>::apply_referral_discount(&previous_referral, credits_to_take, &mut total_discount);
-            }
-        
-            // Calculate the amounts for Storage Rankings and Marketplace
             let rankings_amount = alpha_to_release
-                .checked_mul(60u32.into())
-                .and_then(|x| x.checked_div(100u32.into()))
+                .checked_mul(60)
+                .and_then(|x| x.checked_div(100))
                 .unwrap_or_default();
         
-            let marketplace_amount = alpha_to_release - rankings_amount;
+            let marketplace_amount = alpha_to_release
+                .saturating_sub(rankings_amount);
         
-            // Transfer equivalent amount of native currency from the sudo account
-            if let Some(sudo_account) = Self::sudo_key() { // Get the sudo key from storage
-                // Transfer funds from sudo account to marketplace and rankings accounts
+            if let Some(sudo_account) = Self::sudo_key() {
+        
                 <pallet_balances::Pallet<T>>::transfer(
                     &sudo_account,
                     &ranking_account,
-                    rankings_amount.try_into().unwrap_or_default(), 
+                    rankings_amount.try_into().unwrap_or_default(),
                     ExistenceRequirement::AllowDeath
                 )?;
-
+        
                 <pallet_balances::Pallet<T>>::transfer(
                     &sudo_account,
                     &marketplace_account,
