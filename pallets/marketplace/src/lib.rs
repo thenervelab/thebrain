@@ -1086,7 +1086,7 @@ pub mod pallet {
                 // Separate storage and compute subscriptions that need charging
                 let mut storage_subs_to_charge = Vec::new();
                 let mut compute_subs_to_charge = Vec::new();
-                let mut earliest_last_charged = current_block;
+                let mut earliest_last_charged = BlockNumberFor::<T>::max_value();
 
                 for sub in active_subs {
                     let block_difference = current_block.saturating_sub(sub.last_charged_at);
