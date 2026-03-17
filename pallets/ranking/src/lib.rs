@@ -803,74 +803,75 @@ pub mod pallet {
 								};
 
 								if !reward.is_zero() {
-									// Burn the equivalent amount from their free balance
-									let _ = pallet_balances::Pallet::<T>::burn(
-										frame_system::RawOrigin::Signed(pallet_account.clone())
-											.into(),
-										reward.saturated_into(),
-										false, // keep_alive set to false to allow burning entire balance
-									);
-
-									// Convert reward to u128 first
 									let reward_u128: u128 = reward.saturated_into();
+									let staking_result: Result<_, _>;
 
-									// Try to convert to staking balance type
+									// ry to stake the reward
 									if let Ok(_ledger) = pallet_staking::Pallet::<T>::ledger(
 										sp_staking::StakingAccount::Stash(account.clone()),
 									) {
 										// Account is already bonded, so we can use bond_extra
 										if let Ok(staking_reward) = reward_u128.try_into() {
-											let _ = pallet_staking::Pallet::<T>::bond_extra(
-												frame_system::RawOrigin::Signed(account.clone())
-													.into(),
+											staking_result = pallet_staking::Pallet::<T>::bond_extra(
+												frame_system::RawOrigin::Signed(account.clone()).into(),
 												staking_reward,
 											);
-											Self::deposit_event(Event::RewardDistributed {
-												account: account.clone(),
-												amount: reward.saturated_into(),
-											});
+										} else {
+											continue; // Skip if conversion fails
 										}
 									} else {
 										// Account is not bonded yet, so we bond it first
 										if let Ok(staking_reward) = reward_u128.try_into() {
-											let _ = pallet_staking::Pallet::<T>::bond(
-												frame_system::RawOrigin::Signed(account.clone())
-													.into(),
-												staking_reward,                            // Initial stake
-												pallet_staking::RewardDestination::Staked, // Reward destination
+											staking_result = pallet_staking::Pallet::<T>::bond(
+												frame_system::RawOrigin::Signed(account.clone()).into(),
+												staking_reward,
+												pallet_staking::RewardDestination::Staked,
 											);
-											Self::deposit_event(Event::RewardDistributed {
-												account: account.clone(),
-												amount: reward.saturated_into(),
-											});
+										} else {
+											continue; // Skip if conversion fails
 										}
 									}
 
-									// Get the current records for this node_id
-									let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+									// SECOND: Only burn if staking succeeded
+									if staking_result.is_ok() {
+										// Burn the equivalent amount from their free balance
+										let _ = pallet_balances::Pallet::<T>::burn(
+											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
+											reward.saturated_into(),
+											false,
+										);
 
-									records.push(RewardsRecordDetails {
-										node_types: NodeType::ComputeMiner,
-										weight: reward_u128 as u16,
-										amount: reward_u128,
-										account: account.clone(),
-										block_number: n,
-									});
+										Self::deposit_event(Event::RewardDistributed {
+											account: account.clone(),
+											amount: reward.saturated_into(),
+										});
 
-									// Optionally: Keep only last 100 entries
-									if records.len() > 100 {
-										records.remove(0);
+										// Get the current records for this node_id
+										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+
+										records.push(RewardsRecordDetails {
+											node_types: NodeType::ComputeMiner,
+											weight: reward_u128 as u16,
+											amount: reward_u128,
+											account: account.clone(),
+											block_number: n,
+										});
+
+										// Optionally: Keep only last 100 entries
+										if records.len() > 100 {
+											records.remove(0);
+										}
+
+										// Put the updated records back into storage
+										RewardsRecord::<T, I>::insert(node_id, records);
 									}
-
-									// Put the updated records back into storage
-									RewardsRecord::<T, I>::insert(node_id, records);
+									weight_used = weight_used
+										.saturating_add(T::DbWeight::get().reads_writes(3, 1));
 								}
-								weight_used = weight_used
-									.saturating_add(T::DbWeight::get().reads_writes(3, 1));
 							}
 						}
 					}
-					// if instance id is 4 the distribute to compute miner nodes
+					// if instance id is 4 the distribute to gpu miner nodes
 					else if T::InstanceID::get() == 4 {
 						// Calculate total weights for each type
 						let gpu_miner_total_weight: u128 = gpu_miner_node
@@ -878,7 +879,7 @@ pub mod pallet {
 							.map(|(_, weight, _node_id)| *weight as u128)
 							.sum();
 
-						// Distribute to compute miner nodes
+						// Distribute to gpu miner nodes
 						if !gpu_miner_total_weight.is_zero() {
 							for (account, weight, node_id) in gpu_miner_node {
 								let weight_u128 = weight as u128;
@@ -892,70 +893,65 @@ pub mod pallet {
 								};
 
 								if !reward.is_zero() {
-									// Burn the equivalent amount from their free balance
-									let _ = pallet_balances::Pallet::<T>::burn(
-										frame_system::RawOrigin::Signed(pallet_account.clone())
-											.into(),
-										reward.saturated_into(),
-										false, // keep_alive set to false to allow burning entire balance
-									);
-
-									// Convert reward to u128 first
 									let reward_u128: u128 = reward.saturated_into();
+									let staking_result: Result<_, _>;
 
-									// Try to convert to staking balance type
+									// FIRST: Try to stake the reward
 									if let Ok(_ledger) = pallet_staking::Pallet::<T>::ledger(
 										sp_staking::StakingAccount::Stash(account.clone()),
 									) {
-										// Account is already bonded, so we can use bond_extra
 										if let Ok(staking_reward) = reward_u128.try_into() {
-											let _ = pallet_staking::Pallet::<T>::bond_extra(
-												frame_system::RawOrigin::Signed(account.clone())
-													.into(),
+											staking_result = pallet_staking::Pallet::<T>::bond_extra(
+												frame_system::RawOrigin::Signed(account.clone()).into(),
 												staking_reward,
 											);
-											Self::deposit_event(Event::RewardDistributed {
-												account: account.clone(),
-												amount: reward.saturated_into(),
-											});
+										} else {
+											continue;
 										}
 									} else {
-										// Account is not bonded yet, so we bond it first
 										if let Ok(staking_reward) = reward_u128.try_into() {
-											let _ = pallet_staking::Pallet::<T>::bond(
-												frame_system::RawOrigin::Signed(account.clone())
-													.into(),
-												staking_reward,                            // Initial stake
-												pallet_staking::RewardDestination::Staked, // Reward destination
+											staking_result = pallet_staking::Pallet::<T>::bond(
+												frame_system::RawOrigin::Signed(account.clone()).into(),
+												staking_reward,
+												pallet_staking::RewardDestination::Staked,
 											);
-											Self::deposit_event(Event::RewardDistributed {
-												account: account.clone(),
-												amount: reward.saturated_into(),
-											});
+										} else {
+											continue;
 										}
 									}
 
-									// Get the current records for this node_id
-									let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+									// SECOND: Only burn if staking succeeded
+									if staking_result.is_ok() {
+										let _ = pallet_balances::Pallet::<T>::burn(
+											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
+											reward.saturated_into(),
+											false,
+										);
 
-									records.push(RewardsRecordDetails {
-										node_types: NodeType::GpuMiner,
-										weight: reward_u128 as u16,
-										amount: reward_u128,
-										account: account.clone(),
-										block_number: n,
-									});
+										Self::deposit_event(Event::RewardDistributed {
+											account: account.clone(),
+											amount: reward.saturated_into(),
+										});
 
-									// Optionally: Keep only last 100 entries
-									if records.len() > 100 {
-										records.remove(0);
+										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+
+										records.push(RewardsRecordDetails {
+											node_types: NodeType::GpuMiner,
+											weight: reward_u128 as u16,
+											amount: reward_u128,
+											account: account.clone(),
+											block_number: n,
+										});
+
+										if records.len() > 100 {
+											records.remove(0);
+										}
+
+										RewardsRecord::<T, I>::insert(node_id, records);
 									}
-
-									// Put the updated records back into storage
-									RewardsRecord::<T, I>::insert(node_id, records);
+									weight_used = weight_used
+										.saturating_add(T::DbWeight::get().reads_writes(3, 1));
 								}
-								weight_used = weight_used
-									.saturating_add(T::DbWeight::get().reads_writes(3, 1));
 							}
 						}
 					}
@@ -981,70 +977,65 @@ pub mod pallet {
 								};
 
 								if !reward.is_zero() {
-									// Burn the equivalent amount from their free balance
-									let _ = pallet_balances::Pallet::<T>::burn(
-										frame_system::RawOrigin::Signed(pallet_account.clone())
-											.into(),
-										reward.saturated_into(),
-										false, // keep_alive set to false to allow burning entire balance
-									);
-
-									// Convert reward to u128 first
 									let reward_u128: u128 = reward.saturated_into();
+									let staking_result: Result<_, _>;
 
-									// Try to convert to staking balance type
+									// FIRST: Try to stake the reward
 									if let Ok(_ledger) = pallet_staking::Pallet::<T>::ledger(
 										sp_staking::StakingAccount::Stash(account.clone()),
 									) {
-										// Account is already bonded, so we can use bond_extra
 										if let Ok(staking_reward) = reward_u128.try_into() {
-											let _ = pallet_staking::Pallet::<T>::bond_extra(
-												frame_system::RawOrigin::Signed(account.clone())
-													.into(),
+											staking_result = pallet_staking::Pallet::<T>::bond_extra(
+												frame_system::RawOrigin::Signed(account.clone()).into(),
 												staking_reward,
 											);
-											Self::deposit_event(Event::RewardDistributed {
-												account: account.clone(),
-												amount: reward.saturated_into(),
-											});
+										} else {
+											continue;
 										}
 									} else {
-										// Account is not bonded yet, so we bond it first
 										if let Ok(staking_reward) = reward_u128.try_into() {
-											let _ = pallet_staking::Pallet::<T>::bond(
-												frame_system::RawOrigin::Signed(account.clone())
-													.into(),
-												staking_reward,                            // Initial stake
-												pallet_staking::RewardDestination::Staked, // Reward destination
+											staking_result = pallet_staking::Pallet::<T>::bond(
+												frame_system::RawOrigin::Signed(account.clone()).into(),
+												staking_reward,
+												pallet_staking::RewardDestination::Staked,
 											);
-											Self::deposit_event(Event::RewardDistributed {
-												account: account.clone(),
-												amount: reward.saturated_into(),
-											});
+										} else {
+											continue;
 										}
 									}
 
-									// Get the current records for this node_id
-									let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+									// SECOND: Only burn if staking succeeded
+									if staking_result.is_ok() {
+										let _ = pallet_balances::Pallet::<T>::burn(
+											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
+											reward.saturated_into(),
+											false,
+										);
 
-									records.push(RewardsRecordDetails {
-										node_types: NodeType::StorageS3,
-										weight: reward_u128 as u16,
-										amount: reward_u128,
-										account: account.clone(),
-										block_number: n,
-									});
+										Self::deposit_event(Event::RewardDistributed {
+											account: account.clone(),
+											amount: reward.saturated_into(),
+										});
 
-									// Optionally: Keep only last 100 entries
-									if records.len() > 100 {
-										records.remove(0);
+										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+
+										records.push(RewardsRecordDetails {
+											node_types: NodeType::StorageS3,
+											weight: reward_u128 as u16,
+											amount: reward_u128,
+											account: account.clone(),
+											block_number: n,
+										});
+
+										if records.len() > 100 {
+											records.remove(0);
+										}
+
+										RewardsRecord::<T, I>::insert(node_id, records);
 									}
-
-									// Put the updated records back into storage
-									RewardsRecord::<T, I>::insert(node_id, records);
+									weight_used = weight_used
+										.saturating_add(T::DbWeight::get().reads_writes(3, 1));
 								}
-								weight_used = weight_used
-									.saturating_add(T::DbWeight::get().reads_writes(3, 1));
 							}
 						}
 					}
@@ -1069,71 +1060,65 @@ pub mod pallet {
 								};
 
 								if !reward.is_zero() {
-									// Burn the equivalent amount from their free balance
-									let _ = pallet_balances::Pallet::<T>::burn(
-										frame_system::RawOrigin::Signed(pallet_account.clone())
-											.into(),
-										reward.saturated_into(),
-										false, // keep_alive set to false to allow burning entire balance
-									);
-
-									// Convert reward to u128 first
 									let reward_u128: u128 = reward.saturated_into();
+									let staking_result: Result<_, _>;
 
-									// Try to convert to staking balance type
+									// FIRST: Try to stake the reward
 									if let Ok(_ledger) = pallet_staking::Pallet::<T>::ledger(
 										sp_staking::StakingAccount::Stash(account.clone()),
 									) {
-										// Account is already bonded, so we can use bond_extra
 										if let Ok(staking_reward) = reward_u128.try_into() {
-											let _ = pallet_staking::Pallet::<T>::bond_extra(
-												frame_system::RawOrigin::Signed(account.clone())
-													.into(),
+											staking_result = pallet_staking::Pallet::<T>::bond_extra(
+												frame_system::RawOrigin::Signed(account.clone()).into(),
 												staking_reward,
 											);
-											Self::deposit_event(Event::RewardDistributed {
-												account: account.clone(),
-												amount: reward.saturated_into(),
-											});
+										} else {
+											continue;
 										}
 									} else {
-										// Account is not bonded yet, so we bond it first
 										if let Ok(staking_reward) = reward_u128.try_into() {
-											let _ = pallet_staking::Pallet::<T>::bond(
-												frame_system::RawOrigin::Signed(account.clone())
-													.into(),
-												staking_reward,                            // Initial stake
-												pallet_staking::RewardDestination::Staked, // Reward destination
+											staking_result = pallet_staking::Pallet::<T>::bond(
+												frame_system::RawOrigin::Signed(account.clone()).into(),
+												staking_reward,
+												pallet_staking::RewardDestination::Staked,
 											);
-											Self::deposit_event(Event::RewardDistributed {
-												account: account.clone(),
-												amount: reward.saturated_into(),
-											});
+										} else {
+											continue;
 										}
 									}
 
-									// Get the current records for this node_id
-									let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+									// SECOND: Only burn if staking succeeded
+									if staking_result.is_ok() {
+										let _ = pallet_balances::Pallet::<T>::burn(
+											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
+											reward.saturated_into(),
+											false,
+										);
 
-									records.push(RewardsRecordDetails {
-										node_types: NodeType::StorageMiner,
-										weight: reward_u128 as u16,
-										amount: reward_u128,
-										account: account.clone(),
-										block_number: n,
-									});
+										Self::deposit_event(Event::RewardDistributed {
+											account: account.clone(),
+											amount: reward.saturated_into(),
+										});
 
-									// Optionally: Keep only last 100 entries
-									if records.len() > 100 {
-										records.remove(0);
+										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+
+										records.push(RewardsRecordDetails {
+											node_types: NodeType::StorageMiner,
+											weight: reward_u128 as u16,
+											amount: reward_u128,
+											account: account.clone(),
+											block_number: n,
+										});
+
+										if records.len() > 100 {
+											records.remove(0);
+										}
+
+										RewardsRecord::<T, I>::insert(node_id, records);
 									}
-
-									// Put the updated records back into storage
-									RewardsRecord::<T, I>::insert(node_id, records);
+									weight_used = weight_used
+										.saturating_add(T::DbWeight::get().reads_writes(3, 1));
 								}
-
-								weight_used = weight_used
-									.saturating_add(T::DbWeight::get().reads_writes(3, 1));
 							}
 						}
 					}
