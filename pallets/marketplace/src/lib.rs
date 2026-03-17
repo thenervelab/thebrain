@@ -1710,10 +1710,17 @@ pub mod pallet {
             if let Some(batch) = Batches::<T>::get(batch_id) {
                 // Ensure the batch is frozen and the chargeback is valid
                 ensure!(batch.is_frozen && <frame_system::Pallet<T>>::block_number() < batch.release_time, "Invalid chargeback");
-
+ 
                 // Decrease the total locked Alpha by the remaining Alpha in the batch
-                AlphaBalances::<T>::mutate(&batch.owner, |alpha| *alpha -= batch.remaining_alpha);
+                let total_alpha_to_remove = batch.remaining_alpha
+                    .saturating_add(batch.pending_alpha);
 
+                if total_alpha_to_remove > 0 {
+                    AlphaBalances::<T>::mutate(&batch.owner, |alpha| {
+                        *alpha = alpha.saturating_sub(total_alpha_to_remove);
+                    });
+                }
+ 
                 // Remove the batch from the user's batch list
                 UserBatches::<T>::mutate(&batch.owner, |batches| {
                     if let Some(ref mut batch_vec) = batches {
