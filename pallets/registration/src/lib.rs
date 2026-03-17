@@ -1270,6 +1270,13 @@ pub mod pallet {
 			// Ensure the caller is the current owner
 			ensure!(node_info.owner == who.clone(), Error::<T>::NotNodeOwner);
 
+			// Ensure the new owner is not banned
+			ensure!(!Self::is_account_banned(&new_owner), Error::<T>::AccountBanned);
+
+			// Ensure the new owner is not already registered with another node
+			ensure!(!Self::is_owner_node_registered(&new_owner), Error::<T>::OwnerAlreadyRegistered);
+
+
 			// Update the owner
 			node_info.owner = new_owner.clone();
 
@@ -2365,6 +2372,8 @@ pub mod pallet {
 			LinkedNodes::<T>::remove(node_id.clone());
 			T::MetricsInfo::remove_metrics(node_id.clone());
 			T::IpfsInfo::remove_miner_profile_info(node_id.clone());
+
+			
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}
 
