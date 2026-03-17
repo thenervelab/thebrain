@@ -461,7 +461,16 @@ pub mod pallet {
 			);
 
 			// Mark challenge used (replay protection)
-			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
+			let mut challenges = UsedChallenges::<T>::get();
+			// Check if already used
+			ensure!(!challenges.contains(&ch_hash), Error::<T>::ChallengeReused);
+
+			// Add to list (maintaining only last 100)
+			if challenges.len() == 100 {
+				challenges.remove(0); // Remove oldest
+			}
+			let _ = challenges.try_push(ch_hash); // Should not fail due to logic above
+			UsedChallenges::<T>::put(challenges);
 
 			// Create or update the account profile
 			let profile = AccountProfile { node_id, encryption_key };
