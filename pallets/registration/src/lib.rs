@@ -2345,6 +2345,9 @@ pub mod pallet {
 				T::MetricsInfo::remove_metrics(main_node_id.clone());
 				T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 
+				// Store the deregistration time
+				NodeLastDeregisteredAt::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());
+
 				// Remove the node from LinkedNodes if it exists
 				let main_node_linked_nodes = LinkedNodes::<T>::get(&main_node_id);
 				let updated_linked_nodes: Vec<Vec<u8>> =
@@ -2373,7 +2376,9 @@ pub mod pallet {
 			T::MetricsInfo::remove_metrics(node_id.clone());
 			T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 
-			
+			// Store the deregistration time
+			NodeLastDeregisteredAt::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());
+
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}
 
