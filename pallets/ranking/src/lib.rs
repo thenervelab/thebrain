@@ -806,7 +806,7 @@ pub mod pallet {
 									let reward_u128: u128 = reward.saturated_into();
 									let staking_result: Result<_, _>;
 
-									// ry to stake the reward
+									// FIRST: Try to stake the reward
 									if let Ok(_ledger) = pallet_staking::Pallet::<T>::ledger(
 										sp_staking::StakingAccount::Stash(account.clone()),
 									) {
@@ -835,35 +835,43 @@ pub mod pallet {
 									// SECOND: Only burn if staking succeeded
 									if staking_result.is_ok() {
 										// Burn the equivalent amount from their free balance
-										let _ = pallet_balances::Pallet::<T>::burn(
+										match pallet_balances::Pallet::<T>::burn(
 											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
 											reward.saturated_into(),
 											false,
-										);
+										) {
+											Ok(_) => {
+												Self::deposit_event(Event::RewardDistributed {
+													account: account.clone(),
+													amount: reward.saturated_into(),
+												});
 
-										Self::deposit_event(Event::RewardDistributed {
-											account: account.clone(),
-											amount: reward.saturated_into(),
-										});
+												// Get the current records for this node_id
+												let mut records = RewardsRecord::<T, I>::get(node_id.clone());
 
-										// Get the current records for this node_id
-										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+												records.push(RewardsRecordDetails {
+													node_types: NodeType::ComputeMiner,
+													weight: reward_u128 as u16,
+													amount: reward_u128,
+													account: account.clone(),
+													block_number: n,
+												});
 
-										records.push(RewardsRecordDetails {
-											node_types: NodeType::ComputeMiner,
-											weight: reward_u128 as u16,
-											amount: reward_u128,
-											account: account.clone(),
-											block_number: n,
-										});
+												// Optionally: Keep only last 100 entries
+												if records.len() > 100 {
+													records.remove(0);
+												}
 
-										// Optionally: Keep only last 100 entries
-										if records.len() > 100 {
-											records.remove(0);
+												// Put the updated records back into storage
+												RewardsRecord::<T, I>::insert(node_id, records);
+											},
+											Err(e) => {
+												// Log the error and revert the staking if possible
+												log::error!("Failed to burn tokens for account {:?}: {:?}", account, e);
+												// Note: We can't easily revert the staking here, but at least
+												// we don't lose tokens and we log the error for investigation
+											}
 										}
-
-										// Put the updated records back into storage
-										RewardsRecord::<T, I>::insert(node_id, records);
 									}
 									weight_used = weight_used
 										.saturating_add(T::DbWeight::get().reads_writes(3, 1));
@@ -922,32 +930,37 @@ pub mod pallet {
 
 									// SECOND: Only burn if staking succeeded
 									if staking_result.is_ok() {
-										let _ = pallet_balances::Pallet::<T>::burn(
+										match pallet_balances::Pallet::<T>::burn(
 											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
 											reward.saturated_into(),
 											false,
-										);
+										) {
+											Ok(_) => {
+												Self::deposit_event(Event::RewardDistributed {
+													account: account.clone(),
+													amount: reward.saturated_into(),
+												});
 
-										Self::deposit_event(Event::RewardDistributed {
-											account: account.clone(),
-											amount: reward.saturated_into(),
-										});
+												let mut records = RewardsRecord::<T, I>::get(node_id.clone());
 
-										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+												records.push(RewardsRecordDetails {
+													node_types: NodeType::GpuMiner,
+													weight: reward_u128 as u16,
+													amount: reward_u128,
+													account: account.clone(),
+													block_number: n,
+												});
 
-										records.push(RewardsRecordDetails {
-											node_types: NodeType::GpuMiner,
-											weight: reward_u128 as u16,
-											amount: reward_u128,
-											account: account.clone(),
-											block_number: n,
-										});
+												if records.len() > 100 {
+													records.remove(0);
+												}
 
-										if records.len() > 100 {
-											records.remove(0);
+												RewardsRecord::<T, I>::insert(node_id, records);
+											},
+											Err(e) => {
+												log::error!("Failed to burn tokens for account {:?}: {:?}", account, e);
+											}
 										}
-
-										RewardsRecord::<T, I>::insert(node_id, records);
 									}
 									weight_used = weight_used
 										.saturating_add(T::DbWeight::get().reads_writes(3, 1));
@@ -1006,32 +1019,37 @@ pub mod pallet {
 
 									// SECOND: Only burn if staking succeeded
 									if staking_result.is_ok() {
-										let _ = pallet_balances::Pallet::<T>::burn(
+										match pallet_balances::Pallet::<T>::burn(
 											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
 											reward.saturated_into(),
 											false,
-										);
+										) {
+											Ok(_) => {
+												Self::deposit_event(Event::RewardDistributed {
+													account: account.clone(),
+													amount: reward.saturated_into(),
+												});
 
-										Self::deposit_event(Event::RewardDistributed {
-											account: account.clone(),
-											amount: reward.saturated_into(),
-										});
+												let mut records = RewardsRecord::<T, I>::get(node_id.clone());
 
-										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+												records.push(RewardsRecordDetails {
+													node_types: NodeType::StorageS3,
+													weight: reward_u128 as u16,
+													amount: reward_u128,
+													account: account.clone(),
+													block_number: n,
+												});
 
-										records.push(RewardsRecordDetails {
-											node_types: NodeType::StorageS3,
-											weight: reward_u128 as u16,
-											amount: reward_u128,
-											account: account.clone(),
-											block_number: n,
-										});
+												if records.len() > 100 {
+													records.remove(0);
+												}
 
-										if records.len() > 100 {
-											records.remove(0);
+												RewardsRecord::<T, I>::insert(node_id, records);
+											},
+											Err(e) => {
+												log::error!("Failed to burn tokens for account {:?}: {:?}", account, e);
+											}
 										}
-
-										RewardsRecord::<T, I>::insert(node_id, records);
 									}
 									weight_used = weight_used
 										.saturating_add(T::DbWeight::get().reads_writes(3, 1));
@@ -1089,32 +1107,39 @@ pub mod pallet {
 
 									// SECOND: Only burn if staking succeeded
 									if staking_result.is_ok() {
-										let _ = pallet_balances::Pallet::<T>::burn(
+										match pallet_balances::Pallet::<T>::burn(
 											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
 											reward.saturated_into(),
 											false,
-										);
+										) {
+											Ok(_) => {
+												Self::deposit_event(Event::RewardDistributed {
+													account: account.clone(),
+													amount: reward.saturated_into(),
+												});
 
-										Self::deposit_event(Event::RewardDistributed {
-											account: account.clone(),
-											amount: reward.saturated_into(),
-										});
+												let mut records = RewardsRecord::<T, I>::get(node_id.clone());
 
-										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+												records.push(RewardsRecordDetails {
+													node_types: NodeType::StorageMiner,
+													weight: reward_u128 as u16,
+													amount: reward_u128,
+													account: account.clone(),
+													block_number: n,
+												});
 
-										records.push(RewardsRecordDetails {
-											node_types: NodeType::StorageMiner,
-											weight: reward_u128 as u16,
-											amount: reward_u128,
-											account: account.clone(),
-											block_number: n,
-										});
+												if records.len() > 100 {
+													records.remove(0);
+												}
 
-										if records.len() > 100 {
-											records.remove(0);
+												RewardsRecord::<T, I>::insert(node_id, records);
+											},
+											Err(e) => {
+												log::error!("Failed to burn tokens for account {:?}: {:?}", account, e);
+												// Note: We've already staked the tokens but failed to burn
+												// This creates an accounting discrepancy that needs investigation
+											}
 										}
-
-										RewardsRecord::<T, I>::insert(node_id, records);
 									}
 									weight_used = weight_used
 										.saturating_add(T::DbWeight::get().reads_writes(3, 1));
