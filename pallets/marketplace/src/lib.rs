@@ -1175,7 +1175,7 @@ pub mod pallet {
                     });
                 } else {
                     // Insufficient credits - check grace period using storage grace period
-                    if Self::is_storage_subscription_in_grace_period(earliest_last_charged, current_block) {
+                    if Self::is_subscription_in_grace_period(earliest_last_charged, current_block) {
                         // Still within grace period, do nothing
                     } else {
                         // Grace period expired, cancel ALL subscriptions
@@ -1470,7 +1470,7 @@ pub mod pallet {
         }
 
         // Helper function to check if a storage subscription is in grace period
-        fn is_storage_subscription_in_grace_period(
+        fn is_subscription_in_grace_period(
             last_charged_at: BlockNumberFor<T>,
             current_block: BlockNumberFor<T>,
         ) -> bool {
