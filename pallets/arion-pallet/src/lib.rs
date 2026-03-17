@@ -1106,6 +1106,10 @@ pub mod pallet {
 					let mut reg = ChildRegistrations::<T>::get(miner)
 						.ok_or(Error::<T>::ChildNotRegistered)?;
 					NodeIdToChild::<T>::remove(reg.node_id);
+					let amount = reg.deposit;
+					if LockupEnabled::<T>::get() && !amount.is_zero() {
+						let _ = T::DepositCurrency::unreserve(family_id, amount);
+					}
 					ChildRegistrations::<T>::remove(miner);
 					TotalActiveChildren::<T>::put(
 						TotalActiveChildren::<T>::get().saturating_sub(1),
