@@ -222,7 +222,7 @@ pub mod pallet {
 
 			// Prevent removing the main account
 			ensure!(sub_account_to_remove != main, Error::<T>::NoAccountsLeft);
-
+			ensure!(SubAccount::<T>::get(&sub_account_to_remove) == Some(main.clone()), Error::<T>::NotAllowed);
 			// Verify that the sender and the account to be removed are sub accounts
 			Self::is_sub_account(sender, main.clone())?;
 
