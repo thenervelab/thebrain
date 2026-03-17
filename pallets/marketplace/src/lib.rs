@@ -85,7 +85,7 @@ pub mod pallet {
     use frame_support::traits::ExistenceRequirement;
     use sp_runtime::traits::Zero;
     use sp_core::U256;
-
+    use sp_runtime::traits::Bounded;
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);

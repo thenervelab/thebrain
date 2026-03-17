@@ -452,6 +452,13 @@ pub mod pallet {
 			);
 			log::info!("Challenge node ID hash: {:?}", ch.node_id_hash);
 			let ch_hash = Self::blake256(&challenge_bytes);
+			while UsedChallenges::<T>::iter().count() >= 1000 {
+				// Remove the oldest entry
+				let oldest_key = UsedChallenges::<T>::iter().next().map(|(k, _)| k);
+				if let Some(oldest_key) = oldest_key {
+					UsedChallenges::<T>::remove(oldest_key);
+				}
+			}
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
 			// Verify the signature (using ed25519 for now)
@@ -461,15 +468,6 @@ pub mod pallet {
 			);
 
 			// Mark challenge used (replay protection)
-			let mut challenges = UsedChallenges::<T>::get();
-			// Check if already used
-			ensure!(!challenges.contains(&ch_hash), Error::<T>::ChallengeReused);
-
-			// Add to list (maintaining only last 100)
-			if challenges.len() == 100 {
-				challenges.remove(0); // Remove oldest
-			}
-			let _ = challenges.try_push(ch_hash); // Should not fail due to logic above
 			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
 
 			// Create or update the account profile
