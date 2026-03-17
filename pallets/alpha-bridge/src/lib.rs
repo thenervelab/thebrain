@@ -474,6 +474,9 @@ pub mod pallet {
 			let expected_id = H256::from(sp_core::hashing::blake2_256(&verify_data));
 			ensure!(expected_id == request_id, Error::<T>::InvalidRequestId);
 
+			// Get current guardians set once for reuse
+			let current_guardians: BTreeSet<_> = Guardians::<T>::get().into_iter().collect();
+
 			// Check if deposit already exists
 			if let Some(mut deposit) = Deposits::<T>::get(request_id) {
 				// Check status and vote
@@ -487,10 +490,16 @@ pub mod pallet {
 
 				Self::deposit_event(Event::DepositAttested { id: request_id, guardian });
 
-				// Check if threshold reached
-				if deposit.votes.len() >= ApproveThreshold::<T>::get() as usize {
+				// Check if threshold reached with current guardians only
+				let valid_vote_count = deposit.votes
+					.iter()
+					.filter(|voter| current_guardians.contains(voter))
+					.count();
+
+				if valid_vote_count >= ApproveThreshold::<T>::get() as usize {
 					Self::finalize_deposit(request_id, deposit)?;
 				} else {
+					// STORE THE DEPOSIT when threshold not reached
 					Deposits::<T>::insert(request_id, deposit);
 				}
 			} else {
@@ -510,10 +519,13 @@ pub mod pallet {
 
 				Self::deposit_event(Event::DepositAttested { id: request_id, guardian });
 
-				// Check if threshold reached immediately (single guardian setup)
-				if deposit.votes.len() >= ApproveThreshold::<T>::get() as usize {
+				// Check if threshold reached immediately
+				// Since we just verified guardian is in current_guardians via ensure_guardian,
+				// valid_vote_count = 1
+				if 1 >= ApproveThreshold::<T>::get() as usize {
 					Self::finalize_deposit(request_id, deposit)?;
 				} else {
+					// STORE THE DEPOSIT when threshold not reached
 					Deposits::<T>::insert(request_id, deposit);
 				}
 			}
