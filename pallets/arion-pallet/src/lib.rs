@@ -1929,8 +1929,20 @@ pub mod pallet {
 			let count = attestations.len() as u32;
 			ensure!(count > 0, Error::<T>::TooManyAttestations);
 
-			// Verify all attestation signatures before storing
+			// Verify warden registration and all attestation signatures before storing.
+			//
+			// Registration check is intentionally done before signature verification since it's cheaper.
 			for attestation in attestations.iter() {
+				let warden_pubkey: [u8; 32] = attestation
+					.warden_pubkey
+					.as_slice()
+					.try_into()
+					.map_err(|_| Error::<T>::UnregisteredWarden)?;
+
+				let info = RegisteredWardens::<T>::get(warden_pubkey)
+					.ok_or(Error::<T>::UnregisteredWarden)?;
+				ensure!(info.status == WardenStatus::Active, Error::<T>::UnregisteredWarden);
+
 				ensure!(
 					Self::verify_attestation_sig(attestation),
 					Error::<T>::InvalidAttestationSignature
