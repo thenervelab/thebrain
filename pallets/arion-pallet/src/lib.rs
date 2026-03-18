@@ -1053,6 +1053,7 @@ pub mod pallet {
 		NodeNotRegistered,
 		InvalidNodeType,
 		FamilyNotFound,
+		EmptyAttestations
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -1931,7 +1932,7 @@ pub mod pallet {
 			ensure!(bucket >= cur, Error::<T>::AttestationBucketRegression);
 
 			let count = attestations.len() as u32;
-			ensure!(count > 0, Error::<T>::TooManyAttestations);
+			ensure!(count > 0, Error::<T>::EmptyAttestations);
 
 			// Verify warden registration and all attestation signatures before storing.
 			//
