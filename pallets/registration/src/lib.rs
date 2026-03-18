@@ -334,6 +334,7 @@ pub mod pallet {
 		NodeTypeDisabled,
 		NodeTypeMismatch,
 		NodeNotRegistered,
+		DeregistrationDisabled
 		NotNodeOwner,
 		NotAProxyAccount,
 		InvalidProxyType,
@@ -1351,7 +1352,7 @@ pub mod pallet {
 			let who = ensure_signed(origin)?;
 
 			// Check if de-registration is enabled
-			ensure!(Self::is_deregistration_enabled(), Error::<T>::NodeTypeDisabled);
+			ensure!(Self::is_deregistration_enabled(), Error::<T>::DeregistrationDisabled);
 
 			// Check if this is a proxy account and get the main account
 			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
