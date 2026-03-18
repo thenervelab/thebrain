@@ -2185,36 +2185,31 @@ pub mod pallet {
 				if reports.is_empty() {
 					continue;
 				}
-
-				let total_reports = reports.len() as u32;
-				if total_reports >= threshold {
-					// Count unique validators
-					let unique_validators: sp_std::collections::btree_set::BTreeSet<T::AccountId> =
-						reports.iter().map(|(validator_id, _)| validator_id.clone()).collect();
-
-					let agreeing_validators = unique_validators.len() as u32;
-
-					log::info!(
-						"Node: {:?}, Total Reports: {}, Agreeing Validators: {}, Threshold: {}",
-						node_id,
-						total_reports,
-						agreeing_validators,
-						threshold
-					);
-
-					if agreeing_validators >= threshold {
-						// Consensus reached, unregister the node
-						Self::do_unregister_main_node(node_id.clone());
-
-						// Use proper event emission
-						Self::deposit_event(Event::<T>::DeregistrationConsensusReached {
-							node_id: node_id.clone(),
-						});
-					} else {
-						Self::deposit_event(Event::<T>::DeregistrationConsensusFailed {
-							node_id: node_id.clone(),
-						});
-					}
+			
+				// Count unique validators directly
+				let unique_validators: sp_std::collections::btree_set::BTreeSet<T::AccountId> =
+					reports.iter().map(|(validator_id, _)| validator_id.clone()).collect();
+			
+				let agreeing_validators = unique_validators.len() as u32;
+			
+				log::info!(
+					"Node: {:?}, Total Reports: {}, Agreeing Validators: {}, Threshold: {}",
+					node_id,
+					reports.len(),
+					agreeing_validators,
+					threshold
+				);
+			
+				if agreeing_validators >= threshold {
+					// Consensus reached, unregister the node
+					Self::do_unregister_main_node(node_id.clone());
+					Self::deposit_event(Event::<T>::DeregistrationConsensusReached {
+						node_id: node_id.clone(),
+					});
+				} else {
+					Self::deposit_event(Event::<T>::DeregistrationConsensusFailed {
+						node_id: node_id.clone(),
+					});
 				}
 			}
 		}
