@@ -418,8 +418,8 @@ impl<T: Config> Pallet<T> {
 			RewardDestination::Stash => T::Currency::deposit_into_existing(stash, amount).ok(),
 			RewardDestination::Staked => Self::ledger(Stash(stash.clone()))
 				.and_then(|mut ledger| {
-					ledger.active += amount;
-					ledger.total += amount;
+					ledger.active = ledger.active.saturating_add(amount);
+					ledger.total = ledger.total.saturating_add(amount);
 					let r = T::Currency::deposit_into_existing(stash, amount).ok();
 
 					let _ = ledger
