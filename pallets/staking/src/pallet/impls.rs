@@ -857,7 +857,7 @@ impl<T: Config> Pallet<T> {
 			<ErasRewardPoints<T>>::mutate(active_era.index, |era_rewards| {
 				for (validator, points) in validators_points.into_iter() {
 					*era_rewards.individual.entry(validator).or_default() += points;
-					era_rewards.total += points;
+					era_rewards.total = era_rewards.total.saturating_add(points);
 				}
 			});
 		}
