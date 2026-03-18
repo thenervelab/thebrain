@@ -878,7 +878,8 @@ pub mod pallet {
 			amount: u128,
 		) -> (WithdrawalRequestId, u64) {
 			let nonce = NextWithdrawalRequestNonce::<T>::get();
-			NextWithdrawalRequestNonce::<T>::put(nonce.saturating_add(1));
+			let next_nonce = nonce.checked_add(1).ok_or(Error::<T>::NonceOverflow)?;
+			NextWithdrawalRequestNonce::<T>::put(next_nonce);
 
 			// Hash uses the destination-chain amount (alphaRao)
 			let alpha_amount = amount / HALPHA_RAO_PER_ALPHA_RAO;

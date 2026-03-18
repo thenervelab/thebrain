@@ -334,7 +334,7 @@ pub mod pallet {
 		NodeTypeDisabled,
 		NodeTypeMismatch,
 		NodeNotRegistered,
-		DeregistrationDisabled
+		DeregistrationDisabled,
 		NotNodeOwner,
 		NotAProxyAccount,
 		InvalidProxyType,
