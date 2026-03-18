@@ -544,29 +544,33 @@ pub mod pallet {
 			let caller = ensure_signed(origin)?;
 			Self::ensure_guardian(&caller)?;
 
-			let deposit = Deposits::<T>::get(deposit_id).ok_or(Error::<T>::DepositNotFound)?;
+			Deposits::<T>::try_mutate(deposit_id, |maybe_deposit| -> DispatchResult {
+				if let Some(deposit) = maybe_deposit {
+					// Must be finalized (Completed or Cancelled)
+					ensure!(
+						deposit.status == DepositStatus::Completed
+							|| deposit.status == DepositStatus::Cancelled,
+						Error::<T>::RecordNotFinalized
+					);
 
-			// Must be finalized (Completed or Cancelled)
-			ensure!(
-				deposit.status == DepositStatus::Completed
-					|| deposit.status == DepositStatus::Cancelled,
-				Error::<T>::RecordNotFinalized
-			);
+					// Must have finalized_at_block set
+					let finalized_at = deposit.finalized_at_block.ok_or(Error::<T>::RecordNotFinalized)?;
 
-			// Must have finalized_at_block set
-			let finalized_at = deposit.finalized_at_block.ok_or(Error::<T>::RecordNotFinalized)?;
+					// TTL must have passed since finalization
+					let current_block = frame_system::Pallet::<T>::block_number();
+					let ttl = CleanupTTLBlocks::<T>::get();
+					ensure!(current_block >= finalized_at + ttl, Error::<T>::TTLNotExpired);
 
-			// TTL must have passed since finalization
-			let current_block = frame_system::Pallet::<T>::block_number();
-			let ttl = CleanupTTLBlocks::<T>::get();
-			ensure!(current_block >= finalized_at + ttl, Error::<T>::TTLNotExpired);
+					// Remove from storage
+					*maybe_deposit = None;
 
-			// Remove from storage
-			Deposits::<T>::remove(deposit_id);
+					Self::deposit_event(Event::DepositCleanedUp { id: deposit_id });
 
-			Self::deposit_event(Event::DepositCleanedUp { id: deposit_id });
-
-			Ok(())
+					Ok(())
+				} else {
+					Err(Error::<T>::DepositNotFound)?
+				}
+			})
 		}
 
 		/// Guardian can cleanup a withdrawal request after TTL (no status check for source records)
