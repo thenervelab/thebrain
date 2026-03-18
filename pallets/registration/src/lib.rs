@@ -384,13 +384,15 @@ pub mod pallet {
 			if _n % consensus_period == 0u32.into() {
 				Self::apply_deregistration_consensus();
 			}
-
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			let first_epoch_block = 38u32.into(); // hardcoded or derived
-
-			if (_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
-				// Clear deregistration reports
-				let _ = TemporaryDeregistrationReports::<T>::clear(u32::MAX, None);
+			
+			// Use saturating_sub to prevent underflow
+			if _n >= first_epoch_block {
+				if (_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
+					// Clear deregistration reports
+					let _ = TemporaryDeregistrationReports::<T>::clear(u32::MAX, None);
+				}
 			}
 
 			if _n % 100u32.into() == 0u32.into() {
