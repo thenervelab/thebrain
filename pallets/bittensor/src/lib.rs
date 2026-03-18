@@ -35,7 +35,7 @@ pub mod pallet {
 		traits::Zero,
 		AccountId32,
 	};
-	use sp_std::collections::HashMap;
+	use scale_info::prelude::collections::BTreeMap;
 	use sp_std::prelude::*;
 
 	#[pallet::config]
@@ -143,7 +143,7 @@ pub mod pallet {
 
 			let uid_zero_weight = WeightCalculation::uid_zero_weight::<T>();
 			// Update Bittensor UIDs
-			let uid_map: HashMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for uid in uids.iter() {
 				if uid.id == uid_zero {
 					let miner_ss58 = AccountId32::new(
@@ -286,7 +286,7 @@ pub mod pallet {
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-			let uid_map: HashMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::StorageS3 {
 					continue;
@@ -375,7 +375,7 @@ pub mod pallet {
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-			let uid_map: HashMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::Validator {
 					continue;
@@ -464,7 +464,7 @@ pub mod pallet {
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-			let uid_map: HashMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::GpuMiner {
 					continue;
@@ -553,7 +553,7 @@ pub mod pallet {
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-			let uid_map: HashMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::ComputeMiner {
 					continue;

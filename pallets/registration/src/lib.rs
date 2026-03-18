@@ -246,7 +246,7 @@ pub mod pallet {
 
 	#[pallet::storage]
 	#[pallet::getter(fn owner_to_node)]
-	pub type OwnerToNode<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, Vec<u8>>;
+	pub type OwnerToNode<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, Vec<Vec<u8>>>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub fn deposit_event)]
@@ -471,14 +471,14 @@ pub mod pallet {
 			for (_node_id, node_info) in ColdkeyNodeRegistration::<T>::iter() {
 				if let Some(info) = node_info {
 					OwnerToNode::<T>::mutate(info.owner, |nodes| {
-						nodes.get_or_insert_with(Vec::new).push(_node_id);
+						nodes.get_or_insert_with(Vec::new).push(_node_id.clone());
 					});
 				}
 			}
 			for (_node_id, node_info) in NodeRegistration::<T>::iter() {
 				if let Some(info) = node_info {
 					OwnerToNode::<T>::mutate(info.owner, |nodes| {
-						nodes.get_or_insert_with(Vec::new).push(_node_id);
+						nodes.get_or_insert_with(Vec::new).push(_node_id.clone());
 					});
 				}
 			}

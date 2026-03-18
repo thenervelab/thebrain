@@ -1746,12 +1746,12 @@ pub mod pallet {
         }
         
         pub fn get_batches_for_user(user: T::AccountId) -> Vec<Batch<T::AccountId, BlockNumberFor<T>>> {
-            let batch_ids: Vec<u64> = UserBatches::<T>::get(user).ok_or(Error::<T>::UserNotFound)?.into(); // Convert to Vec<u64>
+            let batch_ids: Vec<u64> = UserBatches::<T>::get(user).unwrap_or_default(); 
             batch_ids.iter()
                 .filter_map(|id| Batches::<T>::get(*id))
                 .collect()
         }
-        
+
         pub fn get_batch_by_id(batch_id: u64) -> Option<Batch<T::AccountId, BlockNumberFor<T>>> {
             Batches::<T>::get(batch_id)
         }

@@ -461,11 +461,12 @@ pub mod pallet {
 			}
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
-			// Verify the signature (using ed25519 for now)
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &signature, &public_key),
-				Error::<T>::InvalidSignature
-			);
+			// Verify the signature
+			if signature.len() != 64 || public_key.len() != 32 {
+				return Err(Error::<T>::InvalidSignature.into());
+			}
+
+			Self::verify_ed25519(&challenge_bytes, &signature, &public_key)?;
 
 			// Mark challenge used (replay protection)
 			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
@@ -535,18 +536,26 @@ pub mod pallet {
 			out.copy_from_slice(h.as_ref());
 			out
 		}
-
-		fn verify_ed25519(msg: &[u8], sig: &[u8], pk: &[u8]) -> bool {
+		
+		fn verify_ed25519(msg: &[u8], sig: &[u8], pk: &[u8]) -> DispatchResult {
 			if sig.len() != 64 || pk.len() != 32 {
-				return false;
+				return Err(Error::<T>::InvalidSignature.into());
 			}
-			sp_io::crypto::ed25519_verify(
-				&sp_core::ed25519::Signature::from_raw(
-					<[u8; 64]>::try_from(sig).unwrap_or([0u8; 64]),
+		
+			ensure!(
+				sp_io::crypto::ed25519_verify(
+					&sp_core::ed25519::Signature::from_raw(
+						<[u8; 64]>::try_from(sig).unwrap_or([0u8; 64]),
+					),
+					msg,
+					&sp_core::ed25519::Public::from_raw(
+						<[u8; 32]>::try_from(pk).unwrap_or([0u8; 32])
+					),
 				),
-				msg,
-				&sp_core::ed25519::Public::from_raw(<[u8; 32]>::try_from(pk).unwrap_or([0u8; 32])),
-			)
+				Error::<T>::InvalidSignature
+			);
+		
+			Ok(())
 		}
 	}
 }
