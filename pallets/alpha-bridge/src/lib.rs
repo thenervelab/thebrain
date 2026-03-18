@@ -768,6 +768,9 @@ pub mod pallet {
 				Error::<T>::WithdrawalRequestAlreadyFinalized
 			);
 
+			// Mint hAlpha back to sender
+			Self::mint_to_recipient(&request.sender, request.amount)?;
+
 			// Check and update mint cap (this is restoring burned hAlpha, so it must fit in cap)
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
@@ -777,9 +780,6 @@ pub mod pallet {
 				*total = new_total;
 				Ok(())
 			})?;
-
-			// Mint hAlpha back to sender
-			Self::mint_to_recipient(&request.sender, request.amount)?;
 
 			// Update status
 			WithdrawalRequests::<T>::mutate(request_id, |maybe_request| {
@@ -823,6 +823,8 @@ pub mod pallet {
 		) -> DispatchResult {
 			ensure_root(origin)?;
 
+			Self::mint_to_recipient(&recipient, amount)?;
+
 			// Check and update mint cap
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
@@ -831,8 +833,6 @@ pub mod pallet {
 				*total = new_total;
 				Ok(())
 			})?;
-
-			Self::mint_to_recipient(&recipient, amount)?;
 
 			Self::deposit_event(Event::AdminManualMint { recipient, amount, deposit_id });
 
@@ -894,6 +894,9 @@ pub mod pallet {
 			let recipient = deposit.recipient.clone();
 			let amount = deposit.amount;
 
+			// Mint hAlpha to recipient
+			Self::mint_to_recipient(&recipient, amount)?;
+
 			// Check and update mint cap
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
@@ -902,9 +905,6 @@ pub mod pallet {
 				*total = new_total;
 				Ok(())
 			})?;
-
-			// Mint hAlpha to recipient
-			Self::mint_to_recipient(&recipient, amount)?;
 
 			// Update deposit status
 			deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
