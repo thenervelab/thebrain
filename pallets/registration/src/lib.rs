@@ -244,6 +244,10 @@ pub mod pallet {
 	#[pallet::getter(fn is_deregistration_enabled)]
 	pub type DeregistrationEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn owner_to_node)]
+	pub type OwnerToNode<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, Vec<u8>>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -463,6 +467,22 @@ pub mod pallet {
 					UsedChallenges::<T>::remove(h);
 				});
 
+			// Migrate existing data to OwnerToNode
+			for (_node_id, node_info) in ColdkeyNodeRegistration::<T>::iter() {
+				if let Some(info) = node_info {
+					OwnerToNode::<T>::mutate(info.owner, |nodes| {
+						nodes.get_or_insert_with(Vec::new).push(_node_id);
+					});
+				}
+			}
+			for (_node_id, node_info) in NodeRegistration::<T>::iter() {
+				if let Some(info) = node_info {
+					OwnerToNode::<T>::mutate(info.owner, |nodes| {
+						nodes.get_or_insert_with(Vec::new).push(_node_id);
+					});
+				}
+			}
+
 			Weight::zero()
 		}
 	}
@@ -623,18 +643,6 @@ pub mod pallet {
 				!NodeRegistration::<T>::contains_key(&node_id),
 				Error::<T>::NodeAlreadyRegistered
 			);
-
-			// Check if the ipfs_node_id is already registered
-			if let Some(ref ipfs_id) = ipfs_node_id {
-				// Iterate through all registered nodes to check for the ipfs_node_id
-				for (_registered_node_id, registered_node_info) in NodeRegistration::<T>::iter() {
-					if let Some(info) = registered_node_info {
-						if info.ipfs_node_id.as_ref() == Some(ipfs_id) {
-							return Err(Error::<T>::IpfsNodeIdAlreadyRegistered.into());
-						}
-					}
-				}
-			}
 
 			// Check if the node type is disabled
 			ensure!(!Self::is_node_type_disabled(node_type.clone()), Error::<T>::NodeTypeDisabled);
@@ -1684,11 +1692,7 @@ pub mod pallet {
 
 		/// Helper function to check if an owner already has a registered node
 		pub fn is_owner_node_registered(owner: &T::AccountId) -> bool {
-			// Check both ColdkeyNodeRegistration and NodeRegistration storage maps
-			ColdkeyNodeRegistration::<T>::iter()
-				.any(|(_, node_info)| node_info.map_or(false, |info| info.owner == *owner))
-				|| NodeRegistration::<T>::iter()
-					.any(|(_, node_info)| node_info.map_or(false, |info| info.owner == *owner))
+			OwnerToNode::<T>::contains_key(owner)
 		}
 
 		/// Fetch all registered miners whose status is not degraded
