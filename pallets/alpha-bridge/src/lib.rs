@@ -879,19 +879,22 @@ pub mod pallet {
 			amount: u128,
 		) -> (WithdrawalRequestId, u64) {
 			let nonce = NextWithdrawalRequestNonce::<T>::get();
-			let next_nonce = nonce.checked_add(1).ok_or(Error::<T>::NonceOverflow)?;
+			
+			// If overflow, wrap around to 0
+			let next_nonce = nonce.checked_add(1).unwrap_or(0);
+			
 			NextWithdrawalRequestNonce::<T>::put(next_nonce);
-
+		
 			// Hash uses the destination-chain amount (alphaRao)
 			let alpha_amount = amount / HALPHA_RAO_PER_ALPHA_RAO;
-
+		
 			let mut data = Vec::new();
 			data.extend_from_slice(&amount.to_le_bytes());
 			data.extend_from_slice(DOMAIN_WITHDRAWAL_REQUEST);
 			data.extend_from_slice(&account.encode());
 			data.extend_from_slice(&alpha_amount.to_le_bytes());
 			data.extend_from_slice(&nonce.to_le_bytes());
-
+		
 			(H256::from(sp_core::hashing::blake2_256(&data)), nonce)
 		}
 
