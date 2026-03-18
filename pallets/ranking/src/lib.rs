@@ -408,7 +408,7 @@ pub mod pallet {
 			node_types: Vec<NodeType>,
 		) -> DispatchResult {
 			// Ensure vectors have same length
-			ensure!(node_ids.len() == weights.len(), Error::<T, I>::InvalidInput);
+			ensure!(node_ids.len() == weights.len() && all_nodes_ss58.len() == weights.len() && node_types.len() == weights.len(), Error::<T, I>::InvalidInput);
 			let current_block = frame_system::Pallet::<T>::block_number();
 			let timestamp: u64 =
 				current_block.try_into().map_err(|_| Error::<T, I>::ConversionError)?;
