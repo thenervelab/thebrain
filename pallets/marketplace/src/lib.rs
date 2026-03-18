@@ -416,7 +416,8 @@ pub mod pallet {
         StorageOperationsDisabled,
         PlanOperationDisabled,
         TooManyRequests,
-        OperationNotAllowed
+        OperationNotAllowed,
+        UserNotFound,
 	}
     
 	#[pallet::storage]
@@ -1742,7 +1743,7 @@ pub mod pallet {
         }
         
         pub fn get_batches_for_user(user: T::AccountId) -> Vec<Batch<T::AccountId, BlockNumberFor<T>>> {
-            let batch_ids: Vec<u64> = UserBatches::<T>::get(user).unwrap(); // Convert to Vec<u64>
+            let batch_ids: Vec<u64> = UserBatches::<T>::get(user).ok_or(Error::<T>::UserNotFound)?.into(); // Convert to Vec<u64>
             batch_ids.iter()
                 .filter_map(|id| Batches::<T>::get(*id))
                 .collect()
