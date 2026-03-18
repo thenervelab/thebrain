@@ -635,8 +635,11 @@ pub mod pallet {
 
 			let current_price = AlphaPrice::<T>::get();
 
-			let new_price =
-				if current_price == 0 { price } else { current_price.saturating_add(price) / 2 };
+			let new_price = if current_price == 0 {
+				price
+			} else {
+				current_price / 2 + price / 2 + (current_price % 2 + price % 2) / 2
+			};
 
 			AlphaPrice::<T>::put(new_price);
 
