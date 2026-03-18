@@ -350,7 +350,7 @@ pub mod pallet {
 			// Update free credits
 			FreeCredits::<T>::insert(&who, free.saturating_sub(amount));
 
-			Self::deposit_event(Event::BurnedAccountCredits { who, amount: free.saturating_sub(amount) });
+			Self::deposit_event(Event::BurnedAccountCredits { who, amount });
 
 			Ok(())
 		}
