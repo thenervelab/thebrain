@@ -346,6 +346,7 @@ pub mod pallet {
         PricePerGbUpdated { price: u128 },
         PricePerBandwidthUpdated { price: u128 },
         StorageSubscriptionCancelled { who: T::AccountId },
+        SubscriptionCancelled { who: T::AccountId },
         ComputeSubscriptionCancelled { who: T::AccountId },
         BackupEnabled { 
             caller: T::AccountId,
@@ -1414,7 +1415,7 @@ pub mod pallet {
         
                 // Emit event if any non-storage plans were removed
                 if subscriptions.len() < original_len {
-                    Self::deposit_event(Event::StorageSubscriptionCancelled {
+                    Self::deposit_event(Event::SubscriptionCancelled {
                         who: account_id.clone(),
                     });
                     Ok(())
