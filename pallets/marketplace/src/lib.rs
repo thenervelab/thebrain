@@ -1219,7 +1219,7 @@ pub mod pallet {
                     let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
                         
                     // Round up to the nearest whole number of GBs
-                    let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
+                    let rounded_gbs = (total_file_size_in_gbs.ceil() as u128);
                     let charge_amount = price_per_gb * rounded_gbs;                    
             
                     if user_free_credits >= charge_amount {
