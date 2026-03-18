@@ -886,15 +886,17 @@ pub mod pallet {
 			// Get the referral codes for the account
 			let codes = ReferredUsers::<T>::get(&account_id).unwrap_or_default();
 
-			// Filter and map the codes to their corresponding account IDs
-			codes
-				.iter()
-				.filter_map(|code| {
-					// Create a Vec<u8> from the u8 code
-					let code_vec: Vec<u8> = vec![*code]; // Wrap the u8 in a Vec<u8>
-					ReferralCodes::<T>::get(&code_vec) // Use &code_vec to retrieve the account ID
-				})
-				.collect()
+			// If there are no referral codes, return empty vector
+			if codes.is_empty() {
+				return Vec::new();
+			}
+
+			// The codes are stored as a Vec<u8> (the full referral code)
+			// We need to look up this exact code in ReferralCodes
+			match ReferralCodes::<T>::get(&codes) {
+				Some(referred_account) => vec![referred_account],
+				None => Vec::new(),
+			}
 		}
 
 		// Get total referral rewards earned by a given account
@@ -906,15 +908,8 @@ pub mod pallet {
 				return 0;
 			}
 
-			codes
-				.iter()
-				.filter_map(|code| {
-					// Create a Vec<u8> from the u8 code
-					let code_vec: Vec<u8> = vec![*code]; // Wrap the u8 in a Vec<u8>
-										  // Retrieve the rewards and wrap in Some
-					Some(ReferralCodeRewards::<T>::get(&code_vec))
-				})
-				.sum() // Sum the results to get total rewards
+			// Get the rewards for this specific referral code
+			ReferralCodeRewards::<T>::get(&codes)
 		}
 
 		pub fn total_referral_codes() -> u32 {
