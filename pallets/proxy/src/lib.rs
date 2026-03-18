@@ -728,7 +728,7 @@ impl<T: Config> Pallet<T> {
 		if num_proxies == 0 {
 			Zero::zero()
 		} else {
-			T::ProxyDepositBase::get() + T::ProxyDepositFactor::get() * num_proxies.into()
+			T::ProxyDepositBase::get() + T::ProxyDepositFactor::get().saturating_mul(num_proxies.into())
 		}
 	}
 
