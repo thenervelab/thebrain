@@ -449,7 +449,7 @@ pub mod pallet {
 			RankedList::<T, I>::put(all_rankings);
 
 			// Update last global update
-			let time: BlockNumberFor<T> = (timestamp as u32).into();
+			let time: BlockNumberFor<T> = timestamp.saturated_into();
 			LastGlobalUpdate::<T, I>::put(time);
 
 			Self::deposit_event(Event::RankingsUpdated { count: node_ids.len() as u32 });
