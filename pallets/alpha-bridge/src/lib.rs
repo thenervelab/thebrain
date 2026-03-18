@@ -880,6 +880,7 @@ pub mod pallet {
 			let alpha_amount = amount / HALPHA_RAO_PER_ALPHA_RAO;
 
 			let mut data = Vec::new();
+			data.extend_from_slice(&amount.to_le_bytes());
 			data.extend_from_slice(DOMAIN_WITHDRAWAL_REQUEST);
 			data.extend_from_slice(&account.encode());
 			data.extend_from_slice(&alpha_amount.to_le_bytes());
