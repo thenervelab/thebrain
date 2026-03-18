@@ -508,8 +508,9 @@ pub mod pallet {
 			force_proxy_type: Option<T::ProxyType>,
 			call: Box<<T as Config>::RuntimeCall>,
 		) -> DispatchResult {
-			ensure_signed(origin)?;
+			let who = ensure_signed(origin)?;
 			let delegate = T::Lookup::lookup(delegate)?;
+			ensure!(who == delegate, Error::<T>::NotProxy);
 			let real = T::Lookup::lookup(real)?;
 			let def = Self::find_proxy(&real, &delegate, force_proxy_type)?;
 
