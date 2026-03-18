@@ -362,6 +362,7 @@ pub mod pallet {
 		InvalidRequestId,
 		/// Withdrawal amount must be divisible by the conversion factor (no dust)
 		AmountNotBridgeable,
+		NonceOverflow
 	}
 
 	// ============ Extrinsics ============

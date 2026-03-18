@@ -513,18 +513,31 @@ pub mod pallet {
 		fn hex_to_bytes(hex: &[u8]) -> Result<Vec<u8>, Error<T>> {
 			let hex_str = core::str::from_utf8(hex).map_err(|_| Error::<T>::InvalidHexString)?;
 			let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-
-			// Check if valid hex
+			
+			// Check if empty
+			if hex_str.is_empty() {
+				return Err(Error::<T>::InvalidHexString);
+			}
+			
+			// Check if valid hex characters
 			if !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
 				return Err(Error::<T>::InvalidHexString);
 			}
-
+			
+			// Check for even length (required for hex to bytes conversion)
+			if hex_str.len() % 2 != 0 {
+				return Err(Error::<T>::InvalidHexString);
+			}
+			
 			// Convert hex to bytes
 			let bytes = (0..hex_str.len())
 				.step_by(2)
-				.filter_map(|i| u8::from_str_radix(&hex_str[i..i + 2], 16).ok())
-				.collect();
-
+				.map(|i| {
+					u8::from_str_radix(&hex_str[i..i + 2], 16)
+						.map_err(|_| Error::<T>::InvalidHexString)
+				})
+				.collect::<Result<Vec<u8>, Error<T>>>()?;
+			
 			Ok(bytes)
 		}
 
