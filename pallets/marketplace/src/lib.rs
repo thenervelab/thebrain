@@ -1576,7 +1576,8 @@ pub mod pallet {
                         ensure!(batch.owner == sender, "Not your batch");
                         
                         let credits_to_take = remaining.min(batch.remaining_credits);
-                        
+                        let current = CreditsPallet::<T>::get_free_credits(&batch.owner);
+                        ensure!(current >= credits_to_take, Error::<T>::InsufficientFreeCredits);
                         // Decrease user credits
                         CreditsPallet::<T>::decrease_user_credits(&batch.owner, credits_to_take);
                         
@@ -1735,6 +1736,8 @@ pub mod pallet {
 
                 // Burn credits from batch.owner (implementation of burning logic needed)
                 let credit_to_burn = batch.remaining_credits;
+                let current = CreditsPallet::<T>::get_free_credits(&batch.owner);
+                ensure!(current >= credit_to_burn, Error::<T>::InsufficientFreeCredits);
                 CreditsPallet::<T>::decrease_user_credits(&batch.owner, credit_to_burn);
                 TotalCreditsPurchased::<T>::mutate(|total| *total -= credit_to_burn);
             }
