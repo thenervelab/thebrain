@@ -1330,7 +1330,7 @@ pub mod pallet {
 
 			for node_id in hotkey_nodes {
 				// Use the existing unregister logic
-				Self::do_unregister_main_node(node_id);
+				Self::do_unregister_node(node_id);
 				unregistered_count += 1;
 			}
 
