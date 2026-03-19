@@ -398,18 +398,18 @@ pub mod pallet {
 
 			if _n % 100u32.into() == 0u32.into() {
 				// Perform periodic cleanup tasks
-				Self::remove_duplicate_linked_nodes();
+				// Self::remove_duplicate_linked_nodes();
 
-				// Remove LinkedNodes entries for main nodes without corresponding ColdkeyNodeRegistration
-				LinkedNodes::<T>::iter_keys().collect::<Vec<_>>().into_iter().for_each(
-					|main_node_id| {
-						if ColdkeyNodeRegistration::<T>::get(&main_node_id).is_none() {
-							T::MetricsInfo::remove_metrics(main_node_id.clone());
-							T::IpfsInfo::remove_miner_profile_info(main_node_id.clone());
-							LinkedNodes::<T>::remove(&main_node_id);
-						}
-					},
-				);
+				// // Remove LinkedNodes entries for main nodes without corresponding ColdkeyNodeRegistration
+				// LinkedNodes::<T>::iter_keys().collect::<Vec<_>>().into_iter().for_each(
+				// 	|main_node_id| {
+				// 		if ColdkeyNodeRegistration::<T>::get(&main_node_id).is_none() {
+				// 			T::MetricsInfo::remove_metrics(main_node_id.clone());
+				// 			T::IpfsInfo::remove_miner_profile_info(main_node_id.clone());
+				// 			LinkedNodes::<T>::remove(&main_node_id);
+				// 		}
+				// 	},
+				// );
 
 				// Remove duplicate owners node registrations
 				let mut owner_node_counts: BTreeMap<T::AccountId, usize> = BTreeMap::new();
@@ -2356,7 +2356,7 @@ pub mod pallet {
 					main_node_linked_nodes.into_iter().filter(|n| n != &node_id).collect();
 
 				if !updated_linked_nodes.is_empty() {
-					LinkedNodes::<T>::insert(&main_node_id, updated_linked_nodes);
+					// LinkedNodes::<T>::insert(&main_node_id, updated_linked_nodes);
 				} else {
 					LinkedNodes::<T>::remove(&main_node_id);
 				}
@@ -2384,15 +2384,15 @@ pub mod pallet {
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}
 
-		/// Helper function to remove duplicate linked node IDs for all main nodes.
-		pub fn remove_duplicate_linked_nodes() {
-			LinkedNodes::<T>::iter_keys().for_each(|main_node_id| {
-				let linked_nodes = LinkedNodes::<T>::get(&main_node_id);
-				let unique_nodes: BTreeSet<Vec<u8>> = linked_nodes.into_iter().collect();
-				let unique_nodes_vec: Vec<Vec<u8>> = unique_nodes.into_iter().collect();
-				LinkedNodes::<T>::insert(&main_node_id, unique_nodes_vec);
-			});
-		}
+		// /// Helper function to remove duplicate linked node IDs for all main nodes.
+		// pub fn remove_duplicate_linked_nodes() {
+		// 	LinkedNodes::<T>::iter_keys().for_each(|main_node_id| {
+		// 		let linked_nodes = LinkedNodes::<T>::get(&main_node_id);
+		// 		let unique_nodes: BTreeSet<Vec<u8>> = linked_nodes.into_iter().collect();
+		// 		let unique_nodes_vec: Vec<Vec<u8>> = unique_nodes.into_iter().collect();
+		// 		LinkedNodes::<T>::insert(&main_node_id, unique_nodes_vec);
+		// 	});
+		// }
 
 		/// Helper function to get the registered node for a specific owner
 		pub fn get_registered_node_for_owner(
