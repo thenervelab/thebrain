@@ -117,7 +117,7 @@ pub mod pallet {
 		type DividendsStorageKey: Get<&'static str>;
 
 		#[pallet::constant]
-		type UidsSubmissionInterval: Get<u32>; // Add this line for the new constant
+		type UidsSubmissionInterval: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -185,6 +185,8 @@ pub mod pallet {
 		WhitelistedValidatorAdded { validator: T::AccountId },
 		/// A validator was removed from the whitelist
 		WhitelistedValidatorRemoved { validator: T::AccountId },
+		/// The list of whitelisted validators was set
+		WhitelistedValidatorsSet { count: u32 },
 	}
 
 	#[pallet::error]
@@ -485,6 +487,12 @@ pub mod pallet {
 			// Find and return the UID with matching ID
 			uids.into_iter().find(|uid| uid.id == uid_id).map(|uid| uid.clone())
 		}
+
+		/// Set the entire whitelisted validators list
+		pub fn set_whitelisted_validators(validators: Vec<T::AccountId>) -> DispatchResult {
+			WhitelistedValidators::<T>::put(validators);
+			Ok(())
+		}
 	}
 
 	#[pallet::call]
@@ -589,6 +597,27 @@ pub mod pallet {
 
 			// Emit an event (optional, but recommended)
 			Self::deposit_event(Event::WhitelistedValidatorRemoved { validator });
+
+			Ok(())
+		}
+
+		/// Sudo function to set the entire whitelisted validators list
+		#[pallet::call_index(4)]
+		#[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
+		pub fn sudo_set_whitelisted_validators(
+			origin: OriginFor<T>,
+			validators: Vec<T::AccountId>,
+		) -> DispatchResult {
+			// Ensure the origin is the root (sudo)
+			ensure_root(origin)?;
+
+			let count = validators.len() as u32;
+
+			// Set the whitelisted validators
+			Self::set_whitelisted_validators(validators)?;
+
+			// Emit an event
+			Self::deposit_event(Event::WhitelistedValidatorsSet { count });
 
 			Ok(())
 		}
