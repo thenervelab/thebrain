@@ -76,7 +76,6 @@ pub mod pallet {
     use sp_std::{vec, vec::Vec};
     use num_traits::float::FloatCore;
     use pallet_rankings::Pallet as RankingsPallet;
-    use pallet_subaccount::traits::SubAccounts;
     use pallet_credits::AlphaBalances;
     use pallet_credits::TotalCreditsPurchased;
     use frame_system::offchain::SendTransactionTypes;
@@ -116,10 +115,9 @@ pub mod pallet {
                     pallet_credits::Config + 
                     pallet_arion::Config +
                     pallet_balances::Config + 
-                    pallet_notifications::Config +
+                    // pallet_notifications::Config +
                     // pallet_storage_s3::Config +
                     pallet_rankings::Config +
-                    pallet_subaccount::Config +
                     pallet_rankings::Config<pallet_rankings::Instance2> +
                     pallet_rankings::Config<pallet_rankings::Instance3> +
                     // pallet_rankings::Config<pallet_rankings::Instance4> +
@@ -510,32 +508,18 @@ pub mod pallet {
             location_ids: Option<Vec<Option<u32>>>,
             selected_image_names: Vec<Option<Vec<u8>>>,
             cloud_init_cids: Option<Vec<Option<Vec<u8>>>>,
-            pay_for: Option<T::AccountId>,
             miner_ids: Option<Vec<Option<Vec<u8>>>>
         ) -> DispatchResult {
-            let caller = ensure_signed(origin)?;
+            let owner = ensure_signed(origin)?;
 
             // Rate limit: maximum storage requests per block per user
             let max_requests_per_block = T::MaxRequestsPerBlock::get();
-            let user_requests_count = UserRequestsCount::<T>::get(&caller);
+            let user_requests_count = UserRequestsCount::<T>::get(&owner);
             ensure!(
                 user_requests_count + (plan_ids.len() as u32) <= max_requests_per_block,
                 Error::<T>::TooManyRequests
             );
-            UserRequestsCount::<T>::insert(&caller, user_requests_count + (plan_ids.len() as u32));
-
-            // Determine the account that will own the subscription
-            let owner = match pay_for {
-                Some(account) => {
-                    // If a specific account is provided, verify they are a sub-account of the caller
-                    ensure!(
-                        <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::is_sub_account(caller.clone(), account.clone()).is_ok(),
-                        Error::<T>::NotAuthorized
-                    );
-                    account
-                },
-                None => caller.clone(),
-            };
+            UserRequestsCount::<T>::insert(&owner, user_requests_count + (plan_ids.len() as u32));
 
             // Initialize default values for optional parameters
             let location_ids = location_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
@@ -596,7 +580,7 @@ pub mod pallet {
                         successful_purchases.push(plan_id);
                         // Emit event for successful purchase
                         Self::deposit_event(Event::PlanPurchased {
-                            caller: caller.clone(),
+                            caller: owner.clone(),
                             owner: owner.clone(),
                             plan_id,
                             location_id: location_ids[i],
@@ -1187,7 +1171,7 @@ pub mod pallet {
                     let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
                         
                     // Round up to the nearest whole number of GBs
-                    let rounded_gbs = (total_file_size_in_gbs.ceil() as u128);
+                    let rounded_gbs = total_file_size_in_gbs.ceil() as u128;
                     let charge_amount = price_per_gb * rounded_gbs;                    
             
                     if user_free_credits >= charge_amount {

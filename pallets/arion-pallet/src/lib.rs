@@ -490,7 +490,7 @@ pub mod pallet {
 		/// Currency used to reserve deposits for child registrations.
 		type DepositCurrency: ReservableCurrency<Self::AccountId>;
 
-		/// Family registry hook (TODO: wire to pallet).
+		/// Family registry hook .
 		type FamilyRegistry: FamilyRegistry<Self::AccountId>;
 
 		type ProxyVerifier: ProxyVerifier<Self::AccountId>;

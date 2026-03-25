@@ -24,7 +24,7 @@ include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 mod filters;
 pub mod frontier_evm;
 pub mod impls;
-// pub mod migrations;
+pub mod migrations;
 pub mod balance_transfer_precompile;
 pub mod precompiles;
 // pub mod hippius_services;
@@ -242,7 +242,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9174,
+	spec_version: 9175,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1314,14 +1314,7 @@ impl pallet_credits::Config for Runtime {
 	type RefferallCoolDOwnPeriod = RefferallCoolDOwnPeriod;
 }
 
-parameter_types! {
-	pub const MaxCidLenght: u32 = 2;
-}
-
-impl pallet_container_registry::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type MaxLength = MaxCidLenght;
-}
+// pallet_container_registry removed — storage cleared in migration RemoveIpAndContainerRegistryPallets
 
 parameter_types! {
 	pub const RankingPalletId: PalletId = PalletId(*b"ranking1");
@@ -1420,10 +1413,10 @@ parameter_types! {
 	pub const CooldownPeriodInBlocks: u32 = 20;
 }
 
-impl pallet_notifications::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type CooldownPeriod = CooldownPeriodInBlocks;
-}
+// impl pallet_notifications::Config for Runtime {
+// 	type RuntimeEvent = RuntimeEvent;
+// 	type CooldownPeriod = CooldownPeriodInBlocks;
+// }
 
 parameter_types! {
 	pub const ExecutionUnitRpcUrl: &'static str = "http://localhost:9944";
@@ -1594,20 +1587,20 @@ impl pallet_child_bounties::Config for Runtime {
 	type WeightInfo = pallet_child_bounties::weights::SubstrateWeight<Runtime>;
 }
 
-parameter_types! {
-	pub const SubAccountStringLimit: u32 = 300;
-	pub const MaxSubAccountsLimit: u32 = 50;
-}
+// parameter_types! {
+// 	pub const SubAccountStringLimit: u32 = 300;
+// 	pub const MaxSubAccountsLimit: u32 = 50;
+// }
 
-impl pallet_subaccount::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
-	type StringLimit = SubAccountStringLimit;
-	type MaxSubAccountsLimit = MaxSubAccountsLimit;
-	type ExistentialDeposit = ExistentialDeposit;
-	type Currency = Balances;
-	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
-}
+// impl pallet_subaccount::Config for Runtime {
+// 	type RuntimeEvent = RuntimeEvent;
+// 	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
+// 	type StringLimit = SubAccountStringLimit;
+// 	type MaxSubAccountsLimit = MaxSubAccountsLimit;
+// 	type ExistentialDeposit = ExistentialDeposit;
+// 	type Currency = Balances;
+// 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
+// }
 
 parameter_types! {
 	pub const MaxKeys: u32 = 10_000;
@@ -1839,8 +1832,8 @@ construct_runtime!(
 		Metagraph : pallet_metagraph=55,
 		Marketplace: pallet_marketplace = 56,
 		Bittensor: pallet_bittensor = 57,
-		SubAccount: pallet_subaccount= 58,
-		Notifications: pallet_notifications = 59,
+		// SubAccount: pallet_subaccount= 58,
+		// Notifications: pallet_notifications = 59,
 		AccountProfile: pallet_account_profile = 60,
 		Utils: pallet_utils = 62,
 		RankingStorage: pallet_rankings =63,
@@ -1849,7 +1842,7 @@ construct_runtime!(
 		// RankingGpu: pallet_rankings::<Instance4> = 71,
 		// RankingS3: pallet_rankings::<Instance5> = 77,
 		Credits: pallet_credits = 65,
-		ContainerRegistry: pallet_container_registry = 69,
+		// ContainerRegistry: pallet_container_registry = 69, // REMOVED in spec_version 9175 (storage cleared via migration)
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
 		IpfsPallet: ipfs_pallet = 75,
@@ -1882,7 +1875,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
-type Migrations = ();
+type Migrations = (migrations::RemoveIpAndContainerRegistryPallets<Runtime>,);
 
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;

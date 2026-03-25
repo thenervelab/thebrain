@@ -1124,7 +1124,7 @@ pub mod pallet {
 					// unRegister and check if storage miner than unpin and update storage
 					let _ = pallet_arion::Pallet::<T>::deregister_family(miner.owner.clone());
 
-					// unregister node , Hotkey nodes and LinkedNodes
+					// unregister node , Hotkey nodes
 					pallet_registration::Pallet::<T>::do_unregister_main_node(
 						miner.node_id.clone(),
 					);

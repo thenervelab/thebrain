@@ -682,7 +682,6 @@ impl<T: Config> Pallet<T> {
 					// The initial era is allowed to have no exposures.
 					// In this case the SessionManager is expected to choose a sensible validator
 					// set.
-					// TODO: this should be simplified #8911
 					CurrentEra::<T>::put(0);
 					ErasStartSessionIndex::<T>::insert(&0, &start_session_index);
 				},

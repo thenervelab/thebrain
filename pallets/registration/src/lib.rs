@@ -168,17 +168,6 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
-	/// Stores the linked node IDs for each main node
-	#[pallet::storage]
-	#[pallet::getter(fn linked_nodes)]
-	pub type LinkedNodes<T: Config> = StorageMap<
-		_,
-		Blake2_128Concat,
-		Vec<u8>,      // The node_id of the main node
-		Vec<Vec<u8>>, // The vector of linked node IDs
-		ValueQuery,
-	>;
-
 	#[pallet::storage]
 	#[pallet::getter(fn whitelisted_validators)]
 	pub type WhitelistedValidators<T: Config> =
@@ -1966,17 +1955,8 @@ pub mod pallet {
 			}
 
 			if let Some(_node_info) = NodeRegistration::<T>::get(&node_id) {
-				// Find the main node by searching LinkedNodes
-				let main_node_id =
-					LinkedNodes::<T>::iter()
-						.find_map(|(main_node, linked_nodes)| {
-							if linked_nodes.contains(&node_id) {
-								Some(main_node)
-							} else {
-								None
-							}
-						})
-						.unwrap_or(node_id.clone());
+				// Since LinkedNodes is removed, treat node_id as its own scope for metrics
+				let main_node_id = node_id.clone();
 
 				// Remove the node registration
 				NodeRegistration::<T>::remove(&node_id);
@@ -1988,31 +1968,14 @@ pub mod pallet {
 				// Store the deregistration time
 				NodeLastDeregisteredAt::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());
 
-				// Remove the node from LinkedNodes if it exists
-				let main_node_linked_nodes = LinkedNodes::<T>::get(&main_node_id);
-				let updated_linked_nodes: Vec<Vec<u8>> =
-					main_node_linked_nodes.into_iter().filter(|n| n != &node_id).collect();
-
-				if !updated_linked_nodes.is_empty() {
-					// LinkedNodes::<T>::insert(&main_node_id, updated_linked_nodes);
-				} else {
-					LinkedNodes::<T>::remove(&main_node_id);
-				}
-
 				Self::deposit_event(Event::NodeUnregistered { node_id });
 			}
 		}
 
 		pub fn do_unregister_main_node(node_id: Vec<u8>) {
-			// Remove all node registrations linked to this coldkey node
-			let linked_node_ids = Self::linked_nodes(&node_id);
-			for linked_node_vec in linked_node_ids {
-				NodeRegistration::<T>::remove(linked_node_vec.clone());
-			}
-
-			// Remove the main node's registration and linked nodes
+			// Remove the main node's registration
+			// Note: LinkedNodes has been removed; sub-node cleanup is handled separately
 			ColdkeyNodeRegistration::<T>::remove(node_id.clone());
-			LinkedNodes::<T>::remove(node_id.clone());
 			T::MetricsInfo::remove_metrics(node_id.clone());
 			T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 
