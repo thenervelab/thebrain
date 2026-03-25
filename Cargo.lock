@@ -4549,7 +4549,6 @@ dependencies = [
  "hex-literal 0.4.1",
  "hippius-crypto-primitives",
  "hippius-primitives",
- "ipfs-pallet",
  "log",
  "num_enum",
  "pallet-account-profile",

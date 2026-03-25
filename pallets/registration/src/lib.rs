@@ -37,7 +37,7 @@ pub mod pallet {
 	use frame_system::{offchain::SendTransactionTypes, pallet_prelude::*};
 	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_proxy::Pallet as ProxyPallet;
-	use pallet_utils::IpfsInfoProvider;
+	// use pallet_utils::IpfsInfoProvider;
 	use pallet_utils::{MetagraphInfoProvider, MetricsInfoProvider};
 	use scale_info::prelude::string::String;
 	use scale_info::prelude::*;
@@ -74,7 +74,7 @@ pub mod pallet {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 		type MetagraphInfo: MetagraphInfoProvider<Self>;
 		type MetricsInfo: MetricsInfoProvider<Self>;
-		type IpfsInfo: IpfsInfoProvider<Self>;
+		// type IpfsInfo: IpfsInfoProvider<Self>;
 		/// The minimum amount that must be staked by a miner
 		#[pallet::constant]
 		type MinerStakeThreshold: Get<u32>;
@@ -1963,7 +1963,7 @@ pub mod pallet {
 
 				// Remove metrics for the main node
 				T::MetricsInfo::remove_metrics(main_node_id.clone());
-				T::IpfsInfo::remove_miner_profile_info(node_id.clone());
+				// T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 
 				// Store the deregistration time
 				NodeLastDeregisteredAt::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());
@@ -1977,7 +1977,7 @@ pub mod pallet {
 			// Note: LinkedNodes has been removed; sub-node cleanup is handled separately
 			ColdkeyNodeRegistration::<T>::remove(node_id.clone());
 			T::MetricsInfo::remove_metrics(node_id.clone());
-			T::IpfsInfo::remove_miner_profile_info(node_id.clone());
+			// T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 
 			// Store the deregistration time
 			NodeLastDeregisteredAt::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());

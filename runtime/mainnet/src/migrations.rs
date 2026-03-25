@@ -110,6 +110,23 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for RemoveIpAndContainerRegistryP
 		);
 		weight = weight.saturating_add(T::DbWeight::get().writes(removed_cr.backend as u64));
 
+		let removed_notifications =
+			frame_support::storage::unhashed::clear_prefix(b"Notifications", None, None);
+		log::info!(
+			target: "runtime::migration",
+			"RemoveIpAndContainerRegistryPallets: cleared {} keys from Notifications",
+			removed_notifications.backend,
+		);
+		weight = weight.saturating_add(T::DbWeight::get().writes(removed_notifications.backend as u64));
+
+		let removed_ipfs =
+			frame_support::storage::unhashed::clear_prefix(b"IpfsPallet", None, None);
+		log::info!(
+			target: "runtime::migration",
+			"RemoveIpAndContainerRegistryPallets: cleared {} keys from IpfsPallet",
+			removed_ipfs.backend,
+		);
+		weight = weight.saturating_add(T::DbWeight::get().writes(removed_ipfs.backend as u64));
 		// ── Clear LinkedNodes from pallet_registration (pallet name: "Registration") ──
 		// Storage item: LinkedNodes<T> = StorageMap<Blake2_128Concat, Vec<u8>, Vec<Vec<u8>>>
 		// The raw key prefix is: twox_128("Registration") ++ twox_128("LinkedNodes")
@@ -143,6 +160,9 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for RemoveIpAndContainerRegistryP
 		let notifications_has = sp_io::storage::next_key(b"Notifications")
 			.filter(|k| k.starts_with(b"Notifications"))
 			.is_some();
+		let ipfs_has = sp_io::storage::next_key(b"IpfsPallet")
+			.filter(|k| k.starts_with(b"IpfsPallet"))
+			.is_some();
 		log::info!(
 			target: "runtime::migration",
 			"pre_upgrade: SubAccount has_keys={}, ContainerRegistry has_keys={}, Notifications has_keys={}",
@@ -162,7 +182,9 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for RemoveIpAndContainerRegistryP
 		let notifications_still = sp_io::storage::next_key(b"Notifications")
 			.map(|k| k.starts_with(b"Notifications"))
 			.unwrap_or(false);
-
+		let ipfs_still = sp_io::storage::next_key(b"IpfsPallet")
+			.map(|k| k.starts_with(b"IpfsPallet"))
+			.unwrap_or(false);
 		frame_support::ensure!(!has_sub_account_still, "post_upgrade: SubAccount storage was NOT fully cleared!");
 		frame_support::ensure!(
 			!cr_still,
