@@ -2472,134 +2472,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// fn handle_resize_request_assignment(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
-		// 	let miner_requests = Self::miner_compute_resize_requests(node_id.clone());
-
-		// 	for miner_request in miner_requests {
-		// 		// if not stopped then stop the vm
-
-		// 		if !miner_request.fullfilled {
-		// 			let url = "http://localhost:3030/resize-disk";
-		// 			let json_payload =
-		// 				serde_json::json!({
-		// 					"vm_name": String::from_utf8_lossy(&miner_request.job_id.unwrap()),
-		// 					"new_size": format!("{}G", miner_request.resize_gbs),
-
-		// 				});
-
-		// 			let json_string = json_payload.to_string();
-		// 			let content_length = json_string.len();
-
-		// 			log::info!("JSON Resize Payload: {}", json_string);
-
-		// 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
-		// 			let request = sp_runtime::offchain::http::Request::post(url, vec![json_string]);
-
-		// 			let pending = request
-		// 				.add_header("Content-Type", "application/json")
-		// 				.add_header("Content-Length", &content_length.to_string())
-		// 				.deadline(deadline)
-		// 				.send()
-		// 				.map_err(|err| {
-		// 					log::error!("❌ Error making Request: {:?}", err);
-		// 					sp_runtime::offchain::http::Error::IoError
-		// 				})?;
-
-		// 			let response = pending
-		// 				.try_wait(deadline)
-		// 				.map_err(|err| {
-		// 					log::error!("❌ Error getting Response: {:?}", err);
-		// 					sp_runtime::offchain::http::Error::DeadlineReached
-		// 				})??;
-
-		// 			if response.code != 200 {
-		// 				log::error!(
-		// 					"Unexpected status code: {}, VM creation failed. Response body: {:?}",
-		// 					response.code, response
-		// 				);
-		// 				return Err(sp_runtime::offchain::http::Error::Unknown);
-		// 			}
-
-		// 			Self::call_submit_compute_resize_request_fulfillment(
-		// 				miner_request.miner_node_id,
-		// 				miner_request.request_id,
-		// 			);
-		// 		}
-		// 	}
-		// 	Ok(())
-		// }
-
-		// fn handle_pending_nebula_requests(node_id: Vec<u8>) -> Result<(), sp_runtime::offchain::http::Error> {
-		// 	let miner_requests = Self::get_pending_nebula_requests(node_id.clone());
-
-		// 	for miner_request in miner_requests {
-		// 		let url = format!(
-		// 			"http://localhost:3030/get-nebula-ip"
-		// 		);
-		// 		log::info!("URL for vnc request is : {}", url);
-		// 		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
-		// 		let request = sp_runtime::offchain::http::Request::get(url.as_str());
-
-		// 		let pending = request
-		// 			.add_header("Content-Type", "application/json")
-		// 			.deadline(deadline)
-		// 			.send()
-		// 			.map_err(|err| {
-		// 				log::error!("❌ Error making status check VM Request: {:?}", err);
-		// 				sp_runtime::offchain::http::Error::IoError
-		// 			})?;
-
-		// 		let response = pending
-		// 			.try_wait(deadline)
-		// 			.map_err(|err| {
-		// 				log::error!("❌ Error getting VM status Response: {:?}", err);
-		// 				sp_runtime::offchain::http::Error::DeadlineReached
-		// 			})??;
-
-		// 		if response.code != 200 {
-		// 			log::error!(
-		// 				"Unexpected status code: {}, VM operation failed. Response body: {:?}",
-		// 				response.code, response
-		// 			);
-		// 			return Err(sp_runtime::offchain::http::Error::Unknown);
-		// 		}
-
-		// 		let response_body = response.body();
-		// 		let response_body_vec = response_body.collect::<Vec<u8>>();
-		// 		let response_str = core::str::from_utf8(&response_body_vec)
-		// 			.map_err(|_| sp_runtime::offchain::http::Error::Unknown)?;
-
-		// 		match serde_json::from_str::<serde_json::Value>(response_str) {
-		// 			Ok(json_response) => {
-		// 				if let Some(hypervisor_ip) = json_response.get("nebula_ip").and_then(|v| v.as_str()) {
-		// 					// Log the Nebula IP
-		// 					log::info!(
-		// 						"Nebula IP Retrieved: {}",
-		// 						hypervisor_ip
-		// 					);
-		// 				    // Convert Nebula IP to Vec<u8>
-		// 					let hypervisor_ip_bytes = hypervisor_ip.as_bytes().to_vec();
-
-		// 					// You can add additional processing here if needed
-		// 					// For example, storing the Nebula IP or using it in further logic
-		// 					Self::update_miner_compute_request_hypervisor_ip_offchain(
-		// 						node_id.clone(),
-		// 						miner_request.request_id,
-		// 						hypervisor_ip_bytes
-		// 					);
-		// 				} else {
-		// 					log::warn!("Missing 'hypervisor_ip' field in response");
-		// 				}
-		// 			},
-		// 			Err(e) => {
-		// 				log::error!("Failed to parse Nebula IP response JSON: {:?}", e);
-		// 				return Err(sp_runtime::offchain::http::Error::Unknown);
-		// 			}
-		// 		}
-		// 	}
-		// 	Ok(())
-		// }
-
 		fn handle_pending_vnc_requests(
 			node_id: Vec<u8>,
 		) -> Result<(), sp_runtime::offchain::http::Error> {
@@ -3101,38 +2973,6 @@ pub mod pallet {
 			}
 			Ok(())
 		}
-
-		// // Retrieves all VM details for a given user
-		// pub fn get_user_vms(account: T::AccountId) -> Vec<UserVmDetails<T::AccountId, BlockNumberFor<T>, T::Hash>> {
-		// 	// Retrieve all compute requests for the user
-		// 	let compute_requests = Self::compute_requests(account.clone());
-
-		// 	// Collect VM details
-		// 	compute_requests.into_iter().map(|compute_request| {
-		// 		// Find the corresponding miner compute request
-		// 		let miner_details = MinerComputeRequests::<T>::iter()
-		// 			.find_map(|(_, miner_compute_requests)| {
-		// 				miner_compute_requests.iter()
-		// 					.find(|mcr| mcr.request_id == compute_request.request_id)
-		// 					.cloned()
-		// 			});
-
-		// 		// Construct user VM details
-		// 		UserVmDetails {
-		// 			request_id: compute_request.request_id,
-		// 			status: compute_request.status,
-		// 			plan_id: compute_request.plan_id,
-		// 			created_at: compute_request.created_at,
-		// 			miner_node_id: miner_details.as_ref().map(|md| md.miner_node_id.clone()),
-		// 			miner_account_id: miner_details.as_ref().map(|md| md.miner_account_id.clone()),
-		// 			hypervisor_ip: miner_details.as_ref().and_then(|md| md.hypervisor_ip.clone()),
-		// 			vnc_port: miner_details.as_ref().and_then(|md| md.vnc_port),
-		// 			ip_assigned: miner_details.as_ref().and_then(|md| md.ip_assigned.clone()),
-		// 			error: miner_details.as_ref().and_then(|md| md.fail_reason.clone()),
-		// 			is_fulfilled: miner_details.map(|md| md.fullfilled).unwrap_or(false),
-		// 		}
-		// 	}).collect()
-		// }
 	}
 
 	#[pallet::hooks]
@@ -3177,11 +3017,6 @@ pub mod pallet {
 									),
 								}
 
-								// match Self::handle_pending_nebula_requests(node_info.node_id.clone()) {
-								// 	Ok(_) => log::info!("Pending nebula requests handled successfully"),
-								// 	Err(e) => log::error!("Error in pending nebula request handling: {:?}", e),
-								// }
-
 								// handle delete requests of minners
 								match Self::handle_delete_request_assignment(
 									node_info.node_id.clone(),
@@ -3221,12 +3056,6 @@ pub mod pallet {
 										log::error!("Error in reboot request handling: {:?}", e)
 									},
 								}
-
-								// // handle resize requests of minners
-								// match Self::handle_resize_request_assignment(node_info.node_id.clone()) {
-								// 	Ok(_) => log::info!("resize Request handled successfully"),
-								// 	Err(e) => log::error!("Error in resize request handling: {:?}", e),
-								// }
 							}
 						},
 						None => {},

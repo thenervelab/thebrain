@@ -437,39 +437,6 @@ pub mod pallet {
     
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-
-        // /// Disable backup for a user's subscription
-        // #[pallet::call_index(1)]
-        // #[pallet::weight((0, Pays::No))]
-        // pub fn disable_vms_backup(
-        //     origin: OriginFor<T>,
-        // ) -> DispatchResult {
-        //     // Ensure the caller is signed
-        //     let account_id = ensure_signed(origin)?;
-
-        //     // Rate limit: maximum storage requests per block per user
-		// 	let max_requests_per_block = T::MaxRequestsPerBlock::get();
-		// 	let user_requests_count = UserRequestsCount::<T>::get(&account_id);
-		// 	ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-        //     // Check if the account is a sub-account, and if so, use the main account
-        //     let main_account = match <pallet_subaccount::Pallet<T> as SubAccounts<T::AccountId>>::get_main_account(account_id.clone()) {
-        //         Ok(main) => main,
-        //         Err(_) => account_id.clone(), // If not a sub-account, use the original account
-        //     };
-
-        //     // Call the disable_backup function
-        //     Self::disable_backup(main_account.clone())?;
-
-        //     // Emit an event (optional, but recommended)
-        //     Self::deposit_event(Event::BackupDisabled { 
-        //         caller: account_id,
-        //         account: main_account 
-        //     });
-
-        //     Ok(())
-        // }
-
         /// Set the `is_suspended` field for a specific package.
         #[pallet::call_index(3)]
         #[pallet::weight((0, Pays::No))]
@@ -1260,99 +1227,6 @@ pub mod pallet {
                 }
             }
         }
-
-        // // charge user for buckets and bandwidth 
-        // fn handle_storage_s3_subscription_charging(current_block: BlockNumberFor<T>) {
-        //     // get total files stores , charge users every hour
-        //     let users_with_buckets = StorageS3Pallet::<T>::get_users_with_buckets();
-        //     for user in users_with_buckets {
-        //         // last_charged_at
-        //         let last_charged_at = StorageS3Pallet::<T>::last_charged_at(&user);
-        //         let block_difference = current_block.saturating_sub(last_charged_at);
-        //         if block_difference > T::BlocksPerHour::get().into() {
-        //             // check user last charged_at and if the hour has passed 
-        //             let bucket_names = StorageS3Pallet::<T>::bucket_names(user.clone());
-        //             // Track total size for the user's buckets
-        //             let mut user_total_size: u128 = 0;
-
-        //             // Process the bucket names
-        //             for bucket_name in bucket_names {
-        //                 // let bucket_name_str = String::from_utf8_lossy(&bucket_name);
-    
-        //                 // Perform HTTP request to list bucket contents
-        //                 let size = StorageS3Pallet::<T>::bucket_size(bucket_name);
-        //                 user_total_size += size;
-                        
-        //             }
-
-        //             // Skip if no files to charge
-        //             if user_total_size == 0 {
-        //                 continue;
-        //             }
-
-        //             // Convert total file size to gigabytes
-        //             let total_file_size_in_gbs = user_total_size as f64 / 1_073_741_824.0;
-
-        //             // Get the current price per GB from the marketplace pallet
-        //             let price_per_gb = Self::get_price_per_gb();
-
-        //             // Round up to the nearest whole number of GBs
-        //             let rounded_gbs = ((total_file_size_in_gbs).floor() as u128) + 1;
-        //             let buckets_charge_amount = price_per_gb * rounded_gbs;     
-                    
-                    
-        //             let bandwidth_user_total_size = StorageS3Pallet::<T>::get_user_bandwidth(user.clone());
-        //             // Convert total file size to gigabytes
-        //             let bandwidth_total_file_size_in_gbs = bandwidth_user_total_size as f64 / 1_073_741_824.0;
-
-        //             // Get the current price per GB from the marketplace pallet
-        //             let bandwidth_price_per_gb = Self::get_price_per_bandwidth();
-                    
-        //             // Round up to the nearest whole number of GBs
-        //             let bandwidth_rounded_gbs = ((bandwidth_total_file_size_in_gbs).floor() as u128) + 1;
-        //             let bandwidth_charge_amount = bandwidth_price_per_gb * bandwidth_rounded_gbs;    
-                    
-        //             let charge_amount = bandwidth_charge_amount + buckets_charge_amount;
-                                        
-        //             let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
-
-        //             if user_free_credits >= charge_amount {
-        //                 // Decrease user credits
-        //                 let _ = Self::consume_credits(user.clone(), charge_amount,
-        //                 Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance5>::account_id().clone());
-
-        //                 // Record transaction
-        //                 let _ = Self::record_credits_transaction(
-        //                     &user,
-        //                     NativeTransactionType::Subscription,
-        //                     charge_amount.into(),
-        //                 );
-
-        //                 // Update last charged block for each request
-        //                 StorageS3Pallet::<T>::update_last_charged_at(&user, current_block);
-                        
-        //             } else {
-        //                 let blocks_per_hour = T::BlocksPerHour::get();
-        //                 let grace_period_blocks = T::StorageGracePeriod::get();
-                        
-        //                 // Calculate grace period start after hourly charging
-        //                 let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
-                        
-        //                 // Check if the current block is within the grace period
-        //                 if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
-        //                     // Still within grace period
-        //                     // log::info!(
-        //                     //     "Storage request for user {:?} is in grace period",
-        //                     //     user
-        //                     // );
-        //                 } else {
-        //                     // Cancel the request after grace period
-        //                     // and delete storage 
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
 
         /// Helper function to get the current price per GB
         pub fn get_price_per_gb() -> u128 {

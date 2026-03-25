@@ -1308,29 +1308,11 @@ parameter_types! {
 	pub const BlocksPerBackupCheck: u32 =  30;
 }
 
-// impl pallet_backup::Config for Runtime {
-//     type RuntimeEvent = RuntimeEvent;
-// 	type AuthorityId = pallet_backup::crypto::TestAuthId;
-// 	type BlocksPerDay = BlocksPerBackupCheck ;
-// }
-
 impl pallet_credits::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AuthorityId = pallet_credits::crypto::TestAuthId;
 	type RefferallCoolDOwnPeriod = RefferallCoolDOwnPeriod;
-	// type OnRuntimeUpgrade = pallet_credits::migrations::Migrate<Runtime>;
 }
-
-// parameter_types! {
-// 	pub const ComputeIpReleasePeriod: u64 = 15 * DAYS;
-// }
-
-// impl pallet_compute::Config for Runtime {
-// 	type RuntimeEvent = RuntimeEvent;
-// 	type AuthorityId = pallet_compute::crypto::TestAuthId;
-// 	type OffchainWorkerInterval = ConstU32<19>;
-// 	type IpReleasePeriod = ComputeIpReleasePeriod;
-// }
 
 parameter_types! {
 	pub const MaxCidLenght: u32 = 2;
@@ -1866,9 +1848,7 @@ construct_runtime!(
 		RankingValidators: pallet_rankings::<Instance3> = 70,
 		// RankingGpu: pallet_rankings::<Instance4> = 71,
 		// RankingS3: pallet_rankings::<Instance5> = 77,
-		// Backup: pallet_backup = 64,
 		Credits: pallet_credits = 65,
-		// Compute: pallet_compute = 67,
 		ContainerRegistry: pallet_container_registry = 69,
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
@@ -3481,32 +3461,6 @@ impl_runtime_apis! {
 			})
 			.collect()
 		}
-
-		// fn get_user_vms(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserVmDetails<AccountId32, u32, [u8; 32]>> {
-		// 	Compute::get_user_vms(account)
-		// 	.into_iter()
-		// 	.map(|vm| rpc_primitives_node_metrics::UserVmDetails {
-		// 		request_id: vm.request_id,
-		// 		status: match vm.status {
-		// 			pallet_compute::ComputeRequestStatus::Pending => rpc_primitives_node_metrics::ComputeRequestStatus::Pending,
-		// 			pallet_compute::ComputeRequestStatus::Stopped => rpc_primitives_node_metrics::ComputeRequestStatus::Stopped,
-		// 			pallet_compute::ComputeRequestStatus::InProgress => rpc_primitives_node_metrics::ComputeRequestStatus::InProgress,
-		// 			pallet_compute::ComputeRequestStatus::Running => rpc_primitives_node_metrics::ComputeRequestStatus::Running,
-		// 			pallet_compute::ComputeRequestStatus::Failed => rpc_primitives_node_metrics::ComputeRequestStatus::Failed,
-		// 			pallet_compute::ComputeRequestStatus::Cancelled => rpc_primitives_node_metrics::ComputeRequestStatus::Cancelled,
-		// 		},
-		// 		plan_id: vm.plan_id.into(),
-		// 		created_at: vm.created_at as u32,
-		// 		miner_node_id: vm.miner_node_id,
-		// 		miner_account_id: vm.miner_account_id,
-		// 		hypervisor_ip: vm.hypervisor_ip,
-		// 		vnc_port: vm.vnc_port,
-		// 		ip_assigned: vm.ip_assigned,
-		// 		error: vm.error,
-		// 		is_fulfilled: vm.is_fulfilled,
-		// 	})
-		// 	.collect()
-		// }
 
 		fn total_file_size_fulfilled(account_id: AccountId32) -> u128 {
 			<ipfs_pallet::Pallet<Runtime>>::user_total_files_size(&account_id).unwrap_or(0)

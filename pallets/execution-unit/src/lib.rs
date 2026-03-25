@@ -424,48 +424,6 @@ pub mod pallet {
 				<frame_system::Pallet<T>>::block_number(),
 			);
 
-			// Check if specs already exist and are the same
-			// if let Some(existing_specs) = NodeSpecs::<T>::get(&node_id) {
-			// 	if existing_specs == system_info {
-			// 		log::info!("✅ System specs unchanged, skipping update");
-			// 		return Ok(().into());
-			// 	}
-			// }
-
-			// // Define 2TB in bytes (2TB = 2 * 1024 * 1024 * 1024 * 1024 bytes)
-			// const TWO_TB_IN_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
-
-			// // Define 5TB in megabytes (5TB = 5 * 1024 * 1024 MB)
-			// const FIVE_TB_IN_MB: u64 = 5 * 1024 * 1024;
-
-			// // Calculate storage values
-			// let current_storage_bytes = (system_info.storage_total_mb * 1024 * 1024)
-			// - (system_info.storage_free_mb * 1024 * 1024);
-			// let total_storage_bytes = system_info.storage_total_mb * 1024 * 1024;
-
-			// if current_storage_bytes < TWO_TB_IN_BYTES || total_storage_bytes < TWO_TB_IN_BYTES {
-			// 	Self::deposit_event(Event::StorageBelowTwoTB { node_id: node_id.clone() });
-			// 	return Err(Error::<T>::StorageBelowTwoTB.into());
-			// }
-
-			// // Check if primary_network_interface is None
-			// if system_info.primary_network_interface.is_none() {
-			// 	Self::deposit_event(Event::NoPrimaryNetworkInterface { node_id: node_id.clone() });
-			// 	return Err(Error::<T>::NoPrimaryNetworkInterface.into());
-			// }
-
-			// // Check if disks array is empty
-			// if system_info.disks.is_empty() {
-			// 	Self::deposit_event(Event::EmptyDisksArray { node_id: node_id.clone() });
-			// 	return Err(Error::<T>::EmptyDisksArray.into());
-			// }
-
-			// // Check if memory or free memory exceeds 5TB
-			// if system_info.memory_mb > FIVE_TB_IN_MB || system_info.free_memory_mb > FIVE_TB_IN_MB {
-			// 	Self::deposit_event(Event::MemoryExceedsFiveTB { node_id: node_id.clone() });
-			// 	return Err(Error::<T>::MemoryExceedsFiveTB.into());
-			// }
-
 			// Function to create default metrics data
 			let create_default_metrics = || {
 				let geolocation = system_info
@@ -637,27 +595,6 @@ pub mod pallet {
 			metrics.miner_id = node_id.clone();
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
-
-			// // Fetch the existing vector of block numbers or initialize a new one
-			// let blocks_vec = BlockNumbers::<T>::get(node_id.clone()).unwrap_or_else(|| Vec::new());
-
-			// // Convert the existing blocks into a BTreeMap to remove duplicates
-			// let mut blocks: BTreeMap<BlockNumberFor<T>, ()> =
-			// 	blocks_vec.into_iter().map(|block| (block, ())).collect();
-
-			// let check_interval = <T as pallet::Config>::BlockCheckInterval::get();
-			// // Push the current block number and the preceding ones
-			// for i in (0..check_interval).rev() {
-			// 	let block_to_push = block_number - i;
-			// 	// Check if the block is already present in the storage
-			// 	if !blocks.contains_key(&block_to_push.into()) {
-			// 		blocks.insert(block_to_push.into(), ()); // Only add if it's not already present
-			// 	}
-			// }
-
-			// // Convert the BTreeMap back to a Vec for storage
-			// let unique_blocks: Vec<_> = blocks.keys().cloned().collect();
-			// BlockNumbers::<T>::insert(node_id, unique_blocks);
 
 			// Store only the latest block number as a single-element vector
 			let block_vec: Vec<BlockNumberFor<T>> = vec![block_number.into()];

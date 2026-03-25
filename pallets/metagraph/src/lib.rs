@@ -224,11 +224,7 @@ pub mod pallet {
 
 			// Get whitelisted validators
 			let whitelisted_validators = Self::whitelisted_validators();
-
-			// --- OPTIMIZATION: Create lookup structures using sp_std collections ---
 			
-			// Use sp_std::collections::btree_set::BTreeSet instead of HashSet (no_std compatible)
-			// Note: BTreeSet gives O(log n) lookups instead of O(1), but still much better than O(n)
 			use sp_std::collections::btree_set::BTreeSet;
 			
 			// Create a BTreeSet of UID addresses for O(log n) lookup
@@ -359,124 +355,6 @@ pub mod pallet {
 		pub fn get_all_registered_uids() -> Vec<UID> {
 			// Get the UIDs from storage
 			Self::get_uids() // This uses the automatically generated getter from StorageValue
-		}
-
-		fn check_consensus(
-			submissions: &BTreeMap<T::AccountId, Vec<UID>>,
-			new_submission: &Vec<UID>,
-		) -> bool {
-			if submissions.is_empty() {
-				return true;
-			}
-
-			let total_validators = submissions.len() + 1;
-			let mut matching_count = 0;
-			let mut divergent_validators = Vec::new();
-
-			// Calculate the average size of existing submissions
-			let avg_size: f64 = submissions.values().map(|v| v.len() as f64).sum::<f64>()
-				/ submissions.len() as f64;
-
-			// Check for significant size divergence (more than 20% difference)
-			let size_threshold = 0.2;
-			let new_size = new_submission.len() as f64;
-			let size_divergence =
-				((if new_size > avg_size { new_size - avg_size } else { avg_size - new_size })
-					/ avg_size) > size_threshold;
-
-			// Compare submissions and track divergent validators
-			for (validator, existing_submission) in submissions.iter() {
-				if existing_submission == new_submission {
-					matching_count += 1;
-				} else {
-					// Check if the difference is significant
-					let common_uids: Vec<_> = existing_submission
-						.iter()
-						.filter(|uid| new_submission.contains(uid))
-						.collect();
-
-					let similarity_ratio = common_uids.len() as f64
-						/ sp_std::cmp::max(existing_submission.len(), new_submission.len()) as f64;
-
-					// If less than 80% similar, consider it divergent
-					if similarity_ratio < 0.8 {
-						divergent_validators.push(validator.clone());
-					}
-				}
-			}
-
-			// Update trust points based on divergence
-			if size_divergence || !divergent_validators.is_empty() {
-				for validator in divergent_validators {
-					ValidatorTrustPoints::<T>::mutate(&validator, |points| {
-						*points = points.saturating_sub(1);
-
-						// If validator has accumulated 3 or more negative points, slash them
-						if *points <= -3 {
-							// Slash 5% of their stake
-							let slash_fraction = Perbill::from_percent(5);
-
-							// Get the current era
-							if let Some(current_era) = <pallet_staking::Pallet<T>>::current_era() {
-								// Fetch the validator's ledger from the staking storage
-								if let Some(mut ledger) =
-									<pallet_staking::Ledger<T>>::get(&validator)
-								{
-									// Calculate the amount to slash based on the fraction
-									let slash_amount = slash_fraction * ledger.total;
-
-									// Ensure the slash amount is greater than the minimum balance
-									let minimum_balance =
-										<T as pallet_staking::Config>::Currency::minimum_balance();
-									if slash_amount > minimum_balance {
-										// Slash the validator's stake
-										let slashed_amount = ledger.slash(
-											slash_amount,
-											minimum_balance,
-											current_era,
-										);
-
-										// Update the staking ledger storage after slashing
-										<pallet_staking::Ledger<T>>::insert(&validator, ledger);
-
-										log::info!(
-                                            "✅ Slashed validator by {:?} due to repeated bad submissions",
-                                            slashed_amount
-                                        );
-									} else {
-										log::warn!("⚠️ Calculated slash amount is below the minimum balance, skipping slashing.");
-									}
-
-									// Reset points after processing
-									*points = 0;
-								} else {
-									log::warn!("⚠️ Validator does not have a staking ledger, skipping slashing.");
-								}
-							} else {
-								log::warn!("⚠️ Current era not available, skipping slashing.");
-							}
-						}
-
-						// Emit event when trust points change
-						Self::deposit_event(Event::ValidatorTrustUpdated {
-							validator: validator.clone(),
-							points: *points,
-						});
-					});
-				}
-			}
-
-			// Add 1 for current submission if it matches any existing one
-			if matching_count > 0 {
-				matching_count += 1;
-			}
-
-			// Check if we have more than 50% agreement
-			if total_validators % 2 == 0 {
-				matching_count >= (total_validators / 2)
-			} else {
-				matching_count >= ((total_validators / 2) + 1)
-			}
 		}
 
 		/// Get a specific UID item by its ID

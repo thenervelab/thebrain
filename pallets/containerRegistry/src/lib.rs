@@ -167,31 +167,6 @@ pub mod pallet {
 		UserAlreadyHasSpace,
 	}
 
-	// #[pallet::hooks]
-	// impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-	// 	fn on_initialize(_block_number: BlockNumberFor<T>) -> Weight {
-	// 		// Retrieve the current list of CID delete requests
-	// 		let cid_delete_requests =
-	// 			pallet_marketplace::Pallet::<T>::registry_cid_delete_requests();
-
-	// 		// Process each CID delete request
-	// 		for cid in cid_delete_requests.clone() {
-	// 			// Attempt to delete CID-related entries in container registry
-	// 			if let Err(e) = Self::delete_all_cid_related_entries(cid.clone()) {
-	// 				log::error!(
-	// 					"Failed to delete CID-related entries for CID: {:?}. Error: {:?}",
-	// 					cid,
-	// 					e
-	// 				);
-	// 			}
-	// 			let _ = pallet_marketplace::Pallet::<T>::remove_cid_delete_request(cid);
-	// 		}
-
-	// 		// Return a small weight for the initialization
-	// 		Weight::from_parts(10_000, 0)
-	// 	}
-	// }
-
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		// Create a new space
@@ -317,18 +292,6 @@ pub mod pallet {
 			// Store CID mapping
 			ImageDigestToCid::<T>::insert(&image_name, &digest, &cid);
 
-			// // adding req inside marketplace pallet
-			// let file_input = FileInput {
-			// 	file_name: "Image Mainfest Digest".as_bytes().to_vec(),
-			// 	file_hash: cid.clone(),
-			// };
-
-			// let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
-			// 	&who.clone(),
-			// 	&vec![file_input.clone()],
-			// 	None
-			// );
-
 			// Emit both events
 			Self::deposit_event(Event::ManifestDigestUpdated(
 				repo_name,
@@ -372,16 +335,6 @@ pub mod pallet {
 
 			// Store in the map
 			DigestInfoStorage::<T>::insert(&digest, digest_info);
-
-			// let file_input =
-			// 	FileInput { file_name: "Digest Info".as_bytes().to_vec(), file_hash: cid.clone() };
-
-			// // adding req inside marketplace pallet
-			// let _ = pallet_marketplace::Pallet::<T>::process_storage_requests(
-			// 	&who.clone(),
-			// 	&vec![file_input.clone()],
-			// 	None,
-			// );
 
 			// Emit an event for successful storage
 			Self::deposit_event(Event::DigestInfoStored { who, digest, digest_type, cid });

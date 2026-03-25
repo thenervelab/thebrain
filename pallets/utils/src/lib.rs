@@ -48,9 +48,7 @@ pub mod pallet {
 	}
 
 	#[pallet::event]
-	// #[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		// SomethingStored { something: u32, who: T::AccountId },
 	}
 
 	#[pallet::error]

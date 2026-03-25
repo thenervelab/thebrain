@@ -832,7 +832,6 @@ pub mod pallet {
 										}
 									}
 
-									// SECOND: Only burn if staking succeeded
 									if staking_result.is_ok() {
 										// Burn the equivalent amount from their free balance
 										match pallet_balances::Pallet::<T>::burn(
@@ -866,10 +865,7 @@ pub mod pallet {
 												RewardsRecord::<T, I>::insert(node_id, records);
 											},
 											Err(e) => {
-												// Log the error and revert the staking if possible
 												log::error!("Failed to burn tokens for account {:?}: {:?}", account, e);
-												// Note: We can't easily revert the staking here, but at least
-												// we don't lose tokens and we log the error for investigation
 											}
 										}
 									}
@@ -928,7 +924,6 @@ pub mod pallet {
 										}
 									}
 
-									// SECOND: Only burn if staking succeeded
 									if staking_result.is_ok() {
 										match pallet_balances::Pallet::<T>::burn(
 											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
@@ -1017,7 +1012,6 @@ pub mod pallet {
 										}
 									}
 
-									// SECOND: Only burn if staking succeeded
 									if staking_result.is_ok() {
 										match pallet_balances::Pallet::<T>::burn(
 											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
@@ -1105,7 +1099,6 @@ pub mod pallet {
 										}
 									}
 
-									// SECOND: Only burn if staking succeeded
 									if staking_result.is_ok() {
 										match pallet_balances::Pallet::<T>::burn(
 											frame_system::RawOrigin::Signed(pallet_account.clone()).into(),
@@ -1136,8 +1129,6 @@ pub mod pallet {
 											},
 											Err(e) => {
 												log::error!("Failed to burn tokens for account {:?}: {:?}", account, e);
-												// Note: We've already staked the tokens but failed to burn
-												// This creates an accounting discrepancy that needs investigation
 											}
 										}
 									}
