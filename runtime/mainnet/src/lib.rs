@@ -132,7 +132,7 @@ impl pallet_arion::Config for Runtime {
 	type MaxEndpointLen = MaxEndpointLen;
 	type MaxHttpAddrLen = MaxHttpAddrLen;
 	type MaxStatsUpdates = MaxStatsUpdates;
-	type MaxFamilies = ConstU32<350>;
+	type MaxFamilies = ConstU32<400>;
 	type MaxChildrenTotal = ConstU32<1000>;
 	type MaxChildrenPerFamily = ConstU32<35>;
 	type BaseChildDeposit = BaseChildDeposit;
