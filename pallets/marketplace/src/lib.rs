@@ -341,6 +341,12 @@ pub mod pallet {
             selected_image_name: Option<Vec<u8>>,
             cloud_init_cid: Option<Vec<u8>>,
         },
+        PlanPurchaseFailed {
+            caller: T::AccountId,
+            owner: T::AccountId,
+            plan_id: T::Hash,
+            error: DispatchError,
+        },
         PricePerGbUpdated { price: u128 },
         PricePerBandwidthUpdated { price: u128 },
         StorageSubscriptionCancelled { who: T::AccountId },
@@ -362,6 +368,11 @@ pub mod pallet {
         /// Specific miner request fee updated
         SpecificMinerRequestFeeUpdated { fee: BalanceOf<T> },
         BatchDeposited { owner: T::AccountId, batch_id: u64 },
+        DepositFailed {
+            authority: T::AccountId,
+            account: T::AccountId,
+            error: DispatchError,
+        },
         CreditsConsumed { owner: T::AccountId, credits: u128 },
 	    StorageOperationsStatusChanged { enabled: bool },
         /// Purchase plan status was changed
@@ -528,42 +539,28 @@ pub mod pallet {
 
             // Track successful purchases
             let mut successful_purchases = Vec::new();
-            let mut errors: Vec<(T::Hash, DispatchError)> = Vec::new();
 
             // Process each plan purchase
             for (i, &plan_id) in plan_ids.iter().enumerate() {
                 // Get plan details
-                let plan = match Plans::<T>::get(&plan_id) {
-                    Some(p) => p,
-                    None => {
-                        errors.push((plan_id, Error::<T>::PlanNotFound.into()));
-                        continue;
-                    }
-                };
+                let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
                 // Check if plan is suspended
-                if plan.is_suspended {
-                    errors.push((plan_id, Error::<T>::PlanSuspended.into()));
-                    continue;
-                }
+                ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
                 // Process the purchase based on plan type
-                let result = if plan.is_storage_plan {
+                if plan.is_storage_plan {
                     // Handle storage plan purchase
                     Self::do_purchase_storage_plan(
                         owner.clone(),
                         plan_id,
                         miner_ids[i].clone()
-                    )
+                    )?;
                 } else {
                     // For compute plans, image name is required
-                    let image_name = match selected_image_names[i].clone() {
-                        Some(name) => name,
-                        None => {
-                            errors.push((plan_id, Error::<T>::InvalidImageSelection.into()));
-                            continue;
-                        }
-                    };
+                    let image_name = selected_image_names[i]
+                        .clone()
+                        .ok_or(Error::<T>::InvalidImageSelection)?;
                     // Handle compute plan purchase
                     Self::do_purchase_compute_plan(
                         owner.clone(),
@@ -572,35 +569,22 @@ pub mod pallet {
                         image_name,
                         cloud_init_cids[i].clone(),
                         miner_ids[i].clone()
-                    )
+                    )?;
                 };
 
-                match result {
-                    Ok(_) => {
-                        successful_purchases.push(plan_id);
-                        // Emit event for successful purchase
-                        Self::deposit_event(Event::PlanPurchased {
-                            caller: owner.clone(),
-                            owner: owner.clone(),
-                            plan_id,
-                            location_id: location_ids[i],
-                            selected_image_name: selected_image_names[i].clone(),
-                            cloud_init_cid: cloud_init_cids[i].clone(),
-                        });
-                    },
-                    Err(e) => {
-                        errors.push((plan_id, e));
-                    }
-                }
-            }
-
-            // If all purchases failed, return the first error
-            if successful_purchases.is_empty() && !errors.is_empty() {
-                return Err(errors[0].1);
+                successful_purchases.push(plan_id);
+                // Emit event for successful purchase
+                Self::deposit_event(Event::PlanPurchased {
+                    caller: owner.clone(),
+                    owner: owner.clone(),
+                    plan_id,
+                    location_id: location_ids[i],
+                    selected_image_name: selected_image_names[i].clone(),
+                    cloud_init_cid: cloud_init_cids[i].clone(),
+                });
             }
 
             // If we had any successful purchases, we consider the call successful
-            // even if some individual purchases failed
             Ok(())
         }
 
@@ -717,7 +701,8 @@ pub mod pallet {
             CreditsPallet::<T>::ensure_is_authority(&authority)?;
 
             // Call the existing deposit function
-            Self::do_deposit(account, credit_amount, alpha_amount, freeze_for_chargeback, code)
+            Self::do_deposit(account, credit_amount, alpha_amount, freeze_for_chargeback, code)?;
+            Ok(())
         }
 
 
@@ -1171,8 +1156,10 @@ pub mod pallet {
                     let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
                         
                     // Round up to the nearest whole number of GBs
-                    let rounded_gbs = total_file_size_in_gbs.ceil() as u128;
-                    let charge_amount = price_per_gb * rounded_gbs;                    
+                    let rounded_gbs: u128 = total_file_size_in_bs
+                        .saturating_add(1_073_741_823)
+                        / 1_073_741_824;
+                    let charge_amount = price_per_gb.saturating_mul(rounded_gbs);            
             
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
@@ -1383,7 +1370,7 @@ pub mod pallet {
 
             let release_time = if freeze_for_chargeback {
                 let block_number = <frame_system::Pallet<T>>::block_number();
-                block_number + (15u32 * 28800u32).into() // 15 days
+                block_number.saturating_add((15u32 * 28800u32).into()) // 15 days
             } else {
                 <frame_system::Pallet<T>>::block_number() // No release time
             };
@@ -1404,7 +1391,7 @@ pub mod pallet {
             let next = batch_id.saturating_add(1);
             NextBatchId::<T>::put(next);
             
-            AlphaBalances::<T>::mutate(&sender, |alpha| *alpha += alpha_amount);
+            AlphaBalances::<T>::mutate(&sender, |alpha| *alpha = alpha.saturating_add(alpha_amount));
             let _ = CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code);
 
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
@@ -1443,11 +1430,11 @@ pub mod pallet {
                         // Referral logic
                         let mut total_discount = 0u128;
                         if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&batch.owner) {
-                            let _ = CreditsPallet::<T>::apply_referral_discount(
+                            CreditsPallet::<T>::apply_referral_discount(
                                 &previous_referral,
                                 credits_to_take,
                                 &mut total_discount
-                            );
+                            )?;
                         }
                         
                         // FIXED: Use remaining amounts for accurate alpha calculation
@@ -1598,7 +1585,7 @@ pub mod pallet {
                 let current = CreditsPallet::<T>::get_free_credits(&batch.owner);
                 ensure!(current >= credit_to_burn, Error::<T>::InsufficientFreeCredits);
                 CreditsPallet::<T>::decrease_user_credits(&batch.owner, credit_to_burn);
-                TotalCreditsPurchased::<T>::mutate(|total| *total -= credit_to_burn);
+                TotalCreditsPurchased::<T>::mutate(|total| *total = total.saturating_sub(credit_to_burn));
             }
 
             Ok(())
