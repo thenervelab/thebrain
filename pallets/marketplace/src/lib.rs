@@ -1182,7 +1182,13 @@ pub mod pallet {
                         let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
                         
                         // Check if the current block is within the grace period
-                        if current_block.saturating_sub(grace_period_start) <= grace_period_blocks.into() {
+                        if current_block <= grace_period_start {
+                            // Haven't even reached charging window
+                            log::info!(
+                                "Storage request for user {:?} is in grace period",
+                                user
+                            );
+                        } else if (current_block - grace_period_start) <= grace_period_blocks.into() {
                             // Still within grace period
                             log::info!(
                                 "Storage request for user {:?} is in grace period",
@@ -1328,7 +1334,10 @@ pub mod pallet {
 			let grace_period_start = last_charged_at.saturating_add(blocks_per_hour);
 			
 			// Check if the current block is within the grace period
-			current_block.saturating_sub(grace_period_start) <= grace_period_blocks
+            if current_block <= grace_period_start {
+                return true;
+            }
+			(current_block - grace_period_start) <= grace_period_blocks
         }
 
 		/// Checks if a compute request is within the grace period
@@ -1343,7 +1352,10 @@ pub mod pallet {
 			let grace_period_start = last_charged_at.saturating_add(blocks_per_hour);
 			
 			// Check if the current block is within the grace period
-			current_block.saturating_sub(grace_period_start) <= grace_period_blocks
+            if current_block <= grace_period_start {
+                return true;
+            }
+			(current_block - grace_period_start) <= grace_period_blocks
 		}
 
         /// Helper function to update the last charged timestamp for a user
