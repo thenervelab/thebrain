@@ -124,6 +124,12 @@ pub mod pallet {
 	pub type LastReferralCreationBlock<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BlockNumberFor<T>>;
 
+	/// Per-account nonce used to ensure referral-code generation is unique even within the same block.
+	#[pallet::storage]
+	#[pallet::getter(fn referral_code_nonce)]
+	pub type ReferralCodeNonce<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u64, ValueQuery>;
+
 	// Mapping to track the total referral rewards earned
 	#[pallet::storage]
 	pub(super) type TotalReferralRewards<T: Config> = StorageValue<_, u128, ValueQuery>;
@@ -360,7 +366,7 @@ pub mod pallet {
 			// Ensure the caller is an authority
 			ensure_root(origin)?;
 
-			AlphaBalances::<T>::mutate(&user_to_credit, |credits| *credits += alpha_amount);
+			AlphaBalances::<T>::mutate(&user_to_credit, |credits| *credits = credits.saturating_add(alpha_amount));
 
 			// Increase the user's credits
 			FreeCredits::<T>::mutate(&user_to_credit, |credits| {
@@ -714,13 +720,21 @@ pub mod pallet {
 		}
 
 		fn generate_random_suffix(account: &T::AccountId) -> u64 {
-			let nonce = frame_system::Pallet::<T>::block_number();
+			let block_number = frame_system::Pallet::<T>::block_number();
+
+			// Ensure uniqueness across multiple attempts in the same block.
+			let attempt_nonce = ReferralCodeNonce::<T>::mutate(account, |n| {
+				let current = *n;
+				*n = n.wrapping_add(1);
+				current
+			});
 
 			// Convert the block number to a primitive type (e.g., u64)
-			let nonce_as_u64 = TryInto::<u64>::try_into(nonce).unwrap_or_default(); // Handle conversion safely
+			let block_as_u64 = TryInto::<u64>::try_into(block_number).unwrap_or_default(); // Handle conversion safely
 
 			let mut random_data = account.using_encoded(|b| b.to_vec());
-			random_data.extend_from_slice(&nonce_as_u64.to_le_bytes());
+			random_data.extend_from_slice(&block_as_u64.to_le_bytes());
+			random_data.extend_from_slice(&attempt_nonce.to_le_bytes());
 
 			// Generate a hash and use its output as a number
 			let hash = hashing::blake2_128(&random_data);
@@ -744,20 +758,23 @@ pub mod pallet {
 
 		// Get all users referred by a given account
 		pub fn get_referred_users(account_id: T::AccountId) -> Vec<T::AccountId> {
-			// Get the referral codes for the account
-			let codes = ReferredUsers::<T>::get(&account_id).unwrap_or_default();
-
-			// If there are no referral codes, return empty vector
-			if codes.is_empty() {
+			// `ReferredUsers` maps (user -> referral_code_used). To get "users referred by account_id",
+			// we collect all referral codes owned by `account_id` and return users whose used code
+			// matches any of those codes.
+			let owned_codes = Self::get_referral_codes(account_id);
+			if owned_codes.is_empty() {
 				return Vec::new();
 			}
 
-			// The codes are stored as a Vec<u8> (the full referral code)
-			// We need to look up this exact code in ReferralCodes
-			match ReferralCodes::<T>::get(&codes) {
-				Some(referred_account) => vec![referred_account],
-				None => Vec::new(),
-			}
+			ReferredUsers::<T>::iter()
+				.filter_map(|(user, code_used)| {
+					if owned_codes.contains(&code_used) {
+						Some(user)
+					} else {
+						None
+					}
+				})
+				.collect()
 		}
 
 		// Get total referral rewards earned by a given account
