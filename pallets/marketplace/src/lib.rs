@@ -65,7 +65,7 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use sp_runtime::{
-        traits::{AtLeast32BitUnsigned, AccountIdConversion, Hash},
+        traits::{AtLeast32BitUnsigned, AccountIdConversion, Hash, SaturatedConversion},
         Saturating,
     };
     use pallet_registration::BalanceOf;
@@ -260,6 +260,12 @@ pub mod pallet {
     #[pallet::getter(fn is_purchase_plan_enabled)]
     pub type IsPurchasePlanEnabled<T: Config> = StorageValue<_, bool, ValueQuery, GetDefault>;
 
+    /// Tracks the last block a user cancelled any subscription, to enforce resubscribe cooldowns.
+    #[pallet::storage]
+    #[pallet::getter(fn last_subscription_cancelled_at)]
+    pub type LastSubscriptionCancelledAt<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, BlockNumberFor<T>, OptionQuery>;
+
     // Next batch ID
     #[pallet::storage]
     #[pallet::getter(fn next_batch_id)]
@@ -430,6 +436,7 @@ pub mod pallet {
         TooManyRequests,
         OperationNotAllowed,
         UserNotFound,
+        ResubscribeCooldownActive,
 	}
     
 	#[pallet::storage]
@@ -879,6 +886,16 @@ pub mod pallet {
             // Check user's native token balance 
             let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
             ensure!(user_free_credits >= plan_price_native, Error::<T>::InsufficientFreeCredits);
+
+            // Prevent cancel-and-resubscribe grace period reset abuse
+            let current_block_number = <frame_system::Pallet<T>>::block_number();
+            if let Some(last_cancelled_at) = LastSubscriptionCancelledAt::<T>::get(&who) {
+                let cooldown = T::MinSubscriptionBlocks::get();
+                ensure!(
+                    current_block_number >= last_cancelled_at.saturating_add(cooldown),
+                    Error::<T>::ResubscribeCooldownActive
+                );
+            }
         
             // Generate new subscription ID
             let subscription_id = NextSubscriptionId::<T>::mutate(|id| {
@@ -901,8 +918,6 @@ pub mod pallet {
                 (plan_price_native).into(),
             )?;
 
-            let current_block_number = <frame_system::Pallet<T>>::block_number();
-			
             // Create subscription (simplified due to removed plan_type)
             let subscription = UserPlanSubscription {
                 id: subscription_id,
@@ -965,6 +980,16 @@ pub mod pallet {
             // Check user's native token balance 
             let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
             ensure!(user_free_credits >= plan_price_native, Error::<T>::InsufficientFreeCredits);
+
+            // Prevent cancel-and-resubscribe grace period reset abuse
+            let current_block_number = <frame_system::Pallet<T>>::block_number();
+            if let Some(last_cancelled_at) = LastSubscriptionCancelledAt::<T>::get(&who) {
+                let cooldown = T::MinSubscriptionBlocks::get();
+                ensure!(
+                    current_block_number >= last_cancelled_at.saturating_add(cooldown),
+                    Error::<T>::ResubscribeCooldownActive
+                );
+            }
         
             // Validate location if specified
             if let Some(location_id) = location_id {
@@ -992,8 +1017,6 @@ pub mod pallet {
                 (plan_price_native).into(),
             )?;
 
-            let current_block_number = <frame_system::Pallet<T>>::block_number();
-			
             // Create subscription (simplified due to removed plan_type)
             let subscription = UserPlanSubscription {
                 id: subscription_id,
@@ -1097,7 +1120,14 @@ pub mod pallet {
 
                 for sub in &compute_subs_to_charge {
                     let price_per_block = sub.package.price;
-                    let charge_amount = price_per_block.saturating_mul(T::BlocksPerHour::get() as u128);
+                    let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
+                    let elapsed_blocks = current_block.saturating_sub(sub.last_charged_at);
+                    // Charge only full hours worth of blocks (keeps the "hourly charging" model but handles drift)
+                    let elapsed_hours = elapsed_blocks / blocks_per_hour.max(1u32.into());
+                    let charge_blocks_u128: u128 = elapsed_hours
+                        .saturating_mul(blocks_per_hour)
+                        .saturated_into::<u128>();
+                    let charge_amount = price_per_block.saturating_mul(charge_blocks_u128);
                     total_compute_charge = total_compute_charge.saturating_add(charge_amount);
                 }
 
@@ -1143,9 +1173,14 @@ pub mod pallet {
                     UserAllSubscriptionPlans::<T>::mutate(&account_id, |subs| {
                         for sub in subs.iter_mut() {
                             if sub.active {
+                                let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
                                 let block_diff = current_block.saturating_sub(sub.last_charged_at);
-                                if block_diff > T::BlocksPerHour::get().into() {
-                                    sub.last_charged_at = current_block;
+                                if block_diff >= blocks_per_hour {
+                                    let elapsed_hours = block_diff / blocks_per_hour.max(1u32.into());
+                                    // Advance by whole hours only, preserving any remainder blocks
+                                    sub.last_charged_at = sub
+                                        .last_charged_at
+                                        .saturating_add(elapsed_hours.saturating_mul(blocks_per_hour));
                                 }
                             }
                         }
@@ -1267,6 +1302,7 @@ pub mod pallet {
 
         /// Cancel a user's subscription
         fn do_cancel_storage_subscription(account_id: &T::AccountId) -> DispatchResult {
+            let now = <frame_system::Pallet<T>>::block_number();
             UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
                 let original_len = subscriptions.len();
                 // Filter out storage plans
@@ -1283,6 +1319,7 @@ pub mod pallet {
         
                 // Emit event if any storage plans were removed
                 if subscriptions.len() < original_len {
+                    LastSubscriptionCancelledAt::<T>::insert(account_id, now);
                     Self::deposit_event(Event::StorageSubscriptionCancelled {
                         who: account_id.clone(),
                     });
@@ -1294,6 +1331,7 @@ pub mod pallet {
         }
         
         fn do_cancel_subscription(account_id: &T::AccountId) -> DispatchResult {
+            let now = <frame_system::Pallet<T>>::block_number();
             UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
                 let original_len = subscriptions.len();
                 // Keep only storage plans
@@ -1305,6 +1343,7 @@ pub mod pallet {
         
                 // Emit event if any non-storage plans were removed
                 if subscriptions.len() < original_len {
+                    LastSubscriptionCancelledAt::<T>::insert(account_id, now);
                     Self::deposit_event(Event::SubscriptionCancelled {
                         who: account_id.clone(),
                     });
@@ -1317,6 +1356,7 @@ pub mod pallet {
 
         /// Cancel ALL subscriptions for a user (both storage and compute)
         fn do_cancel_all_subscriptions(account_id: &T::AccountId) -> DispatchResult {
+            let now = <frame_system::Pallet<T>>::block_number();
             UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
                 let had_subscriptions = !subscriptions.is_empty();
                 
@@ -1324,6 +1364,7 @@ pub mod pallet {
                 subscriptions.clear();
         
                 if had_subscriptions {
+                    LastSubscriptionCancelledAt::<T>::insert(account_id, now);
                     // Emit events for both types being cancelled
                     Self::deposit_event(Event::StorageSubscriptionCancelled {
                         who: account_id.clone(),
