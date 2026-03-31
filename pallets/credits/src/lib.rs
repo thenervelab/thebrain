@@ -91,8 +91,6 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type RefferallCoolDOwnPeriod: Get<u32>;
-
-		// type OnRuntimeUpgrade: OnRuntimeUpgrade;
 	}
 
 	// Storage for authority accounts
@@ -651,6 +649,18 @@ pub mod pallet {
 				);
 			}
 
+			// Retire any codes previously mapped to this account so only one active code exists.
+			let old_codes = Self::get_referral_codes(who.clone());
+			let removed_count = old_codes.len() as u32;
+			for code in &old_codes {
+				ReferralCodes::<T>::remove(code);
+			}
+			if removed_count > 0 {
+				TotalReferralCodes::<T>::mutate(|total| {
+					*total = total.saturating_sub(removed_count);
+				});
+			}
+
 			// Generate a unique referral code with the prefix "HIPPIUS"
 			let mut unique_code = format!("HIPPIUS{}", Self::generate_random_suffix(&who));
 
@@ -658,10 +668,6 @@ pub mod pallet {
 			while ReferralCodes::<T>::contains_key(unique_code.as_bytes()) {
 				unique_code = format!("HIPPIUS{}", Self::generate_random_suffix(&who));
 			}
-
-			// // Fetch the current referral code owner
-			// let previous_referral_owner = ReferralCodes::<T>::get(&existing_code.unwrap());
-			// ensure!(previous_referral_owner == Some(who.clone()), Error::<T>::InvalidRefferalOwner);
 
 			// Insert the newly generated code into ReferralCodes mapping
 			ReferralCodes::<T>::insert(unique_code.as_bytes(), &who);
