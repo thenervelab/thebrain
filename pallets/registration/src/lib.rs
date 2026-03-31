@@ -991,12 +991,7 @@ pub mod pallet {
 			// Check if de-registration is enabled
 			ensure!(Self::is_deregistration_enabled(), Error::<T>::DeregistrationDisabled);
 
-			// Check if this is a proxy account and get the main account
-			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
-				primary
-			} else {
-				who.clone() // If not a proxy, use the account itself
-			};
+			let main_account = Self::resolve_deregistration_reporter(&who)?;
 			// Check if the node is registered and is a validator
 			let node_info = Self::get_registered_node_for_owner(&main_account);
 			ensure!(node_info.is_some(), Error::<T>::NodeNotRegistered);
@@ -1011,9 +1006,11 @@ pub mod pallet {
 			// Update user's storage requests count
 			ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count + 1);
 
-			// Store deregistration reports with current block number
+			// Store deregistration reports with current block number.
+			// Key by `main_account` (validator owner), not `who`, so multiple proxy delegates for the
+			// same validator cannot each count as a separate voter in `apply_deregistration_consensus`.
 			let current_block = <frame_system::Pallet<T>>::block_number();
-			let mut existing_reports = TemporaryDeregistrationReports::<T>::get(&who);
+			let mut existing_reports = TemporaryDeregistrationReports::<T>::get(&main_account);
 			for node_id in node_ids {
 				let report =
 					DeregistrationReport { node_id: node_id.clone(), created_at: current_block };
@@ -1023,7 +1020,7 @@ pub mod pallet {
 				);
 				existing_reports.push(report);
 			}
-			TemporaryDeregistrationReports::<T>::insert(&who, existing_reports);
+			TemporaryDeregistrationReports::<T>::insert(&main_account, existing_reports);
 
 			Ok(().into())
 		}
@@ -1614,6 +1611,16 @@ pub mod pallet {
 			Ok(main_account)
 		}
 
+		/// Validator owner used for deregistration report storage and consensus (one identity per validator).
+		fn resolve_deregistration_reporter(
+			issuer: &T::AccountId,
+		) -> Result<T::AccountId, DispatchError> {
+			Ok(match Self::get_primary_account(issuer)? {
+				Some(owner) => owner,
+				None => issuer.clone(),
+			})
+		}
+
 		pub fn get_chain_decimals() -> u32 {
 			T::ChainDecimals::get()
 		}
@@ -1846,9 +1853,16 @@ pub mod pallet {
 					continue;
 				}
 			
-				// Count unique validators directly
+				// One vote per validator owner (normalize proxy keys for legacy rows too).
 				let unique_validators: sp_std::collections::btree_set::BTreeSet<T::AccountId> =
-					reports.iter().map(|(validator_id, _)| validator_id.clone()).collect();
+					reports
+						.iter()
+						.map(|(validator_id, _)| {
+							Self::resolve_deregistration_reporter(validator_id).unwrap_or_else(
+								|_| validator_id.clone(),
+							)
+						})
+						.collect();
 			
 				let agreeing_validators = unique_validators.len() as u32;
 			
