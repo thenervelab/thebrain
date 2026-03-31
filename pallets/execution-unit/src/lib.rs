@@ -572,14 +572,14 @@ pub mod pallet {
 			.low_u64()) as u32;
 
 			metrics.latency_ms = latency_ms;
-			metrics.total_latency_ms = metrics.total_latency_ms + latency_ms;
-			metrics.total_times_latency_checked += 1;
+			metrics.total_latency_ms = metrics.total_latency_ms.saturating_add(latency_ms);
+			metrics.total_times_latency_checked = metrics.total_times_latency_checked.saturating_add(1);
 			metrics.avg_response_time_ms =
 				metrics.total_latency_ms / metrics.total_times_latency_checked;
 			metrics.peer_count = peer_count;
-			metrics.failed_challenges_count += failed_challenges_count;
-			metrics.successful_challenges += successful_challenges;
-			metrics.total_challenges += total_challenges;
+			metrics.failed_challenges_count = metrics.failed_challenges_count.saturating_add(failed_challenges_count);
+			metrics.successful_challenges = metrics.successful_challenges.saturating_add(successful_challenges);
+			metrics.total_challenges = metrics.total_challenges.saturating_add(total_challenges);
 			if uptime_minutes != 0 && uptime_minutes != u32::MAX {
 				metrics.uptime_minutes = uptime_minutes;
 			}
