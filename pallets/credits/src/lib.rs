@@ -590,8 +590,6 @@ pub mod pallet {
 				Some(ref_owner) => {
 					let ref_discount = price.saturating_mul(5) / 100 as u128;
 
-					Self::increase_user_credits(&ref_owner, ref_discount);
-
 					*total_discount = total_discount.saturating_add(ref_discount);
 
 					ReferralCodeRewards::<T>::mutate(code, |r| *r = r.saturating_add(ref_discount));

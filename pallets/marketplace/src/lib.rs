@@ -60,6 +60,7 @@ pub mod pallet {
     use frame_support::{
         pallet_prelude::*,
         traits::{ReservableCurrency, Currency},
+        transactional,
         PalletId,
     };
     use frame_system::pallet_prelude::*;
@@ -102,6 +103,7 @@ pub mod pallet {
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
                 Self::handle_arion_storage_charging(current_block);
                 Self::handle_all_subscription_charging(current_block);
+                let _ = Self::release_matured_pending_alpha(current_block);
             }
 
             // Return some weight (adjust based on actual implementation)
@@ -787,6 +789,35 @@ pub mod pallet {
 	}
 
     impl<T: Config> Pallet<T> {
+        #[transactional]
+        fn release_matured_pending_alpha(current_block: BlockNumberFor<T>) -> DispatchResult {
+            for (batch_id, mut batch) in Batches::<T>::iter() {
+                if !batch.is_frozen || batch.pending_alpha == 0 {
+                    continue;
+                }
+                if current_block < batch.release_time {
+                    continue;
+                }
+
+                batch.is_frozen = false;
+
+                AlphaBalances::<T>::mutate(&batch.owner, |alpha| {
+                    *alpha = alpha.saturating_sub(batch.pending_alpha)
+                });
+
+                Self::distribute_alpha(
+                    batch.pending_alpha,
+                    RankingsPallet::<T>::account_id(),
+                    Self::account_id(),
+                )?;
+
+                batch.pending_alpha = 0;
+                Batches::<T>::insert(batch_id, batch);
+            }
+
+            Ok(())
+        }
+
         pub fn account_id() -> T::AccountId {
             <T as pallet::Config>::PalletId::get().into_account_truncating()
         }
@@ -856,8 +887,12 @@ pub mod pallet {
                 current_id
             });
 
-            let _ = Self::consume_credits(who.clone(), plan_price_native,
-            Self::account_id().clone(), pallet_rankings::Pallet::<T>::account_id().clone());
+            Self::consume_credits(
+                who.clone(),
+                plan_price_native,
+                Self::account_id().clone(),
+                pallet_rankings::Pallet::<T>::account_id().clone(),
+            )?;
                     
             // Record transaction
             Self::record_credits_transaction(
@@ -943,8 +978,12 @@ pub mod pallet {
                 current_id
             });
 
-            let _ = Self::consume_credits(who.clone(), plan_price_native,
-            Self::account_id().clone(), pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone());
+            Self::consume_credits(
+                who.clone(),
+                plan_price_native,
+                Self::account_id().clone(),
+                pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone(),
+            )?;
                     
             // Record transaction
             Self::record_credits_transaction(
@@ -1404,7 +1443,7 @@ pub mod pallet {
             NextBatchId::<T>::put(next);
             
             AlphaBalances::<T>::mutate(&sender, |alpha| *alpha = alpha.saturating_add(alpha_amount));
-            let _ = CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code);
+            CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code)?;
 
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 
@@ -1412,6 +1451,7 @@ pub mod pallet {
         }
 
         /// Consume user credits from their batches
+        #[transactional]
         pub fn consume_credits(
             sender: T::AccountId,
             credits: u128,
