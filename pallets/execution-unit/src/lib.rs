@@ -416,13 +416,28 @@ pub mod pallet {
 			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			HardwareRequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			let new_count = user_requests_count
+				.checked_add(1)
+				.ok_or(Error::<T>::ArithmeticOverflow)?;
+			
+			ensure!(
+				new_count <= max_requests_per_block,
+				Error::<T>::TooManyRequests
+			);
+			
+			HardwareRequestsCount::<T>::insert(&node_id, new_count);
 
 			// Update last request block
 			HardwareRequestsLastBlock::<T>::insert(
 				&node_id,
 				<frame_system::Pallet<T>>::block_number(),
 			);
+
+			let total_storage_bytes = Self::mb_to_bytes(system_info.storage_total_mb)?;
+			let free_storage_bytes = Self::mb_to_bytes(system_info.storage_free_mb)?;
+			let current_storage_bytes = total_storage_bytes
+				.checked_sub(free_storage_bytes)
+				.ok_or(Error::<T>::ArithmeticOverflow)?;
 
 			// Function to create default metrics data
 			let create_default_metrics = || {
@@ -435,10 +450,8 @@ pub mod pallet {
 				NodeMetricsData {
 					miner_id: node_id.clone(),
 					bandwidth_mbps: system_info.network_bandwidth_mb_s,
-					// converting mbs into bytes
-					current_storage_bytes: (system_info.storage_total_mb * 1024 * 1024)
-						- (system_info.storage_free_mb * 1024 * 1024),
-					total_storage_bytes: system_info.storage_total_mb * 1024 * 1024,
+					current_storage_bytes,
+					total_storage_bytes,
 					geolocation: geolocation.unwrap_or_default(),
 					primary_network_interface: system_info.primary_network_interface.clone(),
 					disks: system_info.disks.clone(),
@@ -471,12 +484,8 @@ pub mod pallet {
 					existing_metrics.miner_id = node_id.clone();
 					// Update existing metrics
 					existing_metrics.bandwidth_mbps = system_info.network_bandwidth_mb_s;
-					// converting mbs into bytes
-					existing_metrics.current_storage_bytes =
-						(system_info.storage_total_mb * 1024 * 1024)
-							- (system_info.storage_free_mb * 1024 * 1024);
-					existing_metrics.total_storage_bytes =
-						system_info.storage_total_mb * 1024 * 1024;
+					existing_metrics.current_storage_bytes = current_storage_bytes;
+					existing_metrics.total_storage_bytes = total_storage_bytes;
 
 					// Calculate storage growth rate
 					existing_metrics.storage_growth_rate = if existing_metrics.uptime_minutes == 0
@@ -844,6 +853,12 @@ pub mod pallet {
 			)
 		}
 
+		fn mb_to_bytes(mb: u64) -> Result<u64, DispatchError> {
+			mb.checked_mul(1024)
+				.and_then(|v| v.checked_mul(1024))
+				.ok_or(Error::<T>::ArithmeticOverflow.into())
+		}
+		
 		pub fn call_update_metrics_data(
 			node_id: Vec<u8>,
 			storage_proof_time_ms: u32,
