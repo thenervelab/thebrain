@@ -93,21 +93,27 @@ pub mod pallet {
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
+            let mut weight_used = Weight::zero();
             // Only execute on blocks divisible by the configured interval
             if current_block % 15u32.into() == 0u32.into() {
                 // Clear all entries; limit is u32::MAX to ensure we get them all
                 let result = UserRequestsCount::<T>::clear(u32::MAX, None);
+                // Conservative: at least one write per removed key plus one read for the clear call.
+                weight_used = weight_used.saturating_add(
+                    T::DbWeight::get().reads_writes(1, result.unique as u64),
+                );
             }
 
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
-                Self::handle_arion_storage_charging(current_block);
-                Self::handle_all_subscription_charging(current_block);
+                weight_used = weight_used.saturating_add(Self::handle_arion_storage_charging(current_block));
+                weight_used = weight_used.saturating_add(Self::handle_all_subscription_charging(current_block));
                 let _ = Self::release_matured_pending_alpha(current_block);
+                // Conservative: iterating batches is unbounded; charge at least one read.
+                weight_used = weight_used.saturating_add(T::DbWeight::get().reads_writes(1, 0));
             }
 
-            // Return some weight (adjust based on actual implementation)
-            T::DbWeight::get().reads_writes(1, 1)
+            weight_used
         }
     }
     
@@ -1070,10 +1076,17 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Unified function to handle all subscription charging (storage + compute) in single iteration
-        fn handle_all_subscription_charging(current_block: BlockNumberFor<T>) {
+        /// Unified function to handle all subscription charging (storage + compute) in single iteration.
+        ///
+        /// Returns a conservative weight estimate based on number of users/subscriptions processed.
+        fn handle_all_subscription_charging(current_block: BlockNumberFor<T>) -> Weight {
+            let mut users_seen: u64 = 0;
+            let mut users_with_active_subs: u64 = 0;
+            let mut users_charged_or_cancelled: u64 = 0;
+
             // Iterate through all users with subscriptions once
             for (account_id, subscriptions) in UserAllSubscriptionPlans::<T>::iter() {
+                users_seen = users_seen.saturating_add(1);
                 // Filter only active subscriptions
                 let active_subs: Vec<_> = subscriptions.iter()
                     .filter(|sub| sub.active)
@@ -1082,6 +1095,7 @@ pub mod pallet {
                 if active_subs.is_empty() {
                     continue;
                 }
+                users_with_active_subs = users_with_active_subs.saturating_add(1);
 
                 // Separate storage and compute subscriptions that need charging
                 let mut storage_subs_to_charge = Vec::new();
@@ -1136,6 +1150,7 @@ pub mod pallet {
 
                 if user_free_credits >= total_charge {
                     // User has enough credits, charge them
+                    users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
                     
                     // Charge for storage subscriptions
                     if total_storage_charge > 0 {
@@ -1192,16 +1207,30 @@ pub mod pallet {
                     } else {
                         // Grace period expired, cancel ALL subscriptions
                         let _ = Self::do_cancel_all_subscriptions(&account_id);
+                        users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
                     }
                 }
             }
+
+            // Conservative weight accounting:
+            // - `iter()` reads each user's subscription entry once.
+            // - for users we charge/cancel, we likely write back to subscriptions and touch credits/tx records.
+            // Use intentionally-high multipliers to avoid undercounting as state grows.
+            let reads = users_seen
+                .saturating_add(users_with_active_subs.saturating_mul(5))
+                .saturating_add(users_charged_or_cancelled.saturating_mul(10));
+            let writes = users_charged_or_cancelled.saturating_mul(10);
+            T::DbWeight::get().reads_writes(reads, writes)
         }
         
         // charges users for storage
-        fn handle_arion_storage_charging(current_block: BlockNumberFor<T>) {
+        fn handle_arion_storage_charging(current_block: BlockNumberFor<T>) -> Weight {
+            let mut users_seen: u64 = 0;
+            let mut users_charged_or_removed: u64 = 0;
             // Get all users who requested storage
             let all_users_who_requested_storage = pallet_arion::Pallet::<T>::get_all_users();
             for user in all_users_who_requested_storage {
+                users_seen = users_seen.saturating_add(1);
                 // Check if user has any active storage plan subscription
                 let subscriptions = UserAllSubscriptionPlans::<T>::get(&user);
                 if !subscriptions.is_empty() && subscriptions.iter().any(|sub| sub.active && sub.package.is_storage_plan) {
@@ -1248,6 +1277,7 @@ pub mod pallet {
                         );
 
                         let _ = Self::update_storage_last_charged_at(&user);
+                        users_charged_or_removed = users_charged_or_removed.saturating_add(1);
                     } else {
                         let blocks_per_hour = T::BlocksPerHour::get();
                         let grace_period_blocks = T::StorageGracePeriod::get();
@@ -1273,10 +1303,18 @@ pub mod pallet {
                             let _ = pallet_arion::Pallet::<T>::delete_user_entries(user.clone());
 
                             Self::remove_storage_last_charged_at(&user);
+                            users_charged_or_removed = users_charged_or_removed.saturating_add(1);
                         }
                     }
                 }
             }
+
+            // Conservative weight accounting:
+            // - reading `UserAllSubscriptionPlans` and `StorageLastChargedAt` per user
+            // - charged/removed paths do writes and call into other pallets
+            let reads = users_seen.saturating_mul(5).saturating_add(users_charged_or_removed.saturating_mul(10));
+            let writes = users_charged_or_removed.saturating_mul(10);
+            T::DbWeight::get().reads_writes(reads, writes)
         }
 
         /// Helper function to get the current price per GB
