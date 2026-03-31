@@ -62,7 +62,7 @@
 //     // Ranking pallet specific parameters
 //     pub const PalletId: frame_support::PalletId = frame_support::PalletId(*b"mrktplce");
 //     pub const RelayNodesRewardPercentage: u32 = 40;
-//     pub const MinerNodesRewardPercentage: u32 = 60;
+
 //     pub const InstanceID: u16 = 1;
 //     pub const RankDistributionLimit: u16 = 10;
 // }
@@ -155,7 +155,6 @@
 //     type RuntimeEvent = RuntimeEvent;
 //     type PalletId = PalletId;
 //     type RelayNodesRewardPercentage = RelayNodesRewardPercentage;
-//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 //     type InstanceID = InstanceID;
 //     type AuthorityId = crypto::TestAuthId;
 // }

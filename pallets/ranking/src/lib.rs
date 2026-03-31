@@ -112,14 +112,6 @@ pub mod pallet {
 		#[pallet::constant]
 		type PalletId: Get<frame_support::PalletId>;
 
-		/// Percentage of total rewards allocated to compute nodes (0-100)
-		#[pallet::constant]
-		type ComputeNodesRewardPercentage: Get<u32>;
-
-		/// Percentage of total rewards allocated to miner nodes (0-100)
-		#[pallet::constant]
-		type MinerNodesRewardPercentage: Get<u32>;
-
 		/// Percentage of total rewards allocated to miner nodes (0-100)
 		#[pallet::constant]
 		type InstanceID: Get<u16>;

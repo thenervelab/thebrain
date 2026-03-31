@@ -1321,8 +1321,6 @@ parameter_types! {
 	pub const SecondRankingPalletId: PalletId = PalletId(*b"ranking2");
 	pub const ThirdRankingPalletId: PalletId = PalletId(*b"ranking3");
 	pub const FourthRankingPalletId: PalletId = PalletId(*b"ranking4");
-	pub const ComputeNodesRewardPercentage: u32 = 75;
-	pub const MinerNodesRewardPercentage: u32 = 25;
 	pub const RankingsInstanceId1: u16 = 1;
 	pub const RankingsInstanceId2: u16 = 2;
 	pub const RankingsInstanceId3: u16 = 3;
@@ -1334,8 +1332,6 @@ parameter_types! {
 impl pallet_rankings::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type PalletId = RankingPalletId;
-	type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-	type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 	type InstanceID = RankingsInstanceId1;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
@@ -1348,8 +1344,6 @@ impl pallet_rankings::Config for Runtime {
 impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type PalletId = SecondRankingPalletId;
-	type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-	type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 	type InstanceID = RankingsInstanceId2;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
@@ -1362,8 +1356,6 @@ impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
 impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type PalletId = ThirdRankingPalletId;
-	type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-	type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 	type InstanceID = RankingsInstanceId3;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
@@ -1376,8 +1368,6 @@ impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 // impl pallet_rankings::Config<pallet_rankings::Instance4> for Runtime {
 //     type RuntimeEvent = RuntimeEvent;
 //     type PalletId = FourthRankingPalletId;
-//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 // 	type InstanceID = RankingsInstanceId4;
 // 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 // 	type BlocksPerEra = BlocksPerEra;
@@ -1387,8 +1377,6 @@ impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 // impl pallet_rankings::Config<pallet_rankings::Instance5> for Runtime {
 //     type RuntimeEvent = RuntimeEvent;
 //     type PalletId = FourthRankingPalletId;
-//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 // 	type InstanceID = RankingsInstanceId5;
 // 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 // 	type BlocksPerEra = BlocksPerEra;
