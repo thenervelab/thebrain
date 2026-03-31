@@ -399,6 +399,7 @@ pub mod pallet {
         NotSubscriptionOwner,
         SubscriptionNotFound,
         TooManySharedUsers,
+        TooManyActiveSubscriptions,
         InsufficientPermissions,
         CannotTransferToSelf,
         RecipientTooManySubscriptions,
@@ -938,6 +939,11 @@ pub mod pallet {
         
             // Get existing subscriptions or create a new vector if none exist
             let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+            let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
+            ensure!(
+                active_count < T::MaxActiveSubscriptions::get(),
+                Error::<T>::TooManyActiveSubscriptions
+            );
 
             // Add the new subscription
             subscriptions.push(subscription);
@@ -977,7 +983,9 @@ pub mod pallet {
             let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
 
             // Determine the price (using the price from the plan)
-            let mut plan_price_native = plan.price;
+            // Compute plans are priced per-block; charge one full hour upfront (aligned with recurring charging).
+            let blocks_per_hour_u128: u128 = T::BlocksPerHour::get() as u128;
+            let mut plan_price_native = plan.price.saturating_mul(blocks_per_hour_u128);
                 
             if let Some(upfront_months) = pay_upfront {
                 plan_price_native = plan_price_native.saturating_mul(upfront_months);
@@ -1037,6 +1045,11 @@ pub mod pallet {
         
             // Get existing subscriptions or create a new vector if none exist
             let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+            let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
+            ensure!(
+                active_count < T::MaxActiveSubscriptions::get(),
+                Error::<T>::TooManyActiveSubscriptions
+            );
 
             // Add the new subscription
             subscriptions.push(subscription);
