@@ -25,7 +25,6 @@ mod filters;
 pub mod frontier_evm;
 pub mod impls;
 pub mod migrations;
-pub mod balance_transfer_precompile;
 pub mod precompiles;
 // pub mod hippius_services;
 pub mod voter_bags;

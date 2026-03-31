@@ -47,12 +47,6 @@ use pallet_account_profile_precompile::AccountProfilePrecompile;
 use frame_support::parameter_types;
 use precompile_utils::precompile_set::*;
 
-use crate::balance_transfer_precompile::BalanceTransferPrecompile; // Update this import to point to the new file
-																   // Add this line to import the new file
-																   // mod balance_transfer_precompile; // Add this line to include the new module
-
-pub const BALANCE_TRANSFER_INDEX: u64 = 2047; // Ensure this constant is defined
-
 type EthereumPrecompilesChecks = (AcceptDelegateCall, CallableByContract, CallableByPrecompile);
 
 pub struct NativeErc20Metadata;
@@ -100,11 +94,6 @@ pub type HipiusPrecompilesAt<R> = (
 	PrecompileAt<AddressU64<6>, Bn128Add, EthereumPrecompilesChecks>,
 	PrecompileAt<AddressU64<7>, Bn128Mul, EthereumPrecompilesChecks>,
 	PrecompileAt<AddressU64<8>, Bn128Pairing, EthereumPrecompilesChecks>,
-	PrecompileAt<
-		AddressU64<{ BALANCE_TRANSFER_INDEX }>,
-		BalanceTransferPrecompile,
-		EthereumPrecompilesChecks,
-	>,
 	PrecompileAt<AddressU64<9>, Blake2F, EthereumPrecompilesChecks>,
 	PrecompileAt<AddressU64<1024>, Sha3FIPS256, (CallableByContract, CallableByPrecompile)>,
 	PrecompileAt<AddressU64<1025>, Dispatch<R>, (CallableByContract, CallableByPrecompile)>,
