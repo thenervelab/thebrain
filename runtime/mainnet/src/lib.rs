@@ -1321,8 +1321,8 @@ parameter_types! {
 	pub const SecondRankingPalletId: PalletId = PalletId(*b"ranking2");
 	pub const ThirdRankingPalletId: PalletId = PalletId(*b"ranking3");
 	pub const FourthRankingPalletId: PalletId = PalletId(*b"ranking4");
-	pub const ComputeNodesRewardPercentage: u32 = 40;
-	pub const MinerNodesRewardPercentage: u32 = 60;
+	pub const ComputeNodesRewardPercentage: u32 = 75;
+	pub const MinerNodesRewardPercentage: u32 = 25;
 	pub const RankingsInstanceId1: u16 = 1;
 	pub const RankingsInstanceId2: u16 = 2;
 	pub const RankingsInstanceId3: u16 = 3;

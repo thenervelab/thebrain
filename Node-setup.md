@@ -9,10 +9,8 @@ Hippius Network is an advanced blockchain platform built on Substrate, designed 
 ### 💡 Unique Reward Distribution Model
 
 #### Reward Allocation Breakdown
-- **Staking Rewards**: 20% of Marketplace Revenue
-- **Ranking Rewards**: 70% of Marketplace Revenue
-  - Split equally between two ranking pallets
-- **Treasury**: 10% of Marketplace Revenue
+- **Validators (Staking pallet validators)**: 75% of Marketplace balance
+- **Treasury / Pot**: 25% of Marketplace balance (sent to the configured treasury/pot address)
 
 #### Validator Reward Mechanism
 1. **Era-Based Distribution**
@@ -59,6 +57,8 @@ Hippius Network is an advanced blockchain platform built on Substrate, designed 
 ### Reward Distribution Workflow
 
 Marketplace Revenue (100%) ├── Staking Rewards (20%) │ └── Distributed among Active Validators ├── Ranking Rewards (70%) │ ├── Ranking Pallet 1 (35%) │ └── Ranking Pallet 2 (35%) └── Treasury (10%)
+
+Marketplace balance (100%) ├── Validators (75%) │ └── Distributed among all active validators in the staking/session set └── Treasury / Pot (25%)    └── Transferred to the configured treasury/pot account
 
 
 

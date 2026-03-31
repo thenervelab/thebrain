@@ -1622,7 +1622,7 @@ pub mod pallet {
         ) -> DispatchResult {
         
             let rankings_amount = alpha_to_release
-                .checked_mul(60)
+                .checked_mul(75)
                 .and_then(|x| x.checked_div(100))
                 .unwrap_or_default();
         
