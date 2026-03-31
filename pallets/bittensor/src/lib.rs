@@ -927,26 +927,40 @@ pub mod pallet {
 			) = Self::calculate_weights_for_nodes();
 
 			// update rankings in ranking pallet for both instances
-			let _ = RankingsPallet::<T>::save_rankings_update(
+			if let Err(e) = RankingsPallet::<T>::save_rankings_update(
 				weights.clone(),
 				storage_nodes_ss58.clone(),
 				storage_miners_node_id.clone(),
 				storage_miners_node_types.clone(),
 				block_number,
 				1u32,
-			);
+			) {
+				log::error!(
+					target: "runtime::bittensor",
+					"save_rankings_update (instance 1, storage) failed at block {:?}: {}",
+					block_number,
+					e
+				);
+			}
 
 			// let _ = RankingsPallet::<T, pallet_rankings::Instance2>::save_rankings_update([compute_weights.clone(), linked_compute_miners_weights.clone()].concat(),
 			//             [compute_all_nodes_ss58.clone(), linked_compute_miners_ss58.clone()].concat(), [compute_all_miners_node_id.clone(), linked_compute_miners_node_id.clone()].concat(), [compute_all_miners_node_types.clone(), linked_compute_miners_node_types.clone()].concat(), block_number, 2u32);
 
-			let _ = RankingsPallet::<T, pallet_rankings::Instance3>::save_rankings_update(
+			if let Err(e) = RankingsPallet::<T, pallet_rankings::Instance3>::save_rankings_update(
 				validator_weights.clone(),
 				validator_all_nodes_ss58.clone(),
 				validator_all_miners_node_id.clone(),
 				validator_all_miners_node_types.clone(),
 				block_number,
 				3u32,
-			);
+			) {
+				log::error!(
+					target: "runtime::bittensor",
+					"save_rankings_update (instance 3, validator) failed at block {:?}: {}",
+					block_number,
+					e
+				);
+			}
 
 			// let _ = RankingsPallet::<T, pallet_rankings::Instance4>::save_rankings_update([gpu_weights.clone(), linked_gpu_miners_weights.clone()].concat(),
 			//         [gpu_all_nodes_ss58.clone(), linked_gpu_miners_ss58.clone()].concat(), [gpu_all_miners_node_id.clone(), linked_gpu_miners_node_id.clone()].concat(), [gpu_all_miners_node_types.clone(), linked_gpu_miners_node_types.clone()].concat(), block_number,  4u32);

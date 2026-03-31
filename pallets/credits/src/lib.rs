@@ -536,7 +536,14 @@ pub mod pallet {
 				let mut vm_available_ips = IpPallet::<T>::available_client_ips();
 
 				if let Some(ip) = vm_available_ips.pop() {
-					let _ = IpPallet::<T>::assign_ip_to_client(who.clone(), ip);
+					if let Err(e) = IpPallet::<T>::assign_ip_to_client(who.clone(), ip) {
+						log::error!(
+							target: "runtime::credits",
+							"assign_ip_to_client failed for {:?}: {:?}",
+							who,
+							e
+						);
+					}
 				}
 			}
 

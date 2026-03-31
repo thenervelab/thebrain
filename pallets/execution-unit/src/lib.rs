@@ -263,6 +263,7 @@ pub mod pallet {
 		NodeNotRegistered,
 		InvalidNodeType,
 		StorageBelowTwoTB,
+		ArithmeticOverflow,
 		/// Primary network interface is not provided.
 		NoPrimaryNetworkInterface,
 		/// Disks array is empty.
@@ -421,7 +422,7 @@ pub mod pallet {
 				.ok_or(Error::<T>::ArithmeticOverflow)?;
 			
 			ensure!(
-				new_count <= max_requests_per_block,
+				new_count <= max_requests_per_block.into(),
 				Error::<T>::TooManyRequests
 			);
 			

@@ -108,7 +108,14 @@ pub mod pallet {
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
                 weight_used = weight_used.saturating_add(Self::handle_arion_storage_charging(current_block));
                 weight_used = weight_used.saturating_add(Self::handle_all_subscription_charging(current_block));
-                let _ = Self::release_matured_pending_alpha(current_block);
+                if let Err(e) = Self::release_matured_pending_alpha(current_block) {
+                    log::error!(
+                        target: "runtime::marketplace",
+                        "release_matured_pending_alpha failed at block {:?}: {:?}",
+                        current_block,
+                        e
+                    );
+                }
                 // Conservative: iterating batches is unbounded; charge at least one read.
                 weight_used = weight_used.saturating_add(T::DbWeight::get().reads_writes(1, 0));
             }
@@ -1252,8 +1259,20 @@ pub mod pallet {
                         // Still within grace period, do nothing
                     } else {
                         // Grace period expired, cancel ALL subscriptions
-                        let _ = Self::do_cancel_all_subscriptions(&account_id);
-                        users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
+                        match Self::do_cancel_all_subscriptions(&account_id) {
+                            Ok(()) => {
+                                users_charged_or_cancelled =
+                                    users_charged_or_cancelled.saturating_add(1);
+                            },
+                            Err(e) => {
+                                log::error!(
+                                    target: "runtime::marketplace",
+                                    "do_cancel_all_subscriptions failed for {:?}: {:?}",
+                                    account_id,
+                                    e
+                                );
+                            },
+                        }
                     }
                 }
             }
@@ -1351,8 +1370,13 @@ pub mod pallet {
                                 user
                             );
                         } else {
-                            // remove user storage request and unpin
-                            let _ = pallet_arion::Pallet::<T>::delete_user_entries(user.clone());
+                            // remove user storage request and unpin (infallible storage clears in arion)
+                            log::warn!(
+                                target: "runtime::marketplace",
+                                "storage grace expired; clearing arion file stats for {:?}",
+                                user
+                            );
+                            pallet_arion::Pallet::<T>::delete_user_entries(user.clone());
 
                             Self::remove_storage_last_charged_at(&user);
                             users_charged_or_removed = users_charged_or_removed.saturating_add(1);

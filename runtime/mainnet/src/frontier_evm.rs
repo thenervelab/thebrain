@@ -19,7 +19,7 @@ use crate::{
 	precompiles::{HipiusPrecompiles, PrecompileName, ASSET_PRECOMPILE_ADDRESS_PREFIX},
 	*,
 };
-use frame_support::{parameter_types, traits::FindAuthor, weights::Weight};
+use frame_support::{pallet_prelude::*, parameter_types, traits::FindAuthor, weights::Weight};
 use sp_core::{crypto::ByteArray, H160, U256};
 use sp_runtime::{traits::BlakeTwo256, ConsensusEngineId, DigestItem, Permill};
 use sp_std::{marker::PhantomData, prelude::*};
