@@ -296,10 +296,16 @@ pub mod pallet {
 								sp_core::crypto::KeyTypeId(*b"babe"),
 								&validator.encode(),
 							) {
-								let _ = <pallet_session::Pallet<T>>::purge_keys(
+								if let Err(e) = <pallet_session::Pallet<T>>::purge_keys(
 									frame_system::RawOrigin::Signed(validator_account.clone()).into(),
-								);
-								// Ignore error - continue execution
+								) {
+									log::error!(
+										target: "runtime::metagraph",
+										"❌ Error purging session keys for validator {}: {:?}",
+										validator_ss58,
+										e
+									);
+								}
 							}
 
 							// 3. Update any relevant storage

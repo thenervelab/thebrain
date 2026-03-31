@@ -319,6 +319,7 @@ pub mod pallet {
 		InvalidAccountId,
 		InsufficientStake,
 		InsufficientBalanceForFee,
+		InsufficientCreditsForFee,
 		FeeTooHigh,
 		NodeTypeDisabled,
 		NodeTypeMismatch,
@@ -692,9 +693,11 @@ pub mod pallet {
 					} else {
 						// decrease credits and mint balance
 						let fee_u128: u128 = fee.try_into().unwrap_or_default();
+						let current_credits = CreditsPallet::<T>::get_free_credits(&owner);
+						ensure!(current_credits >= fee_u128, Error::<T>::InsufficientCreditsForFee);
 						CreditsPallet::<T>::decrease_user_credits(&owner.clone(), fee_u128);
 						// Deposit charge to marketplace account
-						let _ = pallet_balances::Pallet::<T>::deposit_creating(
+						let _imbalance = pallet_balances::Pallet::<T>::deposit_creating(
 							&Self::account_id(),
 							fee,
 						);

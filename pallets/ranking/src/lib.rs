@@ -235,7 +235,7 @@ pub mod pallet {
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T, I>::InvalidNodeType);
 
-			let _ = Self::do_update_rankings(weights, all_nodes_ss58, node_ids, node_types);
+			Self::do_update_rankings(weights, all_nodes_ss58, node_ids, node_types)?;
 			log::info!("✅ Successfully updated rankings");
 			// Return a successful `DispatchResult`
 			Ok(())

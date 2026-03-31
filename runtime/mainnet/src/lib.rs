@@ -552,12 +552,18 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 				.unwrap_or_default();
 
 			// Transfer to the specific account
-			let _ = pallet_balances::Pallet::<Runtime>::transfer(
+			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
 				&marketplace_account.clone(),
 				&recipient_account,
 				treasury_amount,
 				ExistenceRequirement::KeepAlive,
-			);
+			) {
+				log::error!(
+					target: "runtime::marketplace_payout",
+					"❌ Treasury transfer from marketplace failed: {:?}",
+					e
+				);
+			}
 
 			// // Burn the staking amount
 			// let _ = pallet_balances::Pallet::<Runtime>::burn(
@@ -574,18 +580,33 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 					staking_amount.checked_div(num_validators.into()).unwrap_or_default();
 
 				for validator in validators {
-					let _ = pallet_balances::Pallet::<Runtime>::transfer(
+					if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
 						&marketplace_account.clone(),
 						&validator,
 						amount_per_validator,
 						ExistenceRequirement::KeepAlive,
-					);
+					) {
+						log::error!(
+							target: "runtime::marketplace_payout",
+							"❌ Validator payout transfer from marketplace failed for {:?}: {:?}",
+							validator,
+							e
+						);
+						continue;
+					}
 
-					let _ = pallet_staking::Pallet::<Runtime>::bond(
+					if let Err(e) = pallet_staking::Pallet::<Runtime>::bond(
 						frame_system::RawOrigin::Signed(validator.clone()).into(),
 						amount_per_validator,
 						pallet_staking::RewardDestination::Staked,
-					);
+					) {
+						log::warn!(
+							target: "runtime::marketplace_payout",
+							"⚠️ Auto-bond failed for validator {:?}: {:?}",
+							validator,
+							e
+						);
+					}
 				}
 			}
 		}
@@ -603,12 +624,18 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 				.unwrap_or_default();
 
 			// Transfer to the specific account
-			let _ = pallet_balances::Pallet::<Runtime>::transfer(
+			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
 				&registration_account.clone(),
 				&recipient_account,
 				treasury_amount,
 				ExistenceRequirement::KeepAlive,
-			);
+			) {
+				log::error!(
+					target: "runtime::marketplace_payout",
+					"❌ Treasury transfer from registration failed: {:?}",
+					e
+				);
+			}
 
 			// Get the list of validators from the session
 			let validators = <pallet_session::Pallet<Runtime>>::validators(); // Ensure you have the correct type here
@@ -619,18 +646,33 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 
 				for validator in validators {
 					// Transfer the amount to the validator's account first
-					let _ = pallet_balances::Pallet::<Runtime>::transfer(
+					if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
 						&registration_account.clone(),
 						&validator,
 						amount_per_validator,
 						ExistenceRequirement::KeepAlive,
-					);
+					) {
+						log::error!(
+							target: "runtime::marketplace_payout",
+							"❌ Validator payout transfer from registration failed for {:?}: {:?}",
+							validator,
+							e
+						);
+						continue;
+					}
 
-					let _ = pallet_staking::Pallet::<Runtime>::bond(
+					if let Err(e) = pallet_staking::Pallet::<Runtime>::bond(
 						frame_system::RawOrigin::Signed(validator.clone()).into(),
 						amount_per_validator,
 						pallet_staking::RewardDestination::Staked,
-					);
+					) {
+						log::warn!(
+							target: "runtime::marketplace_payout",
+							"⚠️ Auto-bond failed for validator {:?}: {:?}",
+							validator,
+							e
+						);
+					}
 				}
 			}
 		}

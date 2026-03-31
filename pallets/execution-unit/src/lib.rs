@@ -1121,8 +1121,16 @@ pub mod pallet {
 
 				// update storage request and remove files
 				if !is_registered {
-					// unRegister and check if storage miner than unpin and update storage
-					let _ = pallet_arion::Pallet::<T>::deregister_family(miner.owner.clone());
+					// Unregister family first; if this fails, don't proceed (prevents orphaned family state).
+					if let Err(e) = pallet_arion::Pallet::<T>::deregister_family(miner.owner.clone()) {
+						log::error!(
+							target: "runtime::execution_unit",
+							"❌ Failed to deregister family for owner {:?}: {:?}",
+							miner.owner,
+							e
+						);
+						continue;
+					}
 
 					// unregister node , Hotkey nodes
 					pallet_registration::Pallet::<T>::do_unregister_main_node(
