@@ -400,6 +400,7 @@ pub mod pallet {
         SubscriptionNotFound,
         TooManySharedUsers,
         TooManyActiveSubscriptions,
+        PlanAlreadyExists,
         InsufficientPermissions,
         CannotTransferToSelf,
         RecipientTooManySubscriptions,
@@ -442,6 +443,7 @@ pub mod pallet {
         PlanOperationDisabled,
         TooManyRequests,
         OperationNotAllowed,
+        InvalidInput,
         UserNotFound,
         ResubscribeCooldownActive,
 	}
@@ -507,6 +509,10 @@ pub mod pallet {
 
             // Generate a unique ID for the plan (you can use a counter or a random hash)
             let plan_id = T::Hashing::hash_of(&plan_name); // Example way to generate a unique ID
+            ensure!(
+                !Plans::<T>::contains_key(&plan_id),
+                Error::<T>::PlanAlreadyExists
+            );
 
             // Create the plan object
             let new_plan = Plan {
@@ -547,6 +553,20 @@ pub mod pallet {
                 Error::<T>::TooManyRequests
             );
             UserRequestsCount::<T>::insert(&owner, user_requests_count + (plan_ids.len() as u32));
+
+            ensure!(
+                selected_image_names.len() == plan_ids.len(),
+                Error::<T>::InvalidInput
+            );
+            if let Some(ref xs) = location_ids {
+                ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
+            }
+            if let Some(ref xs) = cloud_init_cids {
+                ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
+            }
+            if let Some(ref xs) = miner_ids {
+                ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
+            }
 
             // Initialize default values for optional parameters
             let location_ids = location_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
