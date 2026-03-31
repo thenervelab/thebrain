@@ -1164,37 +1164,43 @@ pub mod pallet {
                 if user_free_credits >= total_charge {
                     // User has enough credits, charge them
                     users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
+                    let mut storage_charged_ok = false;
+                    let mut compute_charged_ok = false;
                     
                     // Charge for storage subscriptions
                     if total_storage_charge > 0 {
-                        let _ = Self::consume_credits(
+                        let storage_charge_result = Self::consume_credits(
                             account_id.clone(), 
                             total_storage_charge,
                             Self::account_id().clone(), 
                             pallet_rankings::Pallet::<T>::account_id().clone()
                         );
-
-                        let _ = Self::record_credits_transaction(
-                            &account_id,
-                            NativeTransactionType::Subscription,
-                            total_storage_charge.into(),
-                        );
+                        if storage_charge_result.is_ok() {
+                            let tx_result = Self::record_credits_transaction(
+                                &account_id,
+                                NativeTransactionType::Subscription,
+                                total_storage_charge.into(),
+                            );
+                            storage_charged_ok = tx_result.is_ok();
+                        }
                     }
 
                     // Charge for compute subscriptions
                     if total_compute_charge > 0 {
-                        let _ = Self::consume_credits(
+                        let compute_charge_result = Self::consume_credits(
                             account_id.clone(), 
                             total_compute_charge,
                             Self::account_id().clone(), 
                             pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone()
                         );
-
-                        let _ = Self::record_credits_transaction(
-                            &account_id,
-                            NativeTransactionType::Subscription,
-                            total_compute_charge.into(),
-                        );
+                        if compute_charge_result.is_ok() {
+                            let tx_result = Self::record_credits_transaction(
+                                &account_id,
+                                NativeTransactionType::Subscription,
+                                total_compute_charge.into(),
+                            );
+                            compute_charged_ok = tx_result.is_ok();
+                        }
                     }
 
                     // Update all charged subscriptions
@@ -1204,6 +1210,13 @@ pub mod pallet {
                                 let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
                                 let block_diff = current_block.saturating_sub(sub.last_charged_at);
                                 if block_diff >= blocks_per_hour {
+                                    // Only advance timestamps if the relevant charge path succeeded.
+                                    if sub.package.is_storage_plan && !storage_charged_ok {
+                                        continue;
+                                    }
+                                    if !sub.package.is_storage_plan && !compute_charged_ok {
+                                        continue;
+                                    }
                                     let elapsed_hours = block_diff / blocks_per_hour.max(1u32.into());
                                     // Advance by whole hours only, preserving any remainder blocks
                                     sub.last_charged_at = sub
@@ -1279,18 +1292,24 @@ pub mod pallet {
             
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
-                        let _ = Self::consume_credits(user.clone(), charge_amount,
-                            Self::account_id().clone(), RankingsPallet::<T>::account_id().clone());
-
-                        // Record transaction
-                        let _ = Self::record_credits_transaction(
-                            &user,
-                            NativeTransactionType::Subscription,
-                            charge_amount.into(),
+                        let charge_result = Self::consume_credits(
+                            user.clone(),
+                            charge_amount,
+                            Self::account_id().clone(),
+                            RankingsPallet::<T>::account_id().clone(),
                         );
 
-                        let _ = Self::update_storage_last_charged_at(&user);
-                        users_charged_or_removed = users_charged_or_removed.saturating_add(1);
+                        if charge_result.is_ok() {
+                            let tx_result = Self::record_credits_transaction(
+                                &user,
+                                NativeTransactionType::Subscription,
+                                charge_amount.into(),
+                            );
+                            let ts_result = Self::update_storage_last_charged_at(&user);
+                            if tx_result.is_ok() && ts_result.is_ok() {
+                                users_charged_or_removed = users_charged_or_removed.saturating_add(1);
+                            }
+                        }
                     } else {
                         let blocks_per_hour = T::BlocksPerHour::get();
                         let grace_period_blocks = T::StorageGracePeriod::get();
