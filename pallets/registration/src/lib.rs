@@ -356,23 +356,33 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
+			let mut reads: u64 = 0;
+			let mut writes: u64 = 0;
+
 			// Initialize fees if not already set
+			reads = reads.saturating_add(1);
 			if CurrentNodeTypeFee::<T>::iter().count() == 0 {
 				Self::initialize_node_type_fees();
+				writes = writes.saturating_add(5);
 			}
 
 			let report_clear_interval = <T as pallet::Config>::ReportRequestsClearInterval::get();
 
 			// Clear entries every 1000 blocks
 			if _n % report_clear_interval.into() == 0u32.into() {
-				// Iterate through all entries in HardwareRequestsCount
-				ReportSubmissionCount::<T>::iter().for_each(|(node_id, _count)| {
+				// Iterate through all entries and remove them
+				for (node_id, _count) in ReportSubmissionCount::<T>::iter() {
+					reads = reads.saturating_add(1);
 					ReportSubmissionCount::<T>::remove(&node_id);
-				});
+					writes = writes.saturating_add(1);
+				}
 			}
 
 			let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
 			if _n % consensus_period == 0u32.into() {
+				// Conservative: consensus touches reports + may unregister nodes.
+				reads = reads.saturating_add(10);
+				writes = writes.saturating_add(10);
 				Self::apply_deregistration_consensus();
 			}
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
@@ -383,6 +393,9 @@ pub mod pallet {
 				if (_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
 					// Clear deregistration reports
 					let _ = TemporaryDeregistrationReports::<T>::clear(u32::MAX, None);
+					// Conservative: clear can touch many keys; count at least 1 read.
+					reads = reads.saturating_add(1);
+					writes = writes.saturating_add(1);
 				}
 			}
 
@@ -394,20 +407,22 @@ pub mod pallet {
 				let mut all_registrations: Vec<(Vec<u8>, T::AccountId, bool)> = Vec::new();
 
 				// Collect from ColdkeyNodeRegistration
-				ColdkeyNodeRegistration::<T>::iter().for_each(|(node_id, node_info)| {
+				for (node_id, node_info) in ColdkeyNodeRegistration::<T>::iter() {
+					reads = reads.saturating_add(1);
 					if let Some(info) = node_info {
 						all_registrations.push((node_id, info.owner.clone(), true));
 						*owner_node_counts.entry(info.owner).or_default() += 1;
 					}
-				});
+				}
 
 				// Collect from NodeRegistration
-				NodeRegistration::<T>::iter().for_each(|(node_id, node_info)| {
+				for (node_id, node_info) in NodeRegistration::<T>::iter() {
+					reads = reads.saturating_add(1);
 					if let Some(info) = node_info {
 						all_registrations.push((node_id, info.owner.clone(), false));
 						*owner_node_counts.entry(info.owner).or_default() += 1;
 					}
-				});
+				}
 
 				// Group registrations by owner
 				let mut owner_registrations: BTreeMap<T::AccountId, Vec<(Vec<u8>, bool)>> =
@@ -428,8 +443,10 @@ pub mod pallet {
 						for (node_id, is_coldkey) in registrations {
 							if is_coldkey {
 								ColdkeyNodeRegistration::<T>::remove(&node_id);
+								writes = writes.saturating_add(1);
 							} else {
 								NodeRegistration::<T>::remove(&node_id);
+								writes = writes.saturating_add(1);
 							}
 						}
 					}
@@ -443,26 +460,12 @@ pub mod pallet {
 				.collect::<Vec<_>>()
 				.into_iter()
 				.for_each(|h| {
+					reads = reads.saturating_add(1);
 					UsedChallenges::<T>::remove(h);
+					writes = writes.saturating_add(1);
 				});
 
-			// Migrate existing data to OwnerToNode
-			for (_node_id, node_info) in ColdkeyNodeRegistration::<T>::iter() {
-				if let Some(info) = node_info {
-					OwnerToNode::<T>::mutate(info.owner, |nodes| {
-						nodes.get_or_insert_with(Vec::new).push(_node_id.clone());
-					});
-				}
-			}
-			for (_node_id, node_info) in NodeRegistration::<T>::iter() {
-				if let Some(info) = node_info {
-					OwnerToNode::<T>::mutate(info.owner, |nodes| {
-						nodes.get_or_insert_with(Vec::new).push(_node_id.clone());
-					});
-				}
-			}
-
-			Weight::zero()
+			T::DbWeight::get().reads_writes(reads, writes)
 		}
 	}
 
@@ -498,6 +501,7 @@ pub mod pallet {
 
 			// Get the current block number
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
+			let owner_for_index = owner.clone();
 
 			let node_info = NodeInfo {
 				node_id: node_id.clone(),
@@ -509,6 +513,7 @@ pub mod pallet {
 				owner,
 			};
 			ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+			Self::owner_to_node_add(&owner_for_index, &node_id);
 
 			Self::deposit_event(Event::MainNodeRegistered { node_id });
 			Ok(().into())
@@ -672,7 +677,7 @@ pub mod pallet {
 				}
 
 				// Check if fee charging is enabled
-				if Self::fee_charging_enabled() && !is_in_uids {
+				if Self::fee_charging_enabled() {
 					// Calculate dynamic fee based on node type
 					let fee = Self::calculate_dynamic_fee(node_type.clone());
 
@@ -710,6 +715,7 @@ pub mod pallet {
 
 			// Get the current block number
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
+			let owner_for_index = owner.clone();
 
 			let node_info = NodeInfo {
 				node_id: node_id.clone(),
@@ -721,6 +727,7 @@ pub mod pallet {
 				owner,
 			};
 			ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+			Self::owner_to_node_add(&owner_for_index, &node_id);
 
 			// Persist identities (for later audits/liveness checks)
 			Libp2pMainIdentity::<T>::insert(node_id.clone(), (main_key_type, main_public_key));
@@ -1271,6 +1278,26 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+		fn owner_to_node_add(owner: &T::AccountId, node_id: &Vec<u8>) {
+			OwnerToNode::<T>::mutate(owner, |nodes_opt| {
+				let nodes = nodes_opt.get_or_insert_with(Vec::new);
+				if !nodes.iter().any(|n| n == node_id) {
+					nodes.push(node_id.clone());
+				}
+			});
+		}
+
+		fn owner_to_node_remove(owner: &T::AccountId, node_id: &Vec<u8>) {
+			OwnerToNode::<T>::mutate_exists(owner, |nodes_opt| {
+				if let Some(nodes) = nodes_opt.as_mut() {
+					nodes.retain(|n| n != node_id);
+					if nodes.is_empty() {
+						*nodes_opt = None;
+					}
+				}
+			});
+		}
+
 		pub fn get_all_degraded_storage_miners() -> Vec<Vec<u8>> {
 			let mut degraded_nodes = Vec::new();
 
@@ -1957,12 +1984,15 @@ pub mod pallet {
 				return;
 			}
 
-			if let Some(_node_info) = NodeRegistration::<T>::get(&node_id) {
+			if let Some(node_info) = NodeRegistration::<T>::get(&node_id) {
 				// Since LinkedNodes is removed, treat node_id as its own scope for metrics
 				let main_node_id = node_id.clone();
 
 				// Remove the node registration
 				NodeRegistration::<T>::remove(&node_id);
+
+				// Keep OwnerToNode in sync
+				Self::owner_to_node_remove(&node_info.owner, &node_id);
 
 				// Remove metrics for the main node
 				T::MetricsInfo::remove_metrics(main_node_id.clone());
@@ -1976,9 +2006,17 @@ pub mod pallet {
 		}
 
 		pub fn do_unregister_main_node(node_id: Vec<u8>) {
+			let owner = ColdkeyNodeRegistration::<T>::get(&node_id).map(|info| info.owner);
+
 			// Remove the main node's registration
 			// Note: LinkedNodes has been removed; sub-node cleanup is handled separately
 			ColdkeyNodeRegistration::<T>::remove(node_id.clone());
+
+			// Keep OwnerToNode in sync
+			if let Some(owner) = owner {
+				Self::owner_to_node_remove(&owner, &node_id);
+			}
+
 			T::MetricsInfo::remove_metrics(node_id.clone());
 			// T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 
