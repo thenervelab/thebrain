@@ -1058,7 +1058,7 @@ pub mod pallet {
 
                 for sub in &compute_subs_to_charge {
                     let price_per_block = sub.package.price;
-                    let charge_amount = price_per_block * (T::BlocksPerHour::get() as u128);
+                    let charge_amount = price_per_block.saturating_mul(T::BlocksPerHour::get() as u128);
                     total_compute_charge = total_compute_charge.saturating_add(charge_amount);
                 }
 
@@ -1436,8 +1436,6 @@ pub mod pallet {
                         let credits_to_take = remaining.min(batch.remaining_credits);
                         let current = CreditsPallet::<T>::get_free_credits(&batch.owner);
                         ensure!(current >= credits_to_take, Error::<T>::InsufficientFreeCredits);
-                        // Decrease user credits
-                        CreditsPallet::<T>::decrease_user_credits(&batch.owner, credits_to_take);
                         
                         // Referral logic
                         let mut total_discount = 0u128;
@@ -1448,10 +1446,15 @@ pub mod pallet {
                                 &mut total_discount
                             )?;
                         }
+                        let effective_charge = credits_to_take.saturating_sub(total_discount);
+                        ensure!(current >= effective_charge, Error::<T>::InsufficientFreeCredits);
+
+                        // Decrease user credits (apply discount)
+                        CreditsPallet::<T>::decrease_user_credits(&batch.owner, effective_charge);
                         
                         // FIXED: Use remaining amounts for accurate alpha calculation
                         // This ensures the ratio reflects the current batch state
-                        let credits_to_take_u256 = U256::from(credits_to_take);
+                        let credits_to_take_u256 = U256::from(effective_charge);
                         let remaining_alpha_u256 = U256::from(batch.remaining_alpha);
                         let remaining_credits_u256 = U256::from(batch.remaining_credits.max(1));
                         
@@ -1465,7 +1468,7 @@ pub mod pallet {
                             .as_u128();
                         
                         // Update batch credits first (needed for future calculations in this batch)
-                        batch.remaining_credits = batch.remaining_credits.saturating_sub(credits_to_take);
+                        batch.remaining_credits = batch.remaining_credits.saturating_sub(effective_charge);
                         
                         // Handle frozen/unfrozen logic
                         if batch.is_frozen && block_number < batch.release_time {
@@ -1516,7 +1519,7 @@ pub mod pallet {
                         batch.remaining_alpha = batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
                         // Save updated batch
                         Batches::<T>::insert(batch_id, batch);
-                        remaining -= credits_to_take;
+                        remaining = remaining.saturating_sub(effective_charge);
                     }
                 }
             }

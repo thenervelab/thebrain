@@ -29,3 +29,5 @@ SECURITY_AUDIT_REPORT.md
 .envrc
 .aider*
 .env
+
+audit_reports
