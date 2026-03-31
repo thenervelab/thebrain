@@ -95,6 +95,11 @@ parameter_types! {
 	pub const GlobalDepositHalvingPeriodBlocks: BlockNumber = 14_400; // ~24 hours at 6s/block
 	pub const UnregisterCooldownBlocks: BlockNumber = 7200; // ~12 hours at 6s/block
 	pub const UnbondingPeriodBlocks: BlockNumber = 100_800; // ~7 days at 6s/block
+	/// Retained CRUSH map + attestation commitment epochs (older keys pruned each `submit_crush_map`).
+	pub const EpochCrushMapRetention: u64 = 100;
+	pub const MaxCrushEpochPrunesPerCall: u32 = 200;
+	/// Cap on `prune_attestation_buckets` batch size (weight + anti-spam).
+	pub const MaxAttestationBucketsPrunePerCall: u32 = 64;
 }
 
 pub struct ArionAdminMembers;
@@ -117,6 +122,7 @@ impl pallet_arion::Config for Runtime {
 	type AttestationAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
 	type MaxContentHashLen = ConstU32<32>;
 	type AttestationRetentionBuckets = ConstU32<168>;
+	type MaxAttestationBucketsPrunePerCall = MaxAttestationBucketsPrunePerCall;
 	type WeightInfo = pallet_arion::weights::SubstrateWeight<Runtime>;
 	type MaxAttestations = ConstU32<1000>;
 	type MaxShardHashLen = ConstU32<100>;
@@ -129,6 +135,8 @@ impl pallet_arion::Config for Runtime {
 	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
 	type EnforceRegisteredMinersInMap = ConstBool<false>;
 	type MaxMiners = MaxMiners;
+	type EpochCrushMapRetention = EpochCrushMapRetention;
+	type MaxCrushEpochPrunesPerCall = MaxCrushEpochPrunesPerCall;
 	type MaxEndpointLen = MaxEndpointLen;
 	type MaxHttpAddrLen = MaxHttpAddrLen;
 	type MaxStatsUpdates = MaxStatsUpdates;

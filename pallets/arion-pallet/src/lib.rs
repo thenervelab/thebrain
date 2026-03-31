@@ -504,6 +504,18 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxMiners: Get<u32>;
 
+		/// How many latest CRUSH / commitment epochs to keep on-chain (`EpochParams`, `EpochMiners`,
+		/// `EpochRoot`, and `EpochAttestationCommitments` for the same `epoch` key).
+		///
+		/// Each `submit_crush_map` removes the epoch `current_epoch - retention` once
+		/// `current_epoch > retention`. Set to **`0` to disable pruning** (legacy behavior).
+		#[pallet::constant]
+		type EpochCrushMapRetention: Get<u64>;
+
+		/// Max epoch keys removed per `prune_historical_crush_epochs` call (bounds weight).
+		#[pallet::constant]
+		type MaxCrushEpochPrunesPerCall: Get<u32>;
+
 		/// Max bytes for `endpoint`.
 		#[pallet::constant]
 		type MaxEndpointLen: Get<u32>;
@@ -549,6 +561,11 @@ pub mod pallet {
 		/// Default recommendation: 1000 buckets (~7 days at 300 blocks/bucket, 6s blocks)
 		#[pallet::constant]
 		type AttestationRetentionBuckets: Get<u32>;
+
+		/// Max bucket keys processed (removed if present) per `prune_attestation_buckets` call.
+		/// Bounds weight and reduces permissionless spam surface.
+		#[pallet::constant]
+		type MaxAttestationBucketsPrunePerCall: Get<u32>;
 
 		// --- Registration economics / safety controls ---
 
@@ -973,6 +990,11 @@ pub mod pallet {
 			pruned_count: u32,
 			oldest_remaining: u32,
 		},
+		CrushEpochsPruned {
+			start_epoch: u64,
+			pruned: u32,
+			next_epoch: u64,
+		},
 		UserFilesUpdated {
 			user: T::AccountId,
 			size: u128,
@@ -1053,7 +1075,19 @@ pub mod pallet {
 		NodeNotRegistered,
 		InvalidNodeType,
 		FamilyNotFound,
-		EmptyAttestations
+		EmptyAttestations,
+		/// Same attestation (identical Ed25519 signature) already in this bucket or repeated in the batch.
+		DuplicateAttestation,
+		/// Reserved balance was lower than expected; full deposit could not be unreserved.
+		PartialUnreserve,
+		/// `EpochCrushMapRetention` is zero; historical CRUSH epoch pruning is disabled.
+		CrushEpochPruningDisabled,
+		/// Batch size for `prune_historical_crush_epochs` is zero or exceeds the configured cap.
+		InvalidCrushEpochPruneBatch,
+		/// `start_epoch` is already past the stale cutover; no stale epochs to remove from this start.
+		CrushEpochPruneStartBeyondCutoff,
+		/// `max_buckets` for `prune_attestation_buckets` is zero or exceeds [`Config::MaxAttestationBucketsPrunePerCall`].
+		InvalidAttestationPruneBatch,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -1097,20 +1131,56 @@ pub mod pallet {
 			UserTotalFilesCount::<T>::remove(&account_id);
 		}
 
+		/// Remove per-child weight / quality tracking (avoids stale keys after deregistration).
+		fn remove_child_node_weight_entries(child: &T::AccountId) {
+			NodeWeightByChild::<T>::remove(child);
+			NodeWeightLastBucket::<T>::remove(child);
+			NodeQualityByChild::<T>::remove(child);
+		}
+
+		/// Reset family-level registration and weight state when the family has no active children.
+		///
+		/// Call only after `FamilyActiveChildren` has been set to **0** and indices updated.
+		fn cleanup_family_when_no_active_children(family: &T::AccountId) {
+			if FamilyActiveChildren::<T>::get(family) != 0 {
+				return;
+			}
+			// Preserve `FamilyUsedFreeSlot`: once a family claimed its first free child, it must not
+			// get another free registration after all children deregister (anti-yoyo / MaxFamilies).
+			FamilyFirstSeenBucket::<T>::remove(family);
+			FamilyWeightRaw::<T>::remove(family);
+			FamilyWeight::<T>::remove(family);
+			FamilyChildren::<T>::remove(family);
+			FamilyActiveChildren::<T>::remove(family);
+			FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
+		}
+
 		pub fn deregister_family(family_id: T::AccountId) -> Result<(), Error<T>> {
 			// Ensure the family exists
 			if FamilyActiveChildren::<T>::contains_key(&family_id) {
+				let now = Self::now();
+				let cooldown_end = now.saturating_add(T::UnregisterCooldownBlocks::get());
+
 				// Remove all miners associated with this family
 				let miners = FamilyChildren::<T>::take(&family_id);
 				for miner in miners.iter() {
 					// Remove miner from relevant storage maps
-					let mut reg = ChildRegistrations::<T>::get(miner)
+					let reg = ChildRegistrations::<T>::get(miner)
 						.ok_or(Error::<T>::ChildNotRegistered)?;
 					NodeIdToChild::<T>::remove(reg.node_id);
 					let amount = reg.deposit;
 					if LockupEnabled::<T>::get() && !amount.is_zero() {
-						let _ = T::DepositCurrency::unreserve(&family_id, amount);
+						let unreleased = T::DepositCurrency::unreserve(&family_id, amount);
+						ensure!(unreleased.is_zero(), Error::<T>::PartialUnreserve);
 					}
+
+					// Same anti-yoyo as `deregister_child`: cooldowns + nonce bump before dropping records
+					ChildCooldownUntil::<T>::insert(miner, cooldown_end);
+					NodeIdCooldownUntil::<T>::insert(reg.node_id, cooldown_end);
+					let nonce = NodeIdNonce::<T>::get(reg.node_id);
+					NodeIdNonce::<T>::insert(reg.node_id, nonce.saturating_add(1));
+
+					Self::remove_child_node_weight_entries(miner);
 					ChildRegistrations::<T>::remove(miner);
 					TotalActiveChildren::<T>::put(
 						TotalActiveChildren::<T>::get().saturating_sub(1),
@@ -1120,7 +1190,10 @@ pub mod pallet {
 				// Remove family-related storage entries
 				FamilyActiveChildren::<T>::remove(&family_id);
 				FamilyChildren::<T>::remove(&family_id);
-				FamilyUsedFreeSlot::<T>::remove(&family_id);
+				// Do not clear `FamilyUsedFreeSlot`: family must not reclaim a “first free child” slot.
+				FamilyFirstSeenBucket::<T>::remove(&family_id);
+				FamilyWeightRaw::<T>::remove(&family_id);
+				FamilyWeight::<T>::remove(&family_id);
 
 				// Update family count
 				let family_count = FamilyCount::<T>::get();
@@ -1346,7 +1419,30 @@ pub mod pallet {
 		}
 
 		pub fn get_total_family_weight() -> u128 {
-			FamilyWeight::<T>::iter().map(|(_, w)| w as u128).sum()
+			FamilyActiveChildren::<T>::iter()
+				.filter(|(_, n)| *n > 0)
+				.map(|(family, _)| FamilyWeight::<T>::get(&family) as u128)
+				.sum()
+		}
+
+		/// Highest epoch id that may be removed as stale (`EpochParams` / miners / root / commitment).
+		///
+		/// Aligns with `submit_crush_map` pruning: while `current_epoch <= retention`, nothing is stale.
+		fn crush_epoch_prune_cutoff() -> u64 {
+			let current = CurrentEpoch::<T>::get();
+			let retention = T::EpochCrushMapRetention::get();
+			if retention == 0 || current <= retention {
+				0
+			} else {
+				current.saturating_sub(retention)
+			}
+		}
+
+		fn remove_crush_epoch_storage(epoch: u64) {
+			EpochParams::<T>::remove(epoch);
+			EpochMiners::<T>::remove(epoch);
+			EpochRoot::<T>::remove(epoch);
+			EpochAttestationCommitments::<T>::remove(epoch);
 		}
 
 		fn log2_fixed_u128(x: u128) -> u32 {
@@ -1413,9 +1509,6 @@ pub mod pallet {
 			bucket: u32,
 			updates: &BoundedVec<(T::AccountId, u16), T::MaxNodeWeightUpdates>,
 		) -> DispatchResult {
-			// Track which families are impacted so we only recompute those.
-			let mut touched_families: sp_std::vec::Vec<T::AccountId> = sp_std::vec::Vec::new();
-
 			for (child, w) in updates.iter() {
 				let reg =
 					ChildRegistrations::<T>::get(child).ok_or(Error::<T>::ChildNotRegistered)?;
@@ -1424,10 +1517,6 @@ pub mod pallet {
 				let capped = (*w).min(T::MaxNodeWeight::get());
 				NodeWeightByChild::<T>::insert(child, capped);
 				NodeWeightLastBucket::<T>::insert(child, bucket);
-
-				if !touched_families.iter().any(|f| f == &reg.family) {
-					touched_families.push(reg.family);
-				}
 			}
 
 			// Bucket advances once per call (monotonic), so newcomers are measured relative to that.
@@ -1437,9 +1526,17 @@ pub mod pallet {
 				updates: updates.len() as u32,
 			});
 
-			// Recompute family weights for touched families.
+			// Recompute every family with active children so weights cannot be suppressed by
+			// omitting a family's children from this batch.
+			let mut families_to_recompute: sp_std::vec::Vec<T::AccountId> = sp_std::vec::Vec::new();
+			for (family, n) in FamilyActiveChildren::<T>::iter() {
+				if n > 0 {
+					families_to_recompute.push(family);
+				}
+			}
+
 			let mut computed: u32 = 0;
-			for family in touched_families.iter() {
+			for family in families_to_recompute.iter() {
 				let raw = Self::compute_family_weight_from_nodes(family);
 
 				// Newcomer floor, only if raw > 0 and within grace
@@ -1529,6 +1626,12 @@ pub mod pallet {
 			EpochMiners::<T>::insert(epoch, miners.clone());
 			EpochRoot::<T>::insert(epoch, root_h256);
 			CurrentEpoch::<T>::put(epoch);
+
+			let retention = T::EpochCrushMapRetention::get();
+			if retention > 0 && epoch > retention {
+				let prune_epoch = epoch.saturating_sub(retention);
+				Self::remove_crush_epoch_storage(prune_epoch);
+			}
 
 			Self::deposit_event(Event::CrushMapPublished {
 				epoch,
@@ -1722,13 +1825,18 @@ pub mod pallet {
 			NodeIdToChild::<T>::remove(reg.node_id);
 			TotalActiveChildren::<T>::put(TotalActiveChildren::<T>::get().saturating_sub(1));
 			let fam_active = FamilyActiveChildren::<T>::get(&reg.family);
-			FamilyActiveChildren::<T>::insert(&reg.family, fam_active.saturating_sub(1));
+			let new_fam_active = fam_active.saturating_sub(1);
+			FamilyActiveChildren::<T>::insert(&reg.family, new_fam_active);
 			// Maintain family children index
 			FamilyChildren::<T>::mutate(&reg.family, |v| {
 				if let Some(pos) = v.iter().position(|c| c == &child) {
 					v.swap_remove(pos);
 				}
 			});
+			Self::remove_child_node_weight_entries(&child);
+			if new_fam_active.is_zero() {
+				Self::cleanup_family_when_no_active_children(&reg.family);
+			}
 
 			// Cooldowns
 			ChildCooldownUntil::<T>::insert(&child, cooldown_end);
@@ -1780,16 +1888,15 @@ pub mod pallet {
 			let mut reg =
 				ChildRegistrations::<T>::get(&child).ok_or(Error::<T>::ChildNotRegistered)?;
 
-			// here we should checkk 
 			ensure!(reg.status == ChildStatus::Active, Error::<T>::ChildNotActive);
-			
+
 			if FamilyActiveChildren::<T>::get(&reg.family) == 1 {
 				let node_info =
-				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&reg.family)
-					.ok_or(Error::<T>::NodeNotRegistered)?;
+					pallet_registration::Pallet::<T>::get_registered_node_for_owner(&reg.family)
+						.ok_or(Error::<T>::NodeNotRegistered)?;
 
 				pallet_registration::Pallet::<T>::do_unregister_main_node(node_info.node_id);
-			} 
+			}
 
 			let now = Self::now();
 			let lockup_enabled = LockupEnabled::<T>::get();
@@ -1804,13 +1911,18 @@ pub mod pallet {
 			NodeIdToChild::<T>::remove(reg.node_id);
 			TotalActiveChildren::<T>::put(TotalActiveChildren::<T>::get().saturating_sub(1));
 			let fam_active = FamilyActiveChildren::<T>::get(&reg.family);
-			FamilyActiveChildren::<T>::insert(&reg.family, fam_active.saturating_sub(1));
+			let new_fam_active = fam_active.saturating_sub(1);
+			FamilyActiveChildren::<T>::insert(&reg.family, new_fam_active);
 			// Maintain family children index
 			FamilyChildren::<T>::mutate(&reg.family, |v| {
 				if let Some(pos) = v.iter().position(|c| c == &child) {
 					v.swap_remove(pos);
 				}
 			});
+			Self::remove_child_node_weight_entries(&child);
+			if new_fam_active.is_zero() {
+				Self::cleanup_family_when_no_active_children(&reg.family);
+			}
 
 			// Cooldowns
 			ChildCooldownUntil::<T>::insert(&child, cooldown_end);
@@ -1851,8 +1963,13 @@ pub mod pallet {
 
 			let amount = reg.deposit;
 			if LockupEnabled::<T>::get() && !amount.is_zero() {
-				let _ = T::DepositCurrency::unreserve(&reg.family, amount);
+				let unreleased = T::DepositCurrency::unreserve(&reg.family, amount);
+				ensure!(unreleased.is_zero(), Error::<T>::PartialUnreserve);
 			}
+
+			// Idempotent: normally cleared in `deregister_child` / `force_deregister_child`; ensures
+			// no stale weight keys if a registration path ever skipped cleanup.
+			Self::remove_child_node_weight_entries(&child);
 
 			// Remove record; cooldown tombstones remain in separate storage.
 			ChildRegistrations::<T>::remove(&child);
@@ -1910,6 +2027,7 @@ pub mod pallet {
 		/// # Security
 		/// - Each attestation signature is verified using Ed25519
 		/// - Invalid signatures are rejected with InvalidAttestationSignature error
+		/// - Duplicate signatures are rejected within the batch and against stored attestations for the bucket
 		#[pallet::call_index(2)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::submit_attestations(attestations.len() as u32), Pays::No))]
 		pub fn submit_attestations(
@@ -1954,9 +2072,23 @@ pub mod pallet {
 				);
 			}
 
+			let n = attestations.len();
+			for i in 0..n {
+				for j in (i + 1)..n {
+					ensure!(
+						attestations[i].signature != attestations[j].signature,
+						Error::<T>::DuplicateAttestation
+					);
+				}
+			}
+
 			// Append to existing attestations for this bucket (or create new vec)
 			AttestationsByBucket::<T>::try_mutate(bucket, |existing| {
 				for attestation in attestations.iter() {
+					ensure!(
+						!existing.iter().any(|e| e.signature == attestation.signature),
+						Error::<T>::DuplicateAttestation
+					);
 					existing
 						.try_push(attestation.clone())
 						.map_err(|_| Error::<T>::AttestationBucketFull)?;
@@ -2136,10 +2268,12 @@ pub mod pallet {
 		///
 		/// This is a permissionless operation - anyone can call it to help clean up
 		/// old attestation data. The retention period ensures recent data is protected.
+		/// Callers pay normal transaction fees; [`Config::MaxAttestationBucketsPrunePerCall`] caps
+		/// `max_buckets` per extrinsic to limit weight and cheap spam.
 		///
 		/// # Parameters
 		/// - `before_bucket`: Prune all buckets with ID less than this value
-		/// - `max_buckets`: Maximum number of buckets to prune in this call (for weight limiting)
+		/// - `max_buckets`: Maximum number of bucket ids to scan/removals to perform in this call (see pallet config cap)
 		#[pallet::call_index(34)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_attestation_buckets(*max_buckets), Pays::No))]
 		pub fn prune_attestation_buckets(
@@ -2147,11 +2281,16 @@ pub mod pallet {
 			before_bucket: u32,
 			max_buckets: u32,
 		) -> DispatchResult {
-			// Permissionless - anyone can prune old data
+			// Permissionless - anyone can prune old data (fees still apply).
 			let _who = ensure_signed(origin)?;
 
 			let current = CurrentAttestationBucket::<T>::get();
 			let retention = T::AttestationRetentionBuckets::get();
+			let cap = T::MaxAttestationBucketsPrunePerCall::get();
+			ensure!(
+				max_buckets > 0 && max_buckets <= cap,
+				Error::<T>::InvalidAttestationPruneBatch
+			);
 
 			// Ensure we're not pruning within the retention period
 			ensure!(
@@ -2227,6 +2366,48 @@ pub mod pallet {
 				count: file_count,
 			});
 
+			Ok(())
+		}
+
+		/// Remove stale CRUSH map + attestation commitment entries for epochs `start_epoch`.. in batches.
+		///
+		/// For clearing **historical bloat** (epochs written before automatic pruning), repeat with
+		/// `start_epoch = next_epoch` from [`Event::CrushEpochsPruned`] until
+		/// `CrushEpochPruneStartBeyondCutoff`.
+		///
+		/// Only epochs **`<=` current cutover** are removed (same rule as [`Self::submit_crush_map`]).
+		/// Permissionless; weight bounded by `count` and [`Config::MaxCrushEpochPrunesPerCall`].
+		#[pallet::call_index(36)]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_historical_crush_epochs(*count), Pays::No))]
+		pub fn prune_historical_crush_epochs(
+			origin: OriginFor<T>,
+			start_epoch: u64,
+			count: u32,
+		) -> DispatchResult {
+			let _who = ensure_signed(origin)?;
+
+			let retention = T::EpochCrushMapRetention::get();
+			ensure!(retention > 0, Error::<T>::CrushEpochPruningDisabled);
+
+			let cap = T::MaxCrushEpochPrunesPerCall::get();
+			ensure!(count > 0 && count <= cap, Error::<T>::InvalidCrushEpochPruneBatch);
+
+			let cutoff = Self::crush_epoch_prune_cutoff();
+			ensure!(start_epoch <= cutoff, Error::<T>::CrushEpochPruneStartBeyondCutoff);
+
+			let mut e = start_epoch;
+			let mut pruned: u32 = 0;
+			while pruned < count && e <= cutoff {
+				Self::remove_crush_epoch_storage(e);
+				pruned = pruned.saturating_add(1);
+				e = e.saturating_add(1);
+			}
+
+			Self::deposit_event(Event::CrushEpochsPruned {
+				start_epoch,
+				pruned,
+				next_epoch: e,
+			});
 			Ok(())
 		}
 	}

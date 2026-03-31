@@ -37,6 +37,7 @@ pub trait WeightInfo {
     fn register_warden() -> Weight;
     fn deregister_warden() -> Weight;
     fn prune_attestation_buckets(n: u32) -> Weight;
+    fn prune_historical_crush_epochs(n: u32) -> Weight;
 }
 
 /// Weights for pallet_arion using the Substrate node and recommended hardware.
@@ -49,11 +50,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// Storage: Arion MapRootHash (r:0 w:1)
     /// The weight includes `n` miners being processed.
     fn submit_crush_map(n: u32) -> Weight {
-        // Base: read epoch + write 4 storage items
+        // Base: read epoch + write 4 storage items; up to 4 extra writes when pruning an old epoch
         // Per miner: bounded vec encoding overhead
         Weight::from_parts(25_000_000, 0)
             .saturating_add(Weight::from_parts(500_000, 0).saturating_mul(n.into()))
             .saturating_add(T::DbWeight::get().reads(1))
+            .saturating_add(T::DbWeight::get().writes(4))
             .saturating_add(T::DbWeight::get().writes(4))
     }
 
@@ -111,9 +113,14 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             65_000_000,
             0
         );
+        // Bounded duplicate checks: O(n^2) within batch and O(n * existing) vs stored vec;
+        // both lengths are capped by MaxAttestations (~n).
+        let n_sq = n.saturating_mul(n);
+        let dedup = Weight::from_parts(3_000, 0).saturating_mul(n_sq.into());
 
         base
             .saturating_add(per_attestation.saturating_mul(n.into()))
+            .saturating_add(dedup)
             .saturating_add(T::DbWeight::get().reads(n.into()))
             .saturating_add(T::DbWeight::get().writes(n.into()))
     }
@@ -189,6 +196,14 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().reads(n.into())) // contains_key checks
             .saturating_add(T::DbWeight::get().writes(n.into())) // remove_prefix calls
     }
+
+    /// Per epoch: remove EpochParams, EpochMiners, EpochRoot, EpochAttestationCommitments
+    fn prune_historical_crush_epochs(n: u32) -> Weight {
+        Weight::from_parts(12_000_000, 0)
+            .saturating_add(Weight::from_parts(4_000_000, 0).saturating_mul(n.into()))
+            .saturating_add(T::DbWeight::get().reads(1))
+            .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(4)))
+    }
 }
 
 /// For backwards compatibility and testnets
@@ -222,8 +237,10 @@ impl WeightInfo for () {
     }
 
     fn submit_attestations(n: u32) -> Weight {
+        let n_sq = n.saturating_mul(n);
         Weight::from_parts(10_000_000, 0)
             .saturating_add(Weight::from_parts(65_000_000, 0).saturating_mul(n.into()))
+            .saturating_add(Weight::from_parts(3_000, 0).saturating_mul(n_sq.into()))
             .saturating_add(RocksDbWeight::get().reads(n.into()))
             .saturating_add(RocksDbWeight::get().writes(n.into()))
     }
@@ -279,5 +296,12 @@ impl WeightInfo for () {
             .saturating_add(Weight::from_parts(5_000_000, 0).saturating_mul(n.into()))
             .saturating_add(RocksDbWeight::get().reads(n.into())) // contains_key checks
             .saturating_add(RocksDbWeight::get().writes(n.into())) // remove_prefix calls
+    }
+
+    fn prune_historical_crush_epochs(n: u32) -> Weight {
+        Weight::from_parts(12_000_000, 0)
+            .saturating_add(Weight::from_parts(4_000_000, 0).saturating_mul(n.into()))
+            .saturating_add(RocksDbWeight::get().reads(1))
+            .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(4)))
     }
 }

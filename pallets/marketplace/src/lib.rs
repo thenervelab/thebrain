@@ -1510,24 +1510,6 @@ pub mod pallet {
 			(current_block - grace_period_start) <= grace_period_blocks
         }
 
-		/// Checks if a compute request is within the grace period
-		pub fn is_compute_request_in_grace_period(
-			last_charged_at: BlockNumberFor<T>, 
-			current_block: BlockNumberFor<T>
-		) -> bool {
-			let blocks_per_hour = T::BlocksPerHour::get().into();
-			let grace_period_blocks = Self::get_compute_grace_period();
-			
-			// Calculate grace period start after hourly charging
-			let grace_period_start = last_charged_at.saturating_add(blocks_per_hour);
-			
-			// Check if the current block is within the grace period
-            if current_block <= grace_period_start {
-                return true;
-            }
-			(current_block - grace_period_start) <= grace_period_blocks
-		}
-
         /// Helper function to update the last charged timestamp for a user
         pub fn update_storage_last_charged_at(who: &T::AccountId) -> DispatchResult {
             // Get the current timestamp from the timestamp pallet
