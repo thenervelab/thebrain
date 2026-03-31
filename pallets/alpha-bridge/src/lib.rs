@@ -244,6 +244,12 @@ pub mod pallet {
 		1_000_000_000
 	}
 
+	/// Permanently tracks all completed deposit IDs to prevent replay attacks
+	#[pallet::storage]
+	#[pallet::getter(fn completed_deposit_ids)]
+	pub type CompletedDepositIds<T: Config> =
+		StorageMap<_, Blake2_128Concat, DepositId, (), OptionQuery>;
+
 	/// Minimum withdrawal amount (in halphaRao)
 	#[pallet::storage]
 	#[pallet::getter(fn min_withdrawal_amount)]
@@ -462,6 +468,11 @@ pub mod pallet {
 			nonce: u64,
 		) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
+			// ❗ HARD REPLAY PROTECTION
+			ensure!(
+				!CompletedDepositIds::<T>::contains_key(request_id),
+				Error::<T>::DepositAlreadyCompleted
+			);
 			Self::ensure_guardian(&guardian)?;
 			Self::ensure_not_paused()?;
 
@@ -914,6 +925,8 @@ pub mod pallet {
 				*total = new_total;
 				Ok(())
 			})?;
+
+			CompletedDepositIds::<T>::insert(deposit_id, ());
 
 			// Update deposit status
 			deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
