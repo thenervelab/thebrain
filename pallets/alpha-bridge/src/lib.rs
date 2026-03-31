@@ -344,6 +344,8 @@ pub mod pallet {
 		ThresholdTooHigh,
 		/// Too many guardians provided
 		TooManyGuardians,
+		/// Guardian list must not contain duplicate accounts
+		DuplicateGuardians,
 		/// Failed to convert between numeric balance types
 		AmountConversionFailed,
 		/// Failed to mint tokens
@@ -632,6 +634,11 @@ pub mod pallet {
 		) -> DispatchResult {
 			ensure_root(origin)?;
 			ensure!(guardians.len() <= MAX_GUARDIANS, Error::<T>::TooManyGuardians);
+			let unique_guardians: BTreeSet<_> = guardians.iter().cloned().collect();
+			ensure!(
+				unique_guardians.len() == guardians.len(),
+				Error::<T>::DuplicateGuardians
+			);
 			let guardian_count = guardians.len() as u16;
 			ensure!(approve_threshold > 0, Error::<T>::ThresholdTooLow);
 			ensure!(approve_threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
