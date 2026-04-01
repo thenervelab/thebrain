@@ -169,7 +169,7 @@ fn test_attestation_on_completed_deposit_fails() {
 				amount,
 				nonce,
 			),
-			Error::<Test>::DepositAlreadyCompleted
+			Error::<Test>::DepositIdAlreadySettled
 		);
 	});
 }

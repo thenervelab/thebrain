@@ -250,6 +250,14 @@ pub mod pallet {
 	pub type CompletedDepositIds<T: Config> =
 		StorageMap<_, Blake2_128Concat, DepositId, (), OptionQuery>;
 
+	/// Permanently records deposit request IDs that reached a terminal on-chain outcome
+	/// (Completed mint or Cancelled). Never cleared by `cleanup_deposit`, so guardians
+	/// cannot re-attest the same `request_id` after TTL pruning of `Deposits`.
+	#[pallet::storage]
+	#[pallet::getter(fn settled_deposit_ids)]
+	pub type SettledDepositIds<T: Config> =
+		StorageMap<_, Blake2_128Concat, DepositId, (), OptionQuery>;
+
 	/// Minimum withdrawal amount (in halphaRao)
 	#[pallet::storage]
 	#[pallet::getter(fn min_withdrawal_amount)]
@@ -354,6 +362,8 @@ pub mod pallet {
 		ArithmeticOverflow,
 		/// Deposit already completed
 		DepositAlreadyCompleted,
+		/// Deposit request ID already settled (completed or cancelled); cannot attest again
+		DepositIdAlreadySettled,
 		/// Withdrawal request already completed or failed
 		WithdrawalRequestAlreadyFinalized,
 		/// Amount must be greater than zero
@@ -470,13 +480,12 @@ pub mod pallet {
 			nonce: u64,
 		) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
-			// ❗ HARD REPLAY PROTECTION
-			ensure!(
-				!CompletedDepositIds::<T>::contains_key(request_id),
-				Error::<T>::DepositAlreadyCompleted
-			);
 			Self::ensure_guardian(&guardian)?;
 			Self::ensure_not_paused()?;
+			ensure!(
+				!SettledDepositIds::<T>::contains_key(request_id),
+				Error::<T>::DepositIdAlreadySettled
+			);
 
 			// Verify request_id matches recomputed hash
 			let mut verify_data = Vec::new();
@@ -756,6 +765,7 @@ pub mod pallet {
 
 				deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
 				deposit.status = DepositStatus::Cancelled;
+				SettledDepositIds::<T>::insert(request_id, ());
 
 				Self::deposit_event(Event::DepositCancelled { id: request_id, reason });
 
@@ -938,6 +948,7 @@ pub mod pallet {
 			// Update deposit status
 			deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
 			deposit.status = DepositStatus::Completed;
+			SettledDepositIds::<T>::insert(deposit_id, ());
 			Deposits::<T>::insert(deposit_id, deposit);
 
 			Self::deposit_event(Event::DepositCompleted { id: deposit_id, recipient, amount });
