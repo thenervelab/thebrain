@@ -108,7 +108,19 @@ Important: We removed the strict “online in last 10 minutes” gate in favor o
 - User profiles list only active replicas on active miners
 - If a file shows fewer than `R` replicas, it is under-replicated and queued for healing
 
+### Marketplace alpha routing (on-chain, separate from placement)
 
+These flows govern **native alpha** movement in the marketplace / staking stack. They are **not** the same as off-chain placement or miner ping rules above.
+
+1. **`distribute_alpha` (marketplace pallet)**  
+   When alpha is released through paths that call `distribute_alpha` (e.g. frozen-batch / credit settlement), the amount is split **75%** to the **rankings** pallet account and **25%** to the **marketplace** pallet account.  
+   The **75/25** ratio is **hardcoded** in `pallets/marketplace/src/lib.rs` — it is not yet exposed as pallet or runtime configuration constants.
+
+2. **Era payout (`MarketplaceRewardPayout` on mainnet runtime)**  
+   At era boundaries, the **marketplace pallet’s free balance** is split **75%** to **active validators** (shared equally per account in the session validator set) and **25%** to the **treasury** destination encoded in runtime.  
+   This is independent of the rankings-vs-marketplace split in (1).
+
+**Documentation hygiene:** Older descriptions sometimes used a **70% / 20% / 10%** style breakdown (e.g. ranking vs staking vs treasury). **Mainnet currently uses 75/25** for the era marketplace payout (validators vs treasury) and **75/25** for `distribute_alpha` (rankings vs marketplace). Any design doc should name these two mechanisms separately and match the code above.
 
 ### Incentives and anti-cheat
 - Higher reliability → more eligible placements
