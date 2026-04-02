@@ -383,7 +383,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		// submits hotkeys fetched from tao to our local storage
 		#[pallet::call_index(0)]
-		#[pallet::weight(Weight::from_parts(100_000u64.saturating_add(50_000u64.saturating_mul(hot_keys.len() as u64)).saturating_add(10_000u64.saturating_mul(dividends.len() as u64)), 0).saturating_add(T::DbWeight::get().reads(3).writes(2)))]
+		#[pallet::weight(Weight::from_parts(100_000u64.saturating_add(50_000u64.saturating_mul(hot_keys.len() as u64)).saturating_add(10_000u64.saturating_mul(dividends.len() as u64)), 0).saturating_add(T::DbWeight::get().reads_writes(3, 2)))]
 		pub fn submit_hot_keys_info(
 			origin: OriginFor<T>,
 			hot_keys: Vec<UID>,

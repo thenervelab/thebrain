@@ -1314,9 +1314,6 @@ pub mod pallet {
                     if total_file_size_in_bs == 0 {
                         continue;
                     }
-                
-                    // Convert total file size to gigabytes
-                    let total_file_size_in_gbs = total_file_size_in_bs as f64 / 1_073_741_824.0;
             
                     // Get the current price per GB from the marketplace pallet
                     let price_per_gb = Self::get_price_per_gb();

@@ -630,6 +630,9 @@ pub mod pallet {
 
 		/// Atomically set the guardian set and threshold (sudo/root only)
 		///
+		/// Pending deposits are re-checked immediately: if enough **current** guardian votes
+		/// already exist for the new threshold, they are finalized (mint) in the same call.
+		///
 		/// # Arguments
 		/// * `origin` - Must be root
 		/// * `guardians` - New guardian set
@@ -654,6 +657,7 @@ pub mod pallet {
 			Guardians::<T>::put(guardians.clone());
 			ApproveThreshold::<T>::put(approve_threshold);
 			Self::deposit_event(Event::GuardiansUpdated { guardians, approve_threshold });
+			Self::reevaluate_pending_deposits_after_guardian_change()?;
 			Ok(())
 		}
 
@@ -890,6 +894,52 @@ pub mod pallet {
 		/// Ensure the bridge is not paused
 		pub fn ensure_not_paused() -> DispatchResult {
 			ensure!(!Paused::<T>::get(), Error::<T>::BridgePaused);
+			Ok(())
+		}
+
+		/// After [`Guardians`] and [`ApproveThreshold`] are updated, finalize any **pending** deposits
+		/// that already have enough attestations from **current** guardians (same rule as
+		/// [`Pallet::attest_deposit`]). Prevents deposits from staying stuck when the set or
+		/// threshold changes (e.g. threshold lowered, or overlapping guardians retained).
+		fn reevaluate_pending_deposits_after_guardian_change() -> DispatchResult {
+			let current_guardians: BTreeSet<_> = Guardians::<T>::get().into_iter().collect();
+			let threshold = ApproveThreshold::<T>::get() as usize;
+
+			let pending: Vec<(DepositId, Deposit<T>)> = Deposits::<T>::iter()
+				.filter(|(_, d)| d.status == DepositStatus::Pending)
+				.collect();
+
+			let mut to_finalize: Vec<(DepositId, Deposit<T>)> = Vec::with_capacity(pending.len());
+			let mut added_mint: u128 = 0;
+
+			for (id, deposit) in pending {
+				let valid_vote_count = deposit
+					.votes
+					.iter()
+					.filter(|voter| current_guardians.contains(voter))
+					.count();
+				if valid_vote_count >= threshold {
+					added_mint = added_mint
+						.checked_add(deposit.amount)
+						.ok_or(Error::<T>::ArithmeticOverflow)?;
+					to_finalize.push((id, deposit));
+				}
+			}
+
+			if to_finalize.is_empty() {
+				return Ok(());
+			}
+
+			let total_minted = TotalMintedByBridge::<T>::get();
+			let new_total = total_minted
+				.checked_add(added_mint)
+				.ok_or(Error::<T>::ArithmeticOverflow)?;
+			ensure!(new_total <= GlobalMintCap::<T>::get(), Error::<T>::CapExceeded);
+
+			for (id, deposit) in to_finalize {
+				Self::finalize_deposit(id, deposit)?;
+			}
+
 			Ok(())
 		}
 

@@ -669,11 +669,37 @@ pub mod pallet {
 
 		/// Weight information for extrinsics in this pallet.
 		type WeightInfo: crate::weights::WeightInfo;
+
+		/// Run [`MinerStatsByUid`] pruning every N blocks (`0` = disabled).
+		#[pallet::constant]
+		type MinerStatsPruneInterval: Get<BlockNumberFor<Self>>;
+
+		/// Max `MinerStatsByUid` keys examined per pruning tick (removals are a subset).
+		#[pallet::constant]
+		type MinerStatsPruneMaxScanPerBlock: Get<u32>;
 	}
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
+
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
+			let interval = T::MinerStatsPruneInterval::get();
+			if interval.is_zero() {
+				return Weight::zero();
+			}
+			if n % interval != Zero::zero() {
+				return Weight::zero();
+			}
+			Self::prune_stale_miner_stats();
+			<T as Config>::WeightInfo::miner_stats_prune_hook(
+				T::MinerStatsPruneMaxScanPerBlock::get(),
+				T::MaxChildrenTotal::get(),
+			)
+		}
+	}
 
 	/// Current CRUSH epoch.
 	#[pallet::storage]
@@ -708,6 +734,15 @@ pub mod pallet {
 	/// Stats by miner uid (latest).
 	#[pallet::storage]
 	pub type MinerStatsByUid<T> = StorageMap<_, Blake2_128Concat, u32, MinerStats, OptionQuery>;
+
+	/// CRUSH / stats `uid` supplied at child registration (stats cleanup). `0` means unset (legacy).
+	#[pallet::storage]
+	pub type ChildMinerUid<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u32, OptionQuery>;
+
+	/// Last `MinerStatsByUid` key processed by batched pruning (`None` = next pass from the start).
+	#[pallet::storage]
+	pub type MinerStatsPruneCursor<T> = StorageValue<_, u32, OptionQuery>;
 
 	// -------------------------
 	// Attestation state
@@ -1131,6 +1166,80 @@ pub mod pallet {
 			UserTotalFilesCount::<T>::remove(&account_id);
 		}
 
+		/// Remove [`MinerStatsByUid`] and [`ChildMinerUid`] for a deregistered child account.
+		pub fn clear_miner_uid_and_stats_for_child(child: &T::AccountId) {
+			if let Some(uid) = ChildMinerUid::<T>::get(child) {
+				MinerStatsByUid::<T>::remove(uid);
+				ChildMinerUid::<T>::remove(child);
+			}
+		}
+
+		fn find_uid_for_node_in_epoch(epoch: u64, node_id: &[u8; 32]) -> Option<u32> {
+			EpochMiners::<T>::get(epoch).and_then(|miners| {
+				miners
+					.iter()
+					.find(|m| m.node_id == *node_id)
+					.map(|m| m.uid)
+			})
+		}
+
+		/// Uids that still correspond to **active** children (registration + optional CRUSH map).
+		fn collect_protected_miner_uids() -> Vec<u32> {
+			let epoch = CurrentEpoch::<T>::get();
+			let mut out: Vec<u32> = Vec::new();
+			for (child, reg) in ChildRegistrations::<T>::iter() {
+				if reg.status != ChildStatus::Active {
+					continue;
+				}
+				if let Some(uid) = ChildMinerUid::<T>::get(&child) {
+					if uid != 0 && !out.contains(&uid) {
+						out.push(uid);
+					}
+				}
+				if let Some(uid) = Self::find_uid_for_node_in_epoch(epoch, &reg.node_id) {
+					if !out.contains(&uid) {
+						out.push(uid);
+					}
+				}
+			}
+			out
+		}
+
+		/// Bounded pass over [`MinerStatsByUid`]: drop entries whose uid is not protected.
+		fn prune_stale_miner_stats() {
+			let max_scan = T::MinerStatsPruneMaxScanPerBlock::get();
+			if max_scan == 0 {
+				return;
+			}
+			let protected = Self::collect_protected_miner_uids();
+			let start = MinerStatsPruneCursor::<T>::get();
+
+			let keys: Vec<u32> = MinerStatsByUid::<T>::iter()
+				.map(|(k, _)| k)
+				.filter(|k| start.map(|s| *k > s).unwrap_or(true))
+				.take(max_scan as usize)
+				.collect();
+
+			if keys.is_empty() {
+				MinerStatsPruneCursor::<T>::kill();
+				return;
+			}
+
+			for uid in &keys {
+				let keep = protected.iter().any(|&p| p == *uid);
+				if !keep {
+					MinerStatsByUid::<T>::remove(uid);
+				}
+			}
+
+			let last = *keys.last().expect("keys non-empty; qed");
+			if (keys.len() as u32) < max_scan {
+				MinerStatsPruneCursor::<T>::kill();
+			} else {
+				MinerStatsPruneCursor::<T>::put(last);
+			}
+		}
+
 		/// Remove per-child weight / quality tracking (avoids stale keys after deregistration).
 		fn remove_child_node_weight_entries(child: &T::AccountId) {
 			NodeWeightByChild::<T>::remove(child);
@@ -1180,6 +1289,7 @@ pub mod pallet {
 					let nonce = NodeIdNonce::<T>::get(reg.node_id);
 					NodeIdNonce::<T>::insert(reg.node_id, nonce.saturating_add(1));
 
+					Self::clear_miner_uid_and_stats_for_child(miner);
 					Self::remove_child_node_weight_entries(miner);
 					ChildRegistrations::<T>::remove(miner);
 					TotalActiveChildren::<T>::put(
@@ -1678,6 +1788,10 @@ pub mod pallet {
 		///
 		/// Signature payload (domain-separated, SCALE-encoded):
 		/// - ("ARION_NODE_REG_V1", family, child, node_id, nonce)
+		///
+		/// `miner_uid`: CRUSH / stats uid for this node (`0` = not tracked; prefer the uid used in
+		/// `submit_miner_stats` and the epoch map so deregistration and periodic pruning can clear
+		/// [`MinerStatsByUid`]).
 		#[pallet::call_index(10)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::register_child(), Pays::No))]
 		pub fn register_child(
@@ -1686,6 +1800,7 @@ pub mod pallet {
 			child: T::AccountId,
 			node_id: [u8; 32],
 			node_sig: [u8; 64],
+			miner_uid: u32,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(who == family, DispatchError::BadOrigin);
@@ -1769,6 +1884,10 @@ pub mod pallet {
 			NodeIdToChild::<T>::insert(node_id, &child);
 			NodeIdNonce::<T>::insert(node_id, nonce.saturating_add(1));
 
+			if miner_uid != 0 {
+				ChildMinerUid::<T>::insert(&child, miner_uid);
+			}
+
 			// Update counts
 			TotalActiveChildren::<T>::put(total.saturating_add(1));
 			FamilyActiveChildren::<T>::insert(&family, fam_count.saturating_add(1));
@@ -1811,6 +1930,8 @@ pub mod pallet {
 				ChildRegistrations::<T>::get(&child).ok_or(Error::<T>::ChildNotRegistered)?;
 			ensure!(who == reg.family, DispatchError::BadOrigin);
 			ensure!(reg.status == ChildStatus::Active, Error::<T>::ChildNotActive);
+
+			Self::clear_miner_uid_and_stats_for_child(&child);
 
 			let now = Self::now();
 			let lockup_enabled = LockupEnabled::<T>::get();
@@ -1898,6 +2019,8 @@ pub mod pallet {
 				pallet_registration::Pallet::<T>::do_unregister_main_node(node_info.node_id);
 			}
 
+			Self::clear_miner_uid_and_stats_for_child(&child);
+
 			let now = Self::now();
 			let lockup_enabled = LockupEnabled::<T>::get();
 			let unbonding_end = if !lockup_enabled || reg.deposit.is_zero() {
@@ -1973,6 +2096,7 @@ pub mod pallet {
 
 			// Remove record; cooldown tombstones remain in separate storage.
 			ChildRegistrations::<T>::remove(&child);
+			ChildMinerUid::<T>::remove(&child);
 
 			Self::deposit_event(Event::ChildUnbonded {
 				family: reg.family,

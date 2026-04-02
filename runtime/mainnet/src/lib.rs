@@ -99,6 +99,10 @@ parameter_types! {
 	pub const MaxCrushEpochPrunesPerCall: u32 = 200;
 	/// Cap on `prune_attestation_buckets` batch size (weight + anti-spam).
 	pub const MaxAttestationBucketsPrunePerCall: u32 = 64;
+	/// Periodic [`MinerStatsByUid`] pruning in arion (`0` = disabled).
+	pub const ArionMinerStatsPruneInterval: BlockNumber = 100;
+	/// Max stats uid keys scanned per pruning tick.
+	pub const ArionMinerStatsPruneMaxScanPerBlock: u32 = 128;
 }
 
 pub struct ArionAdminMembers;
@@ -160,6 +164,8 @@ impl pallet_arion::Config for Runtime {
 	type NodeScoreScale = NodeScoreScale;
 	type StrikePenalty = StrikePenalty;
 	type IntegrityFailPenalty = IntegrityFailPenalty;
+	type MinerStatsPruneInterval = ArionMinerStatsPruneInterval;
+	type MinerStatsPruneMaxScanPerBlock = ArionMinerStatsPruneMaxScanPerBlock;
 }
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -1879,7 +1885,7 @@ construct_runtime!(
 		// RankingGpu: pallet_rankings::<Instance4> = 71,
 		// RankingS3: pallet_rankings::<Instance5> = 77,
 		Credits: pallet_credits = 65,
-		// ContainerRegistry: pallet_container_registry = 69, // REMOVED in spec_version 9175 (storage cleared via migration)
+		// ContainerRegistry: pallet_container_registry = 69, 
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
 		// IpfsPallet: ipfs_pallet = 75,
