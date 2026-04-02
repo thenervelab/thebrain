@@ -414,7 +414,7 @@ pub mod pallet {
 			let max_requests_per_block =
 				<T as pallet::Config>::MaxOffchainHardwareSubmitRequestsPerPeriod::get();
 			let user_requests_count = HardwareRequestsCount::<T>::get(&node_id);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+			ensure!(user_requests_count.saturating_add(1) <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
 			let new_count = user_requests_count
@@ -565,10 +565,10 @@ pub mod pallet {
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(&node_id);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+			ensure!(user_requests_count.saturating_add(1) <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			RequestsCount::<T>::insert(&node_id, user_requests_count.saturating_add(1));
 
 			// Fetch existing metrics
 			let mut metrics = NodeMetrics::<T>::get(&node_id).ok_or(Error::<T>::MetricsNotFound)?;

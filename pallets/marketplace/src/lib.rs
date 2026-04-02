@@ -716,7 +716,7 @@ pub mod pallet {
             // Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = T::MaxRequestsPerBlock::get();
 			let user_requests_count = UserRequestsCount::<T>::get(&authority);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+			ensure!(user_requests_count.saturating_add(1) <= max_requests_per_block, Error::<T>::TooManyRequests);
 
             CreditsPallet::<T>::ensure_is_authority(&authority)?;
 

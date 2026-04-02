@@ -1004,7 +1004,7 @@ pub mod pallet {
 			ensure!(user_requests_count <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count + 1);
+			ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count.saturating_add(1));
 
 			// Store deregistration reports with current block number.
 			// Key by `main_account` (validator owner), not `who`, so multiple proxy delegates for the
