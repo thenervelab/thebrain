@@ -2323,7 +2323,11 @@ pub mod pallet {
 		/// Update the total file size for a user.
 		/// Can only be called by a registered validator proxy account.
 		#[pallet::call_index(35)]
-		#[pallet::weight((10_000, DispatchClass::Operational, Pays::No))]
+		#[pallet::weight((
+			<T as pallet::Config>::WeightInfo::update_user_file_size(),
+			DispatchClass::Operational,
+			Pays::No
+		))]
 		pub fn update_user_file_size(
 			origin: OriginFor<T>,
 			account_id: T::AccountId,

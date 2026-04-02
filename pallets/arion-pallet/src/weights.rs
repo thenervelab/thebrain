@@ -22,6 +22,13 @@
 use frame_support::{traits::Get, weights::{Weight, constants::RocksDbWeight}};
 use sp_std::marker::PhantomData;
 
+/// Storage-read budget for [`Pallet::update_user_file_size`] worst-case weight.
+///
+/// Covers `get_primary_account` when the caller has no local proxy defs (full validator scan +
+/// `proxies` per owner) and `get_registered_node_for_owner` (two registration maps). This is a
+/// **conservative** upper bound — re-benchmark or raise if on-chain registration counts grow past it.
+const UPDATE_USER_FILE_SIZE_READ_BUDGET: u64 = 8_192;
+
 /// Weight functions needed for pallet_arion.
 pub trait WeightInfo {
     fn submit_crush_map(n: u32) -> Weight;
@@ -38,6 +45,8 @@ pub trait WeightInfo {
     fn deregister_warden() -> Weight;
     fn prune_attestation_buckets(n: u32) -> Weight;
     fn prune_historical_crush_epochs(n: u32) -> Weight;
+    /// See [`UPDATE_USER_FILE_SIZE_READ_BUDGET`].
+    fn update_user_file_size() -> Weight;
 }
 
 /// Weights for pallet_arion using the Substrate node and recommended hardware.
@@ -204,6 +213,14 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().reads(1))
             .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(4)))
     }
+
+    /// Storage: Proxy Proxies (r:1+), Registration maps (iteration), UserTotalFilesSize (r:1 w:1),
+    /// UserTotalFilesCount (r:1 w:1)
+    fn update_user_file_size() -> Weight {
+        Weight::from_parts(35_000_000, 0)
+            .saturating_add(T::DbWeight::get().reads(UPDATE_USER_FILE_SIZE_READ_BUDGET))
+            .saturating_add(T::DbWeight::get().writes(2))
+    }
 }
 
 /// For backwards compatibility and testnets
@@ -303,5 +320,11 @@ impl WeightInfo for () {
             .saturating_add(Weight::from_parts(4_000_000, 0).saturating_mul(n.into()))
             .saturating_add(RocksDbWeight::get().reads(1))
             .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(4)))
+    }
+
+    fn update_user_file_size() -> Weight {
+        Weight::from_parts(35_000_000, 0)
+            .saturating_add(RocksDbWeight::get().reads(UPDATE_USER_FILE_SIZE_READ_BUDGET))
+            .saturating_add(RocksDbWeight::get().writes(2))
     }
 }
