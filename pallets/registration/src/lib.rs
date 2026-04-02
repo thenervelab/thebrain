@@ -347,6 +347,8 @@ pub mod pallet {
 		GenesisMismatch,
 		PublicKeyMismatch,
 		ChallengeMismatch,
+		/// `node_id` must match `node_id_hex` (the peer ID bytes bound by the challenge and signatures)
+		NodeIdMismatch,
 		/// Batch unregistration failed due to too many nodes
 		TooManyUnverifiedNodes,
 		NodeAlreadyVerified,
@@ -559,6 +561,7 @@ pub mod pallet {
 				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
 				Error::<T>::ChallengeMismatch
 			);
+			ensure!(node_id == node_id_hex, Error::<T>::NodeIdMismatch);
 
 			let ch_hash = Self::blake256(&challenge_bytes);
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
@@ -1115,6 +1118,7 @@ pub mod pallet {
 				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
 				Error::<T>::ChallengeMismatch
 			);
+			ensure!(node_id == node_id_hex, Error::<T>::NodeIdMismatch);
 
 			let ch_hash = Self::blake256(&challenge_bytes);
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
@@ -1209,6 +1213,7 @@ pub mod pallet {
 				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
 				Error::<T>::ChallengeMismatch
 			);
+			ensure!(node_id == node_id_hex, Error::<T>::NodeIdMismatch);
 
 			let ch_hash = Self::blake256(&challenge_bytes);
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
