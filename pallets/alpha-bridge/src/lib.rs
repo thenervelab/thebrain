@@ -244,20 +244,6 @@ pub mod pallet {
 		1_000_000_000
 	}
 
-	/// Permanently tracks all completed deposit IDs to prevent replay attacks
-	#[pallet::storage]
-	#[pallet::getter(fn completed_deposit_ids)]
-	pub type CompletedDepositIds<T: Config> =
-		StorageMap<_, Blake2_128Concat, DepositId, (), OptionQuery>;
-
-	/// Permanently records deposit request IDs that reached a terminal on-chain outcome
-	/// (Completed mint or Cancelled). Never cleared by `cleanup_deposit`, so guardians
-	/// cannot re-attest the same `request_id` after TTL pruning of `Deposits`.
-	#[pallet::storage]
-	#[pallet::getter(fn settled_deposit_ids)]
-	pub type SettledDepositIds<T: Config> =
-		StorageMap<_, Blake2_128Concat, DepositId, (), OptionQuery>;
-
 	/// Minimum withdrawal amount (in halphaRao)
 	#[pallet::storage]
 	#[pallet::getter(fn min_withdrawal_amount)]
@@ -352,8 +338,6 @@ pub mod pallet {
 		ThresholdTooHigh,
 		/// Too many guardians provided
 		TooManyGuardians,
-		/// Guardian list must not contain duplicate accounts
-		DuplicateGuardians,
 		/// Failed to convert between numeric balance types
 		AmountConversionFailed,
 		/// Failed to mint tokens
@@ -362,8 +346,6 @@ pub mod pallet {
 		ArithmeticOverflow,
 		/// Deposit already completed
 		DepositAlreadyCompleted,
-		/// Deposit request ID already settled (completed or cancelled); cannot attest again
-		DepositIdAlreadySettled,
 		/// Withdrawal request already completed or failed
 		WithdrawalRequestAlreadyFinalized,
 		/// Amount must be greater than zero
@@ -380,7 +362,6 @@ pub mod pallet {
 		InvalidRequestId,
 		/// Withdrawal amount must be divisible by the conversion factor (no dust)
 		AmountNotBridgeable,
-		NonceOverflow
 	}
 
 	// ============ Extrinsics ============
@@ -482,10 +463,6 @@ pub mod pallet {
 			let guardian = ensure_signed(origin)?;
 			Self::ensure_guardian(&guardian)?;
 			Self::ensure_not_paused()?;
-			ensure!(
-				!SettledDepositIds::<T>::contains_key(request_id),
-				Error::<T>::DepositIdAlreadySettled
-			);
 
 			// Verify request_id matches recomputed hash
 			let mut verify_data = Vec::new();
@@ -496,9 +473,6 @@ pub mod pallet {
 
 			let expected_id = H256::from(sp_core::hashing::blake2_256(&verify_data));
 			ensure!(expected_id == request_id, Error::<T>::InvalidRequestId);
-
-			// Get current guardians set once for reuse
-			let current_guardians: BTreeSet<_> = Guardians::<T>::get().into_iter().collect();
 
 			// Check if deposit already exists
 			if let Some(mut deposit) = Deposits::<T>::get(request_id) {
@@ -513,16 +487,10 @@ pub mod pallet {
 
 				Self::deposit_event(Event::DepositAttested { id: request_id, guardian });
 
-				// Check if threshold reached with current guardians only
-				let valid_vote_count = deposit.votes
-					.iter()
-					.filter(|voter| current_guardians.contains(voter))
-					.count();
-
-				if valid_vote_count >= ApproveThreshold::<T>::get() as usize {
+				// Check if threshold reached
+				if deposit.votes.len() >= ApproveThreshold::<T>::get() as usize {
 					Self::finalize_deposit(request_id, deposit)?;
 				} else {
-					// STORE THE DEPOSIT when threshold not reached
 					Deposits::<T>::insert(request_id, deposit);
 				}
 			} else {
@@ -542,13 +510,10 @@ pub mod pallet {
 
 				Self::deposit_event(Event::DepositAttested { id: request_id, guardian });
 
-				// Check if threshold reached immediately
-				// Since we just verified guardian is in current_guardians via ensure_guardian,
-				// valid_vote_count = 1
-				if 1 >= ApproveThreshold::<T>::get() as usize {
+				// Check if threshold reached immediately (single guardian setup)
+				if deposit.votes.len() >= ApproveThreshold::<T>::get() as usize {
 					Self::finalize_deposit(request_id, deposit)?;
 				} else {
-					// STORE THE DEPOSIT when threshold not reached
 					Deposits::<T>::insert(request_id, deposit);
 				}
 			}
@@ -567,33 +532,29 @@ pub mod pallet {
 			let caller = ensure_signed(origin)?;
 			Self::ensure_guardian(&caller)?;
 
-			Deposits::<T>::try_mutate(deposit_id, |maybe_deposit| -> DispatchResult {
-				if let Some(deposit) = maybe_deposit {
-					// Must be finalized (Completed or Cancelled)
-					ensure!(
-						deposit.status == DepositStatus::Completed
-							|| deposit.status == DepositStatus::Cancelled,
-						Error::<T>::RecordNotFinalized
-					);
+			let deposit = Deposits::<T>::get(deposit_id).ok_or(Error::<T>::DepositNotFound)?;
 
-					// Must have finalized_at_block set
-					let finalized_at = deposit.finalized_at_block.ok_or(Error::<T>::RecordNotFinalized)?;
+			// Must be finalized (Completed or Cancelled)
+			ensure!(
+				deposit.status == DepositStatus::Completed
+					|| deposit.status == DepositStatus::Cancelled,
+				Error::<T>::RecordNotFinalized
+			);
 
-					// TTL must have passed since finalization
-					let current_block = frame_system::Pallet::<T>::block_number();
-					let ttl = CleanupTTLBlocks::<T>::get();
-					ensure!(current_block >= finalized_at + ttl, Error::<T>::TTLNotExpired);
+			// Must have finalized_at_block set
+			let finalized_at = deposit.finalized_at_block.ok_or(Error::<T>::RecordNotFinalized)?;
 
-					// Remove from storage
-					*maybe_deposit = None;
+			// TTL must have passed since finalization
+			let current_block = frame_system::Pallet::<T>::block_number();
+			let ttl = CleanupTTLBlocks::<T>::get();
+			ensure!(current_block >= finalized_at + ttl, Error::<T>::TTLNotExpired);
 
-					Self::deposit_event(Event::DepositCleanedUp { id: deposit_id });
+			// Remove from storage
+			Deposits::<T>::remove(deposit_id);
 
-					Ok(())
-				} else {
-					Err(Error::<T>::DepositNotFound)?
-				}
-			})
+			Self::deposit_event(Event::DepositCleanedUp { id: deposit_id });
+
+			Ok(())
 		}
 
 		/// Guardian can cleanup a withdrawal request after TTL (no status check for source records)
@@ -617,7 +578,7 @@ pub mod pallet {
 			let current_block = frame_system::Pallet::<T>::block_number();
 			let ttl = CleanupTTLBlocks::<T>::get();
 			ensure!(current_block >= request.created_at_block + ttl, Error::<T>::TTLNotExpired);
-			ensure!(request.status == WithdrawalRequestStatus::Failed, Error::<T>::RecordNotFinalized);
+
 			// Remove from storage
 			WithdrawalRequests::<T>::remove(request_id);
 
@@ -629,9 +590,6 @@ pub mod pallet {
 		// ============ Admin Configuration ============
 
 		/// Atomically set the guardian set and threshold (sudo/root only)
-		///
-		/// Pending deposits are re-checked immediately: if enough **current** guardian votes
-		/// already exist for the new threshold, they are finalized (mint) in the same call.
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
@@ -646,18 +604,12 @@ pub mod pallet {
 		) -> DispatchResult {
 			ensure_root(origin)?;
 			ensure!(guardians.len() <= MAX_GUARDIANS, Error::<T>::TooManyGuardians);
-			let unique_guardians: BTreeSet<_> = guardians.iter().cloned().collect();
-			ensure!(
-				unique_guardians.len() == guardians.len(),
-				Error::<T>::DuplicateGuardians
-			);
 			let guardian_count = guardians.len() as u16;
 			ensure!(approve_threshold > 0, Error::<T>::ThresholdTooLow);
 			ensure!(approve_threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
 			Guardians::<T>::put(guardians.clone());
 			ApproveThreshold::<T>::put(approve_threshold);
 			Self::deposit_event(Event::GuardiansUpdated { guardians, approve_threshold });
-			Self::reevaluate_pending_deposits_after_guardian_change()?;
 			Ok(())
 		}
 
@@ -769,7 +721,6 @@ pub mod pallet {
 
 				deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
 				deposit.status = DepositStatus::Cancelled;
-				SettledDepositIds::<T>::insert(request_id, ());
 
 				Self::deposit_event(Event::DepositCancelled { id: request_id, reason });
 
@@ -805,9 +756,6 @@ pub mod pallet {
 				Error::<T>::WithdrawalRequestAlreadyFinalized
 			);
 
-			// Mint hAlpha back to sender
-			Self::mint_to_recipient(&request.sender, request.amount)?;
-
 			// Check and update mint cap (this is restoring burned hAlpha, so it must fit in cap)
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
@@ -817,6 +765,9 @@ pub mod pallet {
 				*total = new_total;
 				Ok(())
 			})?;
+
+			// Mint hAlpha back to sender
+			Self::mint_to_recipient(&request.sender, request.amount)?;
 
 			// Update status
 			WithdrawalRequests::<T>::mutate(request_id, |maybe_request| {
@@ -860,8 +811,6 @@ pub mod pallet {
 		) -> DispatchResult {
 			ensure_root(origin)?;
 
-			Self::mint_to_recipient(&recipient, amount)?;
-
 			// Check and update mint cap
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
 				let mint_cap = GlobalMintCap::<T>::get();
@@ -870,6 +819,8 @@ pub mod pallet {
 				*total = new_total;
 				Ok(())
 			})?;
+
+			Self::mint_to_recipient(&recipient, amount)?;
 
 			Self::deposit_event(Event::AdminManualMint { recipient, amount, deposit_id });
 
@@ -897,52 +848,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// After [`Guardians`] and [`ApproveThreshold`] are updated, finalize any **pending** deposits
-		/// that already have enough attestations from **current** guardians (same rule as
-		/// [`Pallet::attest_deposit`]). Prevents deposits from staying stuck when the set or
-		/// threshold changes (e.g. threshold lowered, or overlapping guardians retained).
-		fn reevaluate_pending_deposits_after_guardian_change() -> DispatchResult {
-			let current_guardians: BTreeSet<_> = Guardians::<T>::get().into_iter().collect();
-			let threshold = ApproveThreshold::<T>::get() as usize;
-
-			let pending: Vec<(DepositId, Deposit<T>)> = Deposits::<T>::iter()
-				.filter(|(_, d)| d.status == DepositStatus::Pending)
-				.collect();
-
-			let mut to_finalize: Vec<(DepositId, Deposit<T>)> = Vec::with_capacity(pending.len());
-			let mut added_mint: u128 = 0;
-
-			for (id, deposit) in pending {
-				let valid_vote_count = deposit
-					.votes
-					.iter()
-					.filter(|voter| current_guardians.contains(voter))
-					.count();
-				if valid_vote_count >= threshold {
-					added_mint = added_mint
-						.checked_add(deposit.amount)
-						.ok_or(Error::<T>::ArithmeticOverflow)?;
-					to_finalize.push((id, deposit));
-				}
-			}
-
-			if to_finalize.is_empty() {
-				return Ok(());
-			}
-
-			let total_minted = TotalMintedByBridge::<T>::get();
-			let new_total = total_minted
-				.checked_add(added_mint)
-				.ok_or(Error::<T>::ArithmeticOverflow)?;
-			ensure!(new_total <= GlobalMintCap::<T>::get(), Error::<T>::CapExceeded);
-
-			for (id, deposit) in to_finalize {
-				Self::finalize_deposit(id, deposit)?;
-			}
-
-			Ok(())
-		}
-
 		/// Convert a raw amount into the runtime's balance type
 		pub fn amount_to_balance(amount: u128) -> Result<BalanceOf<T>, DispatchError> {
 			amount.try_into().map_err(|_| Error::<T>::AmountConversionFailed.into())
@@ -957,22 +862,17 @@ pub mod pallet {
 			amount: u128,
 		) -> (WithdrawalRequestId, u64) {
 			let nonce = NextWithdrawalRequestNonce::<T>::get();
-			
-			// If overflow, wrap around to 0
-			let next_nonce = nonce.checked_add(1).unwrap_or(0);
-			
-			NextWithdrawalRequestNonce::<T>::put(next_nonce);
-		
+			NextWithdrawalRequestNonce::<T>::put(nonce.saturating_add(1));
+
 			// Hash uses the destination-chain amount (alphaRao)
 			let alpha_amount = amount / HALPHA_RAO_PER_ALPHA_RAO;
-		
+
 			let mut data = Vec::new();
-			data.extend_from_slice(&amount.to_le_bytes());
 			data.extend_from_slice(DOMAIN_WITHDRAWAL_REQUEST);
 			data.extend_from_slice(&account.encode());
 			data.extend_from_slice(&alpha_amount.to_le_bytes());
 			data.extend_from_slice(&nonce.to_le_bytes());
-		
+
 			(H256::from(sp_core::hashing::blake2_256(&data)), nonce)
 		}
 
@@ -980,9 +880,6 @@ pub mod pallet {
 		fn finalize_deposit(deposit_id: DepositId, mut deposit: Deposit<T>) -> DispatchResult {
 			let recipient = deposit.recipient.clone();
 			let amount = deposit.amount;
-
-			// Mint hAlpha to recipient
-			Self::mint_to_recipient(&recipient, amount)?;
 
 			// Check and update mint cap
 			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
@@ -993,12 +890,12 @@ pub mod pallet {
 				Ok(())
 			})?;
 
-			CompletedDepositIds::<T>::insert(deposit_id, ());
+			// Mint hAlpha to recipient
+			Self::mint_to_recipient(&recipient, amount)?;
 
 			// Update deposit status
 			deposit.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
 			deposit.status = DepositStatus::Completed;
-			SettledDepositIds::<T>::insert(deposit_id, ());
 			Deposits::<T>::insert(deposit_id, deposit);
 
 			Self::deposit_event(Event::DepositCompleted { id: deposit_id, recipient, amount });
