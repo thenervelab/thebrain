@@ -129,11 +129,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Storage: `AlphaBridge::ApproveThreshold` (r:0 w:1)
 	/// Proof: `AlphaBridge::ApproveThreshold` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
 	/// The range of component `g` is `[1, 10]`.
+	///
+	/// Includes conservative upper bound for scanning `Deposits` and finalizing pending
+	/// entries after guardian rotation.
 	fn set_guardians_and_threshold(g: u32, ) -> Weight {
 		Weight::from_parts(14_725_697, 1542)
 			.saturating_add(Weight::from_parts(33_949, 0).saturating_mul(g.into()))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
 			.saturating_add(Weight::from_parts(0, 32).saturating_mul(g.into()))
+			.saturating_add(Weight::from_parts(50_000_000, 0))
+			.saturating_add(T::DbWeight::get().reads(10_240_u64))
+			.saturating_add(T::DbWeight::get().writes(768_u64))
 	}
 	/// Storage: `AlphaBridge::Paused` (r:0 w:1)
 	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
@@ -301,6 +307,9 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(33_949, 0).saturating_mul(g.into()))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))
 			.saturating_add(Weight::from_parts(0, 32).saturating_mul(g.into()))
+			.saturating_add(Weight::from_parts(50_000_000, 0))
+			.saturating_add(RocksDbWeight::get().reads(10_240_u64))
+			.saturating_add(RocksDbWeight::get().writes(768_u64))
 	}
 	/// Storage: `AlphaBridge::Paused` (r:0 w:1)
 	/// Proof: `AlphaBridge::Paused` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)

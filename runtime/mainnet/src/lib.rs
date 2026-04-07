@@ -24,8 +24,7 @@ include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 mod filters;
 pub mod frontier_evm;
 pub mod impls;
-// pub mod migrations;
-pub mod balance_transfer_precompile;
+pub mod migrations;
 pub mod precompiles;
 // pub mod hippius_services;
 pub mod voter_bags;
@@ -95,6 +94,15 @@ parameter_types! {
 	pub const GlobalDepositHalvingPeriodBlocks: BlockNumber = 14_400; // ~24 hours at 6s/block
 	pub const UnregisterCooldownBlocks: BlockNumber = 7200; // ~12 hours at 6s/block
 	pub const UnbondingPeriodBlocks: BlockNumber = 100_800; // ~7 days at 6s/block
+	/// Retained CRUSH map + attestation commitment epochs (older keys pruned each `submit_crush_map`).
+	pub const EpochCrushMapRetention: u64 = 100;
+	pub const MaxCrushEpochPrunesPerCall: u32 = 200;
+	/// Cap on `prune_attestation_buckets` batch size (weight + anti-spam).
+	pub const MaxAttestationBucketsPrunePerCall: u32 = 64;
+	/// Periodic [`MinerStatsByUid`] pruning in arion (`0` = disabled).
+	pub const ArionMinerStatsPruneInterval: BlockNumber = 100;
+	/// Max stats uid keys scanned per pruning tick.
+	pub const ArionMinerStatsPruneMaxScanPerBlock: u32 = 128;
 }
 
 pub struct ArionAdminMembers;
@@ -117,6 +125,7 @@ impl pallet_arion::Config for Runtime {
 	type AttestationAuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
 	type MaxContentHashLen = ConstU32<32>;
 	type AttestationRetentionBuckets = ConstU32<168>;
+	type MaxAttestationBucketsPrunePerCall = MaxAttestationBucketsPrunePerCall;
 	type WeightInfo = pallet_arion::weights::SubstrateWeight<Runtime>;
 	type MaxAttestations = ConstU32<1000>;
 	type MaxShardHashLen = ConstU32<100>;
@@ -129,6 +138,8 @@ impl pallet_arion::Config for Runtime {
 	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
 	type EnforceRegisteredMinersInMap = ConstBool<false>;
 	type MaxMiners = MaxMiners;
+	type EpochCrushMapRetention = EpochCrushMapRetention;
+	type MaxCrushEpochPrunesPerCall = MaxCrushEpochPrunesPerCall;
 	type MaxEndpointLen = MaxEndpointLen;
 	type MaxHttpAddrLen = MaxHttpAddrLen;
 	type MaxStatsUpdates = MaxStatsUpdates;
@@ -153,6 +164,8 @@ impl pallet_arion::Config for Runtime {
 	type NodeScoreScale = NodeScoreScale;
 	type StrikePenalty = StrikePenalty;
 	type IntegrityFailPenalty = IntegrityFailPenalty;
+	type MinerStatsPruneInterval = ArionMinerStatsPruneInterval;
+	type MinerStatsPruneMaxScanPerBlock = ArionMinerStatsPruneMaxScanPerBlock;
 }
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -242,13 +255,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9175,
+	spec_version: 9176,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
 	state_version: 0,
 };
-
+ 
 impl pallet_registration::ProxyTypeCompat for ProxyType {
 	fn is_non_transfer(&self) -> bool {
 		matches!(self, ProxyType::NonTransfer)
@@ -552,12 +565,18 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 				.unwrap_or_default();
 
 			// Transfer to the specific account
-			let _ = pallet_balances::Pallet::<Runtime>::transfer(
+			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
 				&marketplace_account.clone(),
 				&recipient_account,
 				treasury_amount,
 				ExistenceRequirement::KeepAlive,
-			);
+			) {
+				log::error!(
+					target: "runtime::marketplace_payout",
+					"❌ Treasury transfer from marketplace failed: {:?}",
+					e
+				);
+			}
 
 			// // Burn the staking amount
 			// let _ = pallet_balances::Pallet::<Runtime>::burn(
@@ -574,18 +593,33 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 					staking_amount.checked_div(num_validators.into()).unwrap_or_default();
 
 				for validator in validators {
-					let _ = pallet_balances::Pallet::<Runtime>::transfer(
+					if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
 						&marketplace_account.clone(),
 						&validator,
 						amount_per_validator,
 						ExistenceRequirement::KeepAlive,
-					);
+					) {
+						log::error!(
+							target: "runtime::marketplace_payout",
+							"❌ Validator payout transfer from marketplace failed for {:?}: {:?}",
+							validator,
+							e
+						);
+						continue;
+					}
 
-					let _ = pallet_staking::Pallet::<Runtime>::bond(
+					if let Err(e) = pallet_staking::Pallet::<Runtime>::bond(
 						frame_system::RawOrigin::Signed(validator.clone()).into(),
 						amount_per_validator,
 						pallet_staking::RewardDestination::Staked,
-					);
+					) {
+						log::warn!(
+							target: "runtime::marketplace_payout",
+							"⚠️ Auto-bond failed for validator {:?}: {:?}",
+							validator,
+							e
+						);
+					}
 				}
 			}
 		}
@@ -603,12 +637,18 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 				.unwrap_or_default();
 
 			// Transfer to the specific account
-			let _ = pallet_balances::Pallet::<Runtime>::transfer(
+			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
 				&registration_account.clone(),
 				&recipient_account,
 				treasury_amount,
 				ExistenceRequirement::KeepAlive,
-			);
+			) {
+				log::error!(
+					target: "runtime::marketplace_payout",
+					"❌ Treasury transfer from registration failed: {:?}",
+					e
+				);
+			}
 
 			// Get the list of validators from the session
 			let validators = <pallet_session::Pallet<Runtime>>::validators(); // Ensure you have the correct type here
@@ -619,18 +659,33 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 
 				for validator in validators {
 					// Transfer the amount to the validator's account first
-					let _ = pallet_balances::Pallet::<Runtime>::transfer(
+					if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
 						&registration_account.clone(),
 						&validator,
 						amount_per_validator,
 						ExistenceRequirement::KeepAlive,
-					);
+					) {
+						log::error!(
+							target: "runtime::marketplace_payout",
+							"❌ Validator payout transfer from registration failed for {:?}: {:?}",
+							validator,
+							e
+						);
+						continue;
+					}
 
-					let _ = pallet_staking::Pallet::<Runtime>::bond(
+					if let Err(e) = pallet_staking::Pallet::<Runtime>::bond(
 						frame_system::RawOrigin::Signed(validator.clone()).into(),
 						amount_per_validator,
 						pallet_staking::RewardDestination::Staked,
-					);
+					) {
+						log::warn!(
+							target: "runtime::marketplace_payout",
+							"⚠️ Auto-bond failed for validator {:?}: {:?}",
+							validator,
+							e
+						);
+					}
 				}
 			}
 		}
@@ -1215,21 +1270,21 @@ parameter_types! {
 	pub const MinerIPFSCHeckInterval : u32 = 5;
 }
 
-parameter_types! {
-	pub const MaxStorageRequestsPerBlock: u32 = 10;
-	pub const PinPinningInterval: u32 = 50;
-}
+// parameter_types! {
+// 	pub const MaxStorageRequestsPerBlock: u32 = 10;
+// 	pub const PinPinningInterval: u32 = 50;
+// }
 
-impl ipfs_pallet::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type IPFSBaseUrl = IpfsBaseUrl;
-	type GarbageCollectorInterval = GarbageCollectorInterval;
-	type AuthorityId = ipfs_pallet::crypto::TestAuthId;
-	type PinPinningInterval = PinPinningInterval;
-	type MaxOffchainRequestsPerPeriod = MaxOffchainRequestsPerPeriod;
-	type RequestsClearInterval = RequestsClearInterval;
-	type EpochPeriod = ConstU64<100>;
-}
+// impl ipfs_pallet::Config for Runtime {
+// 	type RuntimeEvent = RuntimeEvent;
+// 	type IPFSBaseUrl = IpfsBaseUrl;
+// 	type GarbageCollectorInterval = GarbageCollectorInterval;
+// 	type AuthorityId = ipfs_pallet::crypto::TestAuthId;
+// 	type PinPinningInterval = PinPinningInterval;
+// 	type MaxOffchainRequestsPerPeriod = MaxOffchainRequestsPerPeriod;
+// 	type RequestsClearInterval = RequestsClearInterval;
+// 	type EpochPeriod = ConstU64<100>;
+// }
 
 parameter_types! {
 	pub const AlphaPalletId: PalletId = PalletId(*b"Alpha123");
@@ -1284,7 +1339,7 @@ impl pallet_registration::Config for Runtime {
 	// Use Pallet instead of the crate name
 	type MetagraphInfo = pallet_metagraph::Pallet<Runtime>;
 	type MetricsInfo = pallet_execution_unit::Pallet<Runtime>;
-	type IpfsInfo = ipfs_pallet::Pallet<Runtime>;
+	// type IpfsInfo = ipfs_pallet::Pallet<Runtime>;
 	type MinerStakeThreshold = ConstU32<0>;
 	type ChainDecimals = ConstU32<18>;
 	type PalletId = ResgisterPalletId;
@@ -1308,46 +1363,19 @@ parameter_types! {
 	pub const BlocksPerBackupCheck: u32 =  30;
 }
 
-// impl pallet_backup::Config for Runtime {
-//     type RuntimeEvent = RuntimeEvent;
-// 	type AuthorityId = pallet_backup::crypto::TestAuthId;
-// 	type BlocksPerDay = BlocksPerBackupCheck ;
-// }
-
 impl pallet_credits::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AuthorityId = pallet_credits::crypto::TestAuthId;
 	type RefferallCoolDOwnPeriod = RefferallCoolDOwnPeriod;
-	// type OnRuntimeUpgrade = pallet_credits::migrations::Migrate<Runtime>;
 }
 
-// parameter_types! {
-// 	pub const ComputeIpReleasePeriod: u64 = 15 * DAYS;
-// }
-
-// impl pallet_compute::Config for Runtime {
-// 	type RuntimeEvent = RuntimeEvent;
-// 	type AuthorityId = pallet_compute::crypto::TestAuthId;
-// 	type OffchainWorkerInterval = ConstU32<19>;
-// 	type IpReleasePeriod = ComputeIpReleasePeriod;
-// }
-
-parameter_types! {
-	pub const MaxCidLenght: u32 = 2;
-}
-
-impl pallet_container_registry::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type MaxLength = MaxCidLenght;
-}
+// pallet_container_registry removed — storage cleared in migration RemoveIpAndContainerRegistryPallets
 
 parameter_types! {
 	pub const RankingPalletId: PalletId = PalletId(*b"ranking1");
 	pub const SecondRankingPalletId: PalletId = PalletId(*b"ranking2");
 	pub const ThirdRankingPalletId: PalletId = PalletId(*b"ranking3");
 	pub const FourthRankingPalletId: PalletId = PalletId(*b"ranking4");
-	pub const ComputeNodesRewardPercentage: u32 = 40;
-	pub const MinerNodesRewardPercentage: u32 = 60;
 	pub const RankingsInstanceId1: u16 = 1;
 	pub const RankingsInstanceId2: u16 = 2;
 	pub const RankingsInstanceId3: u16 = 3;
@@ -1359,8 +1387,6 @@ parameter_types! {
 impl pallet_rankings::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type PalletId = RankingPalletId;
-	type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-	type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 	type InstanceID = RankingsInstanceId1;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
@@ -1373,8 +1399,6 @@ impl pallet_rankings::Config for Runtime {
 impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type PalletId = SecondRankingPalletId;
-	type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-	type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 	type InstanceID = RankingsInstanceId2;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
@@ -1387,8 +1411,6 @@ impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
 impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type PalletId = ThirdRankingPalletId;
-	type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-	type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 	type InstanceID = RankingsInstanceId3;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
@@ -1401,8 +1423,6 @@ impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 // impl pallet_rankings::Config<pallet_rankings::Instance4> for Runtime {
 //     type RuntimeEvent = RuntimeEvent;
 //     type PalletId = FourthRankingPalletId;
-//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 // 	type InstanceID = RankingsInstanceId4;
 // 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 // 	type BlocksPerEra = BlocksPerEra;
@@ -1412,8 +1432,6 @@ impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 // impl pallet_rankings::Config<pallet_rankings::Instance5> for Runtime {
 //     type RuntimeEvent = RuntimeEvent;
 //     type PalletId = FourthRankingPalletId;
-//     type ComputeNodesRewardPercentage = ComputeNodesRewardPercentage;
-//     type MinerNodesRewardPercentage = MinerNodesRewardPercentage;
 // 	type InstanceID = RankingsInstanceId5;
 // 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 // 	type BlocksPerEra = BlocksPerEra;
@@ -1438,10 +1456,10 @@ parameter_types! {
 	pub const CooldownPeriodInBlocks: u32 = 20;
 }
 
-impl pallet_notifications::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type CooldownPeriod = CooldownPeriodInBlocks;
-}
+// impl pallet_notifications::Config for Runtime {
+// 	type RuntimeEvent = RuntimeEvent;
+// 	type CooldownPeriod = CooldownPeriodInBlocks;
+// }
 
 parameter_types! {
 	pub const ExecutionUnitRpcUrl: &'static str = "http://localhost:9944";
@@ -1612,20 +1630,20 @@ impl pallet_child_bounties::Config for Runtime {
 	type WeightInfo = pallet_child_bounties::weights::SubstrateWeight<Runtime>;
 }
 
-parameter_types! {
-	pub const SubAccountStringLimit: u32 = 300;
-	pub const MaxSubAccountsLimit: u32 = 50;
-}
+// parameter_types! {
+// 	pub const SubAccountStringLimit: u32 = 300;
+// 	pub const MaxSubAccountsLimit: u32 = 50;
+// }
 
-impl pallet_subaccount::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
-	type StringLimit = SubAccountStringLimit;
-	type MaxSubAccountsLimit = MaxSubAccountsLimit;
-	type ExistentialDeposit = ExistentialDeposit;
-	type Currency = Balances;
-	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
-}
+// impl pallet_subaccount::Config for Runtime {
+// 	type RuntimeEvent = RuntimeEvent;
+// 	type WeightInfo = pallet_subaccount::weights::SubstrateWeight<Runtime>;
+// 	type StringLimit = SubAccountStringLimit;
+// 	type MaxSubAccountsLimit = MaxSubAccountsLimit;
+// 	type ExistentialDeposit = ExistentialDeposit;
+// 	type Currency = Balances;
+// 	// type OnRuntimeUpgrade = pallet_subaccount::migrations::MigrateToNewStorageFormat<Runtime>;
+// }
 
 parameter_types! {
 	pub const MaxKeys: u32 = 10_000;
@@ -1857,8 +1875,8 @@ construct_runtime!(
 		Metagraph : pallet_metagraph=55,
 		Marketplace: pallet_marketplace = 56,
 		Bittensor: pallet_bittensor = 57,
-		SubAccount: pallet_subaccount= 58,
-		Notifications: pallet_notifications = 59,
+		// SubAccount: pallet_subaccount= 58,
+		// Notifications: pallet_notifications = 59,
 		AccountProfile: pallet_account_profile = 60,
 		Utils: pallet_utils = 62,
 		RankingStorage: pallet_rankings =63,
@@ -1866,13 +1884,11 @@ construct_runtime!(
 		RankingValidators: pallet_rankings::<Instance3> = 70,
 		// RankingGpu: pallet_rankings::<Instance4> = 71,
 		// RankingS3: pallet_rankings::<Instance5> = 77,
-		// Backup: pallet_backup = 64,
 		Credits: pallet_credits = 65,
-		// Compute: pallet_compute = 67,
-		ContainerRegistry: pallet_container_registry = 69,
+		// ContainerRegistry: pallet_container_registry = 69, 
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
-		IpfsPallet: ipfs_pallet = 75,
+		// IpfsPallet: ipfs_pallet = 75,
 		Arion: pallet_arion = 76
 	}
 );
@@ -1888,6 +1904,7 @@ impl fp_rpc::ConvertTransaction<UncheckedExtrinsic> for TransactionConverter {
 	}
 }
 
+
 impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConverter {
 	fn convert_transaction(
 		&self,
@@ -1902,7 +1919,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
-type Migrations = ();
+type Migrations = (migrations::RemoveIpAndContainerRegistryPallets<Runtime>,);
 
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;
@@ -3466,50 +3483,27 @@ impl_runtime_apis! {
 		}
 
 		fn calculate_total_file_size(account: AccountId32) -> u128 {
-			<ipfs_pallet::Pallet<Runtime>>::user_total_files_size(&account).unwrap_or(0)
+			// <ipfs_pallet::Pallet<Runtime>>::user_total_files_size(&account).unwrap_or(0)
+			0
 		}
 
 		fn get_user_files(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserFile> {
-			<ipfs_pallet::Pallet<Runtime>>::get_user_files(account)
-			.into_iter()
-			.map(|file| rpc_primitives_node_metrics::UserFile {
-				file_hash: file.file_hash.to_vec(),
-				file_name: file.file_name.to_vec(),
-				miner_ids: file.miner_ids.clone(),
-				file_size: file.file_size,
-				created_at: file.created_at,
-			})
-			.collect()
+			// <ipfs_pallet::Pallet<Runtime>>::get_user_files(account)
+			// .into_iter()
+			// .map(|file| rpc_primitives_node_metrics::UserFile {
+			// 	file_hash: file.file_hash.to_vec(),
+			// 	file_name: file.file_name.to_vec(),
+			// 	miner_ids: file.miner_ids.clone(),
+			// 	file_size: file.file_size,
+			// 	created_at: file.created_at,
+			// })
+			// .collect()
+			Vec::new()
 		}
 
-		// fn get_user_vms(account: AccountId32) -> Vec<rpc_primitives_node_metrics::UserVmDetails<AccountId32, u32, [u8; 32]>> {
-		// 	Compute::get_user_vms(account)
-		// 	.into_iter()
-		// 	.map(|vm| rpc_primitives_node_metrics::UserVmDetails {
-		// 		request_id: vm.request_id,
-		// 		status: match vm.status {
-		// 			pallet_compute::ComputeRequestStatus::Pending => rpc_primitives_node_metrics::ComputeRequestStatus::Pending,
-		// 			pallet_compute::ComputeRequestStatus::Stopped => rpc_primitives_node_metrics::ComputeRequestStatus::Stopped,
-		// 			pallet_compute::ComputeRequestStatus::InProgress => rpc_primitives_node_metrics::ComputeRequestStatus::InProgress,
-		// 			pallet_compute::ComputeRequestStatus::Running => rpc_primitives_node_metrics::ComputeRequestStatus::Running,
-		// 			pallet_compute::ComputeRequestStatus::Failed => rpc_primitives_node_metrics::ComputeRequestStatus::Failed,
-		// 			pallet_compute::ComputeRequestStatus::Cancelled => rpc_primitives_node_metrics::ComputeRequestStatus::Cancelled,
-		// 		},
-		// 		plan_id: vm.plan_id.into(),
-		// 		created_at: vm.created_at as u32,
-		// 		miner_node_id: vm.miner_node_id,
-		// 		miner_account_id: vm.miner_account_id,
-		// 		hypervisor_ip: vm.hypervisor_ip,
-		// 		vnc_port: vm.vnc_port,
-		// 		ip_assigned: vm.ip_assigned,
-		// 		error: vm.error,
-		// 		is_fulfilled: vm.is_fulfilled,
-		// 	})
-		// 	.collect()
-		// }
-
 		fn total_file_size_fulfilled(account_id: AccountId32) -> u128 {
-			<ipfs_pallet::Pallet<Runtime>>::user_total_files_size(&account_id).unwrap_or(0)
+			// <ipfs_pallet::Pallet<Runtime>>::user_total_files_size(&account_id).unwrap_or(0)
+			0
 		}
 	}
 

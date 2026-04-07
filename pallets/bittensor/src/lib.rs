@@ -35,6 +35,7 @@ pub mod pallet {
 		traits::Zero,
 		AccountId32,
 	};
+	use scale_info::prelude::collections::BTreeMap;
 	use sp_std::prelude::*;
 
 	#[pallet::config]
@@ -131,17 +132,18 @@ pub mod pallet {
 			let mut storage_miners_node_id: Vec<Vec<u8>> = Vec::new();
 			let mut storage_miners_node_types: Vec<NodeType> = Vec::new();
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
-			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
+			let mut all_weights_on_bittensor: Vec<u16> = Vec::new();
 
 			let uid_zero = 0;
 			if !all_uids_on_bittensor.contains(&uid_zero) {
 				all_uids_on_bittensor.push(uid_zero);
 				// Initialize with 0 weight, we'll update it later
-				all_weights_on_bitensor.push(0);
+				all_weights_on_bittensor.push(0);
 			}
 
 			let uid_zero_weight = WeightCalculation::uid_zero_weight::<T>();
 			// Update Bittensor UIDs
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for uid in uids.iter() {
 				if uid.id == uid_zero {
 					let miner_ss58 = AccountId32::new(
@@ -208,7 +210,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number - last_block;
+						let difference = current_block_number.saturating_sub(last_block);
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -226,12 +228,9 @@ pub mod pallet {
 				storage_nodes_ss58.push(miner_ss58.clone().into());
 
 				// Update Bittensor UIDs
-				for uid in uids.iter() {
-					if uid.substrate_address.to_ss58check() == miner_ss58 {
-						all_uids_on_bittensor.push(uid.id);
-						all_weights_on_bitensor.push(*storage_weights.last().unwrap_or(&0) as u16);
-						// Use the last calculated weight
-					}
+				if let Some(uid) = uid_map.get(&miner_ss58) {
+					all_uids_on_bittensor.push(uid.id);
+					all_weights_on_bittensor.push(*storage_weights.last().unwrap_or(&0) as u16);
 				}
 			}
 
@@ -257,9 +256,9 @@ pub mod pallet {
 				storage_weights[pos] = final_uid_zero;
 			}
 
-			// 4) Update all_weights_on_bitensor for UID 0
+			// 4) Update all_weights_on_bittensor for UID 0
 			if let Some(pos) = all_uids_on_bittensor.iter().position(|&id| id == uid_zero) {
-				all_weights_on_bitensor[pos] = final_uid_zero;
+				all_weights_on_bittensor[pos] = final_uid_zero;
 			}
 
 			(
@@ -268,7 +267,7 @@ pub mod pallet {
 				storage_miners_node_id,
 				storage_miners_node_types,
 				all_uids_on_bittensor,
-				all_weights_on_bitensor,
+				all_weights_on_bittensor,
 			)
 		}
 
@@ -283,10 +282,11 @@ pub mod pallet {
 			let mut storage_s3_miners_node_id: Vec<Vec<u8>> = Vec::new();
 			let mut storage_s3_miners_node_types: Vec<NodeType> = Vec::new();
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
-			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
+			let mut all_weights_on_bittensor: Vec<u16> = Vec::new();
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::StorageS3 {
 					continue;
@@ -325,7 +325,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number - last_block;
+						let difference = current_block_number.saturating_sub(last_block);
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -343,12 +343,10 @@ pub mod pallet {
 				storage_s3_nodes_ss58.push(miner_ss58.clone().into());
 
 				// Update Bittensor UIDs
-				for uid in uids.iter() {
-					if uid.substrate_address.to_ss58check() == miner_ss58 {
-						all_uids_on_bittensor.push(uid.id);
-						all_weights_on_bitensor
-							.push(*storage_s3_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
-					}
+				if let Some(uid) = uid_map.get(&miner_ss58) {
+					all_uids_on_bittensor.push(uid.id);
+					all_weights_on_bittensor
+						.push(*storage_s3_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
 				}
 			}
 
@@ -358,7 +356,7 @@ pub mod pallet {
 				storage_s3_miners_node_id,
 				storage_s3_miners_node_types,
 				all_uids_on_bittensor,
-				all_weights_on_bitensor,
+				all_weights_on_bittensor,
 			)
 		}
 
@@ -373,10 +371,11 @@ pub mod pallet {
 			let mut validator_miners_node_id: Vec<Vec<u8>> = Vec::new();
 			let mut validator_miners_node_types: Vec<NodeType> = Vec::new();
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
-			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
+			let mut all_weights_on_bittensor: Vec<u16> = Vec::new();
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::Validator {
 					continue;
@@ -415,7 +414,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number - last_block;
+						let difference = current_block_number.saturating_sub(last_block);
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -433,12 +432,10 @@ pub mod pallet {
 				validator_nodes_ss58.push(miner_ss58.clone().into());
 
 				// Update Bittensor UIDs
-				for uid in uids.iter() {
-					if uid.substrate_address.to_ss58check() == miner_ss58 {
-						all_uids_on_bittensor.push(uid.id);
-						all_weights_on_bitensor
-							.push(*validator_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
-					}
+				if let Some(uid) = uid_map.get(&miner_ss58) {
+					all_uids_on_bittensor.push(uid.id);
+					all_weights_on_bittensor
+						.push(*validator_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
 				}
 			}
 
@@ -448,7 +445,7 @@ pub mod pallet {
 				validator_miners_node_id,
 				validator_miners_node_types,
 				all_uids_on_bittensor,
-				all_weights_on_bitensor,
+				all_weights_on_bittensor,
 			)
 		}
 
@@ -463,10 +460,11 @@ pub mod pallet {
 			let mut gpu_miners_node_id: Vec<Vec<u8>> = Vec::new();
 			let mut gpu_miners_node_types: Vec<NodeType> = Vec::new();
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
-			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
+			let mut all_weights_on_bittensor: Vec<u16> = Vec::new();
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::GpuMiner {
 					continue;
@@ -506,7 +504,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number - last_block;
+						let difference = current_block_number.saturating_sub(last_block);
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -524,11 +522,9 @@ pub mod pallet {
 				gpu_nodes_ss58.push(miner_ss58.clone().into());
 
 				// Update Bittensor UIDs
-				for uid in uids.iter() {
-					if uid.substrate_address.to_ss58check() == miner_ss58 {
-						all_uids_on_bittensor.push(uid.id);
-						all_weights_on_bitensor.push(*gpu_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
-					}
+				if let Some(uid) = uid_map.get(&miner_ss58) {
+					all_uids_on_bittensor.push(uid.id);
+					all_weights_on_bittensor.push(*gpu_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
 				}
 			}
 
@@ -538,7 +534,7 @@ pub mod pallet {
 				gpu_miners_node_id,
 				gpu_miners_node_types,
 				all_uids_on_bittensor,
-				all_weights_on_bitensor,
+				all_weights_on_bittensor,
 			)
 		}
 
@@ -553,10 +549,11 @@ pub mod pallet {
 			let mut compute_miners_node_id: Vec<Vec<u8>> = Vec::new();
 			let mut compute_miners_node_types: Vec<NodeType> = Vec::new();
 			let mut all_uids_on_bittensor: Vec<u16> = Vec::new();
-			let mut all_weights_on_bitensor: Vec<u16> = Vec::new();
+			let mut all_weights_on_bittensor: Vec<u16> = Vec::new();
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
+			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::ComputeMiner {
 					continue;
@@ -596,7 +593,7 @@ pub mod pallet {
 				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
 				if let Some(blocks) = blocks_online {
 					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number - last_block;
+						let difference = current_block_number.saturating_sub(last_block);
 						if difference > buffer.into() {
 							// Ensure buffer is of the correct type
 							weight = 0; // Accumulate weight
@@ -613,12 +610,10 @@ pub mod pallet {
 				compute_nodes_ss58.push(miner_ss58.clone().into());
 
 				// Update Bittensor UIDs
-				for uid in uids.iter() {
-					if uid.substrate_address.to_ss58check() == miner_ss58 {
-						all_uids_on_bittensor.push(uid.id);
-						all_weights_on_bitensor.push(*compute_weights.last().unwrap_or(&0) as u16);
-						// Use the last calculated weight
-					}
+				if let Some(uid) = uid_map.get(&miner_ss58) {
+					all_uids_on_bittensor.push(uid.id);
+					all_weights_on_bittensor.push(*compute_weights.last().unwrap_or(&0) as u16);
+					// Use the last calculated weight
 				}
 			}
 
@@ -628,7 +623,7 @@ pub mod pallet {
 				compute_miners_node_id,
 				compute_miners_node_types,
 				all_uids_on_bittensor,
-				all_weights_on_bitensor,
+				all_weights_on_bittensor,
 			)
 		}
 
@@ -724,7 +719,7 @@ pub mod pallet {
 
 			let mut all_uids_on_bittensor: Vec<u16> =
 				[storage_uids, compute_uids, gpu_uids, storage_s3_uids].concat();
-			let mut all_weights_on_bitensor: Vec<u16> = [
+			let mut all_weights_on_bittensor: Vec<u16> = [
 				storage_weights_on_bittensor,
 				compute_weights_on_bittensor,
 				gpu_weights_on_bittensor,
@@ -742,7 +737,7 @@ pub mod pallet {
 			for uid in uids.iter() {
 				if !all_uids_on_bittensor.contains(&uid.id) {
 					all_uids_on_bittensor.push(uid.id);
-					all_weights_on_bitensor.push(0);
+					all_weights_on_bittensor.push(0);
 				}
 			}
 			// Combine results
@@ -768,7 +763,7 @@ pub mod pallet {
 				storage_s3_miners_node_id,
 				storage_s3_miners_node_types,
 				all_uids_on_bittensor,
-				all_weights_on_bitensor,
+				all_weights_on_bittensor,
 			)
 		}
 
@@ -905,7 +900,7 @@ pub mod pallet {
 				_storage_s3_all_miners_node_id,
 				_storage_s3_all_miners_node_types,
 				all_dests_on_bittensor,
-				all_weights_on_bitensor,
+				all_weights_on_bittensor,
 			): (
 				Vec<u16>,
 				Vec<Vec<u8>>,
@@ -932,26 +927,40 @@ pub mod pallet {
 			) = Self::calculate_weights_for_nodes();
 
 			// update rankings in ranking pallet for both instances
-			let _ = RankingsPallet::<T>::save_rankings_update(
+			if let Err(e) = RankingsPallet::<T>::save_rankings_update(
 				weights.clone(),
 				storage_nodes_ss58.clone(),
 				storage_miners_node_id.clone(),
 				storage_miners_node_types.clone(),
 				block_number,
 				1u32,
-			);
+			) {
+				log::error!(
+					target: "runtime::bittensor",
+					"save_rankings_update (instance 1, storage) failed at block {:?}: {}",
+					block_number,
+					e
+				);
+			}
 
 			// let _ = RankingsPallet::<T, pallet_rankings::Instance2>::save_rankings_update([compute_weights.clone(), linked_compute_miners_weights.clone()].concat(),
 			//             [compute_all_nodes_ss58.clone(), linked_compute_miners_ss58.clone()].concat(), [compute_all_miners_node_id.clone(), linked_compute_miners_node_id.clone()].concat(), [compute_all_miners_node_types.clone(), linked_compute_miners_node_types.clone()].concat(), block_number, 2u32);
 
-			let _ = RankingsPallet::<T, pallet_rankings::Instance3>::save_rankings_update(
+			if let Err(e) = RankingsPallet::<T, pallet_rankings::Instance3>::save_rankings_update(
 				validator_weights.clone(),
 				validator_all_nodes_ss58.clone(),
 				validator_all_miners_node_id.clone(),
 				validator_all_miners_node_types.clone(),
 				block_number,
 				3u32,
-			);
+			) {
+				log::error!(
+					target: "runtime::bittensor",
+					"save_rankings_update (instance 3, validator) failed at block {:?}: {}",
+					block_number,
+					e
+				);
+			}
 
 			// let _ = RankingsPallet::<T, pallet_rankings::Instance4>::save_rankings_update([gpu_weights.clone(), linked_gpu_miners_weights.clone()].concat(),
 			//         [gpu_all_nodes_ss58.clone(), linked_gpu_miners_ss58.clone()].concat(), [gpu_all_miners_node_id.clone(), linked_gpu_miners_node_id.clone()].concat(), [gpu_all_miners_node_types.clone(), linked_gpu_miners_node_types.clone()].concat(), block_number,  4u32);
@@ -960,7 +969,7 @@ pub mod pallet {
 			//         [storage_s3_all_nodes_ss58.clone(), linked_storage_s3_miners_ss58.clone()].concat(), [storage_s3_all_miners_node_id.clone(), linked_storage_s3_miners_node_id.clone()].concat(), [storage_s3_all_miners_node_types.clone(), linked_storage_s3_miners_node_types.clone()].concat(), block_number, 5u32);
 
 			// Ensure both vectors have the same length and are greater than 1
-			if all_dests_on_bittensor.len() != all_weights_on_bitensor.len() {
+			if all_dests_on_bittensor.len() != all_weights_on_bittensor.len() {
 				log::error!("❌ Destinations and weights must have the same length ");
 				return Err(http::Error::Unknown);
 			}
@@ -976,7 +985,7 @@ pub mod pallet {
 				Err(_) => T::Versionkey::get().try_into().unwrap_or(0), // Convert to u16 if needed
 			};
 
-			let weights_string = all_weights_on_bitensor
+			let weights_string = all_weights_on_bittensor
 				.iter()
 				.map(|w| w.to_string())
 				.collect::<Vec<_>>()

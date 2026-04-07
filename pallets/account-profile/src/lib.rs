@@ -452,13 +452,21 @@ pub mod pallet {
 			);
 			log::info!("Challenge node ID hash: {:?}", ch.node_id_hash);
 			let ch_hash = Self::blake256(&challenge_bytes);
+			while UsedChallenges::<T>::iter().count() >= 1000 {
+				// Remove the oldest entry
+				let oldest_key = UsedChallenges::<T>::iter().next().map(|(k, _)| k);
+				if let Some(oldest_key) = oldest_key {
+					UsedChallenges::<T>::remove(oldest_key);
+				}
+			}
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
-			// Verify the signature (using ed25519 for now)
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &signature, &public_key),
-				Error::<T>::InvalidSignature
-			);
+			// Verify the signature
+			if signature.len() != 64 || public_key.len() != 32 {
+				return Err(Error::<T>::InvalidSignature.into());
+			}
+
+			Self::verify_ed25519(&challenge_bytes, &signature, &public_key)?;
 
 			// Mark challenge used (replay protection)
 			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
@@ -505,18 +513,31 @@ pub mod pallet {
 		fn hex_to_bytes(hex: &[u8]) -> Result<Vec<u8>, Error<T>> {
 			let hex_str = core::str::from_utf8(hex).map_err(|_| Error::<T>::InvalidHexString)?;
 			let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-
-			// Check if valid hex
+			
+			// Check if empty
+			if hex_str.is_empty() {
+				return Err(Error::<T>::InvalidHexString);
+			}
+			
+			// Check if valid hex characters
 			if !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
 				return Err(Error::<T>::InvalidHexString);
 			}
-
+			
+			// Check for even length (required for hex to bytes conversion)
+			if hex_str.len() % 2 != 0 {
+				return Err(Error::<T>::InvalidHexString);
+			}
+			
 			// Convert hex to bytes
 			let bytes = (0..hex_str.len())
 				.step_by(2)
-				.filter_map(|i| u8::from_str_radix(&hex_str[i..i + 2], 16).ok())
-				.collect();
-
+				.map(|i| {
+					u8::from_str_radix(&hex_str[i..i + 2], 16)
+						.map_err(|_| Error::<T>::InvalidHexString)
+				})
+				.collect::<Result<Vec<u8>, Error<T>>>()?;
+			
 			Ok(bytes)
 		}
 
@@ -528,18 +549,26 @@ pub mod pallet {
 			out.copy_from_slice(h.as_ref());
 			out
 		}
-
-		fn verify_ed25519(msg: &[u8], sig: &[u8], pk: &[u8]) -> bool {
+		
+		fn verify_ed25519(msg: &[u8], sig: &[u8], pk: &[u8]) -> DispatchResult {
 			if sig.len() != 64 || pk.len() != 32 {
-				return false;
+				return Err(Error::<T>::InvalidSignature.into());
 			}
-			sp_io::crypto::ed25519_verify(
-				&sp_core::ed25519::Signature::from_raw(
-					<[u8; 64]>::try_from(sig).unwrap_or([0u8; 64]),
+		
+			ensure!(
+				sp_io::crypto::ed25519_verify(
+					&sp_core::ed25519::Signature::from_raw(
+						<[u8; 64]>::try_from(sig).unwrap_or([0u8; 64]),
+					),
+					msg,
+					&sp_core::ed25519::Public::from_raw(
+						<[u8; 32]>::try_from(pk).unwrap_or([0u8; 32])
+					),
 				),
-				msg,
-				&sp_core::ed25519::Public::from_raw(<[u8; 32]>::try_from(pk).unwrap_or([0u8; 32])),
-			)
+				Error::<T>::InvalidSignature
+			);
+		
+			Ok(())
 		}
 	}
 }

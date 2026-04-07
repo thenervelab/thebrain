@@ -91,8 +91,6 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type RefferallCoolDOwnPeriod: Get<u32>;
-
-		// type OnRuntimeUpgrade: OnRuntimeUpgrade;
 	}
 
 	// Storage for authority accounts
@@ -123,6 +121,12 @@ pub mod pallet {
 	#[pallet::getter(fn last_referral_creation_block)]
 	pub type LastReferralCreationBlock<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BlockNumberFor<T>>;
+
+	/// Per-account nonce used to ensure referral-code generation is unique even within the same block.
+	#[pallet::storage]
+	#[pallet::getter(fn referral_code_nonce)]
+	pub type ReferralCodeNonce<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u64, ValueQuery>;
 
 	// Mapping to track the total referral rewards earned
 	#[pallet::storage]
@@ -255,16 +259,10 @@ pub mod pallet {
 		InvalidRefferalOwner,
 		CreditAlreadyFulfilled,
 		LockedCreditNotFound,
-		/// Returned if the account has insufficient free credits
-		// InsufficientFreeCredits,
-		/// Returned if the current block is outside the specified lock period
 		OutsideLockPeriod,
-		/// Returned if no active lock period is set
 		NoActiveLockPeriod,
 		InvalidLockPeriod,
-		/// Minimum lock amount is not set
 		MinLockAmountNotSet,
-		/// Locked amount is less than the minimum required lock amount
 		InsufficientLockAmount,
 		InsufficientAlphaBalance,
 	}
@@ -348,9 +346,9 @@ pub mod pallet {
 			ensure!(free >= amount, Error::<T>::InsufficientFreeCredits);
 
 			// Update free credits
-			FreeCredits::<T>::insert(&who, free - amount);
+			FreeCredits::<T>::insert(&who, free.saturating_sub(amount));
 
-			Self::deposit_event(Event::BurnedAccountCredits { who, amount: free - amount });
+			Self::deposit_event(Event::BurnedAccountCredits { who, amount });
 
 			Ok(())
 		}
@@ -366,11 +364,11 @@ pub mod pallet {
 			// Ensure the caller is an authority
 			ensure_root(origin)?;
 
-			AlphaBalances::<T>::mutate(&user_to_credit, |credits| *credits += alpha_amount);
+			AlphaBalances::<T>::mutate(&user_to_credit, |credits| *credits = credits.saturating_add(alpha_amount));
 
 			// Increase the user's credits
 			FreeCredits::<T>::mutate(&user_to_credit, |credits| {
-				*credits += marketplace_credit_amount
+				*credits = credits.saturating_add(marketplace_credit_amount)
 			});
 
 			// Emit event for balance increase
@@ -382,74 +380,6 @@ pub mod pallet {
 
 			Ok(())
 		}
-
-		// /// Convert user credits to alpha
-		// #[pallet::call_index(5)]
-		// #[pallet::weight((0, Pays::No))]
-		// pub fn convert_credits_to_alpha(
-		//     origin: OriginFor<T>,
-		//     amount: u128
-		// ) -> DispatchResult {
-		//     // Ensure the caller is a signed origin
-		//     let who = ensure_signed(origin)?;
-
-		//     // Ensure the amount is greater than zero
-		//     ensure!(amount > 0, Error::<T>::InvalidConversionAmount);
-
-		//     // Ensure the user has enough credits
-		//     ensure!(
-		//         FreeCredits::<T>::get(&who) >= amount,
-		//         Error::<T>::InsufficientFreeCredits
-		//     );
-
-		//     // Decrease the user's credits
-		//     FreeCredits::<T>::mutate(&who, |credits| *credits -= amount);
-
-		//     // Increase the total locked alpha by the converted amount
-		//     TotalLockedAlpha::<T>::mutate(|total| *total += amount);
-
-		//     // Deposit an event
-		//     Self::deposit_event(Event::ConvertedToAlpha { who, amount });
-
-		//     Ok(())
-		// }
-
-		// /// Convert alpha to user credits
-		// #[pallet::call_index(6)]
-		// #[pallet::weight((0, Pays::No))]
-		// pub fn convert_alpha_to_credits(
-		//     origin: OriginFor<T>,
-		//     alpha_amount: u128,
-		//     user_to_credit: T::AccountId,
-		// ) -> DispatchResult {
-		//     // Ensure the caller is a signed origin
-		//     let who = ensure_signed(origin)?;
-
-		//     // Ensure the amount is greater than zero
-		//     ensure!(alpha_amount > 0, Error::<T>::InvalidConversionAmount);
-
-		//     // Ensure the total locked alpha is sufficient
-		//     let current_alpha_balance = TotalLockedAlpha::<T>::get();
-		//     ensure!(current_alpha_balance >= alpha_amount, Error::<T>::InsufficientAlphaBalance);
-
-		//     // Decrease the total locked alpha by the specified amount
-		//     TotalLockedAlpha::<T>::mutate(|total| *total -= alpha_amount);
-
-		//     // Increase the user's credits
-		//     FreeCredits::<T>::mutate(&user_to_credit, |credits| *credits += alpha_amount);
-
-		//     // Call the burn function from balances pallet
-		//       pallet_balances::Pallet::<T>::burn(
-		//         frame_system::RawOrigin::Signed(who.clone()).into(),
-		//         alpha_amount,
-		//         false, // keep_alive set to false to allow burning entire balance
-		//     )?;
-
-		//     // Emit an event for the conversion
-		//     Self::deposit_event(Event::ConvertedToCredits { who: user_to_credit.clone(), amount: alpha_amount });
-
-		//     Ok(())
-		// }
 
 		// creates refferal for a user
 		#[pallet::call_index(8)]
@@ -473,69 +403,6 @@ pub mod pallet {
 
 			Ok(())
 		}
-
-		// /// Lock a specified amount of credits for an account
-		// ///
-		// /// - `origin`: The account locking the credits
-		// /// - `amount`: The amount of credits to lock
-		// #[pallet::call_index(8)]
-		// #[pallet::weight((0, Pays::No))]
-		// pub fn lock_credits(
-		//     origin: OriginFor<T>,
-		//     amount: u128,
-		// ) -> DispatchResult {
-		//     // Ensure the caller is signed
-		//     let who = ensure_signed(origin)?;
-
-		//     // Get current block number
-		//     let current_block = frame_system::Pallet::<T>::block_number();
-
-		//     // Check if there's an active lock period
-		//     let lock_period = Self::current_lock_period()
-		//         .ok_or(Error::<T>::NoActiveLockPeriod)?;
-
-		//     // Validate current block is within the lock period
-		//     ensure!(
-		//         current_block >= lock_period.start_block &&
-		//         current_block <= lock_period.end_block,
-		//         Error::<T>::OutsideLockPeriod
-		//     );
-
-		//     // Ensure the account has sufficient free credits
-		//     let current_free_credits = Self::free_credits(&who);
-		//     ensure!(current_free_credits >= amount, Error::<T>::InsufficientFreeCredits);
-
-		//     // Check if the locked amount meets the minimum lock amount requirement
-		//     let min_lock_amount = Self::min_lock_amount()
-		//     .ok_or(Error::<T>::MinLockAmountNotSet)?;
-		//     ensure!(amount >= min_lock_amount, Error::<T>::InsufficientLockAmount);
-
-		//     // Generate a unique ID
-		//     let locked_credit_id = Self::generate_unique_id();
-
-		//     // Create the locked credit struct
-		//     let locked_credit = LockedCredit {
-		//         owner: who.clone(),
-		//         amount_locked: amount,
-		//         is_fulfilled: false,
-		//         tx_hash: None,
-		//         created_at: frame_system::Pallet::<T>::block_number(),
-		//         id: locked_credit_id,
-		//         is_migrated: false,
-		//     };
-
-		//     // Update locked credits
-		//     LockedCredits::<T>::mutate(&who, |credits| {
-		//         credits.push(locked_credit);
-		//     });
-
-		//     // Reduce free credits
-		//     FreeCredits::<T>::mutate(&who, |free| *free -= amount);
-
-		//     Self::deposit_event(Event::CreditLocked{who, amount, id: locked_credit_id});
-
-		//     Ok(())
-		// }
 
 		/// Mark a locked credit as fulfilled by providing a transaction hash
 		///
@@ -574,7 +441,7 @@ pub mod pallet {
 			})?;
 
 			// Increment the total successful credits transfers
-			TotalSucessfullCreditsTransfers::<T>::mutate(|total| *total += amount_fulfilled);
+			TotalSucessfullCreditsTransfers::<T>::mutate(|total| *total = total.saturating_add(amount_fulfilled));
 
 			// Deposit an event for the fulfillment
 			Self::deposit_event(Event::CreditFulfilled {
@@ -635,8 +502,11 @@ pub mod pallet {
 
 			let current_price = AlphaPrice::<T>::get();
 
-			let new_price =
-				if current_price == 0 { price } else { current_price.saturating_add(price) / 2 };
+			let new_price = if current_price == 0 {
+				price
+			} else {
+				current_price / 2 + price / 2 + (current_price % 2 + price % 2) / 2
+			};
 
 			AlphaPrice::<T>::put(new_price);
 
@@ -652,10 +522,10 @@ pub mod pallet {
 			let free = FreeCredits::<T>::get(&who);
 
 			// Update free credits
-			FreeCredits::<T>::insert(&who, free + amount);
+			FreeCredits::<T>::insert(&who, free.saturating_add(amount));
 
 			// Increase total credits purchased
-			TotalCreditsPurchased::<T>::mutate(|total| *total += amount);
+			TotalCreditsPurchased::<T>::mutate(|total| *total = total.saturating_add(amount));
 
 			// Helper function to insert a referral code for a user
 			Self::insert_referral_code(&who.clone(), code)?;
@@ -666,7 +536,14 @@ pub mod pallet {
 				let mut vm_available_ips = IpPallet::<T>::available_client_ips();
 
 				if let Some(ip) = vm_available_ips.pop() {
-					let _ = IpPallet::<T>::assign_ip_to_client(who.clone(), ip);
+					if let Err(e) = IpPallet::<T>::assign_ip_to_client(who.clone(), ip) {
+						log::error!(
+							target: "runtime::credits",
+							"assign_ip_to_client failed for {:?}: {:?}",
+							who,
+							e
+						);
+					}
 				}
 			}
 
@@ -681,7 +558,7 @@ pub mod pallet {
 		}
 
 		pub fn increase_user_credits(account: &T::AccountId, credits_to_increase: u128) {
-			FreeCredits::<T>::mutate(&account, |credits| *credits += credits_to_increase);
+			FreeCredits::<T>::mutate(&account, |credits| *credits = credits.saturating_add(credits_to_increase));
 
 			Self::deposit_event(Event::MintedAccountCredits {
 				who: account.clone(),
@@ -690,7 +567,7 @@ pub mod pallet {
 		}
 
 		pub fn decrease_user_credits(account: &T::AccountId, credits_to_decrease: u128) {
-			FreeCredits::<T>::mutate(&account, |credits| *credits -= credits_to_decrease);
+			FreeCredits::<T>::mutate(&account, |credits| *credits = credits.saturating_sub(credits_to_decrease));
 
 			Self::deposit_event(Event::BurnedAccountCredits {
 				who: account.clone(),
@@ -723,8 +600,6 @@ pub mod pallet {
 			match ReferralCodes::<T>::get(code) {
 				Some(ref_owner) => {
 					let ref_discount = price.saturating_mul(5) / 100 as u128;
-
-					Self::increase_user_credits(&ref_owner, ref_discount);
 
 					*total_discount = total_discount.saturating_add(ref_discount);
 
@@ -781,6 +656,18 @@ pub mod pallet {
 				);
 			}
 
+			// Retire any codes previously mapped to this account so only one active code exists.
+			let old_codes = Self::get_referral_codes(who.clone());
+			let removed_count = old_codes.len() as u32;
+			for code in &old_codes {
+				ReferralCodes::<T>::remove(code);
+			}
+			if removed_count > 0 {
+				TotalReferralCodes::<T>::mutate(|total| {
+					*total = total.saturating_sub(removed_count);
+				});
+			}
+
 			// Generate a unique referral code with the prefix "HIPPIUS"
 			let mut unique_code = format!("HIPPIUS{}", Self::generate_random_suffix(&who));
 
@@ -788,10 +675,6 @@ pub mod pallet {
 			while ReferralCodes::<T>::contains_key(unique_code.as_bytes()) {
 				unique_code = format!("HIPPIUS{}", Self::generate_random_suffix(&who));
 			}
-
-			// // Fetch the current referral code owner
-			// let previous_referral_owner = ReferralCodes::<T>::get(&existing_code.unwrap());
-			// ensure!(previous_referral_owner == Some(who.clone()), Error::<T>::InvalidRefferalOwner);
 
 			// Insert the newly generated code into ReferralCodes mapping
 			ReferralCodes::<T>::insert(unique_code.as_bytes(), &who);
@@ -850,13 +733,21 @@ pub mod pallet {
 		}
 
 		fn generate_random_suffix(account: &T::AccountId) -> u64 {
-			let nonce = frame_system::Pallet::<T>::block_number();
+			let block_number = frame_system::Pallet::<T>::block_number();
+
+			// Ensure uniqueness across multiple attempts in the same block.
+			let attempt_nonce = ReferralCodeNonce::<T>::mutate(account, |n| {
+				let current = *n;
+				*n = n.wrapping_add(1);
+				current
+			});
 
 			// Convert the block number to a primitive type (e.g., u64)
-			let nonce_as_u64 = TryInto::<u64>::try_into(nonce).unwrap_or_default(); // Handle conversion safely
+			let block_as_u64 = TryInto::<u64>::try_into(block_number).unwrap_or_default(); // Handle conversion safely
 
 			let mut random_data = account.using_encoded(|b| b.to_vec());
-			random_data.extend_from_slice(&nonce_as_u64.to_le_bytes());
+			random_data.extend_from_slice(&block_as_u64.to_le_bytes());
+			random_data.extend_from_slice(&attempt_nonce.to_le_bytes());
 
 			// Generate a hash and use its output as a number
 			let hash = hashing::blake2_128(&random_data);
@@ -880,16 +771,21 @@ pub mod pallet {
 
 		// Get all users referred by a given account
 		pub fn get_referred_users(account_id: T::AccountId) -> Vec<T::AccountId> {
-			// Get the referral codes for the account
-			let codes = ReferredUsers::<T>::get(&account_id).unwrap_or_default();
+			// `ReferredUsers` maps (user -> referral_code_used). To get "users referred by account_id",
+			// we collect all referral codes owned by `account_id` and return users whose used code
+			// matches any of those codes.
+			let owned_codes = Self::get_referral_codes(account_id);
+			if owned_codes.is_empty() {
+				return Vec::new();
+			}
 
-			// Filter and map the codes to their corresponding account IDs
-			codes
-				.iter()
-				.filter_map(|code| {
-					// Create a Vec<u8> from the u8 code
-					let code_vec: Vec<u8> = vec![*code]; // Wrap the u8 in a Vec<u8>
-					ReferralCodes::<T>::get(&code_vec) // Use &code_vec to retrieve the account ID
+			ReferredUsers::<T>::iter()
+				.filter_map(|(user, code_used)| {
+					if owned_codes.contains(&code_used) {
+						Some(user)
+					} else {
+						None
+					}
 				})
 				.collect()
 		}
@@ -903,15 +799,8 @@ pub mod pallet {
 				return 0;
 			}
 
-			codes
-				.iter()
-				.filter_map(|code| {
-					// Create a Vec<u8> from the u8 code
-					let code_vec: Vec<u8> = vec![*code]; // Wrap the u8 in a Vec<u8>
-										  // Retrieve the rewards and wrap in Some
-					Some(ReferralCodeRewards::<T>::get(&code_vec))
-				})
-				.sum() // Sum the results to get total rewards
+			// Get the rewards for this specific referral code
+			ReferralCodeRewards::<T>::get(&codes)
 		}
 
 		pub fn total_referral_codes() -> u32 {

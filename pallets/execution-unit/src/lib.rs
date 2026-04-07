@@ -263,6 +263,7 @@ pub mod pallet {
 		NodeNotRegistered,
 		InvalidNodeType,
 		StorageBelowTwoTB,
+		ArithmeticOverflow,
 		/// Primary network interface is not provided.
 		NoPrimaryNetworkInterface,
 		/// Disks array is empty.
@@ -348,30 +349,12 @@ pub mod pallet {
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			let first_epoch_block = 38u32.into(); // hardcoded or derived
 
-			if (_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
+			if _n.saturating_sub(first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
 				// Clear per-epoch pin stats for all miners
 				let _ = TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = TotalPingChecksPerEpoch::<T>::clear(u32::MAX, None);
 				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
-			}
-
-			// Clean up NodeMetrics if not registered
-			for (node_id, _) in NodeMetrics::<T>::iter() {
-				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
-					|| NodeRegistration::<T>::contains_key(&node_id);
-				if !is_registered {
-					NodeMetrics::<T>::remove(&node_id);
-				}
-			}
-
-			// Clean up BlockNumbers if node not registered
-			for (node_id, _) in BlockNumbers::<T>::iter() {
-				let is_registered = ColdkeyNodeRegistration::<T>::contains_key(&node_id)
-					|| NodeRegistration::<T>::contains_key(&node_id);
-				if !is_registered {
-					BlockNumbers::<T>::remove(&node_id);
-				}
 			}
 
 			Weight::zero()
@@ -431,10 +414,19 @@ pub mod pallet {
 			let max_requests_per_block =
 				<T as pallet::Config>::MaxOffchainHardwareSubmitRequestsPerPeriod::get();
 			let user_requests_count = HardwareRequestsCount::<T>::get(&node_id);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+			ensure!(user_requests_count.saturating_add(1) <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			HardwareRequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			let new_count = user_requests_count
+				.checked_add(1)
+				.ok_or(Error::<T>::ArithmeticOverflow)?;
+			
+			ensure!(
+				new_count <= max_requests_per_block.into(),
+				Error::<T>::TooManyRequests
+			);
+			
+			HardwareRequestsCount::<T>::insert(&node_id, new_count);
 
 			// Update last request block
 			HardwareRequestsLastBlock::<T>::insert(
@@ -442,47 +434,11 @@ pub mod pallet {
 				<frame_system::Pallet<T>>::block_number(),
 			);
 
-			// Check if specs already exist and are the same
-			// if let Some(existing_specs) = NodeSpecs::<T>::get(&node_id) {
-			// 	if existing_specs == system_info {
-			// 		log::info!("✅ System specs unchanged, skipping update");
-			// 		return Ok(().into());
-			// 	}
-			// }
-
-			// // Define 2TB in bytes (2TB = 2 * 1024 * 1024 * 1024 * 1024 bytes)
-			// const TWO_TB_IN_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
-
-			// // Define 5TB in megabytes (5TB = 5 * 1024 * 1024 MB)
-			// const FIVE_TB_IN_MB: u64 = 5 * 1024 * 1024;
-
-			// // Calculate storage values
-			// let current_storage_bytes = (system_info.storage_total_mb * 1024 * 1024)
-			// - (system_info.storage_free_mb * 1024 * 1024);
-			// let total_storage_bytes = system_info.storage_total_mb * 1024 * 1024;
-
-			// if current_storage_bytes < TWO_TB_IN_BYTES || total_storage_bytes < TWO_TB_IN_BYTES {
-			// 	Self::deposit_event(Event::StorageBelowTwoTB { node_id: node_id.clone() });
-			// 	return Err(Error::<T>::StorageBelowTwoTB.into());
-			// }
-
-			// // Check if primary_network_interface is None
-			// if system_info.primary_network_interface.is_none() {
-			// 	Self::deposit_event(Event::NoPrimaryNetworkInterface { node_id: node_id.clone() });
-			// 	return Err(Error::<T>::NoPrimaryNetworkInterface.into());
-			// }
-
-			// // Check if disks array is empty
-			// if system_info.disks.is_empty() {
-			// 	Self::deposit_event(Event::EmptyDisksArray { node_id: node_id.clone() });
-			// 	return Err(Error::<T>::EmptyDisksArray.into());
-			// }
-
-			// // Check if memory or free memory exceeds 5TB
-			// if system_info.memory_mb > FIVE_TB_IN_MB || system_info.free_memory_mb > FIVE_TB_IN_MB {
-			// 	Self::deposit_event(Event::MemoryExceedsFiveTB { node_id: node_id.clone() });
-			// 	return Err(Error::<T>::MemoryExceedsFiveTB.into());
-			// }
+			let total_storage_bytes = Self::mb_to_bytes(system_info.storage_total_mb)?;
+			let free_storage_bytes = Self::mb_to_bytes(system_info.storage_free_mb)?;
+			let current_storage_bytes = total_storage_bytes
+				.checked_sub(free_storage_bytes)
+				.ok_or(Error::<T>::ArithmeticOverflow)?;
 
 			// Function to create default metrics data
 			let create_default_metrics = || {
@@ -495,10 +451,8 @@ pub mod pallet {
 				NodeMetricsData {
 					miner_id: node_id.clone(),
 					bandwidth_mbps: system_info.network_bandwidth_mb_s,
-					// converting mbs into bytes
-					current_storage_bytes: (system_info.storage_total_mb * 1024 * 1024)
-						- (system_info.storage_free_mb * 1024 * 1024),
-					total_storage_bytes: system_info.storage_total_mb * 1024 * 1024,
+					current_storage_bytes,
+					total_storage_bytes,
 					geolocation: geolocation.unwrap_or_default(),
 					primary_network_interface: system_info.primary_network_interface.clone(),
 					disks: system_info.disks.clone(),
@@ -531,12 +485,8 @@ pub mod pallet {
 					existing_metrics.miner_id = node_id.clone();
 					// Update existing metrics
 					existing_metrics.bandwidth_mbps = system_info.network_bandwidth_mb_s;
-					// converting mbs into bytes
-					existing_metrics.current_storage_bytes =
-						(system_info.storage_total_mb * 1024 * 1024)
-							- (system_info.storage_free_mb * 1024 * 1024);
-					existing_metrics.total_storage_bytes =
-						system_info.storage_total_mb * 1024 * 1024;
+					existing_metrics.current_storage_bytes = current_storage_bytes;
+					existing_metrics.total_storage_bytes = total_storage_bytes;
 
 					// Calculate storage growth rate
 					existing_metrics.storage_growth_rate = if existing_metrics.uptime_minutes == 0
@@ -615,10 +565,10 @@ pub mod pallet {
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(&node_id);
-			ensure!(user_requests_count + 1 <= max_requests_per_block, Error::<T>::TooManyRequests);
+			ensure!(user_requests_count.saturating_add(1) <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			RequestsCount::<T>::insert(&node_id, user_requests_count + 1);
+			RequestsCount::<T>::insert(&node_id, user_requests_count.saturating_add(1));
 
 			// Fetch existing metrics
 			let mut metrics = NodeMetrics::<T>::get(&node_id).ok_or(Error::<T>::MetricsNotFound)?;
@@ -632,14 +582,14 @@ pub mod pallet {
 			.low_u64()) as u32;
 
 			metrics.latency_ms = latency_ms;
-			metrics.total_latency_ms = metrics.total_latency_ms + latency_ms;
-			metrics.total_times_latency_checked += 1;
+			metrics.total_latency_ms = metrics.total_latency_ms.saturating_add(latency_ms);
+			metrics.total_times_latency_checked = metrics.total_times_latency_checked.saturating_add(1);
 			metrics.avg_response_time_ms =
 				metrics.total_latency_ms / metrics.total_times_latency_checked;
 			metrics.peer_count = peer_count;
-			metrics.failed_challenges_count += failed_challenges_count;
-			metrics.successful_challenges += successful_challenges;
-			metrics.total_challenges += total_challenges;
+			metrics.failed_challenges_count = metrics.failed_challenges_count.saturating_add(failed_challenges_count);
+			metrics.successful_challenges = metrics.successful_challenges.saturating_add(successful_challenges);
+			metrics.total_challenges = metrics.total_challenges.saturating_add(total_challenges);
 			if uptime_minutes != 0 && uptime_minutes != u32::MAX {
 				metrics.uptime_minutes = uptime_minutes;
 			}
@@ -655,27 +605,6 @@ pub mod pallet {
 			metrics.miner_id = node_id.clone();
 			// Insert the updated metrics back into storage
 			NodeMetrics::<T>::insert(node_id.clone(), metrics);
-
-			// // Fetch the existing vector of block numbers or initialize a new one
-			// let blocks_vec = BlockNumbers::<T>::get(node_id.clone()).unwrap_or_else(|| Vec::new());
-
-			// // Convert the existing blocks into a BTreeMap to remove duplicates
-			// let mut blocks: BTreeMap<BlockNumberFor<T>, ()> =
-			// 	blocks_vec.into_iter().map(|block| (block, ())).collect();
-
-			// let check_interval = <T as pallet::Config>::BlockCheckInterval::get();
-			// // Push the current block number and the preceding ones
-			// for i in (0..check_interval).rev() {
-			// 	let block_to_push = block_number - i;
-			// 	// Check if the block is already present in the storage
-			// 	if !blocks.contains_key(&block_to_push.into()) {
-			// 		blocks.insert(block_to_push.into(), ()); // Only add if it's not already present
-			// 	}
-			// }
-
-			// // Convert the BTreeMap back to a Vec for storage
-			// let unique_blocks: Vec<_> = blocks.keys().cloned().collect();
-			// BlockNumbers::<T>::insert(node_id, unique_blocks);
 
 			// Store only the latest block number as a single-element vector
 			let block_vec: Vec<BlockNumberFor<T>> = vec![block_number.into()];
@@ -925,6 +854,12 @@ pub mod pallet {
 			)
 		}
 
+		fn mb_to_bytes(mb: u64) -> Result<u64, DispatchError> {
+			mb.checked_mul(1024)
+				.and_then(|v| v.checked_mul(1024))
+				.ok_or(Error::<T>::ArithmeticOverflow.into())
+		}
+		
 		pub fn call_update_metrics_data(
 			node_id: Vec<u8>,
 			storage_proof_time_ms: u32,
@@ -1202,10 +1137,18 @@ pub mod pallet {
 
 				// update storage request and remove files
 				if !is_registered {
-					// unRegister and check if storage miner than unpin and update storage
-					let _ = pallet_arion::Pallet::<T>::deregister_family(miner.owner.clone());
+					// Unregister family first; if this fails, don't proceed (prevents orphaned family state).
+					if let Err(e) = pallet_arion::Pallet::<T>::deregister_family(miner.owner.clone()) {
+						log::error!(
+							target: "runtime::execution_unit",
+							"❌ Failed to deregister family for owner {:?}: {:?}",
+							miner.owner,
+							e
+						);
+						continue;
+					}
 
-					// unregister node , Hotkey nodes and LinkedNodes
+					// unregister node , Hotkey nodes
 					pallet_registration::Pallet::<T>::do_unregister_main_node(
 						miner.node_id.clone(),
 					);

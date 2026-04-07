@@ -9,10 +9,8 @@ Hippius Network is an advanced blockchain platform built on Substrate, designed 
 ### 💡 Unique Reward Distribution Model
 
 #### Reward Allocation Breakdown
-- **Staking Rewards**: 20% of Marketplace Revenue
-- **Ranking Rewards**: 70% of Marketplace Revenue
-  - Split equally between two ranking pallets
-- **Treasury**: 10% of Marketplace Revenue
+- **Validators (Staking pallet validators)**: 75% of Marketplace balance
+- **Treasury / Pot**: 25% of Marketplace balance (sent to the configured treasury/pot address)
 
 #### Validator Reward Mechanism
 1. **Era-Based Distribution**
@@ -58,9 +56,25 @@ Hippius Network is an advanced blockchain platform built on Substrate, designed 
 
 ### Reward Distribution Workflow
 
-Marketplace Revenue (100%) ├── Staking Rewards (20%) │ └── Distributed among Active Validators ├── Ranking Rewards (70%) │ ├── Ranking Pallet 1 (35%) │ └── Ranking Pallet 2 (35%) └── Treasury (10%)
+**Era payout (mainnet runtime — `MarketplaceRewardPayout`):**
 
+Funds taken from the **marketplace pallet account** each era:
 
+- **75%** → **active validators** (native balance, split **equally** across the session validator set)
+- **25%** → **treasury** (hardcoded recipient in runtime; see `MarketplaceRewardPayout::era_payout`)
+
+This is **not** a 70/20/10 split; the live logic is **75/25** (validators vs treasury).
+
+**Alpha released inside the marketplace pallet (`distribute_alpha`):**
+
+When alpha is routed through `pallets/marketplace`’s `distribute_alpha`:
+
+- **75%** → **rankings** pallet account  
+- **25%** → **marketplace** pallet account  
+
+That split is **hardcoded** in the marketplace pallet (not configurable via runtime constants today). It is a **different** flow from the era marketplace → validators/treasury payout above.
+
+**Registration pallet** and other accounts may hold separate balances for fees; read `era_payout` and marketplace call sites for the full picture.
 
 ### Validator Reward Calculation
 1. **Base Reward Calculation**

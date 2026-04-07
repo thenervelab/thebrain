@@ -29,7 +29,7 @@ use hippius_primitives::{
 	impl_proxy_type,
 };
 use pallet_ethereum::PostLogContent;
-use pallet_evm::{HashedAddressMapping, OnChargeEVMTransaction};
+use pallet_evm::HashedAddressMapping;
 use pallet_evm_precompileset_assets_erc20::AddressToAssetId;
 // use precompile_utils::prelude::Address;
 impl pallet_evm_chain_id::Config for Runtime {}
@@ -82,106 +82,9 @@ parameter_types! {
 	pub PrecompilesValue: HipiusPrecompiles<Runtime> = HipiusPrecompiles::<_>::new();
 }
 
-/// Type alias for negative imbalance during fees
-type RuntimeNegativeImbalance =
-	<Balances as Currency<<Runtime as frame_system::Config>::AccountId>>::NegativeImbalance;
-
-/// See: [`pallet_evm::EVMCurrencyAdapter`]
-pub struct CustomEVMCurrencyAdapter;
-
-impl OnChargeEVMTransaction<Runtime> for CustomEVMCurrencyAdapter {
-	type LiquidityInfo = Option<RuntimeNegativeImbalance>;
-
-	fn withdraw_fee(
-		who: &H160,
-		fee: U256,
-	) -> Result<Self::LiquidityInfo, pallet_evm::Error<Runtime>> {
-		log::info!("withdraw_fee - address: {:?}", who);
-
-		// // Account profile precompile is at address 2086
-		// let account_profile_address = H160::from_low_u64_be(2086);
-
-		// // Get the current transaction info
-		// if let Some(transaction) = get_current_transaction() {
-		//     log::info!("Transaction target: {:?}", transaction.action);
-
-		//     // Check if this is a call to our precompile
-		//     if let TransactionAction::Call(target) = transaction.action {
-		//         if target == account_profile_address {
-		//             // This is a call to our precompile
-		//             log::info!("Account profile precompile call - free!");
-		//             return Ok(None);
-		//         }
-		//     }
-		// }
-
-		// Convert AccountId32 to H160 by taking the last 20 bytes
-		let account_bytes = pallet_marketplace::Pallet::<Runtime>::account_id().encode();
-		let pallet_marketplace_address =
-			H160::from_slice(&account_bytes[account_bytes.len() - 20..]);
-
-		if who == &pallet_marketplace_address {
-			return Ok(None);
-		}
-
-		// fallback to the default implementation
-		<pallet_evm::EVMCurrencyAdapter<Balances, impls::DealWithFees<Runtime>> as OnChargeEVMTransaction<
-            Runtime,
-        >>::withdraw_fee(who, fee)
-	}
-
-	fn correct_and_deposit_fee(
-		who: &H160,
-		corrected_fee: U256,
-		base_fee: U256,
-		already_withdrawn: Self::LiquidityInfo,
-	) -> Self::LiquidityInfo {
-		log::info!("correct_and_deposit_fee - address: {:?}", who);
-
-		// Account profile precompile is at address 2086
-		// let account_profile_address = H160::from_low_u64_be(2086);
-
-		// // Get the current transaction info
-		// if let Some(transaction) = get_current_transaction() {
-		//     log::info!("Transaction target: {:?}", transaction.action);
-		//     // Check if this is a call to our precompile
-		//     if let TransactionAction::Call(target) = transaction.action {
-		//         if target == account_profile_address {
-		//             // This is a call to our precompile
-		//             log::info!("Account profile precompile call - free!");
-		//             return already_withdrawn;
-		//         }
-		//     }
-		// }
-
-		// Convert AccountId32 to H160 by taking the last 20 bytes
-		let account_bytes = pallet_marketplace::Pallet::<Runtime>::account_id().encode();
-		let pallet_marketplace_address =
-			H160::from_slice(&account_bytes[account_bytes.len() - 20..]);
-
-		if who == &pallet_marketplace_address {
-			return already_withdrawn;
-		}
-
-		// fallback to the default implementation
-		<pallet_evm::EVMCurrencyAdapter<Balances, impls::DealWithFees<Runtime>> as OnChargeEVMTransaction<
-            Runtime,
-        >>::correct_and_deposit_fee(who, corrected_fee, base_fee, already_withdrawn)
-	}
-
-	fn pay_priority_fee(tip: Self::LiquidityInfo) {
-		<pallet_evm::EVMCurrencyAdapter<Balances, impls::DealWithFees<Runtime>> as OnChargeEVMTransaction<
-            Runtime,
-        >>::pay_priority_fee(tip)
-	}
-}
-
-// // Placeholder function to get current transaction info
-// fn get_current_transaction() -> Option<Transaction> {
-//     // Implement logic to retrieve the current transaction info
-//     // This might involve accessing the current block or transaction pool
-//     None // Replace with actual implementation
-// }
+/// Standard EVM fee handling with no account-specific exemptions.
+pub type CustomEVMCurrencyAdapter =
+	pallet_evm::EVMCurrencyAdapter<Balances, impls::DealWithFees<Runtime>>;
 
 pub struct PrecompileGasWeightMapping<T>(PhantomData<T>);
 

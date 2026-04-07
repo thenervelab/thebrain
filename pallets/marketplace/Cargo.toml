@@ -28,13 +28,12 @@ sp-io = { default-features = false, workspace = true }
 #pallet-compute = { workspace = true, default-features = false }
 hex = { workspace = true }
 log = { version = "0.4.22", default-features = false }
-pallet-notifications = { workspace = true }
+#pallet-notifications = { workspace = true }
 pallet-registration = { default-features = false, workspace = true }
 pallet-rankings = { default-features = false, workspace = true }
 pallet-credits = { default-features = false, workspace = true }
 num-traits = { version = "0.2.17", default-features = false }
 pallet-utils = { default-features = false, workspace = true }
-pallet-subaccount = { default-features = false, workspace = true }
 pallet-arion = { workspace = true, default-features = false }
 
 [dev-dependencies]
@@ -54,14 +53,13 @@ std = [
     "sp-core/std",
     "sp-arithmetic/std",
     #"pallet-compute/std",
-    "pallet-notifications/std",
+    #"pallet-notifications/std",
     "serde",
     "pallet-registration/std",
     "pallet-credits/std",
     "num-traits/std",
     "pallet-utils/std",
     "pallet-rankings/std",
-    "pallet-subaccount/std",
     "sp-io/std",
     "pallet-arion/std"
 ]

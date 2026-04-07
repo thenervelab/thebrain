@@ -298,7 +298,7 @@ mod tests;
 pub mod election_size_tracker;
 pub mod inflation;
 pub mod ledger;
-pub mod migrations;
+// pub mod migrations;
 pub mod slashing;
 pub mod weights;
 

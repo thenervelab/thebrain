@@ -418,8 +418,8 @@ impl<T: Config> Pallet<T> {
 			RewardDestination::Stash => T::Currency::deposit_into_existing(stash, amount).ok(),
 			RewardDestination::Staked => Self::ledger(Stash(stash.clone()))
 				.and_then(|mut ledger| {
-					ledger.active += amount;
-					ledger.total += amount;
+					ledger.active = ledger.active.saturating_add(amount);
+					ledger.total = ledger.total.saturating_add(amount);
 					let r = T::Currency::deposit_into_existing(stash, amount).ok();
 
 					let _ = ledger
@@ -682,7 +682,6 @@ impl<T: Config> Pallet<T> {
 					// The initial era is allowed to have no exposures.
 					// In this case the SessionManager is expected to choose a sensible validator
 					// set.
-					// TODO: this should be simplified #8911
 					CurrentEra::<T>::put(0);
 					ErasStartSessionIndex::<T>::insert(&0, &start_session_index);
 				},
@@ -857,7 +856,7 @@ impl<T: Config> Pallet<T> {
 			<ErasRewardPoints<T>>::mutate(active_era.index, |era_rewards| {
 				for (validator, points) in validators_points.into_iter() {
 					*era_rewards.individual.entry(validator).or_default() += points;
-					era_rewards.total += points;
+					era_rewards.total = era_rewards.total.saturating_add(points);
 				}
 			});
 		}

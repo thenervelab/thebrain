@@ -169,7 +169,7 @@ fn test_attestation_on_completed_deposit_fails() {
 				amount,
 				nonce,
 			),
-			Error::<Test>::DepositAlreadyCompleted
+			Error::<Test>::DepositIdAlreadySettled
 		);
 	});
 }
@@ -875,6 +875,50 @@ fn test_set_guardians_and_threshold_replaces_existing() {
 
 		assert_eq!(crate::Guardians::<Test>::get(), new_guardians);
 		assert_eq!(crate::ApproveThreshold::<Test>::get(), 1);
+	});
+}
+
+/// Pending deposits that already have enough **current** guardian votes must finalize on rotation
+/// (e.g. threshold lowered from 3 to 2).
+#[test]
+fn test_guardian_rotation_reevaluates_pending_deposits() {
+	new_test_ext().execute_with(|| {
+		crate::ApproveThreshold::<Test>::put(3);
+
+		let recipient = user1();
+		let amount = 1000u128;
+		let nonce = 0u64;
+		let deposit_id = generate_deposit_id_for(&recipient, amount, nonce);
+		let initial_balance = Balances::free_balance(&recipient);
+
+		assert_ok!(AlphaBridge::<Test>::attest_deposit(
+			RuntimeOrigin::signed(alice()),
+			deposit_id,
+			recipient.clone(),
+			amount,
+			nonce,
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_deposit(
+			RuntimeOrigin::signed(bob()),
+			deposit_id,
+			recipient.clone(),
+			amount,
+			nonce,
+		));
+
+		let deposit = crate::Deposits::<Test>::get(deposit_id).expect("deposit");
+		assert_eq!(deposit.status, DepositStatus::Pending);
+
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			vec![alice(), bob(), charlie()],
+			2,
+		));
+
+		let deposit = crate::Deposits::<Test>::get(deposit_id).expect("deposit");
+		assert_eq!(deposit.status, DepositStatus::Completed);
+		assert_eq!(Balances::free_balance(&recipient), initial_balance + amount);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), amount);
 	});
 }
 
