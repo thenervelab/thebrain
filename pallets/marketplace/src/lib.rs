@@ -176,12 +176,6 @@ pub mod pallet {
         #[pallet::constant]
         type BlocksPerEra: Get<u32>;
 
-        #[pallet::constant]
-        type StorageGracePeriod: Get<u32>;
-
-        #[pallet::constant]
-        type ComputeGracePeriod: Get<u32>;
-
         /// Custom hash type for this pallet
         type CustomHash: Parameter + Default + From<H256>;
 
@@ -1253,27 +1247,6 @@ pub mod pallet {
                             }
                         }
                     });
-                } else {
-                    // Insufficient credits - check grace period using storage grace period
-                    if Self::is_subscription_in_grace_period(earliest_last_charged, current_block) {
-                        // Still within grace period, do nothing
-                    } else {
-                        // Grace period expired, cancel ALL subscriptions
-                        match Self::do_cancel_all_subscriptions(&account_id) {
-                            Ok(()) => {
-                                users_charged_or_cancelled =
-                                    users_charged_or_cancelled.saturating_add(1);
-                            },
-                            Err(e) => {
-                                log::error!(
-                                    target: "runtime::marketplace",
-                                    "do_cancel_all_subscriptions failed for {:?}: {:?}",
-                                    account_id,
-                                    e
-                                );
-                            },
-                        }
-                    }
                 }
             }
 
@@ -1345,38 +1318,6 @@ pub mod pallet {
                             if tx_result.is_ok() && ts_result.is_ok() {
                                 users_charged_or_removed = users_charged_or_removed.saturating_add(1);
                             }
-                        }
-                    } else {
-                        let blocks_per_hour = T::BlocksPerHour::get();
-                        let grace_period_blocks = T::StorageGracePeriod::get();
-                        
-                        // Calculate grace period start after hourly charging
-                        let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
-                        
-                        // Check if the current block is within the grace period
-                        if current_block <= grace_period_start {
-                            // Haven't even reached charging window
-                            log::info!(
-                                "Storage request for user {:?} is in grace period",
-                                user
-                            );
-                        } else if (current_block - grace_period_start) <= grace_period_blocks.into() {
-                            // Still within grace period
-                            log::info!(
-                                "Storage request for user {:?} is in grace period",
-                                user
-                            );
-                        } else {
-                            // remove user storage request and unpin (infallible storage clears in arion)
-                            log::warn!(
-                                target: "runtime::marketplace",
-                                "storage grace expired; clearing arion file stats for {:?}",
-                                user
-                            );
-                            pallet_arion::Pallet::<T>::delete_user_entries(user.clone());
-
-                            Self::remove_storage_last_charged_at(&user);
-                            users_charged_or_removed = users_charged_or_removed.saturating_add(1);
                         }
                     }
                 }
@@ -1501,34 +1442,6 @@ pub mod pallet {
             BackupDeleteRequests::<T>::mutate(|delete_requests| {
                 delete_requests.retain(|user| user != user_id);
             });
-        }
-
-        /// Helper function to get the configured compute grace period
-		pub fn get_compute_grace_period() -> BlockNumberFor<T> {
-			T::ComputeGracePeriod::get().into()
-		}
-
-        /// Helper function to get the configured storage grace period
-        pub fn get_storage_grace_period() -> BlockNumberFor<T> {
-            T::StorageGracePeriod::get().into()
-        }
-
-        // Helper function to check if a storage subscription is in grace period
-        fn is_subscription_in_grace_period(
-            last_charged_at: BlockNumberFor<T>,
-            current_block: BlockNumberFor<T>,
-        ) -> bool {
-			let blocks_per_hour = T::BlocksPerHour::get().into();
-			let grace_period_blocks = Self::get_storage_grace_period();
-			
-			// Calculate grace period start after hourly charging
-			let grace_period_start = last_charged_at.saturating_add(blocks_per_hour);
-			
-			// Check if the current block is within the grace period
-            if current_block <= grace_period_start {
-                return true;
-            }
-			(current_block - grace_period_start) <= grace_period_blocks
         }
 
         /// Helper function to update the last charged timestamp for a user

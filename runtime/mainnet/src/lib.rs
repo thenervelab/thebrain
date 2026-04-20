@@ -724,9 +724,6 @@ parameter_types! {
 	pub const BlocksPerEra: u32 = (HOURS * 6) as u32;
 	pub const RefferallCoolDOwnPeriod : u32 = 200;
 	pub const BlockChargeCheckInterval: u32 = 8;
-	// storage and compute grace periods
-	pub const StorageGracePeriod: u32 = 0;
-	pub const ComputeGracePeriod: u32 = 0;
 	pub const MaxRequestsPerBlock: u32 = 5;
 }
 
@@ -740,8 +737,6 @@ impl pallet_marketplace::Config for Runtime {
 	type PalletId = MarketplacePalletId;
 	type BlockDurationMillis = BlockDurationMillis;
 	type BlocksPerEra = BlocksPerEra;
-	type StorageGracePeriod = StorageGracePeriod;
-	type ComputeGracePeriod = ComputeGracePeriod;
 	type CustomHash = sp_core::H256;
 	type BlocksPerHour = BlocksPerHour;
 	type BlockChargeCheckInterval = BlockChargeCheckInterval;
