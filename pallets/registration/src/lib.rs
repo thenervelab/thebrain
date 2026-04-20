@@ -531,8 +531,7 @@ pub mod pallet {
 			);
 			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
 			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
-			ensure!(node_id == node_id_hex, Error::<T>::NodeIdMismatch);
-
+	
 			let ch_hash = Self::blake256(&challenge_bytes);
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
@@ -596,69 +595,69 @@ pub mod pallet {
 			// Get all UIDs using the MetagraphInfo provider
 			let uids = T::MetagraphInfo::get_all_uids();
 
-			// if let Ok(account_bytes) = owner.clone().encode().try_into() {
-			// 	let account = AccountId32::new(account_bytes);
-			// 	let owner_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
-			// 		.to_ss58check();
+			if let Ok(account_bytes) = owner.clone().encode().try_into() {
+				let account = AccountId32::new(account_bytes);
+				let owner_ss58 = AccountId32::new(account.encode().try_into().unwrap_or_default())
+					.to_ss58check();
 
-			// 	// Check if the caller is in UIDs
-			// 	let is_in_uids =
-			// 		uids.iter().any(|uid| uid.substrate_address.to_ss58check() == owner_ss58);
+				// Check if the caller is in UIDs
+				let is_in_uids =
+					uids.iter().any(|uid| uid.substrate_address.to_ss58check() == owner_ss58);
 
-			// 	// Check if the caller is not in UIDs and return an error
-			// 	ensure!(is_in_uids, Error::<T>::NodeNotInUids);
+				// Check if the caller is not in UIDs and return an error
+				ensure!(is_in_uids, Error::<T>::NodeNotInUids);
 
-			// 	// If the caller is in UIDs, check if the node_type matches the role
-			// 	if is_in_uids {
-			// 		let whitelist = T::MetagraphInfo::get_whitelisted_validators();
-			// 		let is_whitelisted = whitelist.iter().any(|validator| validator == &owner);
+				// If the caller is in UIDs, check if the node_type matches the role
+				if is_in_uids {
+					let whitelist = T::MetagraphInfo::get_whitelisted_validators();
+					let is_whitelisted = whitelist.iter().any(|validator| validator == &owner);
 
-			// 		if !is_whitelisted {
-			// 			if let Some(uid) = uids
-			// 				.iter()
-			// 				.find(|uid| uid.substrate_address.to_ss58check() == owner_ss58)
-			// 			{
-			// 				ensure!(uid.role == node_type.to_role(), Error::<T>::NodeTypeMismatch);
-			// 			}
-			// 		}
-			// 	}
+					if !is_whitelisted {
+						if let Some(uid) = uids
+							.iter()
+							.find(|uid| uid.substrate_address.to_ss58check() == owner_ss58)
+						{
+							ensure!(uid.role == node_type.to_role(), Error::<T>::NodeTypeMismatch);
+						}
+					}
+				}
 
-			// 	// Check if fee charging is enabled
-			// 	if Self::fee_charging_enabled() {
-			// 		// Calculate dynamic fee based on node type
-			// 		let fee = Self::calculate_dynamic_fee(node_type.clone());
+				// Check if fee charging is enabled
+				if Self::fee_charging_enabled() {
+					// Calculate dynamic fee based on node type
+					let fee = Self::calculate_dynamic_fee(node_type.clone());
 
-			// 		// Ensure user has sufficient balance
-			// 		ensure!(
-			// 			<pallet_balances::Pallet<T>>::free_balance(&owner) >= fee,
-			// 			Error::<T>::InsufficientBalanceForFee
-			// 		);
+					// Ensure user has sufficient balance
+					ensure!(
+						<pallet_balances::Pallet<T>>::free_balance(&owner) >= fee,
+						Error::<T>::InsufficientBalanceForFee
+					);
 
-			// 		if !pay_in_credits {
-			// 			// Transfer fee to the pallet's account
-			// 			<pallet_balances::Pallet<T>>::transfer(
-			// 				&owner.clone(),
-			// 				&Self::account_id(),
-			// 				fee,
-			// 				ExistenceRequirement::AllowDeath,
-			// 			)?;
-			// 		} else {
-			// 			// decrease credits and mint balance
-			// 			let fee_u128: u128 = fee.try_into().unwrap_or_default();
-			// 			let current_credits = CreditsPallet::<T>::get_free_credits(&owner);
-			// 			ensure!(current_credits >= fee_u128, Error::<T>::InsufficientCreditsForFee);
-			// 			CreditsPallet::<T>::decrease_user_credits(&owner.clone(), fee_u128);
-			// 			// Deposit charge to marketplace account
-			// 			let _imbalance = pallet_balances::Pallet::<T>::deposit_creating(
-			// 				&Self::account_id(),
-			// 				fee,
-			// 			);
-			// 		}
+					if !pay_in_credits {
+						// Transfer fee to the pallet's account
+						<pallet_balances::Pallet<T>>::transfer(
+							&owner.clone(),
+							&Self::account_id(),
+							fee,
+							ExistenceRequirement::AllowDeath,
+						)?;
+					} else {
+						// decrease credits and mint balance
+						let fee_u128: u128 = fee.try_into().unwrap_or_default();
+						let current_credits = CreditsPallet::<T>::get_free_credits(&owner);
+						ensure!(current_credits >= fee_u128, Error::<T>::InsufficientCreditsForFee);
+						CreditsPallet::<T>::decrease_user_credits(&owner.clone(), fee_u128);
+						// Deposit charge to marketplace account
+						let _imbalance = pallet_balances::Pallet::<T>::deposit_creating(
+							&Self::account_id(),
+							fee,
+						);
+					}
 
-			// 		// Update fee after successful registration
-			// 		Self::update_fee_after_registration(node_type.clone());
-			// 	}
-			// }
+					// Update fee after successful registration
+					Self::update_fee_after_registration(node_type.clone());
+				}
+			}
 
 			// Get the current block number
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
