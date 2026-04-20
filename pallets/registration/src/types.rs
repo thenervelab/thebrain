@@ -13,14 +13,27 @@ pub struct NodeInfo<BlockNumber, AccountId> {
 	pub status: Status,
 	pub registered_at: BlockNumber,
 	pub owner: AccountId,
-	pub is_verified: bool, // New field with default value false
+	pub is_verified: bool,
+}
+
+/// Minimal coldkey/main-node registration info.
+///
+/// This is intended to replace `NodeInfo` in the coldkey registration storage to avoid storing
+/// fields that are not required for the runtime's current logic.
+#[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
+pub struct ColdkeyNodeInfoLite<BlockNumber, AccountId> {
+	pub node_id: Vec<u8>,
+	pub node_type: NodeType,
+	pub status: Status,
+	pub registered_at: BlockNumber,
+	pub owner: AccountId,
 }
 
 // DeregistrationReport with created_at field
 #[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]
 pub struct DeregistrationReport<BlockNumberFor> {
 	pub node_id: Vec<u8>,
-	pub created_at: BlockNumberFor, // Block number when the report was created
+	pub created_at: BlockNumberFor,
 }
 
 #[derive(Encode, Decode, Clone, Eq, PartialEq, Debug, TypeInfo)]

@@ -61,8 +61,6 @@ pub mod pallet {
 	use num_traits::float::FloatCore;
 	use pallet_babe::RandomnessFromOneEpochAgo;
 	use pallet_metagraph::UIDs;
-	use pallet_registration::pallet::ColdkeyNodeRegistration;
-	use pallet_registration::pallet::NodeRegistration;
 	use pallet_registration::NodeType;
 	use pallet_registration::Pallet as RegistrationPallet;
 	use pallet_utils::Pallet as UtilsPallet;
