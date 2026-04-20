@@ -124,7 +124,6 @@ pub mod pallet {
 		// New method to calculate weights specifically for storage miners
 		fn calculate_storage_miner_weights(
 			all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
-			all_nodes_metrics: &Vec<NodeMetricsData>,
 			uids: &Vec<UID>,
 		) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
 			let mut storage_weights: Vec<u16> = Vec::new();
@@ -195,29 +194,6 @@ pub mod pallet {
 					&miner.node_id,
 				);
 
-				// // Check if miner has been registered for at least MIN_BLOCKS_REGISTERED
-				// if let Some(reg_block) = registration_block {
-				// 	let blocks_since_registration =
-				// 		current_block_number.saturating_sub(reg_block);
-				// 	let has_children = !pallet_arion::FamilyChildren::<T>::get(&miner.owner).is_empty();
-				// 	if blocks_since_registration < MIN_BLOCKS_REGISTERED.into() && !has_children {
-				// 		// Apply 80% reduction to weight (multiply by 0.2), ensure at least 1
-				// 		weight = ((weight as u64) * 20 / 100).max(1) as u32;
-				// 	}
-				// }
-
-				let buffer = 3000u32;
-				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-				if let Some(blocks) = blocks_online {
-					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
-						if difference > buffer.into() {
-							// Ensure buffer is of the correct type
-							weight = 0; // Accumulate weight
-						}
-					}
-				}
-
 				storage_weights.push(weight as u16);
 
 				let miner_ss58 =
@@ -274,7 +250,6 @@ pub mod pallet {
 		// New method to calculate weights specifically for storage S3 miners
 		fn calculate_storage_s3_weights(
 			all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
-			all_nodes_metrics: &Vec<NodeMetricsData>,
 			uids: &Vec<UID>,
 		) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
 			let mut storage_s3_weights: Vec<u16> = Vec::new();
@@ -321,17 +296,7 @@ pub mod pallet {
 						String::from_utf8_lossy(&miner.node_id)
 					);
 				}
-				let buffer = 300u32;
-				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-				if let Some(blocks) = blocks_online {
-					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
-						if difference > buffer.into() {
-							// Ensure buffer is of the correct type
-							weight = 0; // Accumulate weight
-						}
-					}
-				}
+
 				storage_s3_weights.push(weight as u16);
 
 				// Other logic remains the same...
@@ -363,7 +328,6 @@ pub mod pallet {
 		// New method to calculate weights specifically for compute miners
 		fn calculate_validator_weights(
 			all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
-			all_nodes_metrics: &Vec<NodeMetricsData>,
 			uids: &Vec<UID>,
 		) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
 			let mut validator_weights: Vec<u16> = Vec::new();
@@ -410,17 +374,7 @@ pub mod pallet {
 						String::from_utf8_lossy(&miner.node_id)
 					);
 				}
-				let buffer = 300u32;
-				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-				if let Some(blocks) = blocks_online {
-					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
-						if difference > buffer.into() {
-							// Ensure buffer is of the correct type
-							weight = 0; // Accumulate weight
-						}
-					}
-				}
+
 				validator_weights.push(weight as u16);
 
 				// Other logic remains the same...
@@ -452,7 +406,6 @@ pub mod pallet {
 		// New method to calculate weights specifically for GPU miners
 		fn calculate_gpu_miner_weights(
 			all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
-			all_nodes_metrics: &Vec<NodeMetricsData>,
 			uids: &Vec<UID>,
 		) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
 			let mut gpu_weights: Vec<u16> = Vec::new();
@@ -500,17 +453,6 @@ pub mod pallet {
 					);
 				}
 
-				let buffer = 300u32;
-				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-				if let Some(blocks) = blocks_online {
-					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
-						if difference > buffer.into() {
-							// Ensure buffer is of the correct type
-							weight = 0; // Accumulate weight
-						}
-					}
-				}
 				gpu_weights.push(weight as u16);
 
 				// Other logic remains the same...
@@ -541,7 +483,6 @@ pub mod pallet {
 		// New method to calculate weights specifically for compute miners
 		fn calculate_compute_miner_weights(
 			all_miners: &Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
-			all_nodes_metrics: &Vec<NodeMetricsData>,
 			uids: &Vec<UID>,
 		) -> (Vec<u16>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<NodeType>, Vec<u16>, Vec<u16>) {
 			let mut compute_weights: Vec<u16> = Vec::new();
@@ -589,17 +530,6 @@ pub mod pallet {
 					);
 				}
 
-				let buffer = 300u32;
-				let blocks_online = ExecutionPallet::<T>::block_numbers(miner.node_id.clone());
-				if let Some(blocks) = blocks_online {
-					if let Some(&last_block) = blocks.last() {
-						let difference = current_block_number.saturating_sub(last_block);
-						if difference > buffer.into() {
-							// Ensure buffer is of the correct type
-							weight = 0; // Accumulate weight
-						}
-					}
-				}
 				compute_weights.push(weight as u16);
 
 				let miner_ss58 =
@@ -655,21 +585,6 @@ pub mod pallet {
 			let mut uids = MetagraphPallet::<T>::get_uids();
 			let mut all_nodes = RegistrationPallet::<T>::get_all_nodes_with_min_staked();
 
-			// Collect metrics for all miners
-			let mut all_nodes_metrics: Vec<NodeMetricsData> = Vec::new();
-			// all_nodes.retain(|node| {
-			// 	if let Some(metrics) = ExecutionPallet::<T>::get_node_metrics(node.node_id.clone())
-			// 	{
-			// 		all_nodes_metrics.push(metrics);
-			// 		true // Keep the node
-			// 	} else {
-			// 		if let Ok(node_id_str) = String::from_utf8(node.node_id.clone()) {
-			// 			log::info!("Node metrics not found for miner: {:?}", node_id_str);
-			// 		}
-			// 		false // Remove the node
-			// 	}
-			// });
-
 			// Calculate weights for different miner types
 			let (
 				storage_weights,
@@ -678,7 +593,7 @@ pub mod pallet {
 				storage_miners_node_types,
 				storage_uids,
 				storage_weights_on_bittensor,
-			) = Self::calculate_storage_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+			) = Self::calculate_storage_miner_weights(&all_nodes,&uids);
 
 			let (
 				compute_weights,
@@ -687,7 +602,7 @@ pub mod pallet {
 				compute_miners_node_types,
 				compute_uids,
 				compute_weights_on_bittensor,
-			) = Self::calculate_compute_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+			) = Self::calculate_compute_miner_weights(&all_nodes, &uids);
 
 			let (
 				gpu_weights,
@@ -696,7 +611,7 @@ pub mod pallet {
 				gpu_miners_node_types,
 				gpu_uids,
 				gpu_weights_on_bittensor,
-			) = Self::calculate_gpu_miner_weights(&all_nodes, &all_nodes_metrics, &uids);
+			) = Self::calculate_gpu_miner_weights(&all_nodes, &uids);
 
 			// Calculate weights for different validator types
 			let (
@@ -706,7 +621,7 @@ pub mod pallet {
 				validator_miners_node_types,
 				validator_uids,
 				_validator_weights_on_bittensor,
-			) = Self::calculate_validator_weights(&all_nodes, &all_nodes_metrics, &uids);
+			) = Self::calculate_validator_weights(&all_nodes, &uids);
 
 			let (
 				storage_s3_weights,
@@ -715,7 +630,7 @@ pub mod pallet {
 				storage_s3_miners_node_types,
 				storage_s3_uids,
 				storage_s3_weights_on_bittensor,
-			) = Self::calculate_storage_s3_weights(&all_nodes, &all_nodes_metrics, &uids);
+			) = Self::calculate_storage_s3_weights(&all_nodes, &uids);
 
 			let mut all_uids_on_bittensor: Vec<u16> =
 				[storage_uids, compute_uids, gpu_uids, storage_s3_uids].concat();

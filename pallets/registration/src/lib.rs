@@ -28,16 +28,11 @@ pub mod pallet {
 	use frame_support::{
 		dispatch::DispatchResultWithPostInfo,
 		pallet_prelude::*,
-		traits::{
-			// tokens::ExistenceRequirement,
-			Get,
-			// One,
-		},
+		traits::Get,
 	};
 	use frame_system::{offchain::SendTransactionTypes, pallet_prelude::*};
 	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_proxy::Pallet as ProxyPallet;
-	// use pallet_utils::IpfsInfoProvider;
 	use pallet_utils::{MetagraphInfoProvider, MetricsInfoProvider};
 	use scale_info::prelude::string::String;
 	use scale_info::prelude::*;
@@ -1338,18 +1333,6 @@ pub mod pallet {
 				return Some(node_info.registered_at);
 			}
 			None
-		}
-
-		pub fn try_unregister_storage_miner(node_to_deregister: Vec<u8>) -> Result<(), Error<T>> {
-			// Check if the node to deregister is a degraded StorageMiner
-			ensure!(
-				Self::is_storage_miner_degraded(node_to_deregister.clone()),
-				Error::<T>::NodeNotDegradedStorageMiner
-			);
-
-			// Perform deregistration
-			Self::do_unregister_node(node_to_deregister);
-			Ok(())
 		}
 
 		/// Helper function to check if an owner already has a registered node

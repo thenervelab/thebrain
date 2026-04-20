@@ -198,7 +198,7 @@ pub mod pallet {
 			let degraded_miners = RegistrationPallet::<T>::get_all_degraded_storage_miners();
 			for miner in degraded_miners {
 				let _ = Self::add_rebalance_request_from_node(miner.clone());
-				let _ = RegistrationPallet::<T>::try_unregister_storage_miner(miner);
+				let _ = RegistrationPallet::<T>::do_unregister_node(miner);
 			}
 
 			// Remove MinerProfile entries with empty miner_profile_id
