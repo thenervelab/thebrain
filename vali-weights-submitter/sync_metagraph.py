@@ -58,6 +58,9 @@ class StorageMonitor:
         self.last_processed_block = 0
         self.net_uid = self.config['bittensor']['subnet_id']
         self.block_interval = 85  # submit every 85 blocks
+        # Persistent metagraph to prevent memory leaks
+        # Creating new bt.metagraph() each time leaks ~50MB via scalecodec type registration
+        self._metagraph = None
         
         # Initialize keypair from environment variable
         mnemonic = os.getenv('BITTENSOR_MNEMONIC')
@@ -110,6 +113,15 @@ class StorageMonitor:
                 # Use Bittensor library for Bittensor connection (same as run_continuous.py)
                 self.bittensor_chain = bt.subtensor(network="finney")  # Use mainnet
                 logger.info("✅ Connected to Bittensor chain using Bittensor library")
+                
+                # Create metagraph ONCE to prevent memory leaks
+                # bt.metagraph() leaks ~50MB each call via scalecodec type registration
+                logger.info(f"Creating metagraph for subnet {self.net_uid}...")
+                self._metagraph = bt.metagraph(
+                    netuid=self.net_uid,
+                    subtensor=self.bittensor_chain
+                )
+                logger.info("✅ Created persistent metagraph (will use sync() to refresh)")
 
                 return True
 
@@ -168,16 +180,19 @@ class StorageMonitor:
         return updated_uids
 
     def get_uids_from_bittensor(self):
-        """Fetch UIDs from Bittensor chain for net_uid 75"""
+        """Fetch UIDs from Bittensor chain for net_uid 75.
+        
+        Uses sync() on existing metagraph to prevent memory leaks.
+        Creating new bt.metagraph() each time leaks ~50MB via scalecodec type registration.
+        """
         try:
-            # Use Bittensor library's metagraph method (same as run_continuous.py)
-            metagraph = bt.metagraph(
-                netuid=self.net_uid,
-                subtensor=self.bittensor_chain
-            )
+            # Sync existing metagraph with latest chain data (NO MEMORY LEAK)
+            # Do NOT create new bt.metagraph() - that leaks ~50MB each call!
+            logger.info("Syncing metagraph with latest chain data...")
+            self._metagraph.sync(subtensor=self.bittensor_chain)
             
-            # Get active neurons
-            active_neurons = metagraph.neurons
+            # Get active neurons from synced metagraph
+            active_neurons = self._metagraph.neurons
             
             # Create mapping of UID to hotkey
             uids = []
@@ -198,16 +213,15 @@ class StorageMonitor:
             return []
 
     def get_dividends_from_bittensor(self):
-        """Fetch dividends from Bittensor chain for net_uid 75"""
+        """Fetch dividends from Bittensor chain for net_uid 75.
+        
+        Uses the already-synced metagraph from get_uids_from_bittensor().
+        Do NOT create new bt.metagraph() - that leaks ~50MB each call!
+        """
         try:
-            # Use Bittensor library's metagraph method to get dividends
-            metagraph = bt.metagraph(
-                netuid=self.net_uid,
-                subtensor=self.bittensor_chain
-            )
-            
-            # Get dividends from the metagraph
-            dividends = metagraph.dividends
+            # Use the metagraph that was already synced by get_uids_from_bittensor()
+            # No need to sync again - just read the dividends (NO MEMORY LEAK)
+            dividends = self._metagraph.dividends
             if dividends is not None:
                 logger.info(f"Fetched {len(dividends)} dividends from Bittensor")
                 return list(dividends)
