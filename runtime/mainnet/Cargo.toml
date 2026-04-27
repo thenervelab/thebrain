@@ -153,6 +153,7 @@ pallet-marketplace = { workspace = true, default-features = false }
 pallet-account-profile-precompile = { workspace = true }
 # pallet-notifications-precompile = { workspace = true }
 pallet-ip = { workspace = true }
+pallet-calendar = { workspace = true }
 
 
 evm-tracer = { workspace = true }
@@ -277,6 +278,7 @@ std = [
     "hippius-crypto-primitives/std",
     
     "pallet-ip/std",
+    "pallet-calendar/std",
     #"ipfs-pallet/std",
     "pallet-alpha-bridge/std",
 	"pallet-registration/std",

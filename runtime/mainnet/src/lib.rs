@@ -1303,6 +1303,8 @@ impl pallet_ip::Config for Runtime {
 	type IpReleasePeriod = IpReleasePeriod;
 }
 
+impl pallet_calendar::Config for Runtime {}
+
 parameter_types! {
 	pub const VersionKeyStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555d8cb0c0627a5cd77797c62415dbef9624b00";
 	pub const BittensorCallSubmission : u32 = 100;
@@ -1885,7 +1887,8 @@ construct_runtime!(
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
 		// IpfsPallet: ipfs_pallet = 75,
-		Arion: pallet_arion = 76
+		Arion: pallet_arion = 76,
+		PalletCalendar: pallet_calendar = 78,
 	}
 );
 
