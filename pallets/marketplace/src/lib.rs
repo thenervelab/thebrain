@@ -110,8 +110,11 @@ pub mod pallet {
                 // Monthly subscription charging:
                 // - recurring charges happen only on the 1st day of the calendar month
                 // - guarded by a unix-day marker so we only run once per day even if multiple blocks hit this interval
-                if Self::should_run_monthly_subscription_charge() {
+                if let Some(unix_day) = Self::should_run_monthly_subscription_charge() {
                     weight_used = weight_used.saturating_add(Self::handle_all_subscription_charging(current_block));
+                    // Mark as run for today only after charging completes, to allow retry
+                    // if future changes introduce abortable failure paths.
+                    LastMonthlySubscriptionChargeDay::<T>::put(unix_day);
                 }
                 if let Err(e) = Self::release_matured_pending_alpha(current_block) {
                     log::error!(
@@ -859,20 +862,21 @@ pub mod pallet {
             dim > 0 && drm == dim
         }
 
-        fn should_run_monthly_subscription_charge() -> bool {
+        /// Returns `Some(unix_day)` when monthly charging should run.
+        ///
+        /// IMPORTANT: this function is side-effect free; the caller should write the day marker
+        /// only after the charging work completes, to avoid skipping the month if charging aborts.
+        fn should_run_monthly_subscription_charge() -> Option<u32> {
             if !Self::is_first_day_of_month() {
-                return false;
+                return None;
             }
 
             let today = Self::current_unix_day();
             if LastMonthlySubscriptionChargeDay::<T>::get() == today {
-                return false;
+                return None;
             }
 
-            // Mark as run for today (even if no one ends up being charged),
-            // to prevent repeated full-scan loops within the same day.
-            LastMonthlySubscriptionChargeDay::<T>::put(today);
-            true
+            Some(today)
         }
 
         fn prorated_monthly_price(monthly_price: u128) -> u128 {
