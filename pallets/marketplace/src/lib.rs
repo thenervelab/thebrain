@@ -564,7 +564,7 @@ pub mod pallet {
             location_ids: Option<Vec<Option<u32>>>,
             selected_image_names: Vec<Option<Vec<u8>>>,
             cloud_init_cids: Option<Vec<Option<Vec<u8>>>>,
-            miner_ids: Option<Vec<Option<Vec<u8>>>>
+            pay_upfront: Option<u128>
         ) -> DispatchResult {
             let owner = ensure_signed(origin)?;
 
@@ -587,14 +587,10 @@ pub mod pallet {
             if let Some(ref xs) = cloud_init_cids {
                 ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
             }
-            if let Some(ref xs) = miner_ids {
-                ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
-            }
 
             // Initialize default values for optional parameters
             let location_ids = location_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
             let cloud_init_cids = cloud_init_cids.unwrap_or_else(|| vec![None; plan_ids.len()]);
-            let miner_ids = miner_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
 
             // Track successful purchases
             let mut successful_purchases = Vec::new();
@@ -613,7 +609,7 @@ pub mod pallet {
                     Self::do_purchase_storage_plan(
                         owner.clone(),
                         plan_id,
-                        miner_ids[i].clone()
+                        pay_upfront
                     )?;
                 } else {
                     // For compute plans, image name is required
@@ -627,7 +623,7 @@ pub mod pallet {
                         location_ids[i],
                         image_name,
                         cloud_init_cids[i].clone(),
-                        miner_ids[i].clone()
+                        pay_upfront
                     )?;
                 };
 
@@ -960,7 +956,7 @@ pub mod pallet {
         fn do_purchase_storage_plan(
             who: T::AccountId,
             plan_id: T::Hash,
-            miner_id: Option<Vec<u8>>
+            pay_upfront: Option<u128>
         ) -> DispatchResult {
             // Check if the ComputeMiner node type is disabled
             ensure!(
@@ -983,8 +979,6 @@ pub mod pallet {
                 Error::<T>::AlreadyHasActiveSubscription
             );
 
-
-            let pay_upfront: Option<u128> = None;
             // Check if plan exists
             let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
@@ -1069,7 +1063,7 @@ pub mod pallet {
             location_id: Option<u32>,
             selected_image_name: Vec<u8>,
             cloud_init_cid: Option<Vec<u8>>,
-            miner_id: Option<Vec<u8>>
+            pay_upfront: Option<u128>
         ) -> DispatchResult {
             // Check if the ComputeMiner node type is disabled
             ensure!(
@@ -1086,7 +1080,6 @@ pub mod pallet {
                 Error::<T>::AlreadyHasActiveSubscription
             );
 
-            let pay_upfront: Option<u128> = None;
             // Check if plan exists
             let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
