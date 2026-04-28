@@ -4563,6 +4563,7 @@ dependencies = [
  "pallet-base-fee",
  "pallet-bittensor",
  "pallet-bounties",
+ "pallet-calendar",
  "pallet-child-bounties",
  "pallet-collective",
  "pallet-credits",
@@ -8063,6 +8064,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-calendar"
+version = "0.1.0"
+dependencies = [
+ "frame-support 37.1.0",
+ "frame-system 37.1.0",
+ "pallet-timestamp 36.0.1",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
+ "sp-io 38.0.0",
+ "sp-runtime 39.0.3",
+ "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
+ "time",
+]
+
+[[package]]
 name = "pallet-child-bounties"
 version = "36.0.0"
 source = "git+https://github.com/paritytech/polkadot-sdk?branch=stable2407#9b18aef31b7226d7d7e665b10d6d741e8740ab4e"
@@ -8998,9 +9015,11 @@ dependencies = [
  "pallet-arion",
  "pallet-assets 39.0.0",
  "pallet-balances 38.0.1",
+ "pallet-calendar",
  "pallet-credits",
  "pallet-rankings",
  "pallet-registration",
+ "pallet-timestamp 36.0.1",
  "pallet-utils",
  "parity-scale-codec",
  "scale-info",

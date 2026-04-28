@@ -41,6 +41,7 @@ pub trait WeightInfo {
     fn claim_unbonded() -> Weight;
     fn set_lockup_enabled() -> Weight;
     fn set_base_child_deposit() -> Weight;
+    fn set_free_child_slots_per_family() -> Weight;
     fn register_warden() -> Weight;
     fn deregister_warden() -> Weight;
     fn prune_attestation_buckets(n: u32) -> Weight;
@@ -184,6 +185,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().writes(1))
     }
 
+    /// Storage: Arion FreeChildSlotsPerFamily (r:0 w:1)
+    fn set_free_child_slots_per_family() -> Weight {
+        Weight::from_parts(5_000_000, 0)
+            .saturating_add(T::DbWeight::get().writes(1))
+    }
+
     /// Storage: Arion RegisteredWardens (r:1 w:1)
     fn register_warden() -> Weight {
         Weight::from_parts(20_000_000, 0)
@@ -304,6 +311,11 @@ impl WeightInfo for () {
     }
 
     fn set_base_child_deposit() -> Weight {
+        Weight::from_parts(5_000_000, 0)
+            .saturating_add(RocksDbWeight::get().writes(1))
+    }
+
+    fn set_free_child_slots_per_family() -> Weight {
         Weight::from_parts(5_000_000, 0)
             .saturating_add(RocksDbWeight::get().writes(1))
     }

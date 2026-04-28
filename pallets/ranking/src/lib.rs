@@ -558,7 +558,7 @@ pub mod pallet {
 								ranking.weight,
 								node_info.node_id,
 							)),
-							_ => {}, // Ignore validator nodes
+							_ => {},
 						}
 					}
 				}

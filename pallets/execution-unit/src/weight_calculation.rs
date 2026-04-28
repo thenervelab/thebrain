@@ -7,10 +7,8 @@ use num_traits::CheckedDiv;
 use num_traits::One;
 use num_traits::Zero;
 use pallet_registration::NodeType;
-use sp_arithmetic::{FixedPointNumber, FixedU128};
-use sp_runtime::traits::ConstU32;
-use sp_runtime::Saturating;
-use sp_std::{collections::btree_set::BTreeSet, vec::Vec};
+use sp_arithmetic::FixedPointNumber;
+use sp_std::vec::Vec;
 
 #[derive(Clone, Copy)]
 struct PoolContext {

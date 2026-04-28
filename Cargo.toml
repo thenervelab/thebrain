@@ -96,6 +96,7 @@ snowbridge-milagro-bls = { git = "https://github.com/Snowfork/milagro_bls", defa
 primitive-types = { version = "0.12.2", default-features = false, features = ["scale-info", "serde_no_std"] }
 fixed = { version = "1.28.0", default-features = false }
 educe = { version = "0.6.0", default-features = false }
+time = { version = "0.3", default-features = false, features = ["alloc"] }
 
 hippius-mainnet-runtime = { package = "hippius-mainnet-runtime", path = "runtime/mainnet" }
 
@@ -359,6 +360,7 @@ pallet-arion  = { path = "pallets/arion-pallet", default-features = false }
 ipfs-pallet  = { path = "pallets/ipfs", default-features = false }
 pallet-alpha-bridge = { path = "pallets/alpha-bridge", default-features = false }
 pallet-ip = { path = "pallets/ip", default-features = false }
+pallet-calendar = { path = "pallets/calendar", default-features = false }
 pallet-rankings   = { path = "pallets/ranking", default-features = false }
 pallet-utils  = { path = "pallets/utils", default-features = false }
 pallet-oracle = { path = "pallets/oracles", default-features = false }

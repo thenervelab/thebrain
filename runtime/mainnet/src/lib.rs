@@ -143,7 +143,7 @@ impl pallet_arion::Config for Runtime {
 	type MaxEndpointLen = MaxEndpointLen;
 	type MaxHttpAddrLen = MaxHttpAddrLen;
 	type MaxStatsUpdates = MaxStatsUpdates;
-	type MaxFamilies = ConstU32<400>;
+	type MaxFamilies = ConstU32<600>;
 	type MaxChildrenTotal = ConstU32<1000>;
 	type MaxChildrenPerFamily = ConstU32<35>;
 	type BaseChildDeposit = BaseChildDeposit;
@@ -249,19 +249,20 @@ pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
 		allowed_slots: sp_consensus_babe::AllowedSlots::PrimaryAndSecondaryPlainSlots,
 	};
 
+
 /// This runtime version.
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9178,
+	spec_version: 9180,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
 	state_version: 0,
 };
-
+ 
 impl pallet_registration::ProxyTypeCompat for ProxyType {
 	fn is_non_transfer(&self) -> bool {
 		matches!(self, ProxyType::NonTransfer)
@@ -723,9 +724,6 @@ parameter_types! {
 	pub const BlocksPerEra: u32 = (HOURS * 6) as u32;
 	pub const RefferallCoolDOwnPeriod : u32 = 200;
 	pub const BlockChargeCheckInterval: u32 = 8;
-	// storage and compute grace periods
-	pub const StorageGracePeriod: u32 = 0;
-	pub const ComputeGracePeriod: u32 = 0;
 	pub const MaxRequestsPerBlock: u32 = 5;
 }
 
@@ -739,8 +737,6 @@ impl pallet_marketplace::Config for Runtime {
 	type PalletId = MarketplacePalletId;
 	type BlockDurationMillis = BlockDurationMillis;
 	type BlocksPerEra = BlocksPerEra;
-	type StorageGracePeriod = StorageGracePeriod;
-	type ComputeGracePeriod = ComputeGracePeriod;
 	type CustomHash = sp_core::H256;
 	type BlocksPerHour = BlocksPerHour;
 	type BlockChargeCheckInterval = BlockChargeCheckInterval;
@@ -1306,6 +1302,8 @@ impl pallet_ip::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type IpReleasePeriod = IpReleasePeriod;
 }
+
+impl pallet_calendar::Config for Runtime {}
 
 parameter_types! {
 	pub const VersionKeyStorageKey: &'static str = "0x658faa385070e074c85bf6b568cf0555d8cb0c0627a5cd77797c62415dbef9624b00";
@@ -1889,7 +1887,8 @@ construct_runtime!(
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
 		// IpfsPallet: ipfs_pallet = 75,
-		Arion: pallet_arion = 76
+		Arion: pallet_arion = 76,
+		PalletCalendar: pallet_calendar = 78,
 	}
 );
 
@@ -1919,7 +1918,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
-type Migrations = (migrations::RemoveIpAndContainerRegistryPallets<Runtime>,);
+type Migrations = ();
 
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;

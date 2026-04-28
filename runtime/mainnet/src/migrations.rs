@@ -1,4 +1,5 @@
 use super::*;
+use frame_support::StorageHasher;
 use frame_support::traits::OnRuntimeUpgrade;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use sp_runtime::{BoundToRuntimeAppPublic, RuntimeAppPublic, RuntimeDebug};
@@ -195,5 +196,59 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for RemoveIpAndContainerRegistryP
 			"post_upgrade: SubAccount and ContainerRegistry successfully cleared."
 		);
 		Ok(())
+	}
+}
+
+/// Migration: copy `Registration::ColdkeyNodeRegistration` (legacy full `NodeInfo`) into
+/// `Registration::ColdkeyNodeRegistrationV2` (minimal `ColdkeyNodeInfoLite`), then clear the legacy map.
+pub struct MigrateColdkeyNodeRegistrationToV2<T>(sp_std::marker::PhantomData<T>);
+
+impl<T> OnRuntimeUpgrade for MigrateColdkeyNodeRegistrationToV2<T>
+where
+	T: frame_system::Config + pallet_registration::Config,
+{
+	fn on_runtime_upgrade() -> Weight {
+		let mut reads: u64 = 0;
+		let mut writes: u64 = 0;
+
+		// Copy all legacy rows into v2
+		for (node_id, maybe) in pallet_registration::ColdkeyNodeRegistration::<T>::iter() {
+			reads = reads.saturating_add(1);
+			if let Some(info) = maybe {
+				let lite = pallet_registration::ColdkeyNodeInfoLite {
+					node_id: node_id.clone(),
+					node_type: info.node_type,
+					status: info.status,
+					registered_at: info.registered_at,
+					owner: info.owner,
+				};
+				pallet_registration::ColdkeyNodeRegistrationV2::<T>::insert(node_id, Some(lite));
+				writes = writes.saturating_add(1);
+			}
+		}
+
+		// Clear legacy ColdkeyNodeRegistration storage prefix.
+		// Raw prefix: twox_128("Registration") ++ twox_128("ColdkeyNodeRegistration")
+		let legacy_prefix = {
+			let mut p = frame_support::Twox128::hash(b"Registration").to_vec();
+			p.extend_from_slice(&frame_support::Twox128::hash(b"ColdkeyNodeRegistration"));
+			p
+		};
+		let removed =
+			frame_support::storage::unhashed::clear_prefix(&legacy_prefix, None, None);
+		writes = writes.saturating_add(removed.backend as u64);
+
+		// Clear legacy NodeRegistration storage prefix too.
+		// Raw prefix: twox_128("Registration") ++ twox_128("NodeRegistration")
+		let node_reg_prefix = {
+			let mut p = frame_support::Twox128::hash(b"Registration").to_vec();
+			p.extend_from_slice(&frame_support::Twox128::hash(b"NodeRegistration"));
+			p
+		};
+		let removed_node_reg =
+			frame_support::storage::unhashed::clear_prefix(&node_reg_prefix, None, None);
+		writes = writes.saturating_add(removed_node_reg.backend as u64);
+
+		T::DbWeight::get().reads_writes(reads, writes)
 	}
 }

@@ -822,6 +822,21 @@ pub mod pallet {
 	pub type FamilyUsedFreeSlot<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, bool, ValueQuery>;
 
+	/// How many fee-free child registrations this family has consumed (lifetime).
+	///
+	/// `None` means “not populated yet”; [`Pallet::family_free_slots_used`] falls back to
+	/// [`FamilyUsedFreeSlot`] so existing chains keep the same economics without a migration.
+	#[pallet::storage]
+	pub type FamilyFreeSlotsUsed<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u32, OptionQuery>;
+
+	/// Admin-configurable number of fee-free registrations per family before the global paid curve.
+	///
+	/// `None` means use the implicit default of **1** (matches pre-storage behavior). Setting `Some(0)`
+	/// disables free registrations (every paid registration uses the global curve when lockup is on).
+	#[pallet::storage]
+	pub type FreeChildSlotsPerFamily<T> = StorageValue<_, u32, OptionQuery>;
+
 	/// Active children count per family.
 	#[pallet::storage]
 	pub type FamilyActiveChildren<T: Config> =
@@ -1010,6 +1025,10 @@ pub mod pallet {
 		BaseChildDepositSet {
 			deposit: BalanceOf<T>,
 		},
+		/// Number of fee-free child registrations per family was set by admin.
+		FreeChildSlotsPerFamilySet {
+			slots: u32,
+		},
 		/// A warden was registered and authorized to submit attestations.
 		WardenRegistered {
 			warden_pubkey: [u8; 32],
@@ -1123,6 +1142,8 @@ pub mod pallet {
 		CrushEpochPruneStartBeyondCutoff,
 		/// `max_buckets` for `prune_attestation_buckets` is zero or exceeds [`Config::MaxAttestationBucketsPrunePerCall`].
 		InvalidAttestationPruneBatch,
+		/// `free_child_slots_per_family` exceeds [`Config::MaxChildrenPerFamily`].
+		FreeChildSlotsPerFamilyTooLarge,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -1138,6 +1159,22 @@ pub mod pallet {
 				d
 			} else {
 				cur
+			}
+		}
+
+		/// Fee-free registrations allowed per family when lockup is enabled (`None` → 1).
+		pub fn free_child_slots_per_family() -> u32 {
+			FreeChildSlotsPerFamily::<T>::get().unwrap_or(1)
+		}
+
+		/// Lifetime count of fee-free registrations consumed by this family (legacy-aware).
+		pub fn family_free_slots_used(family: &T::AccountId) -> u32 {
+			if let Some(n) = FamilyFreeSlotsUsed::<T>::get(family) {
+				n
+			} else if FamilyUsedFreeSlot::<T>::get(family) {
+				1
+			} else {
+				0
 			}
 		}
 
@@ -1781,8 +1818,10 @@ pub mod pallet {
 
 		/// Register a child node under a family.
 		///
-		/// - **First child free per family (one-time)**.
-		/// - After that, the required deposit is **global** (network-wide) and **doubles** after each paid registration.
+		/// - **Fee-free registrations per family** (default **1**; configurable via
+		///   [`FreeChildSlotsPerFamily`] / [`Pallet::set_free_child_slots_per_family`]).
+		/// - After those are exhausted, the required deposit is **global** (network-wide) and **doubles**
+		///   after each paid registration.
 		/// - Global deposit **halves** after each `GlobalDepositHalvingPeriodBlocks` of inactivity (lazy, computed on registration).
 		/// - Requires `node_id` (ed25519 pubkey) to sign a domain-separated payload including a per-node nonce.
 		///
@@ -1840,9 +1879,10 @@ pub mod pallet {
 				Error::<T>::TooManyChildrenInFamily
 			);
 
-			// Enforce MaxFamilies the moment a family claims the free slot for the first time.
-			let used_free = FamilyUsedFreeSlot::<T>::get(&family);
-			if !used_free {
+			// Enforce MaxFamilies the moment a family claims their first fee-free registration.
+			let slots_used = Self::family_free_slots_used(&family);
+			let free_slots_limit = Self::free_child_slots_per_family();
+			if slots_used == 0 {
 				let families = FamilyCount::<T>::get();
 				ensure!(families < T::MaxFamilies::get(), Error::<T>::TooManyFamilies);
 			}
@@ -1859,7 +1899,7 @@ pub mod pallet {
 			let lockup_enabled = LockupEnabled::<T>::get();
 			let deposit = if !lockup_enabled {
 				BalanceOf::<T>::zero()
-			} else if !used_free {
+			} else if slots_used < free_slots_limit {
 				BalanceOf::<T>::zero()
 			} else {
 				Self::apply_lazy_global_halving()
@@ -1900,10 +1940,15 @@ pub mod pallet {
 				FamilyFirstSeenBucket::<T>::insert(&family, CurrentWeightBucket::<T>::get());
 			}
 
-			// Mark free slot as used and bump family count
-			if !used_free {
+			// Consume a fee-free slot and bump global family count on first free registration, or
+			// advance the paid global fee curve.
+			if slots_used < free_slots_limit {
+				let new_used = slots_used.saturating_add(1);
+				FamilyFreeSlotsUsed::<T>::insert(&family, new_used);
 				FamilyUsedFreeSlot::<T>::insert(&family, true);
-				FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_add(1));
+				if slots_used == 0 {
+					FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_add(1));
+				}
 			} else if lockup_enabled {
 				// Paid registration: update global fee curve and timestamp
 				let next = Self::global_next_deposit_floor_init();
@@ -2317,6 +2362,23 @@ pub mod pallet {
 			// Ensure fee floor is applied immediately.
 			let _ = Self::global_next_deposit_floor_init();
 			Self::deposit_event(Event::BaseChildDepositSet { deposit });
+			Ok(())
+		}
+
+		/// Admin: set how many fee-free child registrations each family gets before the global paid curve.
+		///
+		/// `slots` is capped by [`Config::MaxChildrenPerFamily`]. Use `0` to require the paid curve for
+		/// every registration (when lockup is enabled).
+		#[pallet::call_index(37)]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::set_free_child_slots_per_family(), Pays::No))]
+		pub fn set_free_child_slots_per_family(origin: OriginFor<T>, slots: u32) -> DispatchResult {
+			T::ArionAdminOrigin::ensure_origin(origin)?;
+			ensure!(
+				slots <= T::MaxChildrenPerFamily::get(),
+				Error::<T>::FreeChildSlotsPerFamilyTooLarge
+			);
+			FreeChildSlotsPerFamily::<T>::put(slots);
+			Self::deposit_event(Event::FreeChildSlotsPerFamilySet { slots });
 			Ok(())
 		}
 

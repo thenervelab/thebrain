@@ -18,6 +18,8 @@ frame-system = { workspace = true, default-features = false }
 frame-benchmarking = { workspace = true, default-features = false, optional = true }
 pallet-assets = { workspace = true, default-features = false }
 pallet-balances = { workspace = true, default-features = false }
+pallet-calendar = { workspace = true, default-features = false }
+pallet-timestamp = { workspace = true, default-features = false }
 sp-std = { workspace = true, default-features = false }
 sp-runtime = { workspace = true, default-features = false }
 sp-core = { workspace = true, default-features = false }
@@ -50,6 +52,8 @@ std = [
     "sp-runtime/std",
     "pallet-assets/std",
     "pallet-balances/std",
+    "pallet-calendar/std",
+    "pallet-timestamp/std",
     "sp-core/std",
     "sp-arithmetic/std",
     #"pallet-compute/std",

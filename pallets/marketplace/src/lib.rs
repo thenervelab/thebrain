@@ -107,7 +107,12 @@ pub mod pallet {
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
                 weight_used = weight_used.saturating_add(Self::handle_arion_storage_charging(current_block));
-                weight_used = weight_used.saturating_add(Self::handle_all_subscription_charging(current_block));
+                // Monthly subscription charging:
+                // - recurring charges happen only on the 1st day of the calendar month
+                // - guarded by a unix-day marker so we only run once per day even if multiple blocks hit this interval
+                if Self::should_run_monthly_subscription_charge() {
+                    weight_used = weight_used.saturating_add(Self::handle_all_subscription_charging(current_block));
+                }
                 if let Err(e) = Self::release_matured_pending_alpha(current_block) {
                     log::error!(
                         target: "runtime::marketplace",
@@ -130,6 +135,7 @@ pub mod pallet {
                     pallet_credits::Config + 
                     pallet_arion::Config +
                     pallet_balances::Config + 
+                    pallet_calendar::Config +
                     // pallet_notifications::Config +
                     // pallet_storage_s3::Config +
                     pallet_rankings::Config +
@@ -175,12 +181,6 @@ pub mod pallet {
 
         #[pallet::constant]
         type BlocksPerEra: Get<u32>;
-
-        #[pallet::constant]
-        type StorageGracePeriod: Get<u32>;
-
-        #[pallet::constant]
-        type ComputeGracePeriod: Get<u32>;
 
         /// Custom hash type for this pallet
         type CustomHash: Parameter + Default + From<H256>;
@@ -468,6 +468,13 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn sudo_key)]
     pub type SudoKey<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
+
+    /// Unix-day marker (unix_ms / 86_400_000) of the last time we ran the monthly subscription charge.
+    ///
+    /// This prevents double-charging on the 1st of the month when `on_initialize` runs multiple times.
+    #[pallet::storage]
+    #[pallet::getter(fn last_monthly_subscription_charge_day)]
+    pub type LastMonthlySubscriptionChargeDay<T: Config> = StorageValue<_, u32, ValueQuery>;
     
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -830,6 +837,48 @@ pub mod pallet {
 	}
 
     impl<T: Config> Pallet<T> {
+        /// Current UNIX millis as `u64`.
+        fn now_ms() -> u64 {
+            pallet_timestamp::Pallet::<T>::get().saturated_into::<u64>()
+        }
+
+        fn current_unix_day() -> u32 {
+            // unix day number since epoch (UTC)
+            (Self::now_ms() / 86_400_000u64) as u32
+        }
+
+        fn is_first_day_of_month() -> bool {
+            let dim = pallet_calendar::Pallet::<T>::days_in_current_month();
+            let drm = pallet_calendar::Pallet::<T>::days_remaining_in_current_month();
+            dim > 0 && drm == dim
+        }
+
+        fn should_run_monthly_subscription_charge() -> bool {
+            if !Self::is_first_day_of_month() {
+                return false;
+            }
+
+            let today = Self::current_unix_day();
+            if LastMonthlySubscriptionChargeDay::<T>::get() == today {
+                return false;
+            }
+
+            // Mark as run for today (even if no one ends up being charged),
+            // to prevent repeated full-scan loops within the same day.
+            LastMonthlySubscriptionChargeDay::<T>::put(today);
+            true
+        }
+
+        fn prorated_monthly_price(monthly_price: u128) -> u128 {
+            // days_remaining_in_current_month is inclusive of today.
+            let dim: u128 = pallet_calendar::Pallet::<T>::days_in_current_month() as u128;
+            let drm: u128 = pallet_calendar::Pallet::<T>::days_remaining_in_current_month() as u128;
+            if dim == 0 {
+                return monthly_price;
+            }
+            monthly_price.saturating_mul(drm) / dim
+        }
+
         #[transactional]
         fn release_matured_pending_alpha(current_block: BlockNumberFor<T>) -> DispatchResult {
             for (batch_id, mut batch) in Batches::<T>::iter() {
@@ -903,6 +952,15 @@ pub mod pallet {
                 Error::<T>::PlanOperationDisabled
             );
 
+            // Enforce: only one active storage subscription at a time.
+            let existing_subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+            ensure!(
+                !existing_subscriptions
+                    .iter()
+                    .any(|s| s.active && s.package.is_storage_plan),
+                Error::<T>::AlreadyHasActiveSubscription
+            );
+
 
             let pay_upfront: Option<u128> = None;
             // Check if plan exists
@@ -910,8 +968,10 @@ pub mod pallet {
 
             ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
-            // Determine the price (using the price from the plan)
-            let mut plan_price_native = plan.price;
+            // Determine the (monthly) price for the plan.
+            // If the user purchases mid-month, charge a pro-rated amount based on remaining days
+            // in the current month (inclusive of today).
+            let mut plan_price_native = Self::prorated_monthly_price(plan.price);
                 
             if let Some(upfront_months) = pay_upfront {
                 plan_price_native = plan_price_native.saturating_mul(upfront_months);
@@ -995,6 +1055,15 @@ pub mod pallet {
                 Error::<T>::NodeTypeDisabled
             );
 
+            // Enforce: only one active compute subscription at a time.
+            let existing_subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+            ensure!(
+                !existing_subscriptions
+                    .iter()
+                    .any(|s| s.active && !s.package.is_storage_plan),
+                Error::<T>::AlreadyHasActiveSubscription
+            );
+
             let pay_upfront: Option<u128> = None;
             // Check if plan exists
             let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
@@ -1009,10 +1078,8 @@ pub mod pallet {
 
             let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
 
-            // Determine the price (using the price from the plan)
-            // Compute plans are priced per-block; charge one full hour upfront (aligned with recurring charging).
-            let blocks_per_hour_u128: u128 = T::BlocksPerHour::get() as u128;
-            let mut plan_price_native = plan.price.saturating_mul(blocks_per_hour_u128);
+            // Determine the (monthly) price (pro-rated if purchased mid-month).
+            let mut plan_price_native = Self::prorated_monthly_price(plan.price);
                 
             if let Some(upfront_months) = pay_upfront {
                 plan_price_native = plan_price_native.saturating_mul(upfront_months);
@@ -1128,8 +1195,10 @@ pub mod pallet {
             for (account_id, subscriptions) in UserAllSubscriptionPlans::<T>::iter() {
                 users_seen = users_seen.saturating_add(1);
                 // Filter only active subscriptions
-                let active_subs: Vec<_> = subscriptions.iter()
+                let active_subs: Vec<UserPlanSubscription<T>> = subscriptions
+                    .iter()
                     .filter(|sub| sub.active)
+                    .cloned()
                     .collect();
                 
                 if active_subs.is_empty() {
@@ -1137,32 +1206,18 @@ pub mod pallet {
                 }
                 users_with_active_subs = users_with_active_subs.saturating_add(1);
 
-                // Separate storage and compute subscriptions that need charging
-                let mut storage_subs_to_charge = Vec::new();
-                let mut compute_subs_to_charge = Vec::new();
-                let mut earliest_last_charged = BlockNumberFor::<T>::max_value();
-
-                for sub in active_subs {
-                    let block_difference = current_block.saturating_sub(sub.last_charged_at);
-                    
-                    // Track earliest last_charged_at for grace period calculation
-                    if sub.last_charged_at < earliest_last_charged {
-                        earliest_last_charged = sub.last_charged_at;
-                    }
-
-                    if block_difference > T::BlocksPerHour::get().into() {
-                        if sub.package.is_storage_plan {
-                            storage_subs_to_charge.push(sub.clone());
-                        } else {
-                            compute_subs_to_charge.push(sub.clone());
-                        }
-                    }
-                }
-
-                // If no subscriptions need charging, continue
-                if storage_subs_to_charge.is_empty() && compute_subs_to_charge.is_empty() {
-                    continue;
-                }
+                // Monthly charging: on the 1st day of the month we charge all active subscriptions.
+                // (The outer caller guards execution to month-start only.)
+                let storage_subs_to_charge: Vec<_> = active_subs
+                    .iter()
+                    .filter(|sub| sub.package.is_storage_plan)
+                    .cloned()
+                    .collect();
+                let compute_subs_to_charge: Vec<_> = active_subs
+                    .iter()
+                    .filter(|sub| !sub.package.is_storage_plan)
+                    .cloned()
+                    .collect();
 
                 // Calculate total charge amounts
                 let mut total_storage_charge = 0u128;
@@ -1173,16 +1228,7 @@ pub mod pallet {
                 }
 
                 for sub in &compute_subs_to_charge {
-                    let price_per_block = sub.package.price;
-                    let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
-                    let elapsed_blocks = current_block.saturating_sub(sub.last_charged_at);
-                    // Charge only full hours worth of blocks (keeps the "hourly charging" model but handles drift)
-                    let elapsed_hours = elapsed_blocks / blocks_per_hour.max(1u32.into());
-                    let charge_blocks_u128: u128 = elapsed_hours
-                        .saturating_mul(blocks_per_hour)
-                        .saturated_into::<u128>();
-                    let charge_amount = price_per_block.saturating_mul(charge_blocks_u128);
-                    total_compute_charge = total_compute_charge.saturating_add(charge_amount);
+                    total_compute_charge = total_compute_charge.saturating_add(sub.package.price);
                 }
 
                 let total_charge = total_storage_charge.saturating_add(total_compute_charge);
@@ -1234,46 +1280,19 @@ pub mod pallet {
                     UserAllSubscriptionPlans::<T>::mutate(&account_id, |subs| {
                         for sub in subs.iter_mut() {
                             if sub.active {
-                                let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
-                                let block_diff = current_block.saturating_sub(sub.last_charged_at);
-                                if block_diff >= blocks_per_hour {
-                                    // Only advance timestamps if the relevant charge path succeeded.
-                                    if sub.package.is_storage_plan && !storage_charged_ok {
-                                        continue;
+                                // Only update timestamps if the relevant charge path succeeded.
+                                if sub.package.is_storage_plan {
+                                    if storage_charged_ok {
+                                        sub.last_charged_at = current_block;
                                     }
-                                    if !sub.package.is_storage_plan && !compute_charged_ok {
-                                        continue;
+                                } else {
+                                    if compute_charged_ok {
+                                        sub.last_charged_at = current_block;
                                     }
-                                    let elapsed_hours = block_diff / blocks_per_hour.max(1u32.into());
-                                    // Advance by whole hours only, preserving any remainder blocks
-                                    sub.last_charged_at = sub
-                                        .last_charged_at
-                                        .saturating_add(elapsed_hours.saturating_mul(blocks_per_hour));
                                 }
                             }
                         }
                     });
-                } else {
-                    // Insufficient credits - check grace period using storage grace period
-                    if Self::is_subscription_in_grace_period(earliest_last_charged, current_block) {
-                        // Still within grace period, do nothing
-                    } else {
-                        // Grace period expired, cancel ALL subscriptions
-                        match Self::do_cancel_all_subscriptions(&account_id) {
-                            Ok(()) => {
-                                users_charged_or_cancelled =
-                                    users_charged_or_cancelled.saturating_add(1);
-                            },
-                            Err(e) => {
-                                log::error!(
-                                    target: "runtime::marketplace",
-                                    "do_cancel_all_subscriptions failed for {:?}: {:?}",
-                                    account_id,
-                                    e
-                                );
-                            },
-                        }
-                    }
                 }
             }
 
@@ -1345,38 +1364,6 @@ pub mod pallet {
                             if tx_result.is_ok() && ts_result.is_ok() {
                                 users_charged_or_removed = users_charged_or_removed.saturating_add(1);
                             }
-                        }
-                    } else {
-                        let blocks_per_hour = T::BlocksPerHour::get();
-                        let grace_period_blocks = T::StorageGracePeriod::get();
-                        
-                        // Calculate grace period start after hourly charging
-                        let grace_period_start = last_charged_at.saturating_add(blocks_per_hour.into());
-                        
-                        // Check if the current block is within the grace period
-                        if current_block <= grace_period_start {
-                            // Haven't even reached charging window
-                            log::info!(
-                                "Storage request for user {:?} is in grace period",
-                                user
-                            );
-                        } else if (current_block - grace_period_start) <= grace_period_blocks.into() {
-                            // Still within grace period
-                            log::info!(
-                                "Storage request for user {:?} is in grace period",
-                                user
-                            );
-                        } else {
-                            // remove user storage request and unpin (infallible storage clears in arion)
-                            log::warn!(
-                                target: "runtime::marketplace",
-                                "storage grace expired; clearing arion file stats for {:?}",
-                                user
-                            );
-                            pallet_arion::Pallet::<T>::delete_user_entries(user.clone());
-
-                            Self::remove_storage_last_charged_at(&user);
-                            users_charged_or_removed = users_charged_or_removed.saturating_add(1);
                         }
                     }
                 }
@@ -1501,34 +1488,6 @@ pub mod pallet {
             BackupDeleteRequests::<T>::mutate(|delete_requests| {
                 delete_requests.retain(|user| user != user_id);
             });
-        }
-
-        /// Helper function to get the configured compute grace period
-		pub fn get_compute_grace_period() -> BlockNumberFor<T> {
-			T::ComputeGracePeriod::get().into()
-		}
-
-        /// Helper function to get the configured storage grace period
-        pub fn get_storage_grace_period() -> BlockNumberFor<T> {
-            T::StorageGracePeriod::get().into()
-        }
-
-        // Helper function to check if a storage subscription is in grace period
-        fn is_subscription_in_grace_period(
-            last_charged_at: BlockNumberFor<T>,
-            current_block: BlockNumberFor<T>,
-        ) -> bool {
-			let blocks_per_hour = T::BlocksPerHour::get().into();
-			let grace_period_blocks = Self::get_storage_grace_period();
-			
-			// Calculate grace period start after hourly charging
-			let grace_period_start = last_charged_at.saturating_add(blocks_per_hour);
-			
-			// Check if the current block is within the grace period
-            if current_block <= grace_period_start {
-                return true;
-            }
-			(current_block - grace_period_start) <= grace_period_blocks
         }
 
         /// Helper function to update the last charged timestamp for a user

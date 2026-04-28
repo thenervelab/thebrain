@@ -61,8 +61,6 @@ pub mod pallet {
 	use num_traits::float::FloatCore;
 	use pallet_babe::RandomnessFromOneEpochAgo;
 	use pallet_metagraph::UIDs;
-	use pallet_registration::pallet::ColdkeyNodeRegistration;
-	use pallet_registration::pallet::NodeRegistration;
 	use pallet_registration::NodeType;
 	use pallet_registration::Pallet as RegistrationPallet;
 	use pallet_utils::Pallet as UtilsPallet;
@@ -336,10 +334,10 @@ pub mod pallet {
 				});
 			}
 
-			// Only purge if the feature is enabled
-			if Self::purge_deregistered_nodes_enabled() {
-				Self::purge_nodes_if_deregistered_on_bittensor();
-			}
+			// // Only purge if the feature is enabled
+			// if Self::purge_deregistered_nodes_enabled() {
+			// 	Self::purge_nodes_if_deregistered_on_bittensor();
+			// }
 
 			let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
 			if _n % consensus_period == 0u32.into() {
@@ -1215,11 +1213,6 @@ pub mod pallet {
 
 			// Then, fetch metrics for these active nodes
 			Self::get_node_metrics_batch(active_node_ids)
-		}
-
-		pub fn unregister_and_remove_metrics(node_id: Vec<u8>) {
-			pallet_registration::Pallet::<T>::do_unregister_node(node_id.clone());
-			Self::do_remove_metrics(node_id);
 		}
 
 		fn system_info_to_json_string(system_info: &SystemInfo) -> String {

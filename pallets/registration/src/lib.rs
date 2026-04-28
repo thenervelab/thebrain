@@ -10,9 +10,6 @@ mod tests;
 
 mod types;
 
-// #[cfg(feature = "runtime-benchmarks")]
-// mod benchmarking;
-
 // Define a trait for proxy type compatibility
 pub trait ProxyTypeCompat {
 	fn is_non_transfer(&self) -> bool;
@@ -28,20 +25,14 @@ pub mod pallet {
 	use frame_support::{
 		dispatch::DispatchResultWithPostInfo,
 		pallet_prelude::*,
-		traits::{
-			// tokens::ExistenceRequirement,
-			Get,
-			// One,
-		},
+		traits::Get,
 	};
 	use frame_system::{offchain::SendTransactionTypes, pallet_prelude::*};
 	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_proxy::Pallet as ProxyPallet;
-	// use pallet_utils::IpfsInfoProvider;
 	use pallet_utils::{MetagraphInfoProvider, MetricsInfoProvider};
 	use scale_info::prelude::string::String;
 	use scale_info::prelude::*;
-	use scale_info::scale;
 	use sp_core::crypto::Ss58Codec;
 	use sp_core::H256;
 	use sp_io::hashing::blake2_256;
@@ -51,7 +42,6 @@ pub mod pallet {
 	use sp_runtime::AccountId32;
 	use sp_runtime::Saturating;
 	use sp_std::collections::btree_map::BTreeMap;
-	use sp_std::collections::btree_set::BTreeSet;
 	use sp_std::{prelude::*, vec::Vec};
 
 	// Define a constant for token decimals (typically at the top of the file)
@@ -139,6 +129,17 @@ pub mod pallet {
 		Blake2_128Concat,
 		Vec<u8>,
 		Option<NodeInfo<BlockNumberFor<T>, T::AccountId>>,
+		ValueQuery,
+	>;
+
+	/// New minimal coldkey/main-node registration storage.
+	#[pallet::storage]
+	#[pallet::getter(fn main_node_registration_v2)]
+	pub type ColdkeyNodeRegistrationV2<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		Vec<u8>,
+		Option<ColdkeyNodeInfoLite<BlockNumberFor<T>, T::AccountId>>,
 		ValueQuery,
 	>;
 
@@ -347,9 +348,7 @@ pub mod pallet {
 		GenesisMismatch,
 		PublicKeyMismatch,
 		ChallengeMismatch,
-		/// `node_id` must match `node_id_hex` (the peer ID bytes bound by the challenge and signatures)
 		NodeIdMismatch,
-		/// Batch unregistration failed due to too many nodes
 		TooManyUnverifiedNodes,
 		NodeAlreadyVerified,
 		Unauthorized,
@@ -408,20 +407,11 @@ pub mod pallet {
 				// Collect all node registrations with their owners
 				let mut all_registrations: Vec<(Vec<u8>, T::AccountId, bool)> = Vec::new();
 
-				// Collect from ColdkeyNodeRegistration
-				for (node_id, node_info) in ColdkeyNodeRegistration::<T>::iter() {
+				// Collect from ColdkeyNodeRegistrationV2
+				for (node_id, node_info) in ColdkeyNodeRegistrationV2::<T>::iter() {
 					reads = reads.saturating_add(1);
 					if let Some(info) = node_info {
 						all_registrations.push((node_id, info.owner.clone(), true));
-						*owner_node_counts.entry(info.owner).or_default() += 1;
-					}
-				}
-
-				// Collect from NodeRegistration
-				for (node_id, node_info) in NodeRegistration::<T>::iter() {
-					reads = reads.saturating_add(1);
-					if let Some(info) = node_info {
-						all_registrations.push((node_id, info.owner.clone(), false));
 						*owner_node_counts.entry(info.owner).or_default() += 1;
 					}
 				}
@@ -436,7 +426,6 @@ pub mod pallet {
 				// Remove registrations for owners with multiple registrations or across different storage types
 				for (owner, registrations) in owner_registrations {
 					// If an owner has more than one registration total
-					// Or has registrations in both ColdkeyNodeRegistration and NodeRegistration
 					if owner_node_counts.get(&owner).copied().unwrap_or(0) > 1
 						|| registrations.iter().any(|(_, is_coldkey)| *is_coldkey)
 							&& registrations.iter().any(|(_, is_coldkey)| !*is_coldkey)
@@ -444,10 +433,7 @@ pub mod pallet {
 						// Remove all registrations for this owner
 						for (node_id, is_coldkey) in registrations {
 							if is_coldkey {
-								ColdkeyNodeRegistration::<T>::remove(&node_id);
-								writes = writes.saturating_add(1);
-							} else {
-								NodeRegistration::<T>::remove(&node_id);
+								ColdkeyNodeRegistrationV2::<T>::remove(&node_id);
 								writes = writes.saturating_add(1);
 							}
 						}
@@ -480,7 +466,6 @@ pub mod pallet {
 			owner: T::AccountId,
 			node_type: NodeType,
 			node_id: Vec<u8>,
-			ipfs_node_id: Option<Vec<u8>>,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
 
@@ -492,12 +477,7 @@ pub mod pallet {
 
 			// Check if the node is already registered
 			ensure!(
-				!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
-				Error::<T>::NodeAlreadyRegistered
-			);
-			// Check if the node is already registered
-			ensure!(
-				!NodeRegistration::<T>::contains_key(&node_id),
+				!ColdkeyNodeRegistrationV2::<T>::contains_key(&node_id),
 				Error::<T>::NodeAlreadyRegistered
 			);
 
@@ -505,16 +485,14 @@ pub mod pallet {
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
 			let owner_for_index = owner.clone();
 
-			let node_info = NodeInfo {
+			let node_info = ColdkeyNodeInfoLite {
 				node_id: node_id.clone(),
 				node_type,
-				ipfs_node_id,
 				status: Status::Online,
-				is_verified: true,
 				registered_at: current_block_number,
 				owner,
 			};
-			ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
 			Self::owner_to_node_add(&owner_for_index, &node_id);
 
 			Self::deposit_event(Event::MainNodeRegistered { node_id });
@@ -528,17 +506,11 @@ pub mod pallet {
 			node_type: NodeType,
 			node_id: Vec<u8>,
 			pay_in_credits: bool,
-			ipfs_node_id: Option<Vec<u8>>,
 			owner: T::AccountId,
-			ipfs_peer_id: Vec<u8>,
 			main_key_type: Libp2pKeyType,
 			main_public_key: Vec<u8>,
 			main_sig: Vec<u8>,
-			ipfs_key_type: Libp2pKeyType,
-			ipfs_public_key: Vec<u8>,
-			ipfs_sig: Vec<u8>,
 			challenge_bytes: Vec<u8>,
-			ipfs_id_hex: Vec<u8>,
 			node_id_hex: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
@@ -557,37 +529,22 @@ pub mod pallet {
 			);
 			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
 			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
-			ensure!(
-				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
-				Error::<T>::ChallengeMismatch
-			);
-			ensure!(node_id == node_id_hex, Error::<T>::NodeIdMismatch);
-
+	
 			let ch_hash = Self::blake256(&challenge_bytes);
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
-			// --- Verify the two libp2p signatures (ed25519 now; extend later if needed) ---
+			// --- Verify the libp2p signature (ed25519 now; extend later if needed) ---
 			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
 
 			// Verify signatures
 			ensure!(
 				Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key),
 				Error::<T>::InvalidSignature
 			);
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key),
-				Error::<T>::InvalidSignature
-			);
 
-			// NEW: Verify that public keys match the expected peer IDs
+			// Verify that public keys match the expected peer IDs
 			ensure!(
 				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			ensure!(
-				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
 				Error::<T>::PublicKeyMismatch
 			);
 
@@ -609,25 +566,9 @@ pub mod pallet {
 				Error::<T>::NodeCooldownPeriodNotExpired
 			);
 
-			// Ensure that if the node type is `StorageMiner`, the `ipfs_node_id` is not `None`
-			match node_type {
-				NodeType::StorageMiner => {
-					ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired)
-				},
-				NodeType::Validator => {
-					ensure!(ipfs_node_id.is_some(), Error::<T>::IpfsNodeIdRequired)
-				},
-				_ => {},
-			}
-
 			// Check if the node is already registered
 			ensure!(
-				!ColdkeyNodeRegistration::<T>::contains_key(&node_id),
-				Error::<T>::NodeAlreadyRegistered
-			);
-			// Check if the node is already registered
-			ensure!(
-				!NodeRegistration::<T>::contains_key(&node_id),
+				!ColdkeyNodeRegistrationV2::<T>::contains_key(&node_id),
 				Error::<T>::NodeAlreadyRegistered
 			);
 
@@ -720,21 +661,18 @@ pub mod pallet {
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
 			let owner_for_index = owner.clone();
 
-			let node_info = NodeInfo {
+			let node_info = ColdkeyNodeInfoLite {
 				node_id: node_id.clone(),
 				node_type,
-				ipfs_node_id,
 				status: Status::Online,
-				is_verified: true,
 				registered_at: current_block_number,
 				owner,
 			};
-			ColdkeyNodeRegistration::<T>::insert(node_id.clone(), Some(node_info));
+			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
 			Self::owner_to_node_add(&owner_for_index, &node_id);
 
 			// Persist identities (for later audits/liveness checks)
 			Libp2pMainIdentity::<T>::insert(node_id.clone(), (main_key_type, main_public_key));
-			Libp2pIpfsIdentity::<T>::insert(node_id.clone(), (ipfs_key_type, ipfs_public_key));
 
 			Self::deposit_event(Event::MainNodeRegistered { node_id });
 			Ok(().into())
@@ -750,7 +688,7 @@ pub mod pallet {
 			ensure_root(origin)?;
 
 			// Try to mutate the node information if it exists
-			NodeRegistration::<T>::try_mutate(&node_id, |node_info_opt| -> DispatchResult {
+			ColdkeyNodeRegistrationV2::<T>::try_mutate(&node_id, |node_info_opt| -> DispatchResult {
 				// Check if the node exists in the storage map
 				let node_info = node_info_opt.as_mut().ok_or(Error::<T>::NodeNotFound)?;
 
@@ -828,19 +766,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(9)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn force_unregister_hotkey_node(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-		) -> DispatchResultWithPostInfo {
-			ensure_root(origin)?;
-
-			Self::do_set_node_status_degraded_or_unregister(node_id);
-
-			Ok(().into())
-		}
-
 		#[pallet::call_index(10)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn force_unregister_coldkey_node(
@@ -849,30 +774,6 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
 
-			Self::do_set_node_status_degraded_or_unregister(node_id);
-
-			Ok(().into())
-		}
-
-		#[pallet::call_index(11)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn unregister_node(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-		) -> DispatchResultWithPostInfo {
-			let who = ensure_signed(origin)?;
-
-			// Ensure that the node is registered
-			ensure!(NodeRegistration::<T>::contains_key(&node_id), Error::<T>::NodeNotRegistered);
-
-			// Retrieve the node info to check ownership
-			let node_info =
-				NodeRegistration::<T>::get(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
-
-			// Ensure the caller is the owner of the node
-			ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
-
-			// Call the existing unregister logic
 			Self::do_set_node_status_degraded_or_unregister(node_id);
 
 			Ok(().into())
@@ -888,13 +789,13 @@ pub mod pallet {
 
 			// Ensure that the node is registered
 			ensure!(
-				ColdkeyNodeRegistration::<T>::contains_key(&node_id),
+				ColdkeyNodeRegistrationV2::<T>::contains_key(&node_id),
 				Error::<T>::NodeNotRegistered
 			);
 
 			// Retrieve the node info to check ownership
-			let node_info =
-				ColdkeyNodeRegistration::<T>::get(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
+			let node_info = Self::get_coldkey_node_info_v2(&node_id)
+				.ok_or(Error::<T>::NodeNotRegistered)?;
 
 			// Ensure the caller is the owner of the node
 			ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
@@ -916,7 +817,7 @@ pub mod pallet {
 
 			// Retrieve the node information
 			let mut node_info =
-				NodeRegistration::<T>::get(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
+				ColdkeyNodeRegistrationV2::<T>::get(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
 
 			// Ensure the caller is the current owner
 			ensure!(node_info.owner == who.clone(), Error::<T>::NotNodeOwner);
@@ -932,53 +833,9 @@ pub mod pallet {
 			node_info.owner = new_owner.clone();
 
 			// Save the updated node information back to storage
-			NodeRegistration::<T>::insert(node_id.clone(), Some(node_info)); // Wrap node_info in Some
+			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
 
 			Self::deposit_event(Event::NodeOwnerSwapped { node_id, new_owner });
-
-			Ok(().into())
-		}
-
-		/// Sudo call to unregister all nodes with is_verified = false
-		/// This will iterate through all registered nodes and unregister those that are not verified
-		#[pallet::call_index(17)]
-		#[pallet::weight((T::DbWeight::get().reads_writes(2, 1), Pays::No))]
-		pub fn sudo_unregister_unverified_nodes(
-			origin: OriginFor<T>,
-		) -> DispatchResultWithPostInfo {
-			// Ensure the caller is root (sudo)
-			ensure_root(origin)?;
-
-			let mut unregistered_count = 0u32;
-
-			// Unregister unverified coldkey nodes
-			let coldkey_nodes: Vec<_> = ColdkeyNodeRegistration::<T>::iter()
-				.filter_map(|(node_id, node_info_opt)| {
-					node_info_opt.filter(|info| !info.is_verified).map(|_| node_id)
-				})
-				.collect();
-
-			for node_id in coldkey_nodes {
-				// Use the existing unregister logic
-				Self::do_unregister_main_node(node_id.clone());
-				unregistered_count += 1;
-			}
-
-			// Unregister unverified hotkey nodes
-			let hotkey_nodes: Vec<_> = NodeRegistration::<T>::iter()
-				.filter_map(|(node_id, node_info_opt)| {
-					node_info_opt.filter(|info| !info.is_verified).map(|_| node_id)
-				})
-				.collect();
-
-			for node_id in hotkey_nodes {
-				// Use the existing unregister logic
-				Self::do_unregister_node(node_id);
-				unregistered_count += 1;
-			}
-
-			// Emit an event with the count of unregistered nodes
-			Self::deposit_event(Event::<T>::NodeUnregisteredBatch { count: unregistered_count });
 
 			Ok(().into())
 		}
@@ -1009,9 +866,6 @@ pub mod pallet {
 			// Update user's storage requests count
 			ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count.saturating_add(1));
 
-			// Store deregistration reports with current block number.
-			// Key by `main_account` (validator owner), not `who`, so multiple proxy delegates for the
-			// same validator cannot each count as a separate voter in `apply_deregistration_consensus`.
 			let current_block = <frame_system::Pallet<T>>::block_number();
 			let mut existing_reports = TemporaryDeregistrationReports::<T>::get(&main_account);
 			for node_id in node_ids {
@@ -1072,196 +926,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(18)]
-		#[pallet::weight((10_000, Pays::No))]
-		pub fn verify_existing_node(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-			challenge_bytes: Vec<u8>,
-			main_key_type: Libp2pKeyType,
-			main_public_key: Vec<u8>,
-			main_sig: Vec<u8>,
-			ipfs_key_type: Libp2pKeyType,
-			ipfs_public_key: Vec<u8>,
-			ipfs_sig: Vec<u8>,
-			ipfs_id_hex: Vec<u8>,
-			node_id_hex: Vec<u8>,
-		) -> DispatchResultWithPostInfo {
-			let who = ensure_signed(origin)?;
-
-			// Get the node information
-			let mut node_info = NodeRegistration::<T>::get(&node_id)
-				.and_then(|opt| Some(opt))
-				.ok_or(Error::<T>::NodeNotFound)?;
-
-			// Check if node is already verified
-			ensure!(!node_info.is_verified, Error::<T>::NodeAlreadyVerified);
-
-			// Verify that the caller owns this node
-			ensure!(node_info.owner == who, Error::<T>::Unauthorized);
-
-			// --- Decode & check the challenge ---
-			let mut rdr = &challenge_bytes[..];
-			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
-				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
-
-			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
-			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
-			ensure!(ch.account == who, Error::<T>::InvalidAccountId);
-			ensure!(
-				ch.expires_at >= <frame_system::Pallet<T>>::block_number(),
-				Error::<T>::ChallengeExpired
-			);
-			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
-			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
-			ensure!(
-				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
-				Error::<T>::ChallengeMismatch
-			);
-			ensure!(node_id == node_id_hex, Error::<T>::NodeIdMismatch);
-
-			let ch_hash = Self::blake256(&challenge_bytes);
-			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
-
-			// --- Verify the two libp2p signatures ---
-			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-
-			// Verify signatures
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key),
-				Error::<T>::InvalidSignature
-			);
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key),
-				Error::<T>::InvalidSignature
-			);
-
-			// Verify that public keys match the expected peer IDs
-			ensure!(
-				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			ensure!(
-				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			// Mark challenge used (replay protection)
-			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
-
-			// Update the node to verified
-			node_info.is_verified = true;
-			NodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
-
-			// Store the identities for future use (liveness checks, etc.)
-			Libp2pMainIdentity::<T>::insert(&node_id, (main_key_type, main_public_key.clone()));
-			Libp2pIpfsIdentity::<T>::insert(&node_id, (ipfs_key_type, ipfs_public_key.clone()));
-
-			Self::deposit_event(Event::NodeVerified {
-				node_id: node_id.clone(),
-				owner: who.clone(),
-			});
-
-			Ok(().into())
-		}
-
-		#[pallet::call_index(19)]
-		#[pallet::weight((10_000, Pays::No))]
-		pub fn verify_existing_coldkey_node(
-			origin: OriginFor<T>,
-			node_id: Vec<u8>,
-			challenge_bytes: Vec<u8>,
-			main_key_type: Libp2pKeyType,
-			main_public_key: Vec<u8>,
-			main_sig: Vec<u8>,
-			ipfs_key_type: Libp2pKeyType,
-			ipfs_public_key: Vec<u8>,
-			ipfs_sig: Vec<u8>,
-			ipfs_id_hex: Vec<u8>,
-			node_id_hex: Vec<u8>,
-		) -> DispatchResultWithPostInfo {
-			let who = ensure_signed(origin)?;
-
-			// Get the coldkey node information
-			let mut node_info = ColdkeyNodeRegistration::<T>::get(&node_id)
-				.and_then(|opt| Some(opt))
-				.ok_or(Error::<T>::NodeNotFound)?;
-
-			// Check if node is already verified
-			ensure!(!node_info.is_verified, Error::<T>::NodeAlreadyVerified);
-
-			// Verify that the caller owns this node
-			ensure!(node_info.owner == who, Error::<T>::Unauthorized);
-
-			// --- Decode & check the challenge ---
-			let mut rdr = &challenge_bytes[..];
-			let ch: RegisterChallenge<T::AccountId, BlockNumberFor<T>> =
-				RegisterChallenge::decode(&mut rdr).map_err(|_| Error::<T>::InvalidChallenge)?;
-
-			const EXPECTED_DOMAIN: [u8; 24] = *b"HIPPIUS::REGISTER::v1\0\0\0";
-			ensure!(ch.domain == EXPECTED_DOMAIN, Error::<T>::InvalidChallengeDomain);
-			ensure!(ch.account == who, Error::<T>::InvalidAccountId);
-			ensure!(
-				ch.expires_at >= <frame_system::Pallet<T>>::block_number(),
-				Error::<T>::ChallengeExpired
-			);
-			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
-			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
-			ensure!(
-				ch.ipfs_peer_id_hash == Self::blake256(&ipfs_id_hex),
-				Error::<T>::ChallengeMismatch
-			);
-			ensure!(node_id == node_id_hex, Error::<T>::NodeIdMismatch);
-
-			let ch_hash = Self::blake256(&challenge_bytes);
-			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
-
-			// --- Verify the two libp2p signatures ---
-			ensure!(matches!(main_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-			ensure!(matches!(ipfs_key_type, Libp2pKeyType::Ed25519), Error::<T>::InvalidKeyType);
-
-			// Verify signatures
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &main_sig, &main_public_key),
-				Error::<T>::InvalidSignature
-			);
-			ensure!(
-				Self::verify_ed25519(&challenge_bytes, &ipfs_sig, &ipfs_public_key),
-				Error::<T>::InvalidSignature
-			);
-
-			// Verify that public keys match the expected peer IDs
-			ensure!(
-				Self::verify_peer_id(&main_public_key, &node_id_hex, main_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			ensure!(
-				Self::verify_peer_id(&ipfs_public_key, &ipfs_id_hex, ipfs_key_type),
-				Error::<T>::PublicKeyMismatch
-			);
-
-			// Mark challenge used (replay protection)
-			UsedChallenges::<T>::insert(ch_hash, ch.expires_at);
-
-			// Update the node to verified
-			node_info.is_verified = true;
-			ColdkeyNodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
-
-			// Store the identities for future use
-			Libp2pMainIdentity::<T>::insert(&node_id, (main_key_type, main_public_key.clone()));
-			Libp2pIpfsIdentity::<T>::insert(&node_id, (ipfs_key_type, ipfs_public_key.clone()));
-
-			Self::deposit_event(Event::ColdkeyNodeVerified {
-				node_id: node_id.clone(),
-				owner: who.clone(),
-			});
-
-			Ok(().into())
-		}
-
 		/// Toggle the de-registration switch (root only)
 		#[pallet::call_index(20)]
 		#[pallet::weight((10_000, Pays::No))]
@@ -1280,6 +944,28 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+		fn coldkey_lite_to_node_info(
+			lite: ColdkeyNodeInfoLite<BlockNumberFor<T>, T::AccountId>,
+		) -> NodeInfo<BlockNumberFor<T>, T::AccountId> {
+			NodeInfo {
+				node_id: lite.node_id.clone(),
+				node_type: lite.node_type,
+				ipfs_node_id: None,
+				status: lite.status,
+				registered_at: lite.registered_at,
+				owner: lite.owner,
+				is_verified: true,
+			}
+		}
+
+		/// Get coldkey/main-node registration info (v2 only).
+		fn get_coldkey_node_info_v2(
+			node_id: &Vec<u8>,
+		) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
+			ColdkeyNodeRegistrationV2::<T>::get(node_id)
+				.map(Self::coldkey_lite_to_node_info)
+		}
+
 		fn owner_to_node_add(owner: &T::AccountId, node_id: &Vec<u8>) {
 			OwnerToNode::<T>::mutate(owner, |nodes_opt| {
 				let nodes = nodes_opt.get_or_insert_with(Vec::new);
@@ -1303,24 +989,13 @@ pub mod pallet {
 		pub fn get_all_degraded_storage_miners() -> Vec<Vec<u8>> {
 			let mut degraded_nodes = Vec::new();
 
-			// Iterate over NodeRegistration storage
-			for (_, maybe_node_info) in <NodeRegistration<T>>::iter() {
+			// Iterate over ColdkeyNodeRegistrationV2 storage
+			for (node_id, maybe_node_info) in <ColdkeyNodeRegistrationV2<T>>::iter() {
 				if let Some(node_info) = maybe_node_info {
 					if node_info.node_type == NodeType::StorageMiner
 						&& matches!(node_info.status, Status::Degraded)
 					{
-						degraded_nodes.push(node_info.node_id.clone());
-					}
-				}
-			}
-
-			// Iterate over ColdkeyNodeRegistration storage
-			for (_, maybe_node_info) in <ColdkeyNodeRegistration<T>>::iter() {
-				if let Some(node_info) = maybe_node_info {
-					if node_info.node_type == NodeType::StorageMiner
-						&& matches!(node_info.status, Status::Degraded)
-					{
-						degraded_nodes.push(node_info.node_id.clone());
+						degraded_nodes.push(node_id);
 					}
 				}
 			}
@@ -1329,27 +1004,11 @@ pub mod pallet {
 		}
 
 		pub fn get_registration_block(node_id: &Vec<u8>) -> Option<BlockNumberFor<T>> {
-			// Check NodeRegistration storage
-			if let Some(node_info) = NodeRegistration::<T>::get(node_id) {
-				return Some(node_info.registered_at);
-			}
-			// Check ColdkeyNodeRegistration storage
-			if let Some(node_info) = ColdkeyNodeRegistration::<T>::get(node_id) {
+			// Check ColdkeyNodeRegistrationV2 storage
+			if let Some(node_info) = ColdkeyNodeRegistrationV2::<T>::get(node_id) {
 				return Some(node_info.registered_at);
 			}
 			None
-		}
-
-		pub fn try_unregister_storage_miner(node_to_deregister: Vec<u8>) -> Result<(), Error<T>> {
-			// Check if the node to deregister is a degraded StorageMiner
-			ensure!(
-				Self::is_storage_miner_degraded(node_to_deregister.clone()),
-				Error::<T>::NodeNotDegradedStorageMiner
-			);
-
-			// Perform deregistration
-			Self::do_unregister_node(node_to_deregister);
-			Ok(())
 		}
 
 		/// Helper function to check if an owner already has a registered node
@@ -1363,33 +1022,17 @@ pub mod pallet {
 			let mut active_storage_miners = Vec::new();
 			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the NodeRegistration storage map
-			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
+			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node is of type miner and its status is not Degraded
 					if matches!(node_info.node_type, NodeType::StorageMiner)
 						&& !matches!(node_info.status, Status::Degraded)
 					{
 						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_storage_miners.push(node_info);
-						}
-					}
-				}
-			}
-
-			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
-			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
-				if let Some(node_info) = node_info_opt {
-					// Check if the node is of type miner and its status is not Degraded
-					if matches!(node_info.node_type, NodeType::StorageMiner)
-						&& !matches!(node_info.status, Status::Degraded)
-					{
-						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_storage_miners.push(node_info);
+						if !seen_node_ids.contains(&node_id) {
+							seen_node_ids.push(node_id.clone());
+							active_storage_miners.push(Self::coldkey_lite_to_node_info(node_info));
 						}
 					}
 				}
@@ -1404,33 +1047,17 @@ pub mod pallet {
 			let mut active_storage_miners = Vec::new();
 			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the NodeRegistration storage map
-			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
+			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node is of type miner and its status is not Degraded
 					if matches!(node_info.node_type, NodeType::ComputeMiner)
 						&& !matches!(node_info.status, Status::Degraded)
 					{
 						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_storage_miners.push(node_info);
-						}
-					}
-				}
-			}
-
-			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
-			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
-				if let Some(node_info) = node_info_opt {
-					// Check if the node is of type miner and its status is not Degraded
-					if matches!(node_info.node_type, NodeType::ComputeMiner)
-						&& !matches!(node_info.status, Status::Degraded)
-					{
-						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_storage_miners.push(node_info);
+						if !seen_node_ids.contains(&node_id) {
+							seen_node_ids.push(node_id.clone());
+							active_storage_miners.push(Self::coldkey_lite_to_node_info(node_info));
 						}
 					}
 				}
@@ -1442,25 +1069,11 @@ pub mod pallet {
 		pub fn get_miner_info(account_id: T::AccountId) -> Option<(NodeType, Status)> {
 			let mut seen_accounts = Vec::new(); // Vec to track unique account IDs
 
-			// Iterate through the storage map to find the miner associated with the account_id in NodeRegistration
-			for (_, node_info) in NodeRegistration::<T>::iter() {
+			// Iterate through the storage map to find the miner associated with the account_id in ColdkeyNodeRegistrationV2
+			for (_, node_info) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(info) = node_info {
-					// Check if the owner of the node matches the provided account_id
 					if info.owner == account_id && !seen_accounts.contains(&info.owner) {
-						seen_accounts.push(info.owner.clone()); // Track this account ID
-											  // Return the miner type and status
-						return Some((info.node_type, info.status));
-					}
-				}
-			}
-
-			// Iterate through the storage map to find the miner associated with the account_id in ColdkeyNodeRegistration
-			for (_, node_info) in ColdkeyNodeRegistration::<T>::iter() {
-				if let Some(info) = node_info {
-					// Check if the owner of the node matches the provided account_id
-					if info.owner == account_id && !seen_accounts.contains(&info.owner) {
-						seen_accounts.push(info.owner.clone()); // Track this account ID
-											  // Return the miner type and status
+						seen_accounts.push(info.owner.clone());
 						return Some((info.node_type, info.status));
 					}
 				}
@@ -1477,8 +1090,8 @@ pub mod pallet {
 			let mut active_storage_miners = Vec::new();
 			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the NodeRegistration storage map
-			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
+			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node is of type miner
 					if matches!(node_info.node_type, NodeType::StorageMiner)
@@ -1501,42 +1114,9 @@ pub mod pallet {
 						// Check if staked balance is greater than threshold
 						if staked_balance >= threshold {
 							// Check for uniqueness
-							if !seen_node_ids.contains(&node_info.node_id) {
-								seen_node_ids.push(node_info.node_id.clone());
-								active_storage_miners.push(node_info);
-							}
-						}
-					}
-				}
-			}
-
-			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
-			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
-				if let Some(node_info) = node_info_opt {
-					// Check if the node is of type miner
-					if matches!(node_info.node_type, NodeType::StorageMiner)
-						&& !matches!(node_info.status, Status::Degraded)
-					{
-						// Get the staked balance for this miner
-						let staked_balance = pallet_staking::Pallet::<T>::ledger(
-							sp_staking::StakingAccount::Stash(node_info.owner.clone()),
-						)
-						.map(|ledger| ledger.active)
-						.unwrap_or_default();
-
-						// Convert the threshold to staking currency balance type
-						let threshold: <T as pallet_staking::Config>::CurrencyBalance =
-							(T::MinerStakeThreshold::get() as u128)
-								.saturating_mul(10u128.pow(T::ChainDecimals::get()))
-								.try_into()
-								.unwrap_or_default();
-
-						// Check if staked balance is greater than threshold
-						if staked_balance >= threshold {
-							// Check for uniqueness
-							if !seen_node_ids.contains(&node_info.node_id) {
-								seen_node_ids.push(node_info.node_id.clone());
-								active_storage_miners.push(node_info);
+							if !seen_node_ids.contains(&node_id) {
+								seen_node_ids.push(node_id.clone());
+								active_storage_miners.push(Self::coldkey_lite_to_node_info(node_info));
 							}
 						}
 					}
@@ -1552,8 +1132,8 @@ pub mod pallet {
 			let mut active_storage_miners = Vec::new();
 			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
-			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
+			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Get the staked balance for this miner
 					let staked_balance = pallet_staking::Pallet::<T>::ledger(
@@ -1572,9 +1152,9 @@ pub mod pallet {
 					// Check if staked balance is greater than threshold
 					if staked_balance >= threshold {
 						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_storage_miners.push(node_info);
+						if !seen_node_ids.contains(&node_id) {
+							seen_node_ids.push(node_id.clone());
+							active_storage_miners.push(Self::coldkey_lite_to_node_info(node_info));
 						}
 					}
 				}
@@ -1636,35 +1216,19 @@ pub mod pallet {
 		) -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
 			// Vector to store filtered node info
 			let mut active_nodes = Vec::new();
-			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
+			let mut seen_node_ids = Vec::new(); 
 
-			// Iterate over all registered nodes in the NodeRegistration storage map
-			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
+			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node is of the specified type and its status is not Degraded
 					if node_info.node_type == node_type
 						&& !matches!(node_info.status, Status::Degraded)
 					{
 						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_nodes.push(node_info);
-						}
-					}
-				}
-			}
-
-			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
-			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
-				if let Some(node_info) = node_info_opt {
-					// Check if the node is of the specified type and its status is not Degraded
-					if node_info.node_type == node_type
-						&& !matches!(node_info.status, Status::Degraded)
-					{
-						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_nodes.push(node_info);
+						if !seen_node_ids.contains(&node_id) {
+							seen_node_ids.push(node_id.clone());
+							active_nodes.push(Self::coldkey_lite_to_node_info(node_info));
 						}
 					}
 				}
@@ -1679,17 +1243,17 @@ pub mod pallet {
 			let mut active_nodes = Vec::new();
 			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
-			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
+			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node's status is not Degraded
 					if !matches!(node_info.status, Status::Degraded)
 						&& matches!(node_info.node_type, NodeType::StorageMiner)
 					{
 						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_nodes.push(node_info);
+						if !seen_node_ids.contains(&node_id) {
+							seen_node_ids.push(node_id.clone());
+							active_nodes.push(Self::coldkey_lite_to_node_info(node_info));
 						}
 					}
 				}
@@ -1704,29 +1268,15 @@ pub mod pallet {
 			let mut active_nodes = Vec::new();
 			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the NodeRegistration storage map
-			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
+			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node's status is not Degraded
 					if !matches!(node_info.status, Status::Degraded) {
 						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_nodes.push(node_info);
-						}
-					}
-				}
-			}
-
-			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
-			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
-				if let Some(node_info) = node_info_opt {
-					// Check if the node's status is not Degraded
-					if !matches!(node_info.status, Status::Degraded) {
-						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_nodes.push(node_info);
+						if !seen_node_ids.contains(&node_id) {
+							seen_node_ids.push(node_id.clone());
+							active_nodes.push(Self::coldkey_lite_to_node_info(node_info));
 						}
 					}
 				}
@@ -1758,28 +1308,12 @@ pub mod pallet {
 		pub fn get_node_registration_info(
 			node_id: Vec<u8>,
 		) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
-			if let Some(coldkey_info) = ColdkeyNodeRegistration::<T>::get(&node_id) {
+			if let Some(coldkey_info) = Self::get_coldkey_node_info_v2(&node_id) {
 				if coldkey_info.status != Status::Degraded {
 					return Some(coldkey_info);
 				}
-			} else if let Some(node_info) = NodeRegistration::<T>::get(&node_id) {
-				if node_info.status != Status::Degraded {
-					return Some(node_info);
-				}
-			}
+			} 
 			None
-		}
-
-		pub fn is_storage_miner_degraded(node_id: Vec<u8>) -> bool {
-			if let Some(coldkey_info) = ColdkeyNodeRegistration::<T>::get(&node_id) {
-				return coldkey_info.node_type == NodeType::StorageMiner
-					&& coldkey_info.status == Status::Degraded;
-			}
-			if let Some(node_info) = NodeRegistration::<T>::get(&node_id) {
-				return node_info.node_type == NodeType::StorageMiner
-					&& node_info.status == Status::Degraded;
-			}
-			false
 		}
 
 		fn blake256(data: &[u8]) -> H256 {
@@ -1960,33 +1494,17 @@ pub mod pallet {
 			let mut active_nodes = Vec::new();
 			let mut seen_node_ids = Vec::new(); // Vec to track unique node IDs
 
-			// Iterate over all registered nodes in the NodeRegistration storage map
-			for (_, node_info_opt) in NodeRegistration::<T>::iter() {
+			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
+			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
 				if let Some(node_info) = node_info_opt {
 					// Check if the node is of the specified type and its status is not Degraded
 					if node_info.node_type == node_type
 						&& !matches!(node_info.status, Status::Degraded)
 					{
 						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_nodes.push(node_info.node_id.clone());
-						}
-					}
-				}
-			}
-
-			// Iterate over all registered nodes in the ColdkeyNodeRegistration storage map
-			for (_, node_info_opt) in ColdkeyNodeRegistration::<T>::iter() {
-				if let Some(node_info) = node_info_opt {
-					// Check if the node is of the specified type and its status is not Degraded
-					if node_info.node_type == node_type
-						&& !matches!(node_info.status, Status::Degraded)
-					{
-						// Check for uniqueness
-						if !seen_node_ids.contains(&node_info.node_id) {
-							seen_node_ids.push(node_info.node_id.clone());
-							active_nodes.push(node_info.node_id.clone());
+						if !seen_node_ids.contains(&node_id) {
+							seen_node_ids.push(node_id.clone());
+							active_nodes.push(node_id.clone());
 						}
 					}
 				}
@@ -1995,41 +1513,12 @@ pub mod pallet {
 			active_nodes
 		}
 
-		pub fn do_unregister_node(node_id: Vec<u8>) {
-			if !NodeRegistration::<T>::contains_key(&node_id) {
-				if ColdkeyNodeRegistration::<T>::contains_key(&node_id) {
-					Self::do_unregister_main_node(node_id.clone());
-				}
-				return;
-			}
-
-			if let Some(node_info) = NodeRegistration::<T>::get(&node_id) {
-				// Since LinkedNodes is removed, treat node_id as its own scope for metrics
-				let main_node_id = node_id.clone();
-
-				// Remove the node registration
-				NodeRegistration::<T>::remove(&node_id);
-
-				// Keep OwnerToNode in sync
-				Self::owner_to_node_remove(&node_info.owner, &node_id);
-
-				// Remove metrics for the main node
-				T::MetricsInfo::remove_metrics(main_node_id.clone());
-				// T::IpfsInfo::remove_miner_profile_info(node_id.clone());
-
-				// Store the deregistration time
-				NodeLastDeregisteredAt::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());
-
-				Self::deposit_event(Event::NodeUnregistered { node_id });
-			}
-		}
-
 		pub fn do_unregister_main_node(node_id: Vec<u8>) {
-			let owner = ColdkeyNodeRegistration::<T>::get(&node_id).map(|info| info.owner);
+			let owner = ColdkeyNodeRegistrationV2::<T>::get(&node_id).map(|info| info.owner);
 
 			// Remove the main node's registration
 			// Note: LinkedNodes has been removed; sub-node cleanup is handled separately
-			ColdkeyNodeRegistration::<T>::remove(node_id.clone());
+			ColdkeyNodeRegistrationV2::<T>::remove(node_id.clone());
 
 			// Keep OwnerToNode in sync
 			if let Some(owner) = owner {
@@ -2049,49 +1538,25 @@ pub mod pallet {
 		pub fn get_registered_node_for_owner(
 			owner: &T::AccountId,
 		) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
-			// First, check ColdkeyNodeRegistration
-			let coldkey_node = ColdkeyNodeRegistration::<T>::iter().find_map(|(_, node_info)| {
-				node_info.filter(|info| info.owner == *owner && info.status != Status::Degraded)
-			});
+			// First, check ColdkeyNodeRegistrationV2
+			let coldkey_node =
+				ColdkeyNodeRegistrationV2::<T>::iter().find_map(|(node_id, node_info)| {
+					node_info
+						.filter(|info| info.owner == *owner && info.status != Status::Degraded)
+						.map(Self::coldkey_lite_to_node_info)
+				});
 
-			if coldkey_node.is_some() {
-				return coldkey_node;
-			}
-
-			// If not found, check NodeRegistration
-			let node_reg_node = NodeRegistration::<T>::iter().find_map(|(_, node_info)| {
-				node_info.filter(|info| info.owner == *owner && info.status != Status::Degraded)
-			});
-
-			node_reg_node
+			coldkey_node
 		}
 
 		pub fn do_set_node_status_degraded_or_unregister(node_id: Vec<u8>) {
-			// Check if the node exists in NodeRegistration
-			if NodeRegistration::<T>::contains_key(&node_id) {
-				if let Some(mut node_info) = NodeRegistration::<T>::get(&node_id) {
+			if ColdkeyNodeRegistrationV2::<T>::contains_key(&node_id) {
+				// Handle main node (ColdkeyNodeRegistrationV2)
+				if let Some(mut node_info) = ColdkeyNodeRegistrationV2::<T>::get(&node_id) {
 					if node_info.node_type == NodeType::StorageMiner {
 						// Update status to Degraded for StorageMiner
 						node_info.status = Status::Degraded;
-						NodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
-
-						// Emit event for status update
-						Self::deposit_event(Event::NodeStatusUpdated {
-							node_id,
-							status: Status::Degraded,
-						});
-					} else {
-						// Deregister non-StorageMiner nodes
-						Self::do_unregister_node(node_id.clone());
-					}
-				}
-			} else if ColdkeyNodeRegistration::<T>::contains_key(&node_id) {
-				// Handle main node (ColdkeyNodeRegistration)
-				if let Some(mut node_info) = ColdkeyNodeRegistration::<T>::get(&node_id) {
-					if node_info.node_type == NodeType::StorageMiner {
-						// Update status to Degraded for StorageMiner
-						node_info.status = Status::Degraded;
-						ColdkeyNodeRegistration::<T>::insert(&node_id, Some(node_info.clone()));
+						ColdkeyNodeRegistrationV2::<T>::insert(&node_id, Some(node_info));
 
 						// Emit event for status update
 						Self::deposit_event(Event::NodeStatusUpdated {
