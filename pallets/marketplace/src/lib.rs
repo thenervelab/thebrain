@@ -879,6 +879,14 @@ pub mod pallet {
             monthly_price.saturating_mul(drm) / dim
         }
 
+        /// Total upfront charge when buying `upfront_months` starting mid-month:
+        /// `1 prorated month + (upfront_months - 1) full months`.
+        fn upfront_prorated_total(monthly_price: u128, upfront_months: u128) -> u128 {
+            let first = Self::prorated_monthly_price(monthly_price);
+            let remaining_full_months = upfront_months.saturating_sub(1);
+            first.saturating_add(monthly_price.saturating_mul(remaining_full_months))
+        }
+
         #[transactional]
         fn release_matured_pending_alpha(current_block: BlockNumberFor<T>) -> DispatchResult {
             for (batch_id, mut batch) in Batches::<T>::iter() {
@@ -974,7 +982,7 @@ pub mod pallet {
             let mut plan_price_native = Self::prorated_monthly_price(plan.price);
                 
             if let Some(upfront_months) = pay_upfront {
-                plan_price_native = plan_price_native.saturating_mul(upfront_months);
+                plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
             }
         
             // Check user's native token balance 
@@ -1080,9 +1088,9 @@ pub mod pallet {
 
             // Determine the (monthly) price (pro-rated if purchased mid-month).
             let mut plan_price_native = Self::prorated_monthly_price(plan.price);
-                
+            
             if let Some(upfront_months) = pay_upfront {
-                plan_price_native = plan_price_native.saturating_mul(upfront_months);
+                plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
             }
         
             // Check user's native token balance 
