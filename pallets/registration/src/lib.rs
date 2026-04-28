@@ -766,7 +766,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(10)]
+		#[pallet::call_index(9)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn force_unregister_coldkey_node(
 			origin: OriginFor<T>,
@@ -779,7 +779,7 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		#[pallet::call_index(12)]
+		#[pallet::call_index(10)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn unregister_main_node(
 			origin: OriginFor<T>,
@@ -806,7 +806,7 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		#[pallet::call_index(13)]
+		#[pallet::call_index(11)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn swap_node_owner(
 			origin: OriginFor<T>,
@@ -840,7 +840,7 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		#[pallet::call_index(14)]
+		#[pallet::call_index(12)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn submit_deregistration_report(
 			origin: OriginFor<T>,
@@ -883,7 +883,7 @@ pub mod pallet {
 		}
 
 		/// Ban or unban an account from registering nodes
-		#[pallet::call_index(15)]
+		#[pallet::call_index(13)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_account_ban_status(
 			origin: OriginFor<T>,
@@ -907,7 +907,7 @@ pub mod pallet {
 		/// Set the list of whitelisted validators
 		///
 		/// Can only be called by root.
-		#[pallet::call_index(16)]
+		#[pallet::call_index(14)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_whitelisted_validators(
 			origin: OriginFor<T>,
@@ -927,7 +927,7 @@ pub mod pallet {
 		}
 
 		/// Toggle the de-registration switch (root only)
-		#[pallet::call_index(20)]
+		#[pallet::call_index(15)]
 		#[pallet::weight((10_000, Pays::No))]
 		pub fn set_deregistration_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
 			// Only root can call this function
