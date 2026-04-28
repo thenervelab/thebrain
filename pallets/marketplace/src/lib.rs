@@ -395,6 +395,12 @@ pub mod pallet {
             error: DispatchError,
         },
         CreditsConsumed { owner: T::AccountId, credits: u128 },
+        /// Monthly subscription charge could not be collected; subscriptions were deactivated.
+        SubscriptionChargeFailed {
+            who: T::AccountId,
+            required_credits: u128,
+            available_credits: u128,
+        },
 	    StorageOperationsStatusChanged { enabled: bool },
         /// Purchase plan status was changed
         PurchasePlanStatusChanged { enabled: bool },
@@ -1300,6 +1306,32 @@ pub mod pallet {
                                 }
                             }
                         }
+                    });
+                } else {
+                    // Not enough credits to pay monthly subscription(s).
+                    // Deactivate active subscriptions so the user falls back to usage-based charging (e.g. per-GB).
+                    users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
+
+                    log::warn!(
+                        target: "runtime::marketplace",
+                        "monthly subscription charge failed for {:?}: required={}, available={}",
+                        account_id,
+                        total_charge,
+                        user_free_credits
+                    );
+
+                    UserAllSubscriptionPlans::<T>::mutate(&account_id, |subs| {
+                        for sub in subs.iter_mut() {
+                            if sub.active {
+                                sub.active = false;
+                            }
+                        }
+                    });
+
+                    Self::deposit_event(Event::SubscriptionChargeFailed {
+                        who: account_id.clone(),
+                        required_credits: total_charge,
+                        available_credits: user_free_credits,
                     });
                 }
             }
