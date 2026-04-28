@@ -886,7 +886,11 @@ pub mod pallet {
             if dim == 0 {
                 return monthly_price;
             }
-            monthly_price.saturating_mul(drm) / dim
+            // Use ceil division to avoid rounding tiny (but non-zero) prices down to 0.
+            let numerator = monthly_price.saturating_mul(drm);
+            numerator
+                .saturating_add(dim.saturating_sub(1))
+                / dim
         }
 
         /// Total upfront charge when buying `upfront_months` starting mid-month:
