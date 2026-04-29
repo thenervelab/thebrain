@@ -332,6 +332,11 @@ pub mod pallet {
     #[pallet::getter(fn specific_miner_request_fee)]
     pub type SpecificMinerRequestFee<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
+    /// Account allowed to call `cancel_user_subscription`.
+    #[pallet::storage]
+    #[pallet::getter(fn subscription_canceller)]
+    pub type SubscriptionCanceller<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -462,6 +467,7 @@ pub mod pallet {
         InvalidInput,
         UserNotFound,
         ResubscribeCooldownActive,
+        SubscriptionCancellationNotAuthorized,
 	}
     
 	#[pallet::storage]
@@ -828,14 +834,29 @@ pub mod pallet {
             Ok(())
         }
 
-        /// User cancels their own subscription
+        /// Root sets the dedicated subscription canceller address.
+        #[pallet::call_index(21)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_set_subscription_canceller(
+            origin: OriginFor<T>,
+            account: Option<T::AccountId>,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            SubscriptionCanceller::<T>::put(account);
+            Ok(())
+        }
+
+        /// Cancel a user's subscription (restricted).
         #[pallet::call_index(19)]
         #[pallet::weight((0, Pays::No))]
-        pub fn cancel_my_subscription(origin: OriginFor<T>) -> DispatchResult {
+        pub fn cancel_user_subscription(origin: OriginFor<T>, user: T::AccountId) -> DispatchResult {
             let who = ensure_signed(origin)?;
+
+            let allowed = SubscriptionCanceller::<T>::get();
+            ensure!(allowed.as_ref() == Some(&who), Error::<T>::SubscriptionCancellationNotAuthorized);
             
             // Call the helper function to cancel the subscription
-            Self::do_cancel_storage_subscription(&who)?;
+            Self::do_cancel_storage_subscription(&user)?;
             
             Ok(())
         }        
