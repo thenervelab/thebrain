@@ -574,6 +574,10 @@ pub mod pallet {
         ) -> DispatchResult {
             let owner = ensure_signed(origin)?;
 
+            if let Some(n) = pay_upfront {
+                ensure!(n >= 1 && n <= 24, Error::<T>::InvalidInput);
+            }
+
             // Rate limit: maximum storage requests per block per user
             let max_requests_per_block = T::MaxRequestsPerBlock::get();
             let user_requests_count = UserRequestsCount::<T>::get(&owner);
@@ -1013,6 +1017,10 @@ pub mod pallet {
             if let Some(upfront_months) = pay_upfront {
                 plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
             }
+
+            let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
+            let next_charge_unix_day =
+                Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
         
             // Check user's native token balance 
             let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
@@ -1058,6 +1066,7 @@ pub mod pallet {
                 active: true,
                 last_charged_at: current_block_number,
                 selected_image_name: None,
+                next_charge_unix_day,
                 _phantom: PhantomData,
             };
         
@@ -1120,6 +1129,10 @@ pub mod pallet {
             if let Some(upfront_months) = pay_upfront {
                 plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
             }
+
+            let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
+            let next_charge_unix_day =
+                Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
         
             // Check user's native token balance 
             let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
@@ -1170,6 +1183,7 @@ pub mod pallet {
                 active: true,
                 last_charged_at: current_block_number,
                 selected_image_name : Some(selected_image_name),
+                next_charge_unix_day,
                 _phantom: PhantomData,
             };
         
@@ -1226,6 +1240,7 @@ pub mod pallet {
             let mut users_seen: u64 = 0;
             let mut users_with_active_subs: u64 = 0;
             let mut users_charged_or_cancelled: u64 = 0;
+            let today = Self::current_unix_day();
 
             // Iterate through all users with subscriptions once
             for (account_id, subscriptions) in UserAllSubscriptionPlans::<T>::iter() {
@@ -1244,14 +1259,19 @@ pub mod pallet {
 
                 // Monthly charging: on the 1st day of the month we charge all active subscriptions.
                 // (The outer caller guards execution to month-start only.)
+                let due = |sub: &&UserPlanSubscription<T>| -> bool {
+                    sub.next_charge_unix_day.map_or(true, |d| today >= d)
+                };
                 let storage_subs_to_charge: Vec<_> = active_subs
                     .iter()
                     .filter(|sub| sub.package.is_storage_plan)
+                    .filter(due)
                     .cloned()
                     .collect();
                 let compute_subs_to_charge: Vec<_> = active_subs
                     .iter()
                     .filter(|sub| !sub.package.is_storage_plan)
+                    .filter(due)
                     .cloned()
                     .collect();
 
@@ -1318,12 +1338,22 @@ pub mod pallet {
                             if sub.active {
                                 // Only update timestamps if the relevant charge path succeeded.
                                 if sub.package.is_storage_plan {
-                                    if storage_charged_ok {
+                                    if storage_charged_ok
+                                        && sub.next_charge_unix_day.map_or(true, |d| today >= d)
+                                    {
                                         sub.last_charged_at = current_block;
+                                        sub.next_charge_unix_day = Some(
+                                            pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(1),
+                                        );
                                     }
                                 } else {
-                                    if compute_charged_ok {
+                                    if compute_charged_ok
+                                        && sub.next_charge_unix_day.map_or(true, |d| today >= d)
+                                    {
                                         sub.last_charged_at = current_block;
+                                        sub.next_charge_unix_day = Some(
+                                            pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(1),
+                                        );
                                     }
                                 }
                             }

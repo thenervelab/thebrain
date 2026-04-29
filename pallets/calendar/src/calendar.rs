@@ -25,6 +25,33 @@ fn date_from_unix_ms(unix_ms: u64) -> Option<time::Date> {
 	OffsetDateTime::from_unix_timestamp(secs).ok().map(|dt| dt.date())
 }
 
+/// Unix day (UTC) of the 1st of the calendar month that is `n` months after the
+/// month containing `unix_ms`.
+///
+/// - `n = 1` means "the first day of next month".
+/// - `n = 12` means "the first day of the month twelve months from now".
+///
+/// Returns `0` if the timestamp is outside `OffsetDateTime`'s representable range.
+pub fn unix_day_of_first_of_month_in(unix_ms: u64, n: u32) -> u32 {
+	let Some(date) = date_from_unix_ms(unix_ms) else { return 0 };
+
+	let mut year = date.year();
+	let mut month = (date.month() as u8 as u32).saturating_add(n); // 1..=12 + n
+	year += ((month.saturating_sub(1)) / 12) as i32;
+	month = ((month.saturating_sub(1)) % 12) + 1;
+
+	let Ok(first) = time::Date::from_calendar_date(
+		year,
+		time::Month::try_from(month as u8).unwrap_or(time::Month::January),
+		1,
+	) else {
+		return 0;
+	};
+
+	let Ok(dt) = first.with_hms(0, 0, 0).map(|t| t.assume_utc()) else { return 0 };
+	(dt.unix_timestamp() as u64 / 86_400u64) as u32
+}
+
 fn month_length(year: i32, month: Month) -> u8 {
 	use Month::*;
 	match month {
