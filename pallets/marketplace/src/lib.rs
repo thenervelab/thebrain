@@ -1643,9 +1643,20 @@ pub mod pallet {
             marketplace_account: T::AccountId,
             ranking_account: T::AccountId
         ) -> DispatchResult {
-            
-            let mut remaining = credits;
             let block_number = <frame_system::Pallet<T>>::block_number();
+
+            // Compute referral discount once on the full obligation.
+            let mut total_discount = 0u128;
+            if let Some(referral_code) = CreditsPallet::<T>::referred_users(&sender) {
+                CreditsPallet::<T>::apply_referral_discount(
+                    &referral_code,
+                    credits,
+                    &mut total_discount,
+                )?;
+            }
+
+            // The user actually pays this much. The marketplace eats `total_discount`.
+            let mut remaining = credits.saturating_sub(total_discount);
             
             if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
                 for batch_id in batch_ids {
@@ -1656,30 +1667,18 @@ pub mod pallet {
                     
                     if let Some(mut batch) = Batches::<T>::get(batch_id) {
                         
-                        ensure!(batch.owner == sender, "Not your batch");
+                        ensure!(batch.owner == sender, Error::<T>::NotAuthorized);
                         
                         let credits_to_take = remaining.min(batch.remaining_credits);
                         let current = CreditsPallet::<T>::get_free_credits(&batch.owner);
                         ensure!(current >= credits_to_take, Error::<T>::InsufficientFreeCredits);
-                        
-                        // Referral logic
-                        let mut total_discount = 0u128;
-                        if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&batch.owner) {
-                            CreditsPallet::<T>::apply_referral_discount(
-                                &previous_referral,
-                                credits_to_take,
-                                &mut total_discount
-                            )?;
-                        }
-                        let effective_charge = credits_to_take.saturating_sub(total_discount);
-                        ensure!(current >= effective_charge, Error::<T>::InsufficientFreeCredits);
 
-                        // Decrease user credits (apply discount)
-                        CreditsPallet::<T>::decrease_user_credits(&batch.owner, effective_charge);
+                        // Decrease user credits (post-discount total is allocated across batches).
+                        CreditsPallet::<T>::decrease_user_credits(&batch.owner, credits_to_take);
                         
                         // FIXED: Use remaining amounts for accurate alpha calculation
                         // This ensures the ratio reflects the current batch state
-                        let credits_to_take_u256 = U256::from(effective_charge);
+                        let credits_to_take_u256 = U256::from(credits_to_take);
                         let remaining_alpha_u256 = U256::from(batch.remaining_alpha);
                         let remaining_credits_u256 = U256::from(batch.remaining_credits.max(1));
                         
@@ -1693,7 +1692,7 @@ pub mod pallet {
                             .as_u128();
                         
                         // Update batch credits first (needed for future calculations in this batch)
-                        batch.remaining_credits = batch.remaining_credits.saturating_sub(effective_charge);
+                        batch.remaining_credits = batch.remaining_credits.saturating_sub(credits_to_take);
                         
                         // Handle frozen/unfrozen logic
                         if batch.is_frozen && block_number < batch.release_time {
@@ -1744,12 +1743,12 @@ pub mod pallet {
                         batch.remaining_alpha = batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
                         // Save updated batch
                         Batches::<T>::insert(batch_id, batch);
-                        remaining = remaining.saturating_sub(effective_charge);
+                        remaining = remaining.saturating_sub(credits_to_take);
                     }
                 }
             }
         
-            ensure!(remaining == 0, "Not enough credits");
+            ensure!(remaining == 0, Error::<T>::InsufficientFreeCredits);
         
             Self::deposit_event(Event::CreditsConsumed {
                 owner: sender,
