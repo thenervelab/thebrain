@@ -353,36 +353,8 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(4)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn increase_user_balance(
-			origin: OriginFor<T>,
-			marketplace_credit_amount: u128,
-			alpha_amount: u128,
-			user_to_credit: T::AccountId,
-		) -> DispatchResult {
-			// Ensure the caller is an authority
-			ensure_root(origin)?;
-
-			AlphaBalances::<T>::mutate(&user_to_credit, |credits| *credits = credits.saturating_add(alpha_amount));
-
-			// Increase the user's credits
-			FreeCredits::<T>::mutate(&user_to_credit, |credits| {
-				*credits = credits.saturating_add(marketplace_credit_amount)
-			});
-
-			// Emit event for balance increase
-			Self::deposit_event(Event::IncreasedUserBalance {
-				who: user_to_credit.clone(),
-				marketplace_credit_amount,
-				alpha_amount,
-			});
-
-			Ok(())
-		}
-
 		// creates refferal for a user
-		#[pallet::call_index(8)]
+		#[pallet::call_index(4)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn create_referral_code(origin: OriginFor<T>) -> DispatchResult {
 			let creator = ensure_signed(origin)?;
@@ -394,7 +366,7 @@ pub mod pallet {
 		}
 
 		// Changes the referral code of a user automatically
-		#[pallet::call_index(9)] // New call index, you can choose your own
+		#[pallet::call_index(5)] // New call index, you can choose your own
 		#[pallet::weight((0, Pays::No))]
 		pub fn change_referral_code(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
@@ -409,7 +381,7 @@ pub mod pallet {
 		/// - `origin`: The account that originally locked the credits
 		/// - `locked_credit_id`: The ID of the locked credit to mark as fulfilled
 		/// - `tx_hash`: The transaction hash proving fulfillment
-		#[pallet::call_index(10)]
+		#[pallet::call_index(6)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn fulfill_locked_credits(
 			origin: OriginFor<T>,
@@ -453,7 +425,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(11)]
+		#[pallet::call_index(7)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_lock_period(
 			origin: OriginFor<T>,
@@ -477,7 +449,7 @@ pub mod pallet {
 		}
 
 		/// Set the minimum lock amount (only callable by authorized accounts)
-		#[pallet::call_index(12)]
+		#[pallet::call_index(8)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_min_lock_amount(origin: OriginFor<T>, amount: u128) -> DispatchResult {
 			// Ensure the caller is an authorized account
@@ -494,7 +466,7 @@ pub mod pallet {
 		}
 
 		/// Set the alpha price (only callable by authorized accounts)
-		#[pallet::call_index(13)]
+		#[pallet::call_index(9)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_alpha_price(origin: OriginFor<T>, price: u128) -> DispatchResult {
 			let authority = ensure_signed(origin)?;
