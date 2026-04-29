@@ -1291,74 +1291,80 @@ pub mod pallet {
                 let user_free_credits = CreditsPallet::<T>::get_free_credits(&account_id);
 
                 if user_free_credits >= total_charge {
-                    // User has enough credits, charge them
                     users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
-                    let mut storage_charged_ok = false;
-                    let mut compute_charged_ok = false;
-                    
-                    // Charge for storage subscriptions
-                    if total_storage_charge > 0 {
-                        let storage_charge_result = Self::consume_credits(
-                            account_id.clone(), 
+
+                    let storage_ok = total_storage_charge == 0
+                        || Self::consume_credits(
+                            account_id.clone(),
                             total_storage_charge,
-                            Self::account_id().clone(), 
-                            pallet_rankings::Pallet::<T>::account_id().clone()
-                        );
-                        if storage_charge_result.is_ok() {
-                            let tx_result = Self::record_credits_transaction(
+                            Self::account_id().clone(),
+                            pallet_rankings::Pallet::<T>::account_id().clone(),
+                        )
+                        .and_then(|_| {
+                            Self::record_credits_transaction(
                                 &account_id,
                                 NativeTransactionType::Subscription,
                                 total_storage_charge.into(),
-                            );
-                            storage_charged_ok = tx_result.is_ok();
-                        }
-                    }
+                            )
+                        })
+                        .is_ok();
 
-                    // Charge for compute subscriptions
-                    if total_compute_charge > 0 {
-                        let compute_charge_result = Self::consume_credits(
-                            account_id.clone(), 
+                    let compute_ok = total_compute_charge == 0
+                        || Self::consume_credits(
+                            account_id.clone(),
                             total_compute_charge,
-                            Self::account_id().clone(), 
-                            pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone()
-                        );
-                        if compute_charge_result.is_ok() {
-                            let tx_result = Self::record_credits_transaction(
+                            Self::account_id().clone(),
+                            pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id()
+                                .clone(),
+                        )
+                        .and_then(|_| {
+                            Self::record_credits_transaction(
                                 &account_id,
                                 NativeTransactionType::Subscription,
                                 total_compute_charge.into(),
-                            );
-                            compute_charged_ok = tx_result.is_ok();
-                        }
-                    }
+                            )
+                        })
+                        .is_ok();
 
-                    // Update all charged subscriptions
-                    UserAllSubscriptionPlans::<T>::mutate(&account_id, |subs| {
-                        for sub in subs.iter_mut() {
-                            if sub.active {
-                                // Only update timestamps if the relevant charge path succeeded.
-                                if sub.package.is_storage_plan {
-                                    if storage_charged_ok
-                                        && sub.next_charge_unix_day.map_or(true, |d| today >= d)
-                                    {
-                                        sub.last_charged_at = current_block;
-                                        sub.next_charge_unix_day = Some(
-                                            pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(1),
-                                        );
-                                    }
-                                } else {
-                                    if compute_charged_ok
-                                        && sub.next_charge_unix_day.map_or(true, |d| today >= d)
-                                    {
-                                        sub.last_charged_at = current_block;
-                                        sub.next_charge_unix_day = Some(
-                                            pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(1),
-                                        );
-                                    }
+                    if storage_ok && compute_ok {
+                        // Advance both timestamp and next-charge marker only for due subs.
+                        UserAllSubscriptionPlans::<T>::mutate(&account_id, |subs| {
+                            for sub in subs.iter_mut() {
+                                if sub.active && sub.next_charge_unix_day.map_or(true, |d| today >= d) {
+                                    sub.last_charged_at = current_block;
+                                    sub.next_charge_unix_day = Some(
+                                        pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(1),
+                                    );
                                 }
                             }
-                        }
-                    });
+                        });
+                    } else {
+                        // Charge attempted but failed mid-flight. Deactivate so the user falls back
+                        // to usage-based charging and the failure is observable.
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "consume_credits failed mid-charge for {:?}: storage_ok={}, compute_ok={}, required={}, available={}",
+                            account_id,
+                            storage_ok,
+                            compute_ok,
+                            total_charge,
+                            user_free_credits
+                        );
+
+                        UserAllSubscriptionPlans::<T>::mutate(&account_id, |subs| {
+                            for sub in subs.iter_mut() {
+                                if sub.active {
+                                    sub.active = false;
+                                }
+                            }
+                        });
+
+                        Self::deposit_event(Event::SubscriptionChargeFailed {
+                            who: account_id.clone(),
+                            required_credits: total_charge,
+                            available_credits: user_free_credits,
+                        });
+                    }
                 } else {
                     // Not enough credits to pay monthly subscription(s).
                     // Deactivate active subscriptions so the user falls back to usage-based charging (e.g. per-GB).
