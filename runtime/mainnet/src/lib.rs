@@ -48,6 +48,7 @@ use pallet_evm::GasWeightMapping;
 use pallet_grandpa::{
 	fg_primitives, AuthorityId as GrandpaId, AuthorityList as GrandpaAuthorityList,
 };
+
 use pallet_im_online::sr25519::AuthorityId as ImOnlineId;
 use pallet_session::historical as pallet_session_historical;
 pub use pallet_staking::StakerStatus;
@@ -230,8 +231,6 @@ use sp_runtime::generic::Era;
 pub use sp_runtime::BuildStorage;
 pub use sp_runtime::{MultiAddress, Perbill, Percent, Permill};
 use sp_staking::currency_to_vote::U128CurrencyToVote;
-// use hex_literal::hex;
-// pub use hippius_services::PalletServicesConstraints;
 
 // Precompiles
 pub type Precompiles = HipiusPrecompiles<Runtime>;
@@ -256,7 +255,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9180,
+	spec_version: 9181,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -548,7 +547,8 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 		let registration_balance = pallet_registration::Pallet::<Runtime>::balance();
 		let marketplace_account = pallet_marketplace::Pallet::<Runtime>::account_id();
 		let registration_account = pallet_registration::Pallet::<Runtime>::account_id();
-		// Transfer to treasury
+		// Marketplace revenue routing destination (intentional — not a
+		// treasury bypass). <Account holder / purpose>.
 		let recipient_account =
 			AccountId32::from_ss58check("5GEudEYMVWJr64Y3599urXfG1tg4u7iNFWmBYZUET2YTdPkn")
 				.expect("Invalid SS58 address");
@@ -609,11 +609,24 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 						continue;
 					}
 
-					if let Err(e) = pallet_staking::Pallet::<Runtime>::bond(
-						frame_system::RawOrigin::Signed(validator.clone()).into(),
-						amount_per_validator,
-						pallet_staking::RewardDestination::Staked,
-					) {
+					let bond_result = if pallet_staking::Pallet::<Runtime>::ledger(
+						sp_staking::StakingAccount::Stash(validator.clone()),
+					)
+					.is_ok()
+					{
+							pallet_staking::Pallet::<Runtime>::bond_extra(
+								frame_system::RawOrigin::Signed(validator.clone()).into(),
+								amount_per_validator,
+							)
+						} else {
+							pallet_staking::Pallet::<Runtime>::bond(
+								frame_system::RawOrigin::Signed(validator.clone()).into(),
+								amount_per_validator,
+								pallet_staking::RewardDestination::Staked,
+							)
+						};
+
+					if let Err(e) = bond_result {
 						log::warn!(
 							target: "runtime::marketplace_payout",
 							"⚠️ Auto-bond failed for validator {:?}: {:?}",
@@ -675,11 +688,24 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 						continue;
 					}
 
-					if let Err(e) = pallet_staking::Pallet::<Runtime>::bond(
-						frame_system::RawOrigin::Signed(validator.clone()).into(),
-						amount_per_validator,
-						pallet_staking::RewardDestination::Staked,
-					) {
+					let bond_result = if pallet_staking::Pallet::<Runtime>::ledger(
+						sp_staking::StakingAccount::Stash(validator.clone()),
+					)
+					.is_ok()
+					{
+							pallet_staking::Pallet::<Runtime>::bond_extra(
+								frame_system::RawOrigin::Signed(validator.clone()).into(),
+								amount_per_validator,
+							)
+						} else {
+							pallet_staking::Pallet::<Runtime>::bond(
+								frame_system::RawOrigin::Signed(validator.clone()).into(),
+								amount_per_validator,
+								pallet_staking::RewardDestination::Staked,
+							)
+						};
+
+					if let Err(e) = bond_result {
 						log::warn!(
 							target: "runtime::marketplace_payout",
 							"⚠️ Auto-bond failed for validator {:?}: {:?}",
@@ -1388,6 +1414,8 @@ impl pallet_rankings::Config for Runtime {
 	type InstanceID = RankingsInstanceId1;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
+	type RewardLockBlocks = BlocksPerEra;
+	type MaxRewardLocksPerAccount = ConstU32<256>;
 	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 	type LocalRpcUrl = LocalRpcUrl;
@@ -1400,6 +1428,8 @@ impl pallet_rankings::Config<pallet_rankings::Instance2> for Runtime {
 	type InstanceID = RankingsInstanceId2;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
+	type RewardLockBlocks = BlocksPerEra;
+	type MaxRewardLocksPerAccount = ConstU32<256>;
 	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 	type LocalRpcUrl = LocalRpcUrl;
@@ -1412,6 +1442,8 @@ impl pallet_rankings::Config<pallet_rankings::Instance3> for Runtime {
 	type InstanceID = RankingsInstanceId3;
 	type AuthorityId = pallet_rankings::crypto::TestAuthId;
 	type BlocksPerEra = BlocksPerEra;
+	type RewardLockBlocks = BlocksPerEra;
+	type MaxRewardLocksPerAccount = ConstU32<256>;
 	type LocalDefaultSpecVersion = ConstU32<{ VERSION.spec_version }>;
 	type LocalDefaultGenesisHash = LocalDefaultGenesisHash;
 	type LocalRpcUrl = LocalRpcUrl;
@@ -1780,6 +1812,10 @@ impl InstanceFilter<RuntimeCall> for ProxyType {
 				c,
 				RuntimeCall::Balances(..)
 					| RuntimeCall::Vesting(pallet_vesting::Call::vested_transfer { .. })
+					// NonTransfer proxies must not be able to drain the principal via
+					// credit purchases or hAlpha withdrawals.
+					| RuntimeCall::Marketplace(pallet_marketplace::Call::purchase_plan { .. })
+					| RuntimeCall::AlphaBridge(pallet_alpha_bridge::Call::withdraw { .. })
 			),
 			ProxyType::Governance => matches!(
 				c,

@@ -353,36 +353,8 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(4)]
-		#[pallet::weight((0, Pays::No))]
-		pub fn increase_user_balance(
-			origin: OriginFor<T>,
-			marketplace_credit_amount: u128,
-			alpha_amount: u128,
-			user_to_credit: T::AccountId,
-		) -> DispatchResult {
-			// Ensure the caller is an authority
-			ensure_root(origin)?;
-
-			AlphaBalances::<T>::mutate(&user_to_credit, |credits| *credits = credits.saturating_add(alpha_amount));
-
-			// Increase the user's credits
-			FreeCredits::<T>::mutate(&user_to_credit, |credits| {
-				*credits = credits.saturating_add(marketplace_credit_amount)
-			});
-
-			// Emit event for balance increase
-			Self::deposit_event(Event::IncreasedUserBalance {
-				who: user_to_credit.clone(),
-				marketplace_credit_amount,
-				alpha_amount,
-			});
-
-			Ok(())
-		}
-
 		// creates refferal for a user
-		#[pallet::call_index(8)]
+		#[pallet::call_index(4)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn create_referral_code(origin: OriginFor<T>) -> DispatchResult {
 			let creator = ensure_signed(origin)?;
@@ -394,7 +366,7 @@ pub mod pallet {
 		}
 
 		// Changes the referral code of a user automatically
-		#[pallet::call_index(9)] // New call index, you can choose your own
+		#[pallet::call_index(5)] // New call index, you can choose your own
 		#[pallet::weight((0, Pays::No))]
 		pub fn change_referral_code(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
@@ -409,7 +381,7 @@ pub mod pallet {
 		/// - `origin`: The account that originally locked the credits
 		/// - `locked_credit_id`: The ID of the locked credit to mark as fulfilled
 		/// - `tx_hash`: The transaction hash proving fulfillment
-		#[pallet::call_index(10)]
+		#[pallet::call_index(6)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn fulfill_locked_credits(
 			origin: OriginFor<T>,
@@ -453,7 +425,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		#[pallet::call_index(11)]
+		#[pallet::call_index(7)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_lock_period(
 			origin: OriginFor<T>,
@@ -477,7 +449,7 @@ pub mod pallet {
 		}
 
 		/// Set the minimum lock amount (only callable by authorized accounts)
-		#[pallet::call_index(12)]
+		#[pallet::call_index(8)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_min_lock_amount(origin: OriginFor<T>, amount: u128) -> DispatchResult {
 			// Ensure the caller is an authorized account
@@ -494,7 +466,7 @@ pub mod pallet {
 		}
 
 		/// Set the alpha price (only callable by authorized accounts)
-		#[pallet::call_index(13)]
+		#[pallet::call_index(9)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn set_alpha_price(origin: OriginFor<T>, price: u128) -> DispatchResult {
 			let authority = ensure_signed(origin)?;
@@ -590,10 +562,15 @@ pub mod pallet {
 			price: u128,
 			total_discount: &mut u128,
 		) -> DispatchResult {
-			// Log if the referral code exists
+			// Defensive: referral codes may be rotated/retired. Treat missing codes as "no discount"
+			// rather than erroring and breaking downstream billing.
 			if !ReferralCodes::<T>::contains_key(code) {
-				log::warn!("Invalid referral code: {:?}", code);
-				return Err(Error::<T>::InvalidReferralCode.into());
+				log::warn!(
+					target: "runtime::credits",
+					"Referral code missing/retired (no discount applied): {:?}",
+					code
+				);
+				return Ok(());
 			}
 
 			// Log the referral code owner
@@ -656,17 +633,12 @@ pub mod pallet {
 				);
 			}
 
-			// Retire any codes previously mapped to this account so only one active code exists.
-			let old_codes = Self::get_referral_codes(who.clone());
-			let removed_count = old_codes.len() as u32;
-			for code in &old_codes {
-				ReferralCodes::<T>::remove(code);
-			}
-			if removed_count > 0 {
-				TotalReferralCodes::<T>::mutate(|total| {
-					*total = total.saturating_sub(removed_count);
-				});
-			}
+			// IMPORTANT: Do not delete old codes here.
+			//
+			// Deleting `ReferralCodes` entries can orphan `ReferredUsers` rows (user -> code_used),
+			// causing `apply_referral_discount` to fail and breaking billing flows for referred users.
+			// Keeping historical codes is safe: code generation already ensures uniqueness, and any
+			// "current code" behavior should be handled at the UX layer, not by deleting on-chain state.
 
 			// Generate a unique referral code with the prefix "HIPPIUS"
 			let mut unique_code = format!("HIPPIUS{}", Self::generate_random_suffix(&who));

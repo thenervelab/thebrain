@@ -7,10 +7,8 @@ use num_traits::CheckedDiv;
 use num_traits::One;
 use num_traits::Zero;
 use pallet_registration::NodeType;
-use sp_arithmetic::{FixedPointNumber, FixedU128};
-use sp_runtime::traits::ConstU32;
-use sp_runtime::Saturating;
-use sp_std::{collections::btree_set::BTreeSet, vec::Vec};
+use sp_arithmetic::FixedPointNumber;
+use sp_std::vec::Vec;
 
 #[derive(Clone, Copy)]
 struct PoolContext {
@@ -100,7 +98,7 @@ impl NodeMetricsData {
 			return 0;
 		}
 
-		let price_per_gb = pallet_marketplace::Pallet::<T>::get_price_per_gb();
+		let price_per_gb = pallet_marketplace::Pallet::<T>::get_storage_price_per_miner();
 		let network_totals = pallet_arion::CurrentNetworkTotals::<T>::get();
 		let total_network_storage = network_totals.total_shard_data_bytes;
 		let alpha_price = pallet_credits::Pallet::<T>::alpha_price();
@@ -147,7 +145,7 @@ impl NodeMetricsData {
 	pub fn uid_zero_weight<
 		T: pallet_marketplace::Config + pallet_credits::Config + pallet_arion::Config,
 	>() -> u16 {
-		let price_per_gb = pallet_marketplace::Pallet::<T>::get_price_per_gb();
+		let price_per_gb = pallet_marketplace::Pallet::<T>::get_storage_price_per_miner();
 		let network_totals = pallet_arion::CurrentNetworkTotals::<T>::get();
 		let total_network_storage = network_totals.total_shard_data_bytes;
 		let alpha_price = pallet_credits::Pallet::<T>::alpha_price();

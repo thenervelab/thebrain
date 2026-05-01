@@ -14,6 +14,10 @@ mod tests;
 pub trait MonthCalendar {
 	fn days_in_current_month() -> u8;
 	fn days_remaining_in_current_month() -> u8;
+	/// Unix day (UTC) of the 1st of the calendar month `n` months from now.
+	fn unix_day_of_first_of_month_in(n: u32) -> u32;
+	/// Unix day (UTC) of the 1st of the calendar month immediately after `unix_day`.
+	fn unix_day_of_first_of_month_after(unix_day: u32) -> u32;
 }
 
 #[frame_support::pallet]
@@ -41,6 +45,14 @@ pub mod pallet {
 		pub fn days_remaining_in_current_month() -> u8 {
 			calendar::days_remaining_in_month(Self::now_ms())
 		}
+
+		pub fn unix_day_of_first_of_month_in(n: u32) -> u32 {
+			calendar::unix_day_of_first_of_month_in(Self::now_ms(), n)
+		}
+
+		pub fn unix_day_of_first_of_month_after(unix_day: u32) -> u32 {
+			calendar::unix_day_of_first_of_month_after(unix_day)
+		}
 	}
 
 	impl<T: Config> MonthCalendar for Pallet<T> {
@@ -49,6 +61,12 @@ pub mod pallet {
 		}
 		fn days_remaining_in_current_month() -> u8 {
 			Self::days_remaining_in_current_month()
+		}
+		fn unix_day_of_first_of_month_in(n: u32) -> u32 {
+			Self::unix_day_of_first_of_month_in(n)
+		}
+		fn unix_day_of_first_of_month_after(unix_day: u32) -> u32 {
+			Self::unix_day_of_first_of_month_after(unix_day)
 		}
 	}
 }

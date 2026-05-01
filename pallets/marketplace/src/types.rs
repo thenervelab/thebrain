@@ -68,7 +68,7 @@ pub struct ImageDetails {
 }
 
 /// User subscription details
-#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
+#[derive(Clone, Encode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
 #[scale_info(skip_type_params(T))]
 pub struct UserPlanSubscription<T>
 where
@@ -81,7 +81,48 @@ where
     pub active: bool,                           // Subscription activity status
     pub last_charged_at: BlockNumberFor<T>,
     pub selected_image_name: Option<Vec<u8>>,           // Name of the selected image
+    /// Unix day (UTC) of the 1st of the next month when recurring charging is due.
+    /// `None` means legacy behavior (charge on the next 1st).
+    pub next_charge_unix_day: Option<u32>,
     pub _phantom: PhantomData<T>,               // Placeholder for generic type
+}
+
+impl<T> Decode for UserPlanSubscription<T>
+where
+    T: frame_system::Config,
+    T::AccountId: Decode,
+    T::Hash: Decode,
+    BlockNumberFor<T>: Decode,
+{
+    fn decode<I: codec::Input>(input: &mut I) -> Result<Self, codec::Error> {
+        let id = SubscriptionId::decode(input)?;
+        let owner = T::AccountId::decode(input)?;
+        let package = Plan::<T::Hash>::decode(input)?;
+        let cdn_location_id = Option::<u32>::decode(input)?;
+        let active = bool::decode(input)?;
+        let last_charged_at = BlockNumberFor::<T>::decode(input)?;
+        let selected_image_name = Option::<Vec<u8>>::decode(input)?;
+
+        // Backward-compatible decode:
+        // - legacy encoding ended after `selected_image_name` (PhantomData encodes to 0 bytes)
+        // - new encoding has `next_charge_unix_day` appended.
+        let next_charge_unix_day = match input.remaining_len()? {
+            Some(0) => None,
+            _ => Option::<u32>::decode(input)?,
+        };
+
+        Ok(Self {
+            id,
+            owner,
+            package,
+            cdn_location_id,
+            active,
+            last_charged_at,
+            selected_image_name,
+            next_charge_unix_day,
+            _phantom: PhantomData,
+        })
+    }
 }
 
 /// CDN location configuration
@@ -118,7 +159,3 @@ pub struct Batch<AccountId, BlockNumberFor> {
     pub is_frozen: bool,         // Freezes Alpha distribution, not credit use
     pub release_time: BlockNumberFor, // When Alpha can be distributed
 }
-
-// charge and update all plans at once 
-// only vali should be able to purchase on users behalf 
-// also if users sub account is passed we should get his main account

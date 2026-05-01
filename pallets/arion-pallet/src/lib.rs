@@ -431,6 +431,17 @@ pub mod pallet {
 		pub total_bandwidth_bytes: u128,
 	}
 
+	/// Aggregate user storage usage metrics reported by validators.
+	#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
+	pub struct UserStorageUsageUpdate {
+		pub total_file_size: u128,
+		pub total_file_count: u128,
+		pub hcfs_file_size: u128,
+		pub hcfs_file_count: u128,
+		pub s3_file_size: u128,
+		pub s3_file_count: u128,
+	}
+
 	/// Validator-reported, non-cheatable per-node quality inputs used for **on-chain** weight computation.
 	///
 	/// The pallet deterministically computes `node_weight_u16` from these inputs.
@@ -959,6 +970,22 @@ pub mod pallet {
 	#[pallet::getter(fn user_total_files_count)]
 	pub type UserTotalFilesCount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_hcfs_files_size)]
+	pub type UserTotalHCFSFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_hcfs_files_count)]
+	pub type UserTotalHCFSFilesCount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_s3_files_size)]
+	pub type UserTotalS3FilesSize<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_s3_files_count)]
+	pub type UserTotalS3FilesCount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -1053,6 +1080,24 @@ pub mod pallet {
 			user: T::AccountId,
 			size: u128,
 			count: u128,
+		},
+		/// User storage usage metrics were updated by a validator.
+		UserStorageUsageUpdated {
+			user: T::AccountId,
+			total_file_size: u128,
+			total_file_count: u128,
+			hcfs_file_size: u128,
+			hcfs_file_count: u128,
+			s3_file_size: u128,
+			s3_file_count: u128,
+		},
+		/// User backend (HCFS + S3) usage metrics were updated by a validator.
+		UserBackendFilesUpdated {
+			user: T::AccountId,
+			hcfs_size: u128,
+			hcfs_count: u128,
+			s3_size: u128,
+			s3_count: u128,
 		},
 	}
 
@@ -2554,6 +2599,55 @@ pub mod pallet {
 				user: account_id,
 				size: file_size,
 				count: file_count,
+			});
+
+			Ok(())
+		}
+
+		/// Update the total HCFS + S3 file size/count for a user.
+		/// Can only be called by a registered validator proxy account.
+		#[pallet::call_index(38)]
+		#[pallet::weight((
+			<T as pallet::Config>::WeightInfo::update_user_file_size(),
+			DispatchClass::Operational,
+			Pays::No
+		))]
+		pub fn update_user_file_usage(
+			origin: OriginFor<T>,
+			account_id: T::AccountId,
+			hcfs_file_size: u128,
+			hcfs_file_count: u128,
+			s3_file_size: u128,
+			s3_file_count: u128,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+ 
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			let node_info =
+				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+					.ok_or(Error::<T>::NodeNotRegistered)?;
+
+			ensure!(
+				node_info.node_type == pallet_registration::NodeType::Validator,
+				Error::<T>::InvalidNodeType
+			);
+
+			UserTotalHCFSFilesSize::<T>::insert(&account_id, hcfs_file_size);
+			UserTotalHCFSFilesCount::<T>::insert(&account_id, hcfs_file_count);
+			UserTotalS3FilesSize::<T>::insert(&account_id, s3_file_size);
+			UserTotalS3FilesCount::<T>::insert(&account_id, s3_file_count);
+
+			Self::deposit_event(Event::UserBackendFilesUpdated {
+				user: account_id,
+				hcfs_size: hcfs_file_size,
+				hcfs_count: hcfs_file_count,
+				s3_size: s3_file_size,
+				s3_count: s3_file_count,
 			});
 
 			Ok(())

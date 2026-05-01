@@ -107,7 +107,15 @@ pub mod pallet {
             // Only execute on blocks divisible by the configured interval
             if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
                 weight_used = weight_used.saturating_add(Self::handle_arion_storage_charging(current_block));
-                weight_used = weight_used.saturating_add(Self::handle_all_subscription_charging(current_block));
+                // Monthly subscription charging:
+                // - recurring charges happen only on the 1st day of the calendar month
+                // - guarded by a unix-day marker so we only run once per day even if multiple blocks hit this interval
+                if let Some(unix_day) = Self::should_run_monthly_subscription_charge() {
+                    weight_used = weight_used.saturating_add(Self::handle_all_subscription_charging(current_block));
+                    // Mark as run for today only after charging completes, to allow retry
+                    // if future changes introduce abortable failure paths.
+                    LastMonthlySubscriptionChargeDay::<T>::put(unix_day);
+                }
                 if let Err(e) = Self::release_matured_pending_alpha(current_block) {
                     log::error!(
                         target: "runtime::marketplace",
@@ -130,6 +138,7 @@ pub mod pallet {
                     pallet_credits::Config + 
                     pallet_arion::Config +
                     pallet_balances::Config + 
+                    pallet_calendar::Config +
                     // pallet_notifications::Config +
                     // pallet_storage_s3::Config +
                     pallet_rankings::Config +
@@ -323,6 +332,16 @@ pub mod pallet {
     #[pallet::getter(fn specific_miner_request_fee)]
     pub type SpecificMinerRequestFee<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
+    #[pallet::storage]
+    #[pallet::getter(fn storage_price_per_miner)]
+    pub(super) type StoragePricePerMiner<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+
+    /// Account allowed to call `cancel_user_subscription`.
+    #[pallet::storage]
+    #[pallet::getter(fn subscription_canceller)]
+    pub type SubscriptionCanceller<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -365,7 +384,6 @@ pub mod pallet {
         PricePerGbUpdated { price: u128 },
         PricePerBandwidthUpdated { price: u128 },
         StorageSubscriptionCancelled { who: T::AccountId },
-        SubscriptionCancelled { who: T::AccountId },
         ComputeSubscriptionCancelled { who: T::AccountId },
         BackupEnabled { 
             caller: T::AccountId,
@@ -389,9 +407,18 @@ pub mod pallet {
             error: DispatchError,
         },
         CreditsConsumed { owner: T::AccountId, credits: u128 },
+        /// Monthly subscription charge could not be collected; subscriptions were deactivated.
+        SubscriptionChargeFailed {
+            who: T::AccountId,
+            required_credits: u128,
+            available_credits: u128,
+        },
 	    StorageOperationsStatusChanged { enabled: bool },
         /// Purchase plan status was changed
         PurchasePlanStatusChanged { enabled: bool },
+        StoragePricePerMinerUpdated { price: u128 },
+        /// Per-GB storage charging failed after passing the FreeCredits guard.
+        PerGbChargeFailed { who: T::AccountId, charge_amount: u128, available_credits: u128 },
 	}
 
 	#[pallet::error]
@@ -447,6 +474,7 @@ pub mod pallet {
         InvalidInput,
         UserNotFound,
         ResubscribeCooldownActive,
+        SubscriptionCancellationNotAuthorized,
 	}
     
 	#[pallet::storage]
@@ -462,6 +490,13 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn sudo_key)]
     pub type SudoKey<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
+
+    /// Unix-day marker (unix_ms / 86_400_000) of the last time we ran the monthly subscription charge.
+    ///
+    /// This prevents double-charging on the 1st of the month when `on_initialize` runs multiple times.
+    #[pallet::storage]
+    #[pallet::getter(fn last_monthly_subscription_charge_day)]
+    pub type LastMonthlySubscriptionChargeDay<T: Config> = StorageValue<_, u32, ValueQuery>;
     
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -542,9 +577,13 @@ pub mod pallet {
             location_ids: Option<Vec<Option<u32>>>,
             selected_image_names: Vec<Option<Vec<u8>>>,
             cloud_init_cids: Option<Vec<Option<Vec<u8>>>>,
-            miner_ids: Option<Vec<Option<Vec<u8>>>>
+            pay_upfront: Option<u128>
         ) -> DispatchResult {
             let owner = ensure_signed(origin)?;
+
+            if let Some(n) = pay_upfront {
+                ensure!(n >= 1 && n <= 24, Error::<T>::InvalidInput);
+            }
 
             // Rate limit: maximum storage requests per block per user
             let max_requests_per_block = T::MaxRequestsPerBlock::get();
@@ -565,14 +604,10 @@ pub mod pallet {
             if let Some(ref xs) = cloud_init_cids {
                 ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
             }
-            if let Some(ref xs) = miner_ids {
-                ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
-            }
 
             // Initialize default values for optional parameters
             let location_ids = location_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
             let cloud_init_cids = cloud_init_cids.unwrap_or_else(|| vec![None; plan_ids.len()]);
-            let miner_ids = miner_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
 
             // Track successful purchases
             let mut successful_purchases = Vec::new();
@@ -591,7 +626,7 @@ pub mod pallet {
                     Self::do_purchase_storage_plan(
                         owner.clone(),
                         plan_id,
-                        miner_ids[i].clone()
+                        pay_upfront
                     )?;
                 } else {
                     // For compute plans, image name is required
@@ -605,7 +640,7 @@ pub mod pallet {
                         location_ids[i],
                         image_name,
                         cloud_init_cids[i].clone(),
-                        miner_ids[i].clone()
+                        pay_upfront
                     )?;
                 };
 
@@ -810,20 +845,251 @@ pub mod pallet {
             Ok(())
         }
 
-        /// User cancels their own subscription
+        /// Root sets the dedicated subscription canceller address.
+        #[pallet::call_index(21)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_set_subscription_canceller(
+            origin: OriginFor<T>,
+            account: Option<T::AccountId>,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            SubscriptionCanceller::<T>::put(account);
+            Ok(())
+        }
+
+        /// Cancel a user's subscription (restricted).
         #[pallet::call_index(19)]
         #[pallet::weight((0, Pays::No))]
-        pub fn cancel_my_subscription(origin: OriginFor<T>) -> DispatchResult {
+        pub fn cancel_user_subscription(origin: OriginFor<T>, user: T::AccountId) -> DispatchResult {
             let who = ensure_signed(origin)?;
+
+            let allowed = SubscriptionCanceller::<T>::get();
+            ensure!(allowed.as_ref() == Some(&who), Error::<T>::SubscriptionCancellationNotAuthorized);
             
-            // Call the helper function to cancel the subscription
-            Self::do_cancel_storage_subscription(&who)?;
+            // Restricted canceller: delete storage subs (legacy behavior), but also refund unused prepaid.
+            Self::do_delete_storage_subscription_with_refund(&user)?;
             
             Ok(())
-        }        
+        }
+
+        /// User-cancel storage subscription(s). Marks inactive (does not delete) and refunds unused prepaid months.
+        #[pallet::call_index(22)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn cancel_my_storage_subscription(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            Self::do_cancel_storage_subscription(&who)
+        }
+
+        /// User-cancel compute subscription(s). Marks inactive (does not delete) and refunds unused prepaid months.
+        #[pallet::call_index(23)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn cancel_my_compute_subscription(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            Self::do_cancel_compute_subscription(&who)
+        }
+
+        #[pallet::call_index(20)]
+        #[pallet::weight((10_000, Pays::No))]
+        pub fn set_storage_price_per_miner(
+            origin: OriginFor<T>,
+            price: u128,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            StoragePricePerMiner::<T>::put(price);
+            Self::deposit_event(Event::StoragePricePerMinerUpdated { price });
+            Ok(())
+        }
 	}
 
     impl<T: Config> Pallet<T> {
+        /// Current UNIX millis as `u64`.
+        fn now_ms() -> u64 {
+            pallet_timestamp::Pallet::<T>::get().saturated_into::<u64>()
+        }
+
+        fn current_unix_day() -> u32 {
+            // unix day number since epoch (UTC)
+            (Self::now_ms() / 86_400_000u64) as u32
+        }
+
+        /// Refund credits for unused prepaid *full* months.
+        ///
+        /// We do NOT refund the current (possibly prorated) month. We only refund whole months
+        /// that start in the future, up to (but excluding) `next_charge_unix_day`.
+        fn unused_prepaid_refund_credits(sub: &UserPlanSubscription<T>) -> u128 {
+            let Some(due_day) = sub.next_charge_unix_day else {
+                return 0;
+            };
+
+            let today = Self::current_unix_day();
+            if today >= due_day {
+                return 0;
+            }
+
+            // Count how many "1st of month" boundaries are still in the future before `due_day`.
+            // We start from next month's 1st; that makes "current month" non-refundable.
+            let mut months_remaining: u128 = 0;
+            for n in 1u32..=24u32 {
+                let d = pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(n);
+                if d == 0 || d >= due_day {
+                    break;
+                }
+                months_remaining = months_remaining.saturating_add(1);
+            }
+
+            sub.package.price.saturating_mul(months_remaining)
+        }
+
+        fn cancel_subscriptions_and_refund(
+            account_id: &T::AccountId,
+            cancel_storage: bool,
+            cancel_compute: bool,
+        ) -> Result<(bool, bool, u128), DispatchError> {
+            let mut refunded: u128 = 0;
+            let mut cancelled_storage = false;
+            let mut cancelled_compute = false;
+
+            UserAllSubscriptionPlans::<T>::mutate(account_id, |subs| {
+                for sub in subs.iter_mut() {
+                    if !sub.active {
+                        continue;
+                    }
+                    let is_storage = sub.package.is_storage_plan;
+                    if (is_storage && cancel_storage) || (!is_storage && cancel_compute) {
+                        refunded = refunded.saturating_add(Self::unused_prepaid_refund_credits(sub));
+                        sub.active = false;
+                        if is_storage {
+                            cancelled_storage = true;
+                        } else {
+                            cancelled_compute = true;
+                        }
+                    }
+                }
+            });
+
+            Ok((cancelled_storage, cancelled_compute, refunded))
+        }
+
+        fn refund_credits_with_batch(account_id: &T::AccountId, amount: u128) -> DispatchResult {
+            if amount == 0 {
+                return Ok(());
+            }
+
+            let batch_id = NextBatchId::<T>::get();
+            let batch = Batch {
+                owner: account_id.clone(),
+                credit_amount: amount,
+                alpha_amount: 0,
+                remaining_credits: amount,
+                remaining_alpha: 0,
+                pending_alpha: 0,
+                is_frozen: false,
+                release_time: <frame_system::Pallet<T>>::block_number(),
+            };
+
+            Batches::<T>::insert(batch_id, batch);
+            UserBatches::<T>::append(account_id, batch_id);
+            NextBatchId::<T>::put(batch_id.saturating_add(1));
+
+            CreditsPallet::<T>::do_mint(account_id.clone(), amount, None)?;
+            Self::record_credits_transaction(account_id, NativeTransactionType::Refund, amount)?;
+            Ok(())
+        }
+
+        /// Restricted canceller path: remove storage subscriptions from storage (delete rows),
+        /// and refund unused prepaid months for any removed *active* storage subs.
+        fn do_delete_storage_subscription_with_refund(account_id: &T::AccountId) -> DispatchResult {
+            let now = <frame_system::Pallet<T>>::block_number();
+            let mut refunded: u128 = 0;
+            let mut removed_any = false;
+
+            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
+                let original_len = subscriptions.len();
+
+                for sub in subscriptions.iter() {
+                    if sub.package.is_storage_plan && sub.active {
+                        refunded = refunded.saturating_add(Self::unused_prepaid_refund_credits(sub));
+                    }
+                }
+
+                *subscriptions = subscriptions
+                    .iter()
+                    .filter(|sub| !sub.package.is_storage_plan)
+                    .cloned()
+                    .collect();
+
+                removed_any = subscriptions.len() < original_len;
+            });
+
+            ensure!(removed_any, Error::<T>::NoActiveSubscription);
+
+            if refunded > 0 {
+                Self::refund_credits_with_batch(account_id, refunded)?;
+            }
+
+            LastSubscriptionCancelledAt::<T>::insert(account_id, now);
+            Self::deposit_event(Event::StorageSubscriptionCancelled { who: account_id.clone() });
+            Ok(())
+        }
+
+        /// Returns `Some(unix_day)` when monthly charging should run.
+        ///
+        /// IMPORTANT: this function is side-effect free; the caller should write the day marker
+        /// only after the charging work completes, to avoid skipping the month if charging aborts.
+        fn should_run_monthly_subscription_charge() -> Option<u32> {
+            let today = Self::current_unix_day();
+            if LastMonthlySubscriptionChargeDay::<T>::get() == today {
+                return None;
+            }
+
+            // Catch-up behavior: if the chain misses the 1st-of-month tick, run on the first
+            // available day after restart as long as there exist due subscriptions.
+            //
+            // Legacy subs (`next_charge_unix_day == None`) are considered due from the 1st of the
+            // current month.
+            let current_month_first = pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(0);
+            let any_due = UserAllSubscriptionPlans::<T>::iter().any(|(_who, subs)| {
+                subs.iter().any(|sub| {
+                    if !sub.active {
+                        return false;
+                    }
+                    match sub.next_charge_unix_day {
+                        Some(d) => today >= d,
+                        None => current_month_first > 0 && today >= current_month_first,
+                    }
+                })
+            });
+
+            if any_due { Some(today) } else { None }
+        }
+
+        /// Helper function to get the current price per GB
+        pub fn get_storage_price_per_miner() -> u128 {
+            StoragePricePerMiner::<T>::get()
+        }
+                    
+        fn prorated_monthly_price(monthly_price: u128) -> u128 {
+            // days_remaining_in_current_month is inclusive of today.
+            let dim: u128 = pallet_calendar::Pallet::<T>::days_in_current_month() as u128;
+            let drm: u128 = pallet_calendar::Pallet::<T>::days_remaining_in_current_month() as u128;
+            if dim == 0 {
+                return monthly_price;
+            }
+            // Use ceil division to avoid rounding tiny (but non-zero) prices down to 0.
+            let numerator = monthly_price.saturating_mul(drm);
+            numerator
+                .saturating_add(dim.saturating_sub(1))
+                / dim
+        }
+
+        /// Total upfront charge when buying `upfront_months` starting mid-month:
+        /// `1 prorated month + (upfront_months - 1) full months`.
+        fn upfront_prorated_total(monthly_price: u128, upfront_months: u128) -> u128 {
+            let first = Self::prorated_monthly_price(monthly_price);
+            let remaining_full_months = upfront_months.saturating_sub(1);
+            first.saturating_add(monthly_price.saturating_mul(remaining_full_months))
+        }
+
         #[transactional]
         fn release_matured_pending_alpha(current_block: BlockNumberFor<T>) -> DispatchResult {
             for (batch_id, mut batch) in Batches::<T>::iter() {
@@ -883,7 +1149,7 @@ pub mod pallet {
         fn do_purchase_storage_plan(
             who: T::AccountId,
             plan_id: T::Hash,
-            miner_id: Option<Vec<u8>>
+            pay_upfront: Option<u128>
         ) -> DispatchResult {
             // Check if the ComputeMiner node type is disabled
             ensure!(
@@ -897,19 +1163,32 @@ pub mod pallet {
                 Error::<T>::PlanOperationDisabled
             );
 
+            // Enforce: only one active storage subscription at a time.
+            let existing_subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+            ensure!(
+                !existing_subscriptions
+                    .iter()
+                    .any(|s| s.active && s.package.is_storage_plan),
+                Error::<T>::AlreadyHasActiveSubscription
+            );
 
-            let pay_upfront: Option<u128> = None;
             // Check if plan exists
             let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
             ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
-            // Determine the price (using the price from the plan)
-            let mut plan_price_native = plan.price;
+            // Determine the (monthly) price for the plan.
+            // If the user purchases mid-month, charge a pro-rated amount based on remaining days
+            // in the current month (inclusive of today).
+            let mut plan_price_native = Self::prorated_monthly_price(plan.price);
                 
             if let Some(upfront_months) = pay_upfront {
-                plan_price_native = plan_price_native.saturating_mul(upfront_months);
+                plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
             }
+
+            let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
+            let next_charge_unix_day =
+                Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
         
             // Check user's native token balance 
             let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
@@ -955,6 +1234,7 @@ pub mod pallet {
                 active: true,
                 last_charged_at: current_block_number,
                 selected_image_name: None,
+                next_charge_unix_day,
                 _phantom: PhantomData,
             };
         
@@ -981,7 +1261,7 @@ pub mod pallet {
             location_id: Option<u32>,
             selected_image_name: Vec<u8>,
             cloud_init_cid: Option<Vec<u8>>,
-            miner_id: Option<Vec<u8>>
+            pay_upfront: Option<u128>
         ) -> DispatchResult {
             // Check if the ComputeMiner node type is disabled
             ensure!(
@@ -989,7 +1269,15 @@ pub mod pallet {
                 Error::<T>::NodeTypeDisabled
             );
 
-            let pay_upfront: Option<u128> = None;
+            // Enforce: only one active compute subscription at a time.
+            let existing_subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+            ensure!(
+                !existing_subscriptions
+                    .iter()
+                    .any(|s| s.active && !s.package.is_storage_plan),
+                Error::<T>::AlreadyHasActiveSubscription
+            );
+
             // Check if plan exists
             let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
@@ -1003,14 +1291,16 @@ pub mod pallet {
 
             let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
 
-            // Determine the price (using the price from the plan)
-            // Compute plans are priced per-block; charge one full hour upfront (aligned with recurring charging).
-            let blocks_per_hour_u128: u128 = T::BlocksPerHour::get() as u128;
-            let mut plan_price_native = plan.price.saturating_mul(blocks_per_hour_u128);
-                
+            // Determine the (monthly) price (pro-rated if purchased mid-month).
+            let mut plan_price_native = Self::prorated_monthly_price(plan.price);
+            
             if let Some(upfront_months) = pay_upfront {
-                plan_price_native = plan_price_native.saturating_mul(upfront_months);
+                plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
             }
+
+            let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
+            let next_charge_unix_day =
+                Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
         
             // Check user's native token balance 
             let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
@@ -1061,6 +1351,7 @@ pub mod pallet {
                 active: true,
                 last_charged_at: current_block_number,
                 selected_image_name : Some(selected_image_name),
+                next_charge_unix_day,
                 _phantom: PhantomData,
             };
         
@@ -1117,137 +1408,194 @@ pub mod pallet {
             let mut users_seen: u64 = 0;
             let mut users_with_active_subs: u64 = 0;
             let mut users_charged_or_cancelled: u64 = 0;
+            let today = Self::current_unix_day();
+            // Cap catch-up to avoid heavy loops after long downtime.
+            let max_catchup_months: u32 = 3;
 
             // Iterate through all users with subscriptions once
             for (account_id, subscriptions) in UserAllSubscriptionPlans::<T>::iter() {
                 users_seen = users_seen.saturating_add(1);
-                // Filter only active subscriptions
-                let active_subs: Vec<_> = subscriptions.iter()
-                    .filter(|sub| sub.active)
-                    .collect();
-                
-                if active_subs.is_empty() {
+                // Work on a local copy so we can do catch-up charging deterministically.
+                let mut subs = subscriptions;
+
+                // If no active subs, skip.
+                if !subs.iter().any(|s| s.active) {
                     continue;
                 }
                 users_with_active_subs = users_with_active_subs.saturating_add(1);
 
-                // Separate storage and compute subscriptions that need charging
-                let mut storage_subs_to_charge = Vec::new();
-                let mut compute_subs_to_charge = Vec::new();
-                let mut earliest_last_charged = BlockNumberFor::<T>::max_value();
+                for _ in 0..max_catchup_months {
+                    let active_subs: Vec<UserPlanSubscription<T>> =
+                        subs.iter().filter(|s| s.active).cloned().collect();
 
-                for sub in active_subs {
-                    let block_difference = current_block.saturating_sub(sub.last_charged_at);
-                    
-                    // Track earliest last_charged_at for grace period calculation
-                    if sub.last_charged_at < earliest_last_charged {
-                        earliest_last_charged = sub.last_charged_at;
+                    if active_subs.is_empty() {
+                        break;
                     }
 
-                    if block_difference > T::BlocksPerHour::get().into() {
-                        if sub.package.is_storage_plan {
-                            storage_subs_to_charge.push(sub.clone());
-                        } else {
-                            compute_subs_to_charge.push(sub.clone());
-                        }
+                    let due = |sub: &&UserPlanSubscription<T>| -> bool {
+                        sub.next_charge_unix_day.map_or(true, |d| today >= d)
+                    };
+
+                    let storage_subs_to_charge: Vec<_> = active_subs
+                        .iter()
+                        .filter(|sub| sub.package.is_storage_plan)
+                        .filter(due)
+                        .cloned()
+                        .collect();
+                    let compute_subs_to_charge: Vec<_> = active_subs
+                        .iter()
+                        .filter(|sub| !sub.package.is_storage_plan)
+                        .filter(due)
+                        .cloned()
+                        .collect();
+
+                    // Nothing due (or nothing active) → stop catch-up for this account.
+                    if storage_subs_to_charge.is_empty() && compute_subs_to_charge.is_empty() {
+                        break;
                     }
-                }
 
-                // If no subscriptions need charging, continue
-                if storage_subs_to_charge.is_empty() && compute_subs_to_charge.is_empty() {
-                    continue;
-                }
+                    // Calculate total charge amounts (one month worth for each due sub).
+                    let mut total_storage_charge = 0u128;
+                    let mut total_compute_charge = 0u128;
 
-                // Calculate total charge amounts
-                let mut total_storage_charge = 0u128;
-                let mut total_compute_charge = 0u128;
+                    for sub in &storage_subs_to_charge {
+                        total_storage_charge = total_storage_charge.saturating_add(sub.package.price);
+                    }
+                    for sub in &compute_subs_to_charge {
+                        total_compute_charge = total_compute_charge.saturating_add(sub.package.price);
+                    }
 
-                for sub in &storage_subs_to_charge {
-                    total_storage_charge = total_storage_charge.saturating_add(sub.package.price);
-                }
-
-                for sub in &compute_subs_to_charge {
-                    let price_per_block = sub.package.price;
-                    let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
-                    let elapsed_blocks = current_block.saturating_sub(sub.last_charged_at);
-                    // Charge only full hours worth of blocks (keeps the "hourly charging" model but handles drift)
-                    let elapsed_hours = elapsed_blocks / blocks_per_hour.max(1u32.into());
-                    let charge_blocks_u128: u128 = elapsed_hours
-                        .saturating_mul(blocks_per_hour)
-                        .saturated_into::<u128>();
-                    let charge_amount = price_per_block.saturating_mul(charge_blocks_u128);
-                    total_compute_charge = total_compute_charge.saturating_add(charge_amount);
-                }
-
-                let total_charge = total_storage_charge.saturating_add(total_compute_charge);
-                let user_free_credits = CreditsPallet::<T>::get_free_credits(&account_id);
-
-                if user_free_credits >= total_charge {
-                    // User has enough credits, charge them
+                    if total_storage_charge == 0 && total_compute_charge == 0 {
+                        break;
+                    }
                     users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
-                    let mut storage_charged_ok = false;
-                    let mut compute_charged_ok = false;
-                    
-                    // Charge for storage subscriptions
+
+                    // Charge storage and compute independently; deactivate only the failed side.
+                    let mut storage_ok = total_storage_charge == 0;
+                    let mut compute_ok = total_compute_charge == 0;
+
+                    let storage_available_at_attempt =
+                        CreditsPallet::<T>::get_free_credits(&account_id);
                     if total_storage_charge > 0 {
-                        let storage_charge_result = Self::consume_credits(
-                            account_id.clone(), 
-                            total_storage_charge,
-                            Self::account_id().clone(), 
-                            pallet_rankings::Pallet::<T>::account_id().clone()
-                        );
-                        if storage_charge_result.is_ok() {
-                            let tx_result = Self::record_credits_transaction(
-                                &account_id,
-                                NativeTransactionType::Subscription,
-                                total_storage_charge.into(),
-                            );
-                            storage_charged_ok = tx_result.is_ok();
+                        if storage_available_at_attempt >= total_storage_charge {
+                            storage_ok = Self::consume_credits(
+                                account_id.clone(),
+                                total_storage_charge,
+                                Self::account_id().clone(),
+                                pallet_rankings::Pallet::<T>::account_id().clone(),
+                            )
+                            .and_then(|_| {
+                                Self::record_credits_transaction(
+                                    &account_id,
+                                    NativeTransactionType::Subscription,
+                                    total_storage_charge.into(),
+                                )
+                            })
+                            .is_ok();
+                        } else {
+                            storage_ok = false;
                         }
                     }
 
-                    // Charge for compute subscriptions
+                    let compute_available_at_attempt =
+                        CreditsPallet::<T>::get_free_credits(&account_id);
                     if total_compute_charge > 0 {
-                        let compute_charge_result = Self::consume_credits(
-                            account_id.clone(), 
-                            total_compute_charge,
-                            Self::account_id().clone(), 
-                            pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone()
-                        );
-                        if compute_charge_result.is_ok() {
-                            let tx_result = Self::record_credits_transaction(
-                                &account_id,
-                                NativeTransactionType::Subscription,
-                                total_compute_charge.into(),
-                            );
-                            compute_charged_ok = tx_result.is_ok();
+                        if compute_available_at_attempt >= total_compute_charge {
+                            compute_ok = Self::consume_credits(
+                                account_id.clone(),
+                                total_compute_charge,
+                                Self::account_id().clone(),
+                                pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id()
+                                    .clone(),
+                            )
+                            .and_then(|_| {
+                                Self::record_credits_transaction(
+                                    &account_id,
+                                    NativeTransactionType::Subscription,
+                                    total_compute_charge.into(),
+                                )
+                            })
+                            .is_ok();
+                        } else {
+                            compute_ok = false;
                         }
                     }
 
-                    // Update all charged subscriptions
-                    UserAllSubscriptionPlans::<T>::mutate(&account_id, |subs| {
+                    // Update successfully charged subscriptions (only those due),
+                    // advancing from the previous `next_charge_unix_day`, not from "now".
+                    if storage_ok || compute_ok {
                         for sub in subs.iter_mut() {
-                            if sub.active {
-                                let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
-                                let block_diff = current_block.saturating_sub(sub.last_charged_at);
-                                if block_diff >= blocks_per_hour {
-                                    // Only advance timestamps if the relevant charge path succeeded.
-                                    if sub.package.is_storage_plan && !storage_charged_ok {
-                                        continue;
-                                    }
-                                    if !sub.package.is_storage_plan && !compute_charged_ok {
-                                        continue;
-                                    }
-                                    let elapsed_hours = block_diff / blocks_per_hour.max(1u32.into());
-                                    // Advance by whole hours only, preserving any remainder blocks
-                                    sub.last_charged_at = sub
-                                        .last_charged_at
-                                        .saturating_add(elapsed_hours.saturating_mul(blocks_per_hour));
-                                }
+                            if !sub.active {
+                                continue;
+                            }
+                            if !sub.next_charge_unix_day.map_or(true, |d| today >= d) {
+                                continue;
+                            }
+
+                            let ok_for_type =
+                                if sub.package.is_storage_plan { storage_ok } else { compute_ok };
+                            if ok_for_type {
+                                sub.last_charged_at = current_block;
+                                let prev_next = sub.next_charge_unix_day.unwrap_or(today);
+                                sub.next_charge_unix_day = Some(
+                                    pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_after(
+                                        prev_next,
+                                    ),
+                                );
                             }
                         }
-                    });
+                    }
+
+                    // Deactivate failed side(s) and emit failure events.
+                    if !storage_ok && total_storage_charge > 0 {
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "monthly storage subscription charge failed for {:?}: required={}, available_at_attempt={}",
+                            account_id,
+                            total_storage_charge,
+                            storage_available_at_attempt
+                        );
+                        for sub in subs.iter_mut() {
+                            if sub.active
+                                && sub.package.is_storage_plan
+                                && sub.next_charge_unix_day.map_or(true, |d| today >= d)
+                            {
+                                sub.active = false;
+                            }
+                        }
+                        Self::deposit_event(Event::SubscriptionChargeFailed {
+                            who: account_id.clone(),
+                            required_credits: total_storage_charge,
+                            available_credits: storage_available_at_attempt,
+                        });
+                    }
+
+                    if !compute_ok && total_compute_charge > 0 {
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "monthly compute subscription charge failed for {:?}: required={}, available_at_attempt={}",
+                            account_id,
+                            total_compute_charge,
+                            compute_available_at_attempt
+                        );
+                        for sub in subs.iter_mut() {
+                            if sub.active
+                                && !sub.package.is_storage_plan
+                                && sub.next_charge_unix_day.map_or(true, |d| today >= d)
+                            {
+                                sub.active = false;
+                            }
+                        }
+                        Self::deposit_event(Event::SubscriptionChargeFailed {
+                            who: account_id.clone(),
+                            required_credits: total_compute_charge,
+                            available_credits: compute_available_at_attempt,
+                        });
+                    }
                 }
+
+                // Persist any advances/deactivations for this account.
+                UserAllSubscriptionPlans::<T>::insert(&account_id, subs);
             }
 
             // Conservative weight accounting:
@@ -1318,6 +1666,19 @@ pub mod pallet {
                             if tx_result.is_ok() && ts_result.is_ok() {
                                 users_charged_or_removed = users_charged_or_removed.saturating_add(1);
                             }
+                        } else {
+                            log::warn!(
+                                target: "runtime::marketplace",
+                                "per-GB charge failed for {:?}: required={}, available={}",
+                                user,
+                                charge_amount,
+                                user_free_credits
+                            );
+                            Self::deposit_event(Event::PerGbChargeFailed {
+                                who: user.clone(),
+                                charge_amount,
+                                available_credits: user_free_credits,
+                            });
                         }
                     }
                 }
@@ -1352,84 +1713,42 @@ pub mod pallet {
                 .collect()
         }
 
-        /// Cancel a user's subscription
+        /// Cancel a user's storage subscription(s) by marking inactive (does not delete).
+        /// Also refunds unused prepaid months (credits) when applicable.
         fn do_cancel_storage_subscription(account_id: &T::AccountId) -> DispatchResult {
             let now = <frame_system::Pallet<T>>::block_number();
-            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
-                let original_len = subscriptions.len();
-                // Filter out storage plans
-                *subscriptions = subscriptions
-                    .iter()
-                    .filter(|sub| !sub.package.is_storage_plan)
-                    .cloned()
-                    .collect();
-        
-                if subscriptions.is_empty() {
-                    // If no subscriptions left, we could clear it if needed
-                    // But since we're already setting it to an empty vector, we might not need to
-                }
-        
-                // Emit event if any storage plans were removed
-                if subscriptions.len() < original_len {
-                    LastSubscriptionCancelledAt::<T>::insert(account_id, now);
-                    Self::deposit_event(Event::StorageSubscriptionCancelled {
-                        who: account_id.clone(),
-                    });
-                    Ok(())
-                } else {
-                    Err(Error::<T>::NoActiveSubscription.into())
-                }
-            })
-        }
-        
-        fn do_cancel_subscription(account_id: &T::AccountId) -> DispatchResult {
-            let now = <frame_system::Pallet<T>>::block_number();
-            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
-                let original_len = subscriptions.len();
-                // Keep only storage plans
-                *subscriptions = subscriptions
-                    .iter()
-                    .filter(|sub| sub.package.is_storage_plan)
-                    .cloned()
-                    .collect();
-        
-                // Emit event if any non-storage plans were removed
-                if subscriptions.len() < original_len {
-                    LastSubscriptionCancelledAt::<T>::insert(account_id, now);
-                    Self::deposit_event(Event::SubscriptionCancelled {
-                        who: account_id.clone(),
-                    });
-                    Ok(())
-                } else {
-                    Err(Error::<T>::NoActiveSubscription.into())
-                }
-            })
+            let (cancelled_storage, _cancelled_compute, refund) =
+                Self::cancel_subscriptions_and_refund(account_id, true, false)?;
+
+            ensure!(cancelled_storage, Error::<T>::NoActiveSubscription);
+
+            if refund > 0 {
+                Self::refund_credits_with_batch(account_id, refund)?;
+            }
+
+            LastSubscriptionCancelledAt::<T>::insert(account_id, now);
+            Self::deposit_event(Event::StorageSubscriptionCancelled { who: account_id.clone() });
+            Ok(())
         }
 
-        /// Cancel ALL subscriptions for a user (both storage and compute)
-        fn do_cancel_all_subscriptions(account_id: &T::AccountId) -> DispatchResult {
+        /// Cancel a user's compute subscription(s) by marking inactive (does not delete).
+        /// Also refunds unused prepaid months (credits) when applicable.
+        fn do_cancel_compute_subscription(account_id: &T::AccountId) -> DispatchResult {
             let now = <frame_system::Pallet<T>>::block_number();
-            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
-                let had_subscriptions = !subscriptions.is_empty();
-                
-                // Clear all subscriptions
-                subscriptions.clear();
-        
-                if had_subscriptions {
-                    LastSubscriptionCancelledAt::<T>::insert(account_id, now);
-                    // Emit events for both types being cancelled
-                    Self::deposit_event(Event::StorageSubscriptionCancelled {
-                        who: account_id.clone(),
-                    });
-                    Self::deposit_event(Event::ComputeSubscriptionCancelled {
-                        who: account_id.clone(),
-                    });
-                    Ok(())
-                } else {
-                    Err(Error::<T>::NoActiveSubscription.into())
-                }
-            })
+            let (_cancelled_storage, cancelled_compute, refund) =
+                Self::cancel_subscriptions_and_refund(account_id, false, true)?;
+
+            ensure!(cancelled_compute, Error::<T>::NoActiveComputeSubscription);
+
+            if refund > 0 {
+                Self::refund_credits_with_batch(account_id, refund)?;
+            }
+
+            LastSubscriptionCancelledAt::<T>::insert(account_id, now);
+            Self::deposit_event(Event::ComputeSubscriptionCancelled { who: account_id.clone() });
+            Ok(())
         }
+
 
         /// Helper function to remove the last charged timestamp for a user
         pub fn remove_storage_last_charged_at(who: &T::AccountId)  {
@@ -1505,9 +1824,20 @@ pub mod pallet {
             marketplace_account: T::AccountId,
             ranking_account: T::AccountId
         ) -> DispatchResult {
-            
-            let mut remaining = credits;
             let block_number = <frame_system::Pallet<T>>::block_number();
+
+            // Compute referral discount once on the full obligation.
+            let mut total_discount = 0u128;
+            if let Some(referral_code) = CreditsPallet::<T>::referred_users(&sender) {
+                CreditsPallet::<T>::apply_referral_discount(
+                    &referral_code,
+                    credits,
+                    &mut total_discount,
+                )?;
+            }
+
+            // The user actually pays this much. The marketplace eats `total_discount`.
+            let mut remaining = credits.saturating_sub(total_discount);
             
             if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
                 for batch_id in batch_ids {
@@ -1518,30 +1848,18 @@ pub mod pallet {
                     
                     if let Some(mut batch) = Batches::<T>::get(batch_id) {
                         
-                        ensure!(batch.owner == sender, "Not your batch");
+                        ensure!(batch.owner == sender, Error::<T>::NotAuthorized);
                         
                         let credits_to_take = remaining.min(batch.remaining_credits);
                         let current = CreditsPallet::<T>::get_free_credits(&batch.owner);
                         ensure!(current >= credits_to_take, Error::<T>::InsufficientFreeCredits);
-                        
-                        // Referral logic
-                        let mut total_discount = 0u128;
-                        if let Some(previous_referral) = CreditsPallet::<T>::referred_users(&batch.owner) {
-                            CreditsPallet::<T>::apply_referral_discount(
-                                &previous_referral,
-                                credits_to_take,
-                                &mut total_discount
-                            )?;
-                        }
-                        let effective_charge = credits_to_take.saturating_sub(total_discount);
-                        ensure!(current >= effective_charge, Error::<T>::InsufficientFreeCredits);
 
-                        // Decrease user credits (apply discount)
-                        CreditsPallet::<T>::decrease_user_credits(&batch.owner, effective_charge);
+                        // Decrease user credits (post-discount total is allocated across batches).
+                        CreditsPallet::<T>::decrease_user_credits(&batch.owner, credits_to_take);
                         
                         // FIXED: Use remaining amounts for accurate alpha calculation
                         // This ensures the ratio reflects the current batch state
-                        let credits_to_take_u256 = U256::from(effective_charge);
+                        let credits_to_take_u256 = U256::from(credits_to_take);
                         let remaining_alpha_u256 = U256::from(batch.remaining_alpha);
                         let remaining_credits_u256 = U256::from(batch.remaining_credits.max(1));
                         
@@ -1555,7 +1873,7 @@ pub mod pallet {
                             .as_u128();
                         
                         // Update batch credits first (needed for future calculations in this batch)
-                        batch.remaining_credits = batch.remaining_credits.saturating_sub(effective_charge);
+                        batch.remaining_credits = batch.remaining_credits.saturating_sub(credits_to_take);
                         
                         // Handle frozen/unfrozen logic
                         if batch.is_frozen && block_number < batch.release_time {
@@ -1606,12 +1924,12 @@ pub mod pallet {
                         batch.remaining_alpha = batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
                         // Save updated batch
                         Batches::<T>::insert(batch_id, batch);
-                        remaining = remaining.saturating_sub(effective_charge);
+                        remaining = remaining.saturating_sub(credits_to_take);
                     }
                 }
             }
         
-            ensure!(remaining == 0, "Not enough credits");
+            ensure!(remaining == 0, Error::<T>::InsufficientFreeCredits);
         
             Self::deposit_event(Event::CreditsConsumed {
                 owner: sender,
