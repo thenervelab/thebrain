@@ -436,8 +436,8 @@ pub mod pallet {
 	pub struct UserStorageUsageUpdate {
 		pub total_file_size: u128,
 		pub total_file_count: u128,
-		pub hcfs_file_size: u128,
-		pub hcfs_file_count: u128,
+		pub drive_file_size: u128,
+		pub drive_file_count: u128,
 		pub s3_file_size: u128,
 		pub s3_file_count: u128,
 	}
@@ -971,9 +971,19 @@ pub mod pallet {
 	pub type UserTotalFilesCount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
 
 	#[pallet::storage]
+	#[pallet::getter(fn user_total_drive_files_size)]
+	pub type UserTotalDriveFilesSize<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_drive_files_count)]
+	pub type UserTotalDriveFilesCount<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
+	#[pallet::storage]
 	#[pallet::getter(fn user_total_hcfs_files_size)]
 	pub type UserTotalHCFSFilesSize<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
-
+	
 	#[pallet::storage]
 	#[pallet::getter(fn user_total_hcfs_files_count)]
 	pub type UserTotalHCFSFilesCount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
@@ -1086,16 +1096,16 @@ pub mod pallet {
 			user: T::AccountId,
 			total_file_size: u128,
 			total_file_count: u128,
-			hcfs_file_size: u128,
-			hcfs_file_count: u128,
+			drive_file_size: u128,
+			drive_file_count: u128,
 			s3_file_size: u128,
 			s3_file_count: u128,
 		},
-		/// User backend (HCFS + S3) usage metrics were updated by a validator.
+		/// User backend (Drive + S3) usage metrics were updated by a validator.
 		UserBackendFilesUpdated {
 			user: T::AccountId,
-			hcfs_size: u128,
-			hcfs_count: u128,
+			drive_size: u128,
+			drive_count: u128,
 			s3_size: u128,
 			s3_count: u128,
 		},
@@ -2604,7 +2614,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Update the total HCFS + S3 file size/count for a user.
+		/// Update the total Drive + S3 file size/count for a user.
 		/// Can only be called by a registered validator proxy account.
 		#[pallet::call_index(38)]
 		#[pallet::weight((
@@ -2615,8 +2625,8 @@ pub mod pallet {
 		pub fn update_user_file_usage(
 			origin: OriginFor<T>,
 			account_id: T::AccountId,
-			hcfs_file_size: u128,
-			hcfs_file_count: u128,
+			drive_file_size: u128,
+			drive_file_count: u128,
 			s3_file_size: u128,
 			s3_file_count: u128,
 		) -> DispatchResult {
@@ -2637,15 +2647,15 @@ pub mod pallet {
 				Error::<T>::InvalidNodeType
 			);
 
-			UserTotalHCFSFilesSize::<T>::insert(&account_id, hcfs_file_size);
-			UserTotalHCFSFilesCount::<T>::insert(&account_id, hcfs_file_count);
+			UserTotalDriveFilesSize::<T>::insert(&account_id, drive_file_size);
+			UserTotalDriveFilesCount::<T>::insert(&account_id, drive_file_count);
 			UserTotalS3FilesSize::<T>::insert(&account_id, s3_file_size);
 			UserTotalS3FilesCount::<T>::insert(&account_id, s3_file_count);
 
 			Self::deposit_event(Event::UserBackendFilesUpdated {
 				user: account_id,
-				hcfs_size: hcfs_file_size,
-				hcfs_count: hcfs_file_count,
+				drive_size: drive_file_size,
+				drive_count: drive_file_count,
 				s3_size: s3_file_size,
 				s3_count: s3_file_count,
 			});
