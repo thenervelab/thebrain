@@ -336,6 +336,27 @@ pub mod pallet {
     #[pallet::getter(fn storage_price_per_miner)]
     pub(super) type StoragePricePerMiner<T: Config> = StorageValue<_, u128, ValueQuery>;
 
+	/// Total Drive-backed file bytes reported for a user (validator metric).
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_drive_files_size)]
+	pub type UserTotalDriveFilesSize<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
+	/// Total Drive-backed file count reported for a user (validator metric).
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_drive_files_count)]
+	pub type UserTotalDriveFilesCount<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
+	/// Total S3-backed file bytes reported for a user (validator metric).
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_s3_files_size)]
+	pub type UserTotalS3FilesSize<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
+
+	/// Total S3-backed file count reported for a user (validator metric).
+	#[pallet::storage]
+	#[pallet::getter(fn user_total_s3_files_count)]
+	pub type UserTotalS3FilesCount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128>;
 
     /// Account allowed to call `cancel_user_subscription`.
     #[pallet::storage]
@@ -419,6 +440,14 @@ pub mod pallet {
         StoragePricePerMinerUpdated { price: u128 },
         /// Per-GB storage charging failed after passing the FreeCredits guard.
         PerGbChargeFailed { who: T::AccountId, charge_amount: u128, available_credits: u128 },
+		/// User Drive + S3 usage metrics were updated by a validator.
+		UserBackendFilesUpdated {
+			user: T::AccountId,
+			drive_size: u128,
+			drive_count: u128,
+			s3_size: u128,
+			s3_count: u128,
+		},
 	}
 
 	#[pallet::error]
@@ -887,6 +916,52 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
             Self::do_cancel_compute_subscription(&who)
         }
+
+		/// Update the total Drive + S3 file size/count for a user.
+		/// Callable only by a registered validator (or its proxy), same rules as arion previously.
+		#[pallet::call_index(24)]
+		#[pallet::weight((100_000, Pays::No))]
+		pub fn update_user_file_usage(
+			origin: OriginFor<T>,
+			account_id: T::AccountId,
+			drive_file_size: u128,
+			drive_file_count: u128,
+			s3_file_size: u128,
+			s3_file_count: u128,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			let main_account =
+				if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
+					primary
+				} else {
+					who.clone()
+				};
+
+			let node_info =
+				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+					.ok_or(Error::<T>::NodeNotRegistered)?;
+
+			ensure!(
+				node_info.node_type == pallet_registration::NodeType::Validator,
+				Error::<T>::InvalidNodeType
+			);
+
+			UserTotalDriveFilesSize::<T>::insert(&account_id, drive_file_size);
+			UserTotalDriveFilesCount::<T>::insert(&account_id, drive_file_count);
+			UserTotalS3FilesSize::<T>::insert(&account_id, s3_file_size);
+			UserTotalS3FilesCount::<T>::insert(&account_id, s3_file_count);
+
+			Self::deposit_event(Event::UserBackendFilesUpdated {
+				user: account_id,
+				drive_size: drive_file_size,
+				drive_count: drive_file_count,
+				s3_size: s3_file_size,
+				s3_count: s3_file_count,
+			});
+
+			Ok(())
+		}
 
         #[pallet::call_index(20)]
         #[pallet::weight((10_000, Pays::No))]

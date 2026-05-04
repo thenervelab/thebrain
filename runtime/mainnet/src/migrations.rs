@@ -252,3 +252,47 @@ where
 		T::DbWeight::get().reads_writes(reads, writes)
 	}
 }
+
+/// Move Drive/S3 per-user file usage from `Arion` to `Marketplace`, then clear legacy HCFS maps on
+/// `Arion`.
+///
+/// `construct_runtime!` pallet names must match: `Arion`, `Marketplace`. Storage item names must
+/// match the FRAME-generated metadata names (`UserTotalDriveFilesSize`, etc.).
+pub struct MigrateArionUserBackendFileUsageToMarketplace<T>(sp_std::marker::PhantomData<T>);
+
+impl<T: frame_system::Config> OnRuntimeUpgrade for MigrateArionUserBackendFileUsageToMarketplace<T> {
+	fn on_runtime_upgrade() -> Weight {
+		use frame_support::storage::migration::move_storage_from_pallet;
+
+		const OLD_PALLET: &[u8] = b"Arion";
+		const NEW_PALLET: &[u8] = b"Marketplace";
+
+		for storage in [
+			b"UserTotalDriveFilesSize".as_ref(),
+			b"UserTotalDriveFilesCount",
+			b"UserTotalS3FilesSize",
+			b"UserTotalS3FilesCount",
+		] {
+			move_storage_from_pallet(storage, OLD_PALLET, NEW_PALLET);
+		}
+
+		let mut weight = T::DbWeight::get().reads_writes(4, 4);
+
+		for hcfs in [b"UserTotalHCFSFilesSize".as_ref(), b"UserTotalHCFSFilesCount"] {
+			let mut prefix = frame_support::Twox128::hash(OLD_PALLET).to_vec();
+			prefix.extend_from_slice(&frame_support::Twox128::hash(hcfs));
+			let removed =
+				frame_support::storage::unhashed::clear_prefix(&prefix, None, None);
+			log::info!(
+				target: "runtime::migration",
+				"MigrateArionUserBackendFileUsageToMarketplace: cleared {} keys from Arion::{}",
+				removed.backend,
+				core::str::from_utf8(hcfs).unwrap_or("<non-utf8>"),
+			);
+			weight = weight.saturating_add(T::DbWeight::get().writes(removed.backend as u64));
+		}
+
+		// `move_storage_from_pallet` cost scales with entries; use a conservative budget.
+		weight.saturating_add(T::DbWeight::get().reads_writes(50_000, 100_000))
+	}
+}
