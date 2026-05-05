@@ -8,6 +8,7 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+mod migrations;
 mod types;
 use sp_core::offchain::KeyTypeId;
 // use frame_system::offchain::SignedPayload;
@@ -59,6 +60,8 @@ pub mod pallet {
     use frame_support::traits::Len;
     use frame_support::{
         pallet_prelude::*,
+        traits::OnRuntimeUpgrade,
+        traits::StorageVersion,
         traits::{ReservableCurrency, Currency},
         transactional,
         PalletId,
@@ -88,10 +91,18 @@ pub mod pallet {
     use sp_runtime::traits::Bounded;
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
+    #[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
+
+    /// The current storage version.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        fn on_runtime_upgrade() -> Weight {
+            migrations::Migrate::<T>::on_runtime_upgrade()
+        }
+
         fn on_initialize(current_block: BlockNumberFor<T>) -> Weight {
             let mut weight_used = Weight::zero();
             // Only execute on blocks divisible by the configured interval
@@ -1052,7 +1063,7 @@ pub mod pallet {
                 months_remaining = months_remaining.saturating_add(1);
             }
 
-            sub.package.price.saturating_mul(months_remaining)
+            sub.paid_per_month.saturating_mul(months_remaining)
         }
 
         fn cancel_subscriptions_and_refund(
@@ -1304,10 +1315,19 @@ pub mod pallet {
             let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
             let next_charge_unix_day =
                 Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
+
+            // Apply referral discount ONLY at subscription purchase time (not on renewals).
+            let mut referral_discount: u128 = 0;
+            let mut ref_owner: Option<T::AccountId> = None;
+            if let Some(ref_code) = CreditsPallet::<T>::referred_users(&who) {
+                referral_discount = plan_price_native.saturating_mul(5) / 100u128;
+                ref_owner = CreditsPallet::<T>::referral_codes(ref_code);
+            }
+            let charged_credits = plan_price_native.saturating_sub(referral_discount);
         
             // Check user's native token balance 
             let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
-            ensure!(user_free_credits >= plan_price_native, Error::<T>::InsufficientFreeCredits);
+            ensure!(user_free_credits >= charged_credits, Error::<T>::InsufficientFreeCredits);
 
             // Prevent cancel-and-resubscribe grace period reset abuse
             let current_block_number = <frame_system::Pallet<T>>::block_number();
@@ -1328,7 +1348,7 @@ pub mod pallet {
 
             Self::consume_credits(
                 who.clone(),
-                plan_price_native,
+                charged_credits,
                 Self::account_id().clone(),
                 pallet_rankings::Pallet::<T>::account_id().clone(),
             )?;
@@ -1337,10 +1357,24 @@ pub mod pallet {
             Self::record_credits_transaction(
                 &who,
                 NativeTransactionType::Subscription,
-                (plan_price_native).into(),
+                charged_credits.into(),
             )?;
 
+            // Mint referral rewards (credits + alpha) to the referral owner, once per subscription purchase.
+            if referral_discount > 0 {
+                if let Some(owner) = ref_owner {
+                    // Reward amount mirrors the user's discount. Alpha reward uses the same unit as alpha balances.
+                    // (If you later want a different mapping, change it here.)
+                    let _ = Self::do_deposit(owner, referral_discount, referral_discount, false, None);
+                }
+            }
+
             // Create subscription (simplified due to removed plan_type)
+            let paid_per_month = if CreditsPallet::<T>::referred_users(&who).is_some() {
+                plan.price.saturating_mul(9_500u128) / 10_000u128
+            } else {
+                plan.price
+            };
             let subscription = UserPlanSubscription {
                 id: subscription_id,
                 owner: who.clone(),
@@ -1350,6 +1384,7 @@ pub mod pallet {
                 last_charged_at: current_block_number,
                 selected_image_name: None,
                 next_charge_unix_day,
+                paid_per_month,
                 _phantom: PhantomData,
             };
         
@@ -1416,10 +1451,19 @@ pub mod pallet {
             let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
             let next_charge_unix_day =
                 Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
+
+            // Apply referral discount ONLY at subscription purchase time (not on renewals).
+            let mut referral_discount: u128 = 0;
+            let mut ref_owner: Option<T::AccountId> = None;
+            if let Some(ref_code) = CreditsPallet::<T>::referred_users(&who) {
+                referral_discount = plan_price_native.saturating_mul(5) / 100u128;
+                ref_owner = CreditsPallet::<T>::referral_codes(ref_code);
+            }
+            let charged_credits = plan_price_native.saturating_sub(referral_discount);
         
             // Check user's native token balance 
             let user_free_credits = CreditsPallet::<T>::get_free_credits(&who);
-            ensure!(user_free_credits >= plan_price_native, Error::<T>::InsufficientFreeCredits);
+            ensure!(user_free_credits >= charged_credits, Error::<T>::InsufficientFreeCredits);
 
             // Prevent cancel-and-resubscribe grace period reset abuse
             let current_block_number = <frame_system::Pallet<T>>::block_number();
@@ -1445,7 +1489,7 @@ pub mod pallet {
 
             Self::consume_credits(
                 who.clone(),
-                plan_price_native,
+                charged_credits,
                 Self::account_id().clone(),
                 pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone(),
             )?;
@@ -1454,10 +1498,22 @@ pub mod pallet {
             Self::record_credits_transaction(
                 &who,
                 NativeTransactionType::Subscription,
-                (plan_price_native).into(),
+                charged_credits.into(),
             )?;
 
+            // Mint referral rewards (credits + alpha) to the referral owner, once per subscription purchase.
+            if referral_discount > 0 {
+                if let Some(owner) = ref_owner {
+                    let _ = Self::do_deposit(owner, referral_discount, referral_discount, false, None);
+                }
+            }
+
             // Create subscription (simplified due to removed plan_type)
+            let paid_per_month = if CreditsPallet::<T>::referred_users(&who).is_some() {
+                plan.price.saturating_mul(9_500u128) / 10_000u128
+            } else {
+                plan.price
+            };
             let subscription = UserPlanSubscription {
                 id: subscription_id,
                 owner: who.clone(),
@@ -1467,6 +1523,7 @@ pub mod pallet {
                 last_charged_at: current_block_number,
                 selected_image_name : Some(selected_image_name),
                 next_charge_unix_day,
+                paid_per_month,
                 _phantom: PhantomData,
             };
         
@@ -1940,19 +1997,11 @@ pub mod pallet {
             ranking_account: T::AccountId
         ) -> DispatchResult {
             let block_number = <frame_system::Pallet<T>>::block_number();
-
-            // Compute referral discount once on the full obligation.
-            let mut total_discount = 0u128;
-            if let Some(referral_code) = CreditsPallet::<T>::referred_users(&sender) {
-                CreditsPallet::<T>::apply_referral_discount(
-                    &referral_code,
-                    credits,
-                    &mut total_discount,
-                )?;
-            }
-
-            // The user actually pays this much. The marketplace eats `total_discount`.
-            let mut remaining = credits.saturating_sub(total_discount);
+            // NOTE: referral discounts should NOT apply here, because this function is used for
+            // recurring subscription charges and other billing paths (e.g. per-GB storage charging).
+            //
+            // Referral discount + referral rewards are handled explicitly at subscription purchase time.
+            let mut remaining = credits;
             
             if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
                 for batch_id in batch_ids {

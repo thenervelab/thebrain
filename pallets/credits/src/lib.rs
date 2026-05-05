@@ -529,15 +529,6 @@ pub mod pallet {
 			FreeCredits::<T>::get(account)
 		}
 
-		pub fn increase_user_credits(account: &T::AccountId, credits_to_increase: u128) {
-			FreeCredits::<T>::mutate(&account, |credits| *credits = credits.saturating_add(credits_to_increase));
-
-			Self::deposit_event(Event::MintedAccountCredits {
-				who: account.clone(),
-				amount: credits_to_increase,
-			});
-		}
-
 		pub fn decrease_user_credits(account: &T::AccountId, credits_to_decrease: u128) {
 			FreeCredits::<T>::mutate(&account, |credits| *credits = credits.saturating_sub(credits_to_decrease));
 

@@ -94,6 +94,11 @@ where
     /// Unix day (UTC) of the 1st of the next month when recurring charging is due.
     /// `None` means legacy behavior (charge on the next 1st).
     pub next_charge_unix_day: Option<u32>,
+    /// Actual credits paid per month (after referral discount).
+    ///
+    /// Note: upfront purchases can include a prorated first month; this field tracks the
+    /// discounted *full-month* price, which is what we refund for unused prepaid full months.
+    pub paid_per_month: u128,
     pub _phantom: PhantomData<T>,               // Placeholder for generic type
 }
 
@@ -115,10 +120,16 @@ where
 
         // Backward-compatible decode:
         // - legacy encoding ended after `selected_image_name` (PhantomData encodes to 0 bytes)
-        // - new encoding has `next_charge_unix_day` appended.
+        // - v1 encoding has `next_charge_unix_day` appended.
+        // - v2 encoding appends `paid_per_month` after that.
         let next_charge_unix_day = match input.remaining_len()? {
             Some(0) => None,
             _ => Option::<u32>::decode(input)?,
+        };
+
+        let paid_per_month = match input.remaining_len()? {
+            Some(0) => package.price,
+            _ => u128::decode(input)?,
         };
 
         Ok(Self {
@@ -130,6 +141,7 @@ where
             last_charged_at,
             selected_image_name,
             next_charge_unix_day,
+            paid_per_month,
             _phantom: PhantomData,
         })
     }

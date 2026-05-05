@@ -460,7 +460,7 @@ pub mod pallet {
 				}
 			}
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
-
+			ensure!(public_key == node_id_bytes, Error::<T>::InvalidSignature);
 			// Verify the signature
 			if signature.len() != 64 || public_key.len() != 32 {
 				return Err(Error::<T>::InvalidSignature.into());

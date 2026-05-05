@@ -571,6 +571,13 @@ pub mod pallet {
 			let caller = ensure_signed(origin)?;
 			Self::ensure_guardian(&caller)?;
 
+			// Must be finalized (Completed or Cancelled)
+			ensure!(
+				deposit.status == DepositStatus::Completed
+					|| deposit.status == DepositStatus::Cancelled,
+				Error::<T>::RecordNotFinalized
+			);
+
 			let request = WithdrawalRequests::<T>::get(request_id)
 				.ok_or(Error::<T>::WithdrawalRequestNotFound)?;
 
