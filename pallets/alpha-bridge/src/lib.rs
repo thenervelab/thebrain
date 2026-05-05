@@ -570,22 +570,21 @@ pub mod pallet {
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
 			Self::ensure_guardian(&caller)?;
-
-			// Must be finalized (Completed or Cancelled)
-			ensure!(
-				deposit.status == DepositStatus::Completed
-					|| deposit.status == DepositStatus::Cancelled,
-				Error::<T>::RecordNotFinalized
-			);
-
+			
 			let request = WithdrawalRequests::<T>::get(request_id)
 				.ok_or(Error::<T>::WithdrawalRequestNotFound)?;
-
-			// TTL must have passed since creation (no status check for source records)
+			
+			// Must be finalized before guardian can clean up — protects user's burned hAlpha
+			// during the admin recovery window.
+			ensure!(
+				matches!(request.status, WithdrawalRequestStatus::Failed),
+				Error::<T>::InvalidStatus,
+			);
+			
+			// TTL must have passed since creation
 			let current_block = frame_system::Pallet::<T>::block_number();
 			let ttl = CleanupTTLBlocks::<T>::get();
 			ensure!(current_block >= request.created_at_block + ttl, Error::<T>::TTLNotExpired);
-
 			// Remove from storage
 			WithdrawalRequests::<T>::remove(request_id);
 
