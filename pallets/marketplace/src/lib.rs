@@ -193,6 +193,10 @@ pub mod pallet {
 
         #[pallet::constant]
         type MaxRequestsPerBlock: Get<u32>;
+
+		/// Max number of user file-usage rows that can be updated in a single batch call.
+		#[pallet::constant]
+		type MaxUserFileUsageUpdatesPerCall: Get<u32>;
     }
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -504,6 +508,7 @@ pub mod pallet {
         UserNotFound,
         ResubscribeCooldownActive,
         SubscriptionCancellationNotAuthorized,
+		TooManyUpdates,
 	}
     
 	#[pallet::storage]
@@ -930,21 +935,10 @@ pub mod pallet {
 			s3_file_count: u128,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
-
-			let main_account =
-				if let Some(primary) = pallet_arion::Pallet::<T>::get_primary_account(&who)? {
-					primary
-				} else {
-					who.clone()
-				};
-
-			let node_info =
-				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
-					.ok_or(Error::<T>::NodeNotRegistered)?;
-
+			let allowed = SubscriptionCanceller::<T>::get();
 			ensure!(
-				node_info.node_type == pallet_registration::NodeType::Validator,
-				Error::<T>::InvalidNodeType
+				allowed.as_ref() == Some(&who),
+				Error::<T>::SubscriptionCancellationNotAuthorized
 			);
 
 			UserTotalDriveFilesSize::<T>::insert(&account_id, drive_file_size);
@@ -959,6 +953,52 @@ pub mod pallet {
 				s3_size: s3_file_size,
 				s3_count: s3_file_count,
 			});
+
+			Ok(())
+		}
+
+		/// Batch variant of `update_user_file_usage`.
+		///
+		/// Updates multiple users in one call; bounded by `MaxUserFileUsageUpdatesPerCall`.
+		#[pallet::call_index(25)]
+        #[pallet::weight((10_000, Pays::No))]
+		pub fn update_users_file_usage(
+			origin: OriginFor<T>,
+			updates: Vec<UserBackendFileUsageUpdate<T::AccountId>>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			ensure!(
+				(updates.len() as u32) <= T::MaxUserFileUsageUpdatesPerCall::get(),
+				Error::<T>::TooManyUpdates
+			);
+
+			let allowed = SubscriptionCanceller::<T>::get();
+			ensure!(
+				allowed.as_ref() == Some(&who),
+				Error::<T>::SubscriptionCancellationNotAuthorized
+			);
+
+			for u in updates {
+				let account_id = u.account_id;
+				let drive_file_size = u.drive_file_size;
+				let drive_file_count = u.drive_file_count;
+				let s3_file_size = u.s3_file_size;
+				let s3_file_count = u.s3_file_count;
+
+				UserTotalDriveFilesSize::<T>::insert(&account_id, drive_file_size);
+				UserTotalDriveFilesCount::<T>::insert(&account_id, drive_file_count);
+				UserTotalS3FilesSize::<T>::insert(&account_id, s3_file_size);
+				UserTotalS3FilesCount::<T>::insert(&account_id, s3_file_count);
+
+				Self::deposit_event(Event::UserBackendFilesUpdated {
+					user: account_id,
+					drive_size: drive_file_size,
+					drive_count: drive_file_count,
+					s3_size: s3_file_size,
+					s3_count: s3_file_count,
+				});
+			}
 
 			Ok(())
 		}

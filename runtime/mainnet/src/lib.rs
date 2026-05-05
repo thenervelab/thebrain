@@ -255,7 +255,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9183,
+	spec_version: 9184,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -751,6 +751,7 @@ parameter_types! {
 	pub const RefferallCoolDOwnPeriod : u32 = 200;
 	pub const BlockChargeCheckInterval: u32 = 8;
 	pub const MaxRequestsPerBlock: u32 = 5;
+	pub const MaxUserFileUsageUpdatesPerCall: u32 = 250;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -768,6 +769,7 @@ impl pallet_marketplace::Config for Runtime {
 	type BlockChargeCheckInterval = BlockChargeCheckInterval;
 	type AuthorityId = pallet_marketplace::crypto::TestAuthId;
 	type MaxRequestsPerBlock = MaxRequestsPerBlock;
+	type MaxUserFileUsageUpdatesPerCall = MaxUserFileUsageUpdatesPerCall;
 }
 
 parameter_types! {
@@ -1954,7 +1956,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
-type Migrations = migrations::MigrateArionUserBackendFileUsageToMarketplace<Runtime>;
+type Migrations = ();
 
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;

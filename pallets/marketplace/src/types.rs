@@ -14,6 +14,16 @@ pub const MAX_NAME_LENGTH: u32 = 32;
 /// Point balance type
 pub type Points = u128;
 
+/// Drive + S3 usage update row (validator metric).
+#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub struct UserBackendFileUsageUpdate<AccountId> {
+    pub account_id: AccountId,
+    pub drive_file_size: u128,
+    pub drive_file_count: u128,
+    pub s3_file_size: u128,
+    pub s3_file_count: u128,
+}
+
 /// Point transaction type
 #[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 pub enum NativeTransactionType {
