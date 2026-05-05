@@ -455,6 +455,8 @@ pub mod pallet {
         StoragePricePerMinerUpdated { price: u128 },
         /// Per-GB storage charging failed after passing the FreeCredits guard.
         PerGbChargeFailed { who: T::AccountId, charge_amount: u128, available_credits: u128 },
+        /// Referral reward (credits) could not be minted to the referrer.
+        ReferralRewardMintFailed { referrer: T::AccountId, reward_credits: u128 },
 		/// User Drive + S3 usage metrics were updated by a validator.
 		UserBackendFilesUpdated {
 			user: T::AccountId,
@@ -1028,6 +1030,39 @@ pub mod pallet {
 	}
 
     impl<T: Config> Pallet<T> {
+        fn try_mint_referral_reward_credits(
+            referrer: &T::AccountId,
+            reward_credits: u128,
+        ) {
+            if reward_credits == 0 {
+                return;
+            }
+
+            // Credits must be spendable; mint them into a new batch (alpha reward intentionally 0).
+            if let Err(e) = Self::do_deposit(referrer.clone(), reward_credits, 0, false, None) {
+                log::warn!(
+                    target: "runtime::marketplace",
+                    "referral reward mint failed for {:?}: {:?}",
+                    referrer,
+                    e
+                );
+                Self::deposit_event(Event::<T>::ReferralRewardMintFailed {
+                    referrer: referrer.clone(),
+                    reward_credits,
+                });
+            }
+        }
+
+        fn referral_discount_and_owner(who: &T::AccountId, face_credits: u128) -> (u128, Option<T::AccountId>) {
+            if let Some(ref_code) = CreditsPallet::<T>::referred_users(who) {
+                let discount = face_credits.saturating_mul(5) / 100u128;
+                let owner = CreditsPallet::<T>::referral_codes(ref_code);
+                (discount, owner)
+            } else {
+                (0, None)
+            }
+        }
+
         /// Current UNIX millis as `u64`.
         fn now_ms() -> u64 {
             pallet_timestamp::Pallet::<T>::get().saturated_into::<u64>()
@@ -1317,12 +1352,8 @@ pub mod pallet {
                 Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
 
             // Apply referral discount ONLY at subscription purchase time (not on renewals).
-            let mut referral_discount: u128 = 0;
-            let mut ref_owner: Option<T::AccountId> = None;
-            if let Some(ref_code) = CreditsPallet::<T>::referred_users(&who) {
-                referral_discount = plan_price_native.saturating_mul(5) / 100u128;
-                ref_owner = CreditsPallet::<T>::referral_codes(ref_code);
-            }
+            let (referral_discount, ref_owner) =
+                Self::referral_discount_and_owner(&who, plan_price_native);
             let charged_credits = plan_price_native.saturating_sub(referral_discount);
         
             // Check user's native token balance 
@@ -1360,13 +1391,9 @@ pub mod pallet {
                 charged_credits.into(),
             )?;
 
-            // Mint referral rewards (credits + alpha) to the referral owner, once per subscription purchase.
-            if referral_discount > 0 {
-                if let Some(owner) = ref_owner {
-                    // Reward amount mirrors the user's discount. Alpha reward uses the same unit as alpha balances.
-                    // (If you later want a different mapping, change it here.)
-                    let _ = Self::do_deposit(owner, referral_discount, referral_discount, false, None);
-                }
+            // Mint referral reward credits to the referral owner (no alpha rewards).
+            if let Some(owner) = ref_owner {
+                Self::try_mint_referral_reward_credits(&owner, referral_discount);
             }
 
             // Create subscription (simplified due to removed plan_type)
@@ -1453,12 +1480,8 @@ pub mod pallet {
                 Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
 
             // Apply referral discount ONLY at subscription purchase time (not on renewals).
-            let mut referral_discount: u128 = 0;
-            let mut ref_owner: Option<T::AccountId> = None;
-            if let Some(ref_code) = CreditsPallet::<T>::referred_users(&who) {
-                referral_discount = plan_price_native.saturating_mul(5) / 100u128;
-                ref_owner = CreditsPallet::<T>::referral_codes(ref_code);
-            }
+            let (referral_discount, ref_owner) =
+                Self::referral_discount_and_owner(&who, plan_price_native);
             let charged_credits = plan_price_native.saturating_sub(referral_discount);
         
             // Check user's native token balance 
@@ -1501,11 +1524,9 @@ pub mod pallet {
                 charged_credits.into(),
             )?;
 
-            // Mint referral rewards (credits + alpha) to the referral owner, once per subscription purchase.
-            if referral_discount > 0 {
-                if let Some(owner) = ref_owner {
-                    let _ = Self::do_deposit(owner, referral_discount, referral_discount, false, None);
-                }
+            // Mint referral reward credits to the referral owner (no alpha rewards).
+            if let Some(owner) = ref_owner {
+                Self::try_mint_referral_reward_credits(&owner, referral_discount);
             }
 
             // Create subscription (simplified due to removed plan_type)
