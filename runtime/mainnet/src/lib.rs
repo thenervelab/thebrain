@@ -555,15 +555,15 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 
 		if marketplace_balance > 0 {
 			// Calculate amounts for each destination
-			let staking_amount = marketplace_balance
-				.checked_mul(75u32.into())
-				.and_then(|x| x.checked_div(100u32.into()))
-				.unwrap_or_default();
+            let staking_amount = marketplace_balance
+                .checked_mul(2u32.into())
+                .and_then(|x| x.checked_div(3u32.into()))
+                .unwrap_or_default();
 
-			let treasury_amount = marketplace_balance
-				.checked_mul(25u32.into())
-				.and_then(|x| x.checked_div(100u32.into()))
-				.unwrap_or_default();
+            let treasury_amount = marketplace_balance
+                .checked_mul(1u32.into())
+                .and_then(|x| x.checked_div(3u32.into()))
+                .unwrap_or_default();
 
 			// Transfer to the specific account
 			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
