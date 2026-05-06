@@ -2131,15 +2131,15 @@ pub mod pallet {
         ) -> DispatchResult {
         
             let rankings_amount = alpha_to_release
-                .checked_mul(75)
+                .checked_mul(70)
                 .and_then(|x| x.checked_div(100))
                 .unwrap_or_default();
         
             let marketplace_amount = alpha_to_release
                 .saturating_sub(rankings_amount);
-        
+
             if let Some(sudo_account) = Self::sudo_key() {
-        
+
                 <pallet_balances::Pallet<T>>::transfer(
                     &sudo_account,
                     &ranking_account,
