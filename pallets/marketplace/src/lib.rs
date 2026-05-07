@@ -1737,6 +1737,18 @@ pub mod pallet {
                                 );
                             }
                         }
+
+                        // Apply referral commission: 5% of total charged to referrer, if referred.
+                        let total_charged = if storage_ok { total_storage_charge } else { 0 } +
+                                            if compute_ok { total_compute_charge } else { 0 };
+                        if total_charged > 0 {
+                            if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
+                                if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
+                                    let commission = total_charged.saturating_mul(5) / 100;
+                                    Self::try_mint_referral_reward_credits(&referrer, commission);
+                                }
+                            }
+                        }
                     }
 
                     // Deactivate failed side(s) and emit failure events.
