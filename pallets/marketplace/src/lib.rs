@@ -505,8 +505,6 @@ pub mod pallet {
         InvalidImageSelection,
         NodeNotRegistered,
         InvalidNodeType,
-        /// No active compute subscription found for the user
-        NoActiveComputeSubscription,
         /// The plan does not match the user's active subscription
         InvalidPlanForSubscription,
         InvalidPlanConfiguration,
@@ -1959,7 +1957,7 @@ pub mod pallet {
 
             UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
                 for sub in subscriptions.iter_mut() {
-                    if sub.id == subscription_id && !sub.package.is_storage_plan {
+                    if sub.id == subscription_id && !sub.package.is_storage_plan && sub.active {
                         refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
                         sub.active = false;
                         cancelled = true;
@@ -1973,7 +1971,12 @@ pub mod pallet {
                 Self::refund_credits_with_batch(account_id, refund)?;
             }
 
-            LastSubscriptionCancelledAt::<T>::insert(account_id, now);
+            // Only set cooldown if no active subscriptions remain
+            let has_active_subs = UserAllSubscriptionPlans::<T>::get(account_id).iter().any(|s| s.active);
+            if !has_active_subs {
+                LastSubscriptionCancelledAt::<T>::insert(account_id, now);
+            }
+
             Self::deposit_event(Event::ComputeSubscriptionCancelled { who: account_id.clone() });
             Ok(())
         }
