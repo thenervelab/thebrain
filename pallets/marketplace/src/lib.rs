@@ -1718,39 +1718,37 @@ pub mod pallet {
 
                     // Update successfully charged subscriptions (only those due),
                     // advancing from the previous `next_charge_unix_day`, not from "now".
-                    if storage_ok || compute_ok {
-                        for sub in subs.iter_mut() {
-                            if !sub.active {
-                                continue;
-                            }
-                            if !sub.next_charge_unix_day.map_or(true, |d| today >= d) {
-                                continue;
-                            }
-
-                            let ok_for_type =
-                                if sub.package.is_storage_plan { storage_ok } else { 
-                                    !compute_subs_to_deactivate.contains(&sub.id)
-                                };
-                            if ok_for_type {
-                                sub.last_charged_at = current_block;
-                                let prev_next = sub.next_charge_unix_day.unwrap_or(today);
-                                sub.next_charge_unix_day = Some(
-                                    pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_after(
-                                        prev_next,
-                                    ),
-                                );
-                            }
+                    for sub in subs.iter_mut() {
+                        if !sub.active {
+                            continue;
+                        }
+                        if !sub.next_charge_unix_day.map_or(true, |d| today >= d) {
+                            continue;
                         }
 
-                        // Apply referral commission: 5% of total charged to referrer, if referred.
-                        let total_charged = if storage_ok { total_storage_charge } else { 0 } +
-                                            compute_charged_total;
-                        if total_charged > 0 {
-                            if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
-                                if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
-                                    let commission = total_charged.saturating_mul(5) / 100;
-                                    Self::try_mint_referral_reward_credits(&referrer, commission);
-                                }
+                        let ok_for_type =
+                            if sub.package.is_storage_plan { storage_ok } else { 
+                                !compute_subs_to_deactivate.contains(&sub.id)
+                            };
+                        if ok_for_type {
+                            sub.last_charged_at = current_block;
+                            let prev_next = sub.next_charge_unix_day.unwrap_or(today);
+                            sub.next_charge_unix_day = Some(
+                                pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_after(
+                                    prev_next,
+                                ),
+                            );
+                        }
+                    }
+
+                    // Apply referral commission: 5% of total charged to referrer, if referred.
+                    let total_charged = if storage_ok { total_storage_charge } else { 0 } +
+                                        compute_charged_total;
+                    if total_charged > 0 {
+                        if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
+                            if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
+                                let commission = total_charged.saturating_mul(5) / 100;
+                                Self::try_mint_referral_reward_credits(&referrer, commission);
                             }
                         }
                     }
@@ -1961,7 +1959,7 @@ pub mod pallet {
 
             UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
                 for sub in subscriptions.iter_mut() {
-                    if sub.id == subscription_id {
+                    if sub.id == subscription_id && !sub.package.is_storage_plan {
                         refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
                         sub.active = false;
                         cancelled = true;
