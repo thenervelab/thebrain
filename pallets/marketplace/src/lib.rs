@@ -1446,15 +1446,6 @@ pub mod pallet {
                 Error::<T>::NodeTypeDisabled
             );
 
-            // Enforce: only one active compute subscription at a time.
-            let existing_subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
-            ensure!(
-                !existing_subscriptions
-                    .iter()
-                    .any(|s| s.active && !s.package.is_storage_plan),
-                Error::<T>::AlreadyHasActiveSubscription
-            );
-
             // Check if plan exists
             let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
