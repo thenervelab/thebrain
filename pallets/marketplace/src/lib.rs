@@ -927,12 +927,12 @@ pub mod pallet {
             Self::do_cancel_storage_subscription(&who)
         }
 
-        /// User-cancel compute subscription(s). Marks inactive (does not delete) and refunds unused prepaid months.
+        /// Cancel a specific subscription by ID. Only the owner can cancel.
         #[pallet::call_index(23)]
         #[pallet::weight((0, Pays::No))]
-        pub fn cancel_my_compute_subscription(origin: OriginFor<T>) -> DispatchResult {
+        pub fn cancel_compute_subscription_by_id(origin: OriginFor<T>, subscription_id: SubscriptionId) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            Self::do_cancel_compute_subscription(&who)
+            Self::do_cancel_subscription_by_id(&who, subscription_id)
         }
 
 		/// Update the total Drive + S3 file size/count for a user.
@@ -1927,14 +1927,23 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Cancel a user's compute subscription(s) by marking inactive (does not delete).
-        /// Also refunds unused prepaid months (credits) when applicable.
-        fn do_cancel_compute_subscription(account_id: &T::AccountId) -> DispatchResult {
+        /// Cancel a specific subscription by ID. Only the owner can cancel.
+        fn do_cancel_subscription_by_id(account_id: &T::AccountId, subscription_id: SubscriptionId) -> DispatchResult {
             let now = <frame_system::Pallet<T>>::block_number();
-            let (_cancelled_storage, cancelled_compute, refund) =
-                Self::cancel_subscriptions_and_refund(account_id, false, true)?;
+            let mut refund = 0;
+            let mut cancelled = false;
 
-            ensure!(cancelled_compute, Error::<T>::NoActiveComputeSubscription);
+            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
+                for sub in subscriptions.iter_mut() {
+                    if sub.id == subscription_id {
+                        refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
+                        sub.active = false;
+                        cancelled = true;
+                    }
+                }
+            });
+
+            ensure!(cancelled, Error::<T>::SubscriptionNotFound);
 
             if refund > 0 {
                 Self::refund_credits_with_batch(account_id, refund)?;
@@ -1944,7 +1953,6 @@ pub mod pallet {
             Self::deposit_event(Event::ComputeSubscriptionCancelled { who: account_id.clone() });
             Ok(())
         }
-
 
         /// Helper function to remove the last charged timestamp for a user
         pub fn remove_storage_last_charged_at(who: &T::AccountId)  {
