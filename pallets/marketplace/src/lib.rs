@@ -505,8 +505,6 @@ pub mod pallet {
         InvalidImageSelection,
         NodeNotRegistered,
         InvalidNodeType,
-        /// No active compute subscription found for the user
-        NoActiveComputeSubscription,
         /// The plan does not match the user's active subscription
         InvalidPlanForSubscription,
         InvalidPlanConfiguration,
@@ -927,12 +925,12 @@ pub mod pallet {
             Self::do_cancel_storage_subscription(&who)
         }
 
-        /// User-cancel compute subscription(s). Marks inactive (does not delete) and refunds unused prepaid months.
+        /// Cancel a specific subscription by ID. Only the owner can cancel.
         #[pallet::call_index(23)]
         #[pallet::weight((0, Pays::No))]
-        pub fn cancel_my_compute_subscription(origin: OriginFor<T>) -> DispatchResult {
+        pub fn cancel_compute_subscription_by_id(origin: OriginFor<T>, subscription_id: SubscriptionId) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            Self::do_cancel_compute_subscription(&who)
+            Self::do_cancel_subscription_by_id(&who, subscription_id)
         }
 
 		/// Update the total Drive + S3 file size/count for a user.
@@ -1446,15 +1444,6 @@ pub mod pallet {
                 Error::<T>::NodeTypeDisabled
             );
 
-            // Enforce: only one active compute subscription at a time.
-            let existing_subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
-            ensure!(
-                !existing_subscriptions
-                    .iter()
-                    .any(|s| s.active && !s.package.is_storage_plan),
-                Error::<T>::AlreadyHasActiveSubscription
-            );
-
             // Check if plan exists
             let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
@@ -1690,51 +1679,74 @@ pub mod pallet {
                         }
                     }
 
-                    let compute_available_at_attempt =
-                        CreditsPallet::<T>::get_free_credits(&account_id);
-                    if total_compute_charge > 0 {
-                        if compute_available_at_attempt >= total_compute_charge {
-                            compute_ok = Self::consume_credits(
+                    // Charge compute subscriptions individually in ascending order of subscription ID
+                    let mut compute_charged_total = 0u128;
+                    let mut compute_subs_to_deactivate = Vec::new();
+                    let mut compute_available = CreditsPallet::<T>::get_free_credits(&account_id);
+                    let mut sorted_compute_subs = compute_subs_to_charge.clone();
+                    sorted_compute_subs.sort_by_key(|sub| sub.id);
+                    for sub in &sorted_compute_subs {
+                        let price = sub.package.price;
+                        if compute_available >= price {
+                            if Self::consume_credits(
                                 account_id.clone(),
-                                total_compute_charge,
+                                price,
                                 Self::account_id().clone(),
-                                pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id()
-                                    .clone(),
+                                pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone(),
                             )
                             .and_then(|_| {
                                 Self::record_credits_transaction(
                                     &account_id,
                                     NativeTransactionType::Subscription,
-                                    total_compute_charge.into(),
+                                    price.into(),
                                 )
                             })
-                            .is_ok();
+                            .is_ok() {
+                                compute_charged_total = compute_charged_total.saturating_add(price);
+                                compute_available = compute_available.saturating_sub(price);
+                                // Mark as charged below
+                            } else {
+                                compute_subs_to_deactivate.push(sub.id);
+                            }
                         } else {
-                            compute_ok = false;
+                            compute_subs_to_deactivate.push(sub.id);
                         }
                     }
+                    compute_ok = compute_subs_to_deactivate.is_empty();
 
                     // Update successfully charged subscriptions (only those due),
                     // advancing from the previous `next_charge_unix_day`, not from "now".
-                    if storage_ok || compute_ok {
-                        for sub in subs.iter_mut() {
-                            if !sub.active {
-                                continue;
-                            }
-                            if !sub.next_charge_unix_day.map_or(true, |d| today >= d) {
-                                continue;
-                            }
+                    for sub in subs.iter_mut() {
+                        if !sub.active {
+                            continue;
+                        }
+                        if !sub.next_charge_unix_day.map_or(true, |d| today >= d) {
+                            continue;
+                        }
 
-                            let ok_for_type =
-                                if sub.package.is_storage_plan { storage_ok } else { compute_ok };
-                            if ok_for_type {
-                                sub.last_charged_at = current_block;
-                                let prev_next = sub.next_charge_unix_day.unwrap_or(today);
-                                sub.next_charge_unix_day = Some(
-                                    pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_after(
-                                        prev_next,
-                                    ),
-                                );
+                        let ok_for_type =
+                            if sub.package.is_storage_plan { storage_ok } else { 
+                                !compute_subs_to_deactivate.contains(&sub.id)
+                            };
+                        if ok_for_type {
+                            sub.last_charged_at = current_block;
+                            let prev_next = sub.next_charge_unix_day.unwrap_or(today);
+                            sub.next_charge_unix_day = Some(
+                                pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_after(
+                                    prev_next,
+                                ),
+                            );
+                        }
+                    }
+
+                    // Apply referral commission: 5% of total charged to referrer, if referred.
+                    let total_charged = if storage_ok { total_storage_charge } else { 0 } +
+                                        compute_charged_total;
+                    if total_charged > 0 {
+                        if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
+                            if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
+                                let commission = total_charged.saturating_mul(5) / 100;
+                                Self::try_mint_referral_reward_credits(&referrer, commission);
                             }
                         }
                     }
@@ -1763,26 +1775,39 @@ pub mod pallet {
                         });
                     }
 
-                    if !compute_ok && total_compute_charge > 0 {
+                    // Deactivate compute subs that failed individually, refund unused prepaid
+                    for sub_id in compute_subs_to_deactivate {
+                        let price = sorted_compute_subs.iter().find(|s| s.id == sub_id).unwrap().package.price;
                         log::warn!(
                             target: "runtime::marketplace",
-                            "monthly compute subscription charge failed for {:?}: required={}, available_at_attempt={}",
+                            "monthly compute subscription charge failed for {:?}, sub_id={}: required={}, available_at_attempt={}",
                             account_id,
-                            total_compute_charge,
-                            compute_available_at_attempt
+                            sub_id,
+                            price,
+                            compute_available
                         );
                         for sub in subs.iter_mut() {
-                            if sub.active
-                                && !sub.package.is_storage_plan
-                                && sub.next_charge_unix_day.map_or(true, |d| today >= d)
-                            {
+                            if sub.id == sub_id && sub.active {
                                 sub.active = false;
+                                // Refund unused prepaid months
+                                let refund = Self::unused_prepaid_refund_credits(sub);
+                                if refund > 0 {
+                                    if let Err(e) = Self::refund_credits_with_batch(&account_id, refund) {
+                                        log::error!(
+                                            target: "runtime::marketplace",
+                                            "failed to refund unused prepaid for sub_id={}: {:?}",
+                                            sub_id,
+                                            e
+                                        );
+                                    }
+                                }
+                                break;
                             }
                         }
                         Self::deposit_event(Event::SubscriptionChargeFailed {
                             who: account_id.clone(),
-                            required_credits: total_compute_charge,
-                            available_credits: compute_available_at_attempt,
+                            required_credits: price,
+                            available_credits: compute_available,
                         });
                     }
                 }
@@ -1924,24 +1949,37 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Cancel a user's compute subscription(s) by marking inactive (does not delete).
-        /// Also refunds unused prepaid months (credits) when applicable.
-        fn do_cancel_compute_subscription(account_id: &T::AccountId) -> DispatchResult {
+        /// Cancel a specific subscription by ID. Only the owner can cancel.
+        fn do_cancel_subscription_by_id(account_id: &T::AccountId, subscription_id: SubscriptionId) -> DispatchResult {
             let now = <frame_system::Pallet<T>>::block_number();
-            let (_cancelled_storage, cancelled_compute, refund) =
-                Self::cancel_subscriptions_and_refund(account_id, false, true)?;
+            let mut refund = 0;
+            let mut cancelled = false;
 
-            ensure!(cancelled_compute, Error::<T>::NoActiveComputeSubscription);
+            UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
+                for sub in subscriptions.iter_mut() {
+                    if sub.id == subscription_id && !sub.package.is_storage_plan && sub.active {
+                        refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
+                        sub.active = false;
+                        cancelled = true;
+                    }
+                }
+            });
+
+            ensure!(cancelled, Error::<T>::SubscriptionNotFound);
 
             if refund > 0 {
                 Self::refund_credits_with_batch(account_id, refund)?;
             }
 
-            LastSubscriptionCancelledAt::<T>::insert(account_id, now);
+            // Only set cooldown if no active subscriptions remain
+            let has_active_subs = UserAllSubscriptionPlans::<T>::get(account_id).iter().any(|s| s.active);
+            if !has_active_subs {
+                LastSubscriptionCancelledAt::<T>::insert(account_id, now);
+            }
+
             Self::deposit_event(Event::ComputeSubscriptionCancelled { who: account_id.clone() });
             Ok(())
         }
-
 
         /// Helper function to remove the last charged timestamp for a user
         pub fn remove_storage_last_charged_at(who: &T::AccountId)  {

@@ -605,6 +605,9 @@ pub mod pallet {
 					ReferralCodes::<T>::contains_key(&referral_code),
 					Error::<T>::InvalidReferralCode
 				);
+				// Prevent self-referral: ensure the code owner is not the same as the user
+				let code_owner = ReferralCodes::<T>::get(&referral_code).unwrap();
+				ensure!(code_owner != *owner, Error::<T>::InvalidRefferalOwner);
 				ReferredUsers::<T>::insert(owner, referral_code);
 			}
 
