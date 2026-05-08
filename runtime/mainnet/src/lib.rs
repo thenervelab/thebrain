@@ -55,7 +55,7 @@ pub use pallet_staking::StakerStatus;
 #[allow(deprecated)]
 use pallet_transaction_payment::{CurrencyAdapter, FeeDetails, Multiplier, RuntimeDispatchInfo};
 use scale_info::prelude::string::String;
-// use pallet_registration::NodeType;
+// use pallet_registration::NodeType; 
 use pallet_tx_pause::RuntimeCallNameOf;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use precompiles::HipiusPrecompiles;
@@ -69,7 +69,7 @@ use sp_runtime::traits::ConstU64;
 use sp_runtime::SaturatedConversion;
 use sp_runtime::{
 	create_runtime_str,
-	// curve::PiecewiseLinear,
+	curve::PiecewiseLinear,
 	generic,
 	impl_opaque_keys,
 	traits::{
@@ -534,30 +534,31 @@ where
 	}
 }
 
+parameter_types! {
+	pub const StakingPotId: PalletId = PalletId(*b"stk/rpot");
+}
+
 pub struct MarketplaceRewardPayout;
 
 impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
-    fn era_payout(
-        _total_staked: Balance,
-        _total_issuance: Balance,
-        _era_duration_millis: u64,
-    ) -> (Balance, Balance) {
-        // Fetch the balance available in the marketplace
-        let marketplace_balance = pallet_marketplace::Pallet::<Runtime>::balance();
-        let registration_balance = pallet_registration::Pallet::<Runtime>::balance();
-        let marketplace_account = pallet_marketplace::Pallet::<Runtime>::account_id();
-        let registration_account = pallet_registration::Pallet::<Runtime>::account_id();
-        // Marketplace revenue routing destination (intentional — not a
-        // treasury bypass). <Account holder / purpose>.
-        let recipient_account =
-            AccountId32::from_ss58check("5GEudEYMVWJr64Y3599urXfG1tg4u7iNFWmBYZUET2YTdPkn")
-                .expect("Invalid SS58 address");
-        let treasury_account = pallet_treasury::Pallet::<Runtime>::account_id();
+	fn era_payout(
+		_total_staked: Balance,
+		_total_issuance: Balance,
+		_era_duration_millis: u64,
+	) -> (Balance, Balance) {
+		// Fetch the balance available in the marketplace
+		let marketplace_balance = pallet_marketplace::Pallet::<Runtime>::balance();
+		let registration_balance = pallet_registration::Pallet::<Runtime>::balance();
+		let marketplace_account = pallet_marketplace::Pallet::<Runtime>::account_id();
+		let registration_account = pallet_registration::Pallet::<Runtime>::account_id();
+		// Marketplace revenue routing destination (intentional — not a
+		// treasury bypass). <Account holder / purpose>.
+		let recipient_account =
+			AccountId32::from_ss58check("5GEudEYMVWJr64Y3599urXfG1tg4u7iNFWmBYZUET2YTdPkn")
+				.expect("Invalid SS58 address");
 
-        let mut total_staking_rewards = 0u128;
-
-        if marketplace_balance > 0 {
-            // Calculate amounts for each destination
+		if marketplace_balance > 0 {
+			// Calculate amounts for each destination
             let staking_amount = marketplace_balance
                 .checked_mul(2u32.into())
                 .and_then(|x| x.checked_div(3u32.into()))
@@ -568,83 +569,179 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
                 .and_then(|x| x.checked_div(3u32.into()))
                 .unwrap_or_default();
 
-            // Transfer treasury portion to the specific account
-            if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
-                &marketplace_account.clone(),
-                &recipient_account,
-                treasury_amount,
-                ExistenceRequirement::KeepAlive,
-            ) {
-                log::error!(
-                    target: "runtime::marketplace_payout",
-                    "❌ Treasury transfer from marketplace failed: {:?}",
-                    e
-                );
-            }
+			// Transfer to the specific account
+			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
+				&marketplace_account.clone(),
+				&recipient_account,
+				treasury_amount,
+				ExistenceRequirement::KeepAlive,
+			) {
+				log::error!(
+					target: "runtime::marketplace_payout",
+					"❌ Treasury transfer from marketplace failed: {:?}",
+					e
+				);
+			}
 
-            // Transfer staking rewards to treasury for distribution
-            if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
-                &marketplace_account.clone(),
-                &treasury_account,
-                staking_amount,
-                ExistenceRequirement::KeepAlive,
-            ) {
-                log::error!(
-                    target: "runtime::marketplace_payout",
-                    "❌ Staking rewards transfer from marketplace to treasury failed: {:?}",
-                    e
-                );
-            } else {
-                total_staking_rewards = total_staking_rewards.saturating_add(staking_amount);
-            }
-        }
+			// // Burn the staking amount
+			// let _ = pallet_balances::Pallet::<Runtime>::burn(
+			//     frame_system::RawOrigin::Signed(marketplace_account.clone()).into(),
+			//     staking_amount,
+			//     false, // keep_alive set to false to allow burning entire balance
+			// );
 
-        if registration_balance > 0 {
-            // Calculate amounts for each destination
-            let staking_amount = registration_balance
-                .checked_mul(50u32.into())
-                .and_then(|x| x.checked_div(100u32.into()))
-                .unwrap_or_default();
+			// Get the list of validators from the session
+			let validators = <pallet_session::Pallet<Runtime>>::validators(); // Ensure you have the correct type here
+			let num_validators = validators.len() as u32;
+			if num_validators > 0 {
+				let amount_per_validator =
+					staking_amount.checked_div(num_validators.into()).unwrap_or_default();
 
-            let treasury_amount = registration_balance
-                .checked_mul(50u32.into())
-                .and_then(|x| x.checked_div(100u32.into()))
-                .unwrap_or_default();
+				for validator in validators {
+					if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
+						&marketplace_account.clone(),
+						&validator,
+						amount_per_validator,
+						ExistenceRequirement::KeepAlive,
+					) {
+						log::error!(
+							target: "runtime::marketplace_payout",
+							"❌ Validator payout transfer from marketplace failed for {:?}: {:?}",
+							validator,
+							e
+						);
+						continue;
+					}
 
-            // Transfer treasury portion to the specific account
-            if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
-                &registration_account.clone(),
-                &recipient_account,
-                treasury_amount,
-                ExistenceRequirement::KeepAlive,
-            ) {
-                log::error!(
-                    target: "runtime::marketplace_payout",
-                    "❌ Treasury transfer from registration failed: {:?}",
-                    e
-                );
-            }
+					let bond_result = if pallet_staking::Pallet::<Runtime>::ledger(
+						sp_staking::StakingAccount::Stash(validator.clone()),
+					)
+					.is_ok()
+					{
+							pallet_staking::Pallet::<Runtime>::bond_extra(
+								frame_system::RawOrigin::Signed(validator.clone()).into(),
+								amount_per_validator,
+							)
+						} else {
+							pallet_staking::Pallet::<Runtime>::bond(
+								frame_system::RawOrigin::Signed(validator.clone()).into(),
+								amount_per_validator,
+								pallet_staking::RewardDestination::Staked,
+							)
+						};
 
-            // Transfer staking rewards to treasury for distribution
-            if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
-                &registration_account.clone(),
-                &treasury_account,
-                staking_amount,
-                ExistenceRequirement::KeepAlive,
-            ) {
-                log::error!(
-                    target: "runtime::marketplace_payout",
-                    "❌ Staking rewards transfer from registration to treasury failed: {:?}",
-                    e
-                );
-            } else {
-                total_staking_rewards = total_staking_rewards.saturating_add(staking_amount);
-            }
-        }
+					if let Err(e) = bond_result {
+						log::warn!(
+							target: "runtime::marketplace_payout",
+							"⚠️ Auto-bond failed for validator {:?}: {:?}",
+							validator,
+							e
+						);
+					}
+				}
+			}
+		}
 
-        // Return the total staking rewards for pallet_staking to distribute to all stakers
-        (total_staking_rewards, 0u32.into())
-    }
+		if registration_balance > 0 {
+			// Calculate amounts for each destination
+			let staking_amount = registration_balance
+				.checked_mul(50u32.into())
+				.and_then(|x| x.checked_div(100u32.into()))
+				.unwrap_or_default();
+
+			let treasury_amount = registration_balance
+				.checked_mul(50u32.into())
+				.and_then(|x| x.checked_div(100u32.into()))
+				.unwrap_or_default();
+
+			// Transfer to the specific account
+			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
+				&registration_account.clone(),
+				&recipient_account,
+				treasury_amount,
+				ExistenceRequirement::KeepAlive,
+			) {
+				log::error!(
+					target: "runtime::marketplace_payout",
+					"❌ Treasury transfer from registration failed: {:?}",
+					e
+				);
+			}
+
+			// Get the list of validators from the session
+			let validators = <pallet_session::Pallet<Runtime>>::validators(); // Ensure you have the correct type here
+			let num_validators = validators.len() as u32;
+			if num_validators > 0 {
+				let amount_per_validator =
+					staking_amount.checked_div(num_validators.into()).unwrap_or_default();
+
+				for validator in validators {
+					// Transfer the amount to the validator's account first
+					if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
+						&registration_account.clone(),
+						&validator,
+						amount_per_validator,
+						ExistenceRequirement::KeepAlive,
+					) {
+						log::error!(
+							target: "runtime::marketplace_payout",
+							"❌ Validator payout transfer from registration failed for {:?}: {:?}",
+							validator,
+							e
+						);
+						continue;
+					}
+
+					let bond_result = if pallet_staking::Pallet::<Runtime>::ledger(
+						sp_staking::StakingAccount::Stash(validator.clone()),
+					)
+					.is_ok()
+					{
+							pallet_staking::Pallet::<Runtime>::bond_extra(
+								frame_system::RawOrigin::Signed(validator.clone()).into(),
+								amount_per_validator,
+							)
+						} else {
+							pallet_staking::Pallet::<Runtime>::bond(
+								frame_system::RawOrigin::Signed(validator.clone()).into(),
+								amount_per_validator,
+								pallet_staking::RewardDestination::Staked,
+							)
+						};
+
+					if let Err(e) = bond_result {
+						log::warn!(
+							target: "runtime::marketplace_payout",
+							"⚠️ Auto-bond failed for validator {:?}: {:?}",
+							validator,
+							e
+						);
+					}
+				}
+			}
+		}
+
+		// Handle explicit staking pot dedicated for rewards
+		use sp_runtime::traits::AccountIdConversion;
+		let staking_pot_account: AccountId = StakingPotId::get().into_account_truncating();
+		let staking_pot_balance = pallet_balances::Pallet::<Runtime>::free_balance(&staking_pot_account);
+		let mut payout = 0u32.into();
+
+		if staking_pot_balance > 0 {
+			// Withdraw the balance from the pot to create a NegativeImbalance that is dropped,
+			// offsetting the PositiveImbalance created by Staking pallet when minting EraPayout.
+			if let Ok(_imbalance) = pallet_balances::Pallet::<Runtime>::withdraw(
+				&staking_pot_account,
+				staking_pot_balance,
+				WithdrawReasons::all(),
+				ExistenceRequirement::AllowDeath,
+			) {
+				payout = staking_pot_balance;
+			}
+		}
+
+		(payout, 0u32.into())
+	}
 }
 
 pub struct TransferDustToTreasury;
@@ -799,7 +896,7 @@ impl pallet_staking::Config for Runtime {
 	type RewardRemainder = Treasury;
 	type RuntimeEvent = RuntimeEvent;
 	type Slash = Treasury; // send the slashed funds to the treasury.
-	type Reward = ();
+	type Reward = (); // rewards are minted from the void
 	type SessionsPerEra = SessionsPerEra;
 	type BondingDuration = BondingDuration;
 	type SlashDeferDuration = SlashDeferDuration;
