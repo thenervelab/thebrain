@@ -69,7 +69,7 @@ use sp_runtime::traits::ConstU64;
 use sp_runtime::SaturatedConversion;
 use sp_runtime::{
 	create_runtime_str,
-	curve::PiecewiseLinear,
+	// curve::PiecewiseLinear,
 	generic,
 	impl_opaque_keys,
 	traits::{
@@ -728,8 +728,12 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 		let mut payout = 0u32.into();
 
 		if staking_pot_balance > 0 {
-			// Withdraw the balance from the pot to create a NegativeImbalance that is dropped,
-			// offsetting the PositiveImbalance created by Staking pallet when minting EraPayout.
+			// Withdraw the pot's balance to create a NegativeImbalance that's dropped,
+			// decreasing total_issuance by `pot_balance`. This offsets the equivalent
+			// PositiveImbalance(s) later created by `pallet_staking::payout_stakers` when
+			// it mints per-stash shares via `make_payout` and drops them via
+			// `T::Reward::on_unbalanced`. Net effect on total_issuance: 0; the pot is
+			// effectively transferred to stakers proportional to stake × reward points.
 			if let Ok(_imbalance) = pallet_balances::Pallet::<Runtime>::withdraw(
 				&staking_pot_account,
 				staking_pot_balance,
