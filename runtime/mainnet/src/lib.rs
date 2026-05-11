@@ -535,6 +535,7 @@ where
 }
 
 parameter_types! {
+	// account id : 5EYCAe5jLNAGgCNQpT4E1xSxeJvqstzrt9hx3HKLkkbiwPci
 	pub const StakingPotId: PalletId = PalletId(*b"stk/rpot");
 }
 
@@ -724,6 +725,11 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 		// Handle explicit staking pot dedicated for rewards
 		use sp_runtime::traits::AccountIdConversion;
 		let staking_pot_account: AccountId = StakingPotId::get().into_account_truncating();
+		log::info!(
+			target: "runtime::marketplace_payout",
+			"Staking Pot Account ID: {:?}",
+			staking_pot_account,
+		);
 		let staking_pot_balance = pallet_balances::Pallet::<Runtime>::free_balance(&staking_pot_account);
 		let mut payout = 0u32.into();
 
@@ -742,6 +748,12 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 			) {
 				payout = staking_pot_balance;
 			}
+
+			log::info!(
+				target: "runtime::marketplace_payout",
+				"✅ Marketplace reward payout: {}",
+				payout,
+			);
 		}
 
 		(payout, 0u32.into())
