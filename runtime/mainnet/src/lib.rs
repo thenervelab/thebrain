@@ -633,7 +633,7 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 
 					if let Err(e) = bond_result {
 						log::warn!(
-							target: "runtime::StakingRewardPayout",
+							target: "runtime::marketplace_payout",
 							"⚠️ Auto-bond failed for validator {:?}: {:?}",
 							validator,
 							e
