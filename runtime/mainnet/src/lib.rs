@@ -747,15 +747,15 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 			) {
 				payout = staking_pot_balance;
 			}else {
-				log::warn!(
+				log::warn!( 
 					target: "runtime::staking_payout",
-					"⚠️ Silent failure on withdraw for staking pot account: {}",
+					"⚠️ Silent failure on withdraw for staking pot account: {:?}",
 					staking_pot_account,
 				);
 			}
 
 			log::info!(
-				target: "runtime::marketplace_payout",
+				target: "runtime::staking_payout",
 				"✅ Staking reward payout: {}",
 				payout,
 			);
