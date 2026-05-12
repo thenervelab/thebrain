@@ -255,7 +255,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9186,
+	spec_version: 9187,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -534,6 +534,11 @@ where
 	}
 }
 
+parameter_types! {
+	// account id : 5EYCAe5jLNAGgCNQpT4E1xSxeJvqstzrt9hx3HKLkkbiwPci
+	pub const StakingPotId: PalletId = PalletId(*b"stk/rpot");
+}
+
 pub struct MarketplaceRewardPayout;
 
 impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
@@ -717,8 +722,46 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 			}
 		}
 
-		// No payout if no funds are available
-		(0u32.into(), 0u32.into())
+		// Handle explicit staking pot dedicated for rewards
+		use sp_runtime::traits::AccountIdConversion;
+		let staking_pot_account: AccountId = StakingPotId::get().into_account_truncating();
+		let staking_pot_balance = pallet_balances::Pallet::<Runtime>::free_balance(&staking_pot_account);
+		let mut payout = 0u32.into();
+
+		if staking_pot_balance > 0 {
+			// Withdraw the pot's balance to create a NegativeImbalance that is dropped.
+			// This alone has no net effect on total_issuance under pallet_balances semantics.
+			// However, the subsequent staking payout calls deposit_creating and passes the
+			// PositiveImbalance to Reward::on_unbalanced. Since Reward = () in this runtime,
+			// that PositiveImbalance is dropped, decreasing total_issuance. Net effect per era:
+			// total_issuance -= payout + rewarded_amount. The pot is effectively transferred
+			// to stakers, but total_issuance is *not* issuance-neutral (pre-existing issue).
+
+			// Account reaping after the first drain. `AllowDeath` reaps the pot once the balance hits zero,
+			// so every sudo refill must send at least the existential deposit (ED) to recreate the account.
+			if let Ok(_imbalance) = pallet_balances::Pallet::<Runtime>::withdraw(
+				&staking_pot_account,
+				staking_pot_balance,
+				WithdrawReasons::all(),
+				ExistenceRequirement::AllowDeath,
+			) {
+				payout = staking_pot_balance;
+			}else {
+				log::warn!( 
+					target: "runtime::staking_payout",
+					"⚠️ Silent failure on withdraw for staking pot account: {:?}",
+					staking_pot_account,
+				);
+			}
+
+			log::info!(
+				target: "runtime::staking_payout",
+				"✅ Staking reward payout: {}",
+				payout,
+			);
+		}
+
+		(payout, 0u32.into())
 	}
 }
 
