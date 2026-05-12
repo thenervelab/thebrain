@@ -55,7 +55,7 @@ pub use pallet_staking::StakerStatus;
 #[allow(deprecated)]
 use pallet_transaction_payment::{CurrencyAdapter, FeeDetails, Multiplier, RuntimeDispatchInfo};
 use scale_info::prelude::string::String;
-// use pallet_registration::NodeType; 
+// use pallet_registration::NodeType;
 use pallet_tx_pause::RuntimeCallNameOf;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use precompiles::HipiusPrecompiles;
@@ -633,7 +633,7 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 
 					if let Err(e) = bond_result {
 						log::warn!(
-							target: "runtime::marketplace_payout",
+							target: "runtime::StakingRewardPayout",
 							"⚠️ Auto-bond failed for validator {:?}: {:?}",
 							validator,
 							e
@@ -725,21 +725,20 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 		// Handle explicit staking pot dedicated for rewards
 		use sp_runtime::traits::AccountIdConversion;
 		let staking_pot_account: AccountId = StakingPotId::get().into_account_truncating();
-		log::info!(
-			target: "runtime::marketplace_payout",
-			"Staking Pot Account ID: {:?}",
-			staking_pot_account,
-		);
 		let staking_pot_balance = pallet_balances::Pallet::<Runtime>::free_balance(&staking_pot_account);
 		let mut payout = 0u32.into();
 
 		if staking_pot_balance > 0 {
-			// Withdraw the pot's balance to create a NegativeImbalance that's dropped,
-			// decreasing total_issuance by `pot_balance`. This offsets the equivalent
-			// PositiveImbalance(s) later created by `pallet_staking::payout_stakers` when
-			// it mints per-stash shares via `make_payout` and drops them via
-			// `T::Reward::on_unbalanced`. Net effect on total_issuance: 0; the pot is
-			// effectively transferred to stakers proportional to stake × reward points.
+			// Withdraw the pot's balance to create a NegativeImbalance that is dropped.
+			// This alone has no net effect on total_issuance under pallet_balances semantics.
+			// However, the subsequent staking payout calls deposit_creating and passes the
+			// PositiveImbalance to Reward::on_unbalanced. Since Reward = () in this runtime,
+			// that PositiveImbalance is dropped, decreasing total_issuance. Net effect per era:
+			// total_issuance -= payout + rewarded_amount. The pot is effectively transferred
+			// to stakers, but total_issuance is *not* issuance-neutral (pre-existing issue).
+
+			// Account reaping after the first drain. `AllowDeath` reaps the pot once the balance hits zero,
+			// so every sudo refill must send at least the existential deposit (ED) to recreate the account.
 			if let Ok(_imbalance) = pallet_balances::Pallet::<Runtime>::withdraw(
 				&staking_pot_account,
 				staking_pot_balance,
@@ -747,11 +746,17 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 				ExistenceRequirement::AllowDeath,
 			) {
 				payout = staking_pot_balance;
+			}else {
+				log::warn!(
+					target: "runtime::staking_payout",
+					"⚠️ Silent failure on withdraw for staking pot account: {}",
+					staking_pot_account,
+				);
 			}
 
 			log::info!(
 				target: "runtime::marketplace_payout",
-				"✅ Marketplace reward payout: {}",
+				"✅ Staking reward payout: {}",
 				payout,
 			);
 		}

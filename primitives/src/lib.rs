@@ -281,9 +281,9 @@ pub mod treasury {
 
 #[cfg(not(feature = "fast-runtime"))]
 pub mod staking {
-	// Six sessions in an era (24 hours). (Era Duration)
+	// Six sessions in an era (6 hours). (Era Duration)
 	pub const SESSIONS_PER_ERA: sp_staking::SessionIndex = 6;
-	// 1 eras for unbonding (7 days).
+	// 1 eras for unbonding (48 hours).
 	pub const BONDING_DURATION: sp_staking::EraIndex = 8;
 	// 27 eras for slash defer duration (10 days).
 	pub const SLASH_DEFER_DURATION: sp_staking::EraIndex = 10;
