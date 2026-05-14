@@ -150,8 +150,6 @@ pub mod pallet {
 	pub enum Event<T: Config<I>, I: 'static = ()> {
 		SomethingStored { something: u32, who: T::AccountId },
 		RankingsUpdated { count: u32 },
-		NodeAdded { node_id: Vec<u8>, node_ss58_address: Vec<u8>, node_type: NodeType, weight: u16, last_updated: BlockNumberFor<T>, is_active: bool },
-		NodeRankChanged { node_id: Vec<u8>, new_rank: u32 },
 		RewardDistributed { account: T::AccountId, amount: BalanceOf<T> },
 		RewardLocked {
 			account: T::AccountId,
@@ -504,8 +502,8 @@ pub mod pallet {
 		/// Update rankings based on node ids and their corresponding weights
 		pub fn do_update_rankings(
 			weights: Vec<u16>,
-			all_nodes_ss58: Vec<Vec<u8>>, 
-			node_ids: Vec<Vec<u8>>, 
+			all_nodes_ss58: Vec<Vec<u8>>,
+			node_ids: Vec<Vec<u8>>,
 			node_types: Vec<NodeType>,
 		) -> DispatchResult {
 			// Ensure vectors have same length
@@ -527,15 +525,12 @@ pub mod pallet {
 				let node_ranking = NodeRankings {
 					rank: 0, // Will be updated after sorting
 					node_id: node_id.clone(),
-					node_ss58_address: node_ss58.clone(),
-					node_type: node_type.clone(),
+					node_ss58_address: node_ss58,
+					node_type,
 					weight,
 					last_updated: current_block,
 					is_active: true,
 				};
-
-				// Emit NodeAdded event
-				Self::deposit_event(Event::NodeAdded { node_id: node_id.clone(), node_ss58_address: node_ss58.clone(), node_type: node_type.clone(), weight, last_updated: current_block, is_active: true });
 
 				// Add to vector for sorting
 				all_rankings.push(node_ranking);
@@ -925,7 +920,7 @@ pub mod pallet {
 								if !reward.is_zero() {
 									let reward_balance: BalanceOf<T> = reward.saturated_into();
 									let reward_u128: u128 = reward.saturated_into();
-									let unlock_at = n.saturating_add(T::RewardLockBlocks::get());
+										let unlock_at = n.saturating_add(T::RewardLockBlocks::get());
 
 									let outcome = with_transaction(|| -> TransactionOutcome<DispatchResult> {
 										if let Err(e) = <pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
