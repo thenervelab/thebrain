@@ -469,6 +469,8 @@ pub mod pallet {
 			s3_size: u128,
 			s3_count: u128,
 		},
+        WhitelistedCallerAdded { account: T::AccountId },
+        WhitelistedCallerRemoved { account: T::AccountId },
 	}
 
 	#[pallet::error]
@@ -523,6 +525,7 @@ pub mod pallet {
         UserNotFound,
         ResubscribeCooldownActive,
         SubscriptionCancellationNotAuthorized,
+        WhitelistedCallerNotAuthorized,
 		TooManyUpdates,
 	}
     
@@ -633,7 +636,7 @@ pub mod pallet {
 
             // Check if the caller is a whitelisted caller
             let allowed = WhitelistedCallers::<T>::get();
-            ensure!(allowed.contains(&who), Error::<T>::SubscriptionCancellationNotAuthorized);
+            ensure!(allowed.contains(&who), Error::<T>::WhitelistedCallerNotAuthorized);
         
             if let Some(n) = pay_upfront {
                 ensure!(n >= 1 && n <= 24, Error::<T>::InvalidInput);
@@ -908,8 +911,10 @@ pub mod pallet {
         ) -> DispatchResult {
             ensure_root(origin)?;
             let mut allowed_accounts = WhitelistedCallers::<T>::get();
+            // In sudo_set_whitelist_canceller function
             if !allowed_accounts.contains(&account) {
-                allowed_accounts.push(account);
+                allowed_accounts.push(account.clone());
+                Self::deposit_event(Event::WhitelistedCallerAdded { account });
             }
             WhitelistedCallers::<T>::put(allowed_accounts);
             Ok(())
@@ -926,6 +931,8 @@ pub mod pallet {
             let mut allowed_accounts = WhitelistedCallers::<T>::get();
             allowed_accounts.retain(|x| x != &account);
             WhitelistedCallers::<T>::put(allowed_accounts);
+            // In sudo_remove_whitelist_canceller function
+            Self::deposit_event(Event::WhitelistedCallerRemoved { account });
             Ok(())
         }
 
@@ -957,7 +964,7 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
 
             let allowed = WhitelistedCallers::<T>::get();
-            ensure!(allowed.contains(&who), Error::<T>::SubscriptionCancellationNotAuthorized);
+            ensure!(allowed.contains(&who), Error::<T>::WhitelistedCallerNotAuthorized);
 
             match subscription_id {
                 Some(id) => Self::do_cancel_subscription_by_id(&user, id),
@@ -981,7 +988,7 @@ pub mod pallet {
 			let allowed = WhitelistedCallers::<T>::get();
 			ensure!(
 				allowed.contains(&who),
-				Error::<T>::SubscriptionCancellationNotAuthorized
+				Error::<T>::WhitelistedCallerNotAuthorized
 			);
 
 			UserTotalDriveFilesSize::<T>::insert(&account_id, drive_file_size);
@@ -1951,6 +1958,7 @@ pub mod pallet {
                         was_storage = sub.package.is_storage_plan;
                         sub.active = false;
                         cancelled = true;
+                        break; // Stop looping after finding the subscription
                     }
                 }
             });
