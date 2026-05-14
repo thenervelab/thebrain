@@ -547,8 +547,6 @@ pub mod pallet {
 			// Update ranks
 			for (index, ranking) in all_rankings.iter_mut().enumerate() {
 				ranking.rank = (index + 1) as u32;
-				// Emit NodeRankChanged event
-				Self::deposit_event(Event::NodeRankChanged { node_id: ranking.node_id.clone(), new_rank: ranking.rank });
 			}
 
 			// Store sorted list
