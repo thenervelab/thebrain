@@ -378,6 +378,10 @@ pub mod pallet {
     #[pallet::getter(fn subscription_canceller)]
     pub type SubscriptionCanceller<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
 
+    #[pallet::storage]
+    #[pallet::getter(fn whitelisted_cancellers)]
+    pub type WhitelistedCallers<T: Config> = StorageValue<_, Vec<T::AccountId>, ValueQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -465,6 +469,8 @@ pub mod pallet {
 			s3_size: u128,
 			s3_count: u128,
 		},
+        WhitelistedCallerAdded { account: T::AccountId },
+        WhitelistedCallerRemoved { account: T::AccountId },
 	}
 
 	#[pallet::error]
@@ -519,6 +525,7 @@ pub mod pallet {
         UserNotFound,
         ResubscribeCooldownActive,
         SubscriptionCancellationNotAuthorized,
+        WhitelistedCallerNotAuthorized,
 		TooManyUpdates,
 	}
     
@@ -618,14 +625,19 @@ pub mod pallet {
         #[pallet::weight((0, Pays::No))]
         pub fn purchase_plan(
             origin: OriginFor<T>,
+            owner: T::AccountId,
             plan_ids: Vec<T::Hash>,
             location_ids: Option<Vec<Option<u32>>>,
             selected_image_names: Vec<Option<Vec<u8>>>,
             cloud_init_cids: Option<Vec<Option<Vec<u8>>>>,
             pay_upfront: Option<u128>
         ) -> DispatchResult {
-            let owner = ensure_signed(origin)?;
+            let who = ensure_signed(origin)?;
 
+            // Check if the caller is a whitelisted caller
+            let allowed = WhitelistedCallers::<T>::get();
+            ensure!(allowed.contains(&who), Error::<T>::WhitelistedCallerNotAuthorized);
+        
             if let Some(n) = pay_upfront {
                 ensure!(n >= 1 && n <= 24, Error::<T>::InvalidInput);
             }
@@ -846,7 +858,7 @@ pub mod pallet {
             ensure_root(origin)?;
     
             // Set the new sudo key in storage
-            SudoKey::<T>::put(Some(new_sudo_key)); // Store as Some(value)
+            SudoKey::<T>::put(Some(new_sudo_key));
     
             Ok(())
         }
@@ -874,7 +886,7 @@ pub mod pallet {
         /// Can only be called by sudo
         #[pallet::call_index(18)]
         #[pallet::weight((0, Pays::No))]
-        pub fn sudo_set_purchase_plan(
+        pub fn sudo_set_purchase_plan_enabled(
             origin: OriginFor<T>,
             enabled: bool
         ) -> DispatchResult {
@@ -887,6 +899,40 @@ pub mod pallet {
             // Emit an event
             Self::deposit_event(Event::PurchasePlanStatusChanged { enabled });
 
+            Ok(())
+        }
+        
+        /// Root sets the dedicated subscription canceller address.
+        #[pallet::call_index(19)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_set_whitelist_canceller(
+            origin: OriginFor<T>,
+            account: T::AccountId,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let mut allowed_accounts = WhitelistedCallers::<T>::get();
+            // In sudo_set_whitelist_canceller function
+            if !allowed_accounts.contains(&account) {
+                allowed_accounts.push(account.clone());
+                Self::deposit_event(Event::WhitelistedCallerAdded { account });
+            }
+            WhitelistedCallers::<T>::put(allowed_accounts);
+            Ok(())
+        }
+
+        /// Root removes an account from the subscription canceller list.
+        #[pallet::call_index(20)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_remove_whitelist_canceller(
+            origin: OriginFor<T>,
+            account: T::AccountId,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let mut allowed_accounts = WhitelistedCallers::<T>::get();
+            allowed_accounts.retain(|x| x != &account);
+            WhitelistedCallers::<T>::put(allowed_accounts);
+            // In sudo_remove_whitelist_canceller function
+            Self::deposit_event(Event::WhitelistedCallerRemoved { account });
             Ok(())
         }
 
@@ -902,35 +948,28 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Cancel a user's subscription (restricted).
-        #[pallet::call_index(19)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn cancel_user_subscription(origin: OriginFor<T>, user: T::AccountId) -> DispatchResult {
-            let who = ensure_signed(origin)?;
-
-            let allowed = SubscriptionCanceller::<T>::get();
-            ensure!(allowed.as_ref() == Some(&who), Error::<T>::SubscriptionCancellationNotAuthorized);
-            
-            // Restricted canceller: delete storage subs (legacy behavior), but also refund unused prepaid.
-            Self::do_delete_storage_subscription_with_refund(&user)?;
-            
-            Ok(())
-        }
-
-        /// User-cancel storage subscription(s). Marks inactive (does not delete) and refunds unused prepaid months.
+        /// Cancel a user's subscription (restricted to whitelisted callers).
+        ///
+        /// - If `subscription_id` is `Some(id)`: cancels (marks inactive) that specific subscription
+        ///   (storage or compute), refunds unused prepaid months.
+        /// - If `subscription_id` is `None`: deletes all storage subscriptions (legacy behavior),
+        ///   refunds unused prepaid months.
         #[pallet::call_index(22)]
         #[pallet::weight((0, Pays::No))]
-        pub fn cancel_my_storage_subscription(origin: OriginFor<T>) -> DispatchResult {
+        pub fn cancel_user_subscription(
+            origin: OriginFor<T>,
+            user: T::AccountId,
+            subscription_id: Option<SubscriptionId>,
+        ) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            Self::do_cancel_storage_subscription(&who)
-        }
 
-        /// Cancel a specific subscription by ID. Only the owner can cancel.
-        #[pallet::call_index(23)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn cancel_compute_subscription_by_id(origin: OriginFor<T>, subscription_id: SubscriptionId) -> DispatchResult {
-            let who = ensure_signed(origin)?;
-            Self::do_cancel_subscription_by_id(&who, subscription_id)
+            let allowed = WhitelistedCallers::<T>::get();
+            ensure!(allowed.contains(&who), Error::<T>::WhitelistedCallerNotAuthorized);
+
+            match subscription_id {
+                Some(id) => Self::do_cancel_subscription_by_id(&user, id),
+                None => Self::do_delete_storage_subscription_with_refund(&user),
+            }
         }
 
 		/// Update the total Drive + S3 file size/count for a user.
@@ -946,10 +985,10 @@ pub mod pallet {
 			s3_file_count: u128,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
-			let allowed = SubscriptionCanceller::<T>::get();
+			let allowed = WhitelistedCallers::<T>::get();
 			ensure!(
-				allowed.as_ref() == Some(&who),
-				Error::<T>::SubscriptionCancellationNotAuthorized
+				allowed.contains(&who),
+				Error::<T>::WhitelistedCallerNotAuthorized
 			);
 
 			UserTotalDriveFilesSize::<T>::insert(&account_id, drive_file_size);
@@ -1014,7 +1053,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-        #[pallet::call_index(20)]
+        #[pallet::call_index(26)]
         #[pallet::weight((10_000, Pays::No))]
         pub fn set_storage_price_per_miner(
             origin: OriginFor<T>,
@@ -1099,35 +1138,7 @@ pub mod pallet {
             sub.paid_per_month.saturating_mul(months_remaining)
         }
 
-        fn cancel_subscriptions_and_refund(
-            account_id: &T::AccountId,
-            cancel_storage: bool,
-            cancel_compute: bool,
-        ) -> Result<(bool, bool, u128), DispatchError> {
-            let mut refunded: u128 = 0;
-            let mut cancelled_storage = false;
-            let mut cancelled_compute = false;
 
-            UserAllSubscriptionPlans::<T>::mutate(account_id, |subs| {
-                for sub in subs.iter_mut() {
-                    if !sub.active {
-                        continue;
-                    }
-                    let is_storage = sub.package.is_storage_plan;
-                    if (is_storage && cancel_storage) || (!is_storage && cancel_compute) {
-                        refunded = refunded.saturating_add(Self::unused_prepaid_refund_credits(sub));
-                        sub.active = false;
-                        if is_storage {
-                            cancelled_storage = true;
-                        } else {
-                            cancelled_compute = true;
-                        }
-                    }
-                }
-            });
-
-            Ok((cancelled_storage, cancelled_compute, refunded))
-        }
 
         fn refund_credits_with_batch(account_id: &T::AccountId, amount: u128) -> DispatchResult {
             if amount == 0 {
@@ -1931,36 +1942,23 @@ pub mod pallet {
                 .collect()
         }
 
-        /// Cancel a user's storage subscription(s) by marking inactive (does not delete).
-        /// Also refunds unused prepaid months (credits) when applicable.
-        fn do_cancel_storage_subscription(account_id: &T::AccountId) -> DispatchResult {
-            let now = <frame_system::Pallet<T>>::block_number();
-            let (cancelled_storage, _cancelled_compute, refund) =
-                Self::cancel_subscriptions_and_refund(account_id, true, false)?;
-
-            ensure!(cancelled_storage, Error::<T>::NoActiveSubscription);
-
-            if refund > 0 {
-                Self::refund_credits_with_batch(account_id, refund)?;
-            }
-
-            LastSubscriptionCancelledAt::<T>::insert(account_id, now);
-            Self::deposit_event(Event::StorageSubscriptionCancelled { who: account_id.clone() });
-            Ok(())
-        }
-
-        /// Cancel a specific subscription by ID. Only the owner can cancel.
+        /// Cancel a specific subscription by ID (storage or compute).
+        /// Marks the subscription inactive, refunds unused prepaid months.
+        /// Sets the resubscribe cooldown only when no active subscriptions remain.
         fn do_cancel_subscription_by_id(account_id: &T::AccountId, subscription_id: SubscriptionId) -> DispatchResult {
             let now = <frame_system::Pallet<T>>::block_number();
-            let mut refund = 0;
+            let mut refund: u128 = 0;
             let mut cancelled = false;
+            let mut was_storage = false;
 
             UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
                 for sub in subscriptions.iter_mut() {
-                    if sub.id == subscription_id && !sub.package.is_storage_plan && sub.active {
+                    if sub.id == subscription_id && sub.active {
                         refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
+                        was_storage = sub.package.is_storage_plan;
                         sub.active = false;
                         cancelled = true;
+                        break; // Stop looping after finding the subscription
                     }
                 }
             });
@@ -1977,7 +1975,11 @@ pub mod pallet {
                 LastSubscriptionCancelledAt::<T>::insert(account_id, now);
             }
 
-            Self::deposit_event(Event::ComputeSubscriptionCancelled { who: account_id.clone() });
+            if was_storage {
+                Self::deposit_event(Event::StorageSubscriptionCancelled { who: account_id.clone() });
+            } else {
+                Self::deposit_event(Event::ComputeSubscriptionCancelled { who: account_id.clone() });
+            }
             Ok(())
         }
 

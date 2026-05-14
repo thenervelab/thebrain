@@ -433,13 +433,10 @@ pub mod pallet {
 
 	/// Aggregate user storage usage metrics reported by validators.
 	#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
-	pub struct UserStorageUsageUpdate {
-		pub total_file_size: u128,
-		pub total_file_count: u128,
-		pub drive_file_size: u128,
-		pub drive_file_count: u128,
-		pub s3_file_size: u128,
-		pub s3_file_count: u128,
+	pub struct UserStorageUsageUpdate<AccountId> {
+		pub account_id: AccountId,
+		pub file_size: u128,
+		pub file_count: u128,
 	}
 
 	/// Validator-reported, non-cheatable per-node quality inputs used for **on-chain** weight computation.
@@ -876,7 +873,7 @@ pub mod pallet {
 		OptionQuery,
 	>;
 
-	/// Node id -> current child (active only).
+	/// Node id → current child (active only).
 	#[pallet::storage]
 	pub type NodeIdToChild<T: Config> =
 		StorageMap<_, Blake2_128Concat, [u8; 32], T::AccountId, OptionQuery>;
@@ -1059,6 +1056,11 @@ pub mod pallet {
 			start_epoch: u64,
 			pruned: u32,
 			next_epoch: u64,
+		},
+		UserStatsUpdated {
+			user: T::AccountId,
+			size: u128,
+			count: u128,
 		},
 		UserFilesUpdated {
 			user: T::AccountId,
@@ -2136,7 +2138,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-
 		/// Claim (unbond) the deposit for a deregistered child after the unbonding period.
 		///
 		/// Note: this does NOT bypass cooldown; cooldown is enforced on `register_child`.
@@ -2390,7 +2391,7 @@ pub mod pallet {
 		///
 		/// `slots` is capped by [`Config::MaxChildrenPerFamily`]. Use `0` to require the paid curve for
 		/// every registration (when lockup is enabled).
-		#[pallet::call_index(37)]
+		#[pallet::call_index(38)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::set_free_child_slots_per_family(), Pays::No))]
 		pub fn set_free_child_slots_per_family(origin: OriginFor<T>, slots: u32) -> DispatchResult {
 			T::ArionAdminOrigin::ensure_origin(origin)?;
@@ -2571,11 +2572,64 @@ pub mod pallet {
 				*count = Some(file_count);
 			});
 
-			Self::deposit_event(Event::UserFilesUpdated {
+			Self::deposit_event(Event::UserStatsUpdated {
 				user: account_id,
 				size: file_size,
 				count: file_count,
 			});
+
+			Ok(())
+		}
+
+		/// Update multiple user file sizes in a single call.
+		/// Can only be called by a registered validator proxy account.
+		#[pallet::call_index(36)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn update_multiple_user_file_sizes(
+			origin: OriginFor<T>,
+			updates: Vec<UserStorageUsageUpdate<T::AccountId>>, // Use struct directly
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Get the main account if this is a proxy, otherwise use the account itself
+			let main_account = if let Some(primary) = Self::get_primary_account(&who)? {
+				primary
+			} else {
+				who.clone()
+			};
+
+			// Check if the node is registered
+			let node_info =
+				pallet_registration::Pallet::<T>::get_registered_node_for_owner(&main_account)
+					.ok_or(Error::<T>::NodeNotRegistered)?;
+
+			// Verify the node type is Validator
+			ensure!(
+				node_info.node_type == pallet_registration::NodeType::Validator,
+				Error::<T>::InvalidNodeType
+			);
+
+			for u in updates {
+				let account_id = u.account_id;
+				let file_size = u.file_size;
+				let file_count = u.file_count;
+
+				// Update the user's total file size
+				UserTotalFilesSize::<T>::mutate(&account_id, |size| {
+					*size = Some(file_size);
+				});
+
+				// Update the user's total file count
+				UserTotalFilesCount::<T>::mutate(&account_id, |count| {
+					*count = Some(file_count);
+				});
+
+				Self::deposit_event(Event::UserFilesUpdated {
+					user: account_id,
+					size: file_size,
+					count: file_count,
+				});
+			}
 
 			Ok(())
 		}
@@ -2588,7 +2642,7 @@ pub mod pallet {
 		///
 		/// Only epochs **`<=` current cutover** are removed (same rule as [`Self::submit_crush_map`]).
 		/// Permissionless; weight bounded by `count` and [`Config::MaxCrushEpochPrunesPerCall`].
-		#[pallet::call_index(36)]
+		#[pallet::call_index(37)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_historical_crush_epochs(*count), Pays::No))]
 		pub fn prune_historical_crush_epochs(
 			origin: OriginFor<T>,
