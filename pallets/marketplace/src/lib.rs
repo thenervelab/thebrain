@@ -947,7 +947,7 @@ pub mod pallet {
         ///   (storage or compute), refunds unused prepaid months.
         /// - If `subscription_id` is `None`: deletes all storage subscriptions (legacy behavior),
         ///   refunds unused prepaid months.
-        #[pallet::call_index(21)]
+        #[pallet::call_index(22)]
         #[pallet::weight((0, Pays::No))]
         pub fn cancel_user_subscription(
             origin: OriginFor<T>,

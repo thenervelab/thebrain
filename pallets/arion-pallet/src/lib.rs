@@ -1057,6 +1057,11 @@ pub mod pallet {
 			pruned: u32,
 			next_epoch: u64,
 		},
+		UserStatsUpdated {
+			user: T::AccountId,
+			size: u128,
+			count: u128,
+		},
 		UserFilesUpdated {
 			user: T::AccountId,
 			size: u128,
@@ -2567,7 +2572,7 @@ pub mod pallet {
 				*count = Some(file_count);
 			});
 
-			Self::deposit_event(Event::UserFilesUpdated {
+			Self::deposit_event(Event::UserStatsUpdated {
 				user: account_id,
 				size: file_size,
 				count: file_count,
