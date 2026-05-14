@@ -902,7 +902,7 @@ pub mod pallet {
         /// Root sets the dedicated subscription canceller address.
         #[pallet::call_index(19)]
         #[pallet::weight((0, Pays::No))]
-        pub fn sudo_set_subscription_canceller(
+        pub fn sudo_set_whitelist_canceller(
             origin: OriginFor<T>,
             account: T::AccountId,
         ) -> DispatchResult {
@@ -918,7 +918,7 @@ pub mod pallet {
         /// Root removes an account from the subscription canceller list.
         #[pallet::call_index(20)]
         #[pallet::weight((0, Pays::No))]
-        pub fn sudo_remove_subscription_canceller(
+        pub fn sudo_remove_whitelist_canceller(
             origin: OriginFor<T>,
             account: T::AccountId,
         ) -> DispatchResult {
@@ -926,6 +926,18 @@ pub mod pallet {
             let mut allowed_accounts = WhitelistedCallers::<T>::get();
             allowed_accounts.retain(|x| x != &account);
             WhitelistedCallers::<T>::put(allowed_accounts);
+            Ok(())
+        }
+
+        /// Root sets the dedicated subscription canceller address.
+        #[pallet::call_index(21)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_set_subscription_canceller(
+            origin: OriginFor<T>,
+            account: Option<T::AccountId>,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            SubscriptionCanceller::<T>::put(account);
             Ok(())
         }
 
@@ -1004,9 +1016,9 @@ pub mod pallet {
 				Error::<T>::TooManyUpdates
 			);
 
-			let allowed = WhitelistedCallers::<T>::get();
+			let allowed = SubscriptionCanceller::<T>::get();
 			ensure!(
-				allowed.contains(&who),
+				allowed.as_ref() == Some(&who),
 				Error::<T>::SubscriptionCancellationNotAuthorized
 			);
 
