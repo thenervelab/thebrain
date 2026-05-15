@@ -387,12 +387,10 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		/// CDN location added
         CdnLocationAdded { id: u32 },
-        /// Auto-renewal status updated
-        AutoRenewalUpdated { who: T::AccountId, subscription_id: SubscriptionId, enabled: bool },
-        SubscriptionTransferred {
-            from: T::AccountId,
-            to: T::AccountId,
+        SubscriptionRenewed {
+            who: T::AccountId,
             subscription_id: SubscriptionId,
+            amount: u128,
         },
         TokensBurned {
             amount: BalanceOf<T>,
@@ -425,14 +423,6 @@ pub mod pallet {
         PricePerBandwidthUpdated { price: u128 },
         StorageSubscriptionCancelled { who: T::AccountId },
         ComputeSubscriptionCancelled { who: T::AccountId },
-        BackupEnabled { 
-            caller: T::AccountId,
-            account: T::AccountId 
-        },
-        BackupDisabled { 
-            caller: T::AccountId,
-            account: T::AccountId 
-        },
         OSDiskImageUrlSet {
 			os_name: Vec<u8>,
 			url: Vec<u8>,
@@ -672,19 +662,38 @@ pub mod pallet {
             // Process each plan purchase
             for (i, &plan_id) in plan_ids.iter().enumerate() {
                 // Get plan details
-                let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
+                let plan = match Plans::<T>::get(&plan_id) {
+                    Some(p) => p,
+                    None => {
+                        Self::deposit_event(Event::PlanPurchaseFailed {
+                            caller: who.clone(),
+                            owner: owner.clone(),
+                            plan_id,
+                            error: Error::<T>::PlanNotFound.into(),
+                        });
+                        return Err(Error::<T>::PlanNotFound.into());
+                    }
+                };
 
                 // Check if plan is suspended
-                ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
+                if plan.is_suspended {
+                    Self::deposit_event(Event::PlanPurchaseFailed {
+                        caller: who.clone(),
+                        owner: owner.clone(),
+                        plan_id,
+                        error: Error::<T>::PlanSuspended.into(),
+                    });
+                    return Err(Error::<T>::PlanSuspended.into());
+                }
 
                 // Process the purchase based on plan type
-                if plan.is_storage_plan {
+                if let Err(e) = if plan.is_storage_plan {
                     // Handle storage plan purchase
                     Self::do_purchase_storage_plan(
                         owner.clone(),
                         plan_id,
                         pay_upfront
-                    )?;
+                    )
                 } else {
                     // For compute plans, image name is required
                     let image_name = selected_image_names[i].clone();
@@ -696,13 +705,21 @@ pub mod pallet {
                         image_name,
                         cloud_init_cids[i].clone(),
                         pay_upfront
-                    )?;
-                };
+                    )
+                } {
+                    Self::deposit_event(Event::PlanPurchaseFailed {
+                        caller: who.clone(),
+                        owner: owner.clone(),
+                        plan_id,
+                        error: e,
+                    });
+                    return Err(e);
+                }
 
                 successful_purchases.push(plan_id);
                 // Emit event for successful purchase
                 Self::deposit_event(Event::PlanPurchased {
-                    caller: owner.clone(),
+                    caller: who.clone(),
                     owner: owner.clone(),
                     plan_id,
                     location_id: location_ids[i],
@@ -828,7 +845,14 @@ pub mod pallet {
             CreditsPallet::<T>::ensure_is_authority(&authority)?;
 
             // Call the existing deposit function
-            Self::do_deposit(account, credit_amount, alpha_amount, freeze_for_chargeback, code)?;
+            if let Err(e) = Self::do_deposit(account.clone(), credit_amount, alpha_amount, freeze_for_chargeback, code) {
+                Self::deposit_event(Event::DepositFailed {
+                    authority,
+                    account,
+                    error: e,
+                });
+                return Err(e);
+            }
             Ok(())
         }
 
@@ -1745,6 +1769,11 @@ pub mod pallet {
                                     prev_next,
                                 ),
                             );
+                            Self::deposit_event(Event::SubscriptionRenewed {
+                                who: account_id.clone(),
+                                subscription_id: sub.id,
+                                amount: sub.package.price,
+                            });
                         }
                     }
 
