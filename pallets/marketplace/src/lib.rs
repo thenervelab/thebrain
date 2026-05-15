@@ -687,9 +687,7 @@ pub mod pallet {
                     )?;
                 } else {
                     // For compute plans, image name is required
-                    let image_name = selected_image_names[i]
-                        .clone()
-                        .ok_or(Error::<T>::InvalidImageSelection)?;
+                    let image_name = selected_image_names[i].clone();
                     // Handle compute plan purchase
                     Self::do_purchase_compute_plan(
                         owner.clone(),
@@ -1445,7 +1443,7 @@ pub mod pallet {
             who: T::AccountId,
             plan_id: T::Hash,
             location_id: Option<u32>,
-            selected_image_name: Vec<u8>,
+            selected_image_name: Option<Vec<u8>>,
             cloud_init_cid: Option<Vec<u8>>,
             pay_upfront: Option<u128>
         ) -> DispatchResult {
@@ -1461,13 +1459,13 @@ pub mod pallet {
             ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
             // Check if the selected image name exists in OSDiskImageUrls storage
-            ensure!(
-                Self::os_disk_image_urls(selected_image_name.clone()).is_some(), 
-                Error::<T>::InvalidImageSelection
-            );
-
-            let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
-
+            if let Some(ref name) = selected_image_name {
+                ensure!(
+                    Self::os_disk_image_urls(name.clone()).is_some(), 
+                    Error::<T>::InvalidImageSelection
+                );
+            }
+            
             // Determine the (monthly) price (pro-rated if purchased mid-month).
             let mut plan_price_native = Self::prorated_monthly_price(plan.price);
             
@@ -1542,7 +1540,7 @@ pub mod pallet {
                 cdn_location_id: location_id,
                 active: true,
                 last_charged_at: current_block_number,
-                selected_image_name : Some(selected_image_name),
+                selected_image_name,
                 next_charge_unix_day,
                 paid_per_month,
                 _phantom: PhantomData,
@@ -2113,30 +2111,30 @@ pub mod pallet {
        
                                 // Batch just unfroze - distribute all pending alpha first
                                 batch.is_frozen = false;
- 
+
                                 if batch.pending_alpha > 0 {
                                     AlphaBalances::<T>::mutate(
                                         &batch.owner,
                                         |alpha| *alpha = alpha.saturating_sub(batch.pending_alpha)
                                     );
-        
+
                                     Self::distribute_alpha(
                                         batch.pending_alpha,
                                         ranking_account.clone(),
                                         marketplace_account.clone(),
                                     )?;
-        
+
                                     batch.pending_alpha = 0;
                                 }
                             }
-        
+
                             // Distribute current alpha
                             if alpha_to_release_u128 > 0 {
                                 AlphaBalances::<T>::mutate(
                                     &batch.owner,
                                     |alpha| *alpha = alpha.saturating_sub(alpha_to_release_u128)
                                 );
-            
+
                                 Self::distribute_alpha(
                                     alpha_to_release_u128,
                                     ranking_account.clone(),
