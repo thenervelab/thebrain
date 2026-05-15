@@ -829,9 +829,9 @@ pub mod pallet {
             freeze_for_chargeback: bool,
             code: Option<Vec<u8>>
         ) -> DispatchResult {
-			let authority = ensure_signed(origin)?;
+            let authority = ensure_signed(origin)?;
             CreditsPallet::<T>::ensure_is_authority(&authority)?;
-
+        
             // Call the existing deposit function
             if let Err(e) = Self::do_deposit(account.clone(), credit_amount, alpha_amount, freeze_for_chargeback, code) {
                 Self::deposit_event(Event::DepositFailed {
@@ -2049,7 +2049,7 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Deposit credits and alpha into a new batch
+        #[transactional]
         fn do_deposit(
             sender: T::AccountId, 
             credit_amount: u128, 
@@ -2057,16 +2057,15 @@ pub mod pallet {
             freeze_for_chargeback: bool,
             code: Option<Vec<u8>>
         ) -> DispatchResult {
-
             let batch_id = NextBatchId::<T>::get();
-
+        
             let release_time = if freeze_for_chargeback {
                 let block_number = <frame_system::Pallet<T>>::block_number();
                 block_number.saturating_add((15u32 * 28800u32).into()) // 15 days
             } else {
                 <frame_system::Pallet<T>>::block_number() // No release time
             };
-
+        
             let batch = Batch {
                 owner: sender.clone(),
                 credit_amount,
@@ -2077,17 +2076,19 @@ pub mod pallet {
                 is_frozen: freeze_for_chargeback,
                 release_time,
             };
-
+        
             Batches::<T>::insert(batch_id, batch);
             UserBatches::<T>::append(&sender, batch_id);
             let next = batch_id.saturating_add(1);
             NextBatchId::<T>::put(next);
             
             AlphaBalances::<T>::mutate(&sender, |alpha| *alpha = alpha.saturating_add(alpha_amount));
+            
+            // This is the critical part - if do_mint fails, the entire transaction rolls back
             CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code)?;
-
+        
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
-
+        
             Ok(())
         }
 
