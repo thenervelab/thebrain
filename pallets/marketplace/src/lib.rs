@@ -385,16 +385,27 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-        SubscriptionRenewed {
-            who: T::AccountId,
+		/// CDN location added
+        CdnLocationAdded { id: u32 },
+        /// Auto-renewal status updated
+        AutoRenewalUpdated { who: T::AccountId, subscription_id: SubscriptionId, enabled: bool },
+        SubscriptionTransferred {
+            from: T::AccountId,
+            to: T::AccountId,
             subscription_id: SubscriptionId,
-            amount: u128,
         },
         TokensBurned {
             amount: BalanceOf<T>,
         },
         PackageSuspensionSet(T::Hash, bool),
-        PlanPriceUpdated(T::Hash, u128),
+        StoragePlanPriceUpdated {
+            plan_id: T::Hash,
+            new_price_per_gb: u32,
+        },
+        ComputePlanPriceUpdated {
+            plan_id: T::Hash,
+            new_price_per_block: u32,
+        },
         PointTransactionRecorded { who: T::AccountId, transaction_type: NativeTransactionType, amount: Points },
         PlanPurchased {
             caller: T::AccountId,
@@ -404,28 +415,26 @@ pub mod pallet {
             selected_image_name: Option<Vec<u8>>,
             cloud_init_cid: Option<Vec<u8>>,
         },
-        PlanPurchaseFailed {
-            caller: T::AccountId,
-            owner: T::AccountId,
-            plan_id: T::Hash,
-            error: DispatchError,
-        },
         PricePerGbUpdated { price: u128 },
         PricePerBandwidthUpdated { price: u128 },
         StorageSubscriptionCancelled { who: T::AccountId },
         ComputeSubscriptionCancelled { who: T::AccountId },
+        BackupEnabled { 
+            caller: T::AccountId,
+            account: T::AccountId 
+        },
+        BackupDisabled { 
+            caller: T::AccountId,
+            account: T::AccountId 
+        },
         OSDiskImageUrlSet {
 			os_name: Vec<u8>,
 			url: Vec<u8>,
 		},
+        PlanPriceUpdated(T::Hash, u128),
         /// Specific miner request fee updated
         SpecificMinerRequestFeeUpdated { fee: BalanceOf<T> },
         BatchDeposited { owner: T::AccountId, batch_id: u64 },
-        DepositFailed {
-            authority: T::AccountId,
-            account: T::AccountId,
-            error: DispatchError,
-        },
         CreditsConsumed { owner: T::AccountId, credits: u128 },
         /// Monthly subscription charge could not be collected; subscriptions were deactivated.
         SubscriptionChargeFailed {
@@ -491,9 +500,11 @@ pub mod pallet {
         InvalidImageSelection,
         NodeNotRegistered,
         InvalidNodeType,
+        /// The plan does not match the user's active subscription
         InvalidPlanForSubscription,
         InvalidPlanConfiguration,
         InvalidOSDiskImageUrl,
+        /// No subscription found for the given user
         NoSubscriptionFound,
         StorageOperationsDisabled,
         PlanOperationDisabled,
@@ -574,7 +585,7 @@ pub mod pallet {
             ensure_root(origin)?;
 
             // Generate a unique ID for the plan (you can use a counter or a random hash)
-            let plan_id = T::Hashing::hash_of(&plan_name);
+            let plan_id = T::Hashing::hash_of(&plan_name); // Example way to generate a unique ID
             ensure!(
                 !Plans::<T>::contains_key(&plan_id),
                 Error::<T>::PlanAlreadyExists
@@ -650,41 +661,24 @@ pub mod pallet {
             // Process each plan purchase
             for (i, &plan_id) in plan_ids.iter().enumerate() {
                 // Get plan details
-                let plan = match Plans::<T>::get(&plan_id) {
-                    Some(p) => p,
-                    None => {
-                        Self::deposit_event(Event::PlanPurchaseFailed {
-                            caller: who.clone(),
-                            owner: owner.clone(),
-                            plan_id,
-                            error: Error::<T>::PlanNotFound.into(),
-                        });
-                        return Err(Error::<T>::PlanNotFound.into());
-                    }
-                };
+                let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
 
                 // Check if plan is suspended
-                if plan.is_suspended {
-                    Self::deposit_event(Event::PlanPurchaseFailed {
-                        caller: who.clone(),
-                        owner: owner.clone(),
-                        plan_id,
-                        error: Error::<T>::PlanSuspended.into(),
-                    });
-                    return Err(Error::<T>::PlanSuspended.into());
-                }
+                ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
                 // Process the purchase based on plan type
-                if let Err(e) = if plan.is_storage_plan {
+                if plan.is_storage_plan {
                     // Handle storage plan purchase
                     Self::do_purchase_storage_plan(
                         owner.clone(),
                         plan_id,
                         pay_upfront
-                    )
+                    )?;
                 } else {
                     // For compute plans, image name is required
-                    let image_name = selected_image_names[i].clone();
+                    let image_name = selected_image_names[i]
+                        .clone()
+                        .ok_or(Error::<T>::InvalidImageSelection)?;
                     // Handle compute plan purchase
                     Self::do_purchase_compute_plan(
                         owner.clone(),
@@ -693,21 +687,13 @@ pub mod pallet {
                         image_name,
                         cloud_init_cids[i].clone(),
                         pay_upfront
-                    )
-                } {
-                    Self::deposit_event(Event::PlanPurchaseFailed {
-                        caller: who.clone(),
-                        owner: owner.clone(),
-                        plan_id,
-                        error: e,
-                    });
-                    return Err(e);
-                }
+                    )?;
+                };
 
                 successful_purchases.push(plan_id);
                 // Emit event for successful purchase
                 Self::deposit_event(Event::PlanPurchased {
-                    caller: who.clone(),
+                    caller: owner.clone(),
                     owner: owner.clone(),
                     plan_id,
                     location_id: location_ids[i],
@@ -829,18 +815,11 @@ pub mod pallet {
             freeze_for_chargeback: bool,
             code: Option<Vec<u8>>
         ) -> DispatchResult {
-            let authority = ensure_signed(origin)?;
+			let authority = ensure_signed(origin)?;
             CreditsPallet::<T>::ensure_is_authority(&authority)?;
-        
+
             // Call the existing deposit function
-            if let Err(e) = Self::do_deposit(account.clone(), credit_amount, alpha_amount, freeze_for_chargeback, code) {
-                Self::deposit_event(Event::DepositFailed {
-                    authority,
-                    account,
-                    error: e,
-                });
-                return Err(e);
-            }
+            Self::do_deposit(account, credit_amount, alpha_amount, freeze_for_chargeback, code)?;
             Ok(())
         }
 
@@ -1072,33 +1051,6 @@ pub mod pallet {
             ensure_root(origin)?;
             StoragePricePerMiner::<T>::put(price);
             Self::deposit_event(Event::StoragePricePerMinerUpdated { price });
-            Ok(())
-        }
-
-        /// Sudo function to update the price of an existing plan.
-        #[pallet::call_index(27)]
-        #[pallet::weight((10_000, Pays::No))]
-        pub fn update_plan_price(
-            origin: OriginFor<T>,
-            plan_id: T::Hash,
-            new_price: u128,
-        ) -> DispatchResult {
-            // Ensure the caller is sudo
-            ensure_root(origin)?;
-
-            // Check if the plan exists
-            Plans::<T>::try_mutate_exists(plan_id, |maybe_plan| -> DispatchResult {
-                if let Some(ref mut plan) = maybe_plan {
-                    plan.price = new_price;
-                } else {
-                    return Err(Error::<T>::PlanNotFound.into());
-                }
-                Ok(())
-            })?;
-
-            // Emit an event
-            Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
-
             Ok(())
         }
 	}
@@ -1482,7 +1434,7 @@ pub mod pallet {
             who: T::AccountId,
             plan_id: T::Hash,
             location_id: Option<u32>,
-            selected_image_name: Option<Vec<u8>>,
+            selected_image_name: Vec<u8>,
             cloud_init_cid: Option<Vec<u8>>,
             pay_upfront: Option<u128>
         ) -> DispatchResult {
@@ -1498,13 +1450,13 @@ pub mod pallet {
             ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
             // Check if the selected image name exists in OSDiskImageUrls storage
-            if let Some(ref name) = selected_image_name {
-                ensure!(
-                    Self::os_disk_image_urls(name.clone()).is_some(), 
-                    Error::<T>::InvalidImageSelection
-                );
-            }
-            
+            ensure!(
+                Self::os_disk_image_urls(selected_image_name.clone()).is_some(), 
+                Error::<T>::InvalidImageSelection
+            );
+
+            let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
+
             // Determine the (monthly) price (pro-rated if purchased mid-month).
             let mut plan_price_native = Self::prorated_monthly_price(plan.price);
             
@@ -1579,7 +1531,7 @@ pub mod pallet {
                 cdn_location_id: location_id,
                 active: true,
                 last_charged_at: current_block_number,
-                selected_image_name,
+                selected_image_name : Some(selected_image_name),
                 next_charge_unix_day,
                 paid_per_month,
                 _phantom: PhantomData,
@@ -1784,11 +1736,6 @@ pub mod pallet {
                                     prev_next,
                                 ),
                             );
-                            Self::deposit_event(Event::SubscriptionRenewed {
-                                who: account_id.clone(),
-                                subscription_id: sub.id,
-                                amount: sub.package.price,
-                            });
                         }
                     }
 
@@ -2049,7 +1996,7 @@ pub mod pallet {
             Ok(())
         }
 
-        #[transactional]
+        /// Deposit credits and alpha into a new batch
         fn do_deposit(
             sender: T::AccountId, 
             credit_amount: u128, 
@@ -2057,15 +2004,16 @@ pub mod pallet {
             freeze_for_chargeback: bool,
             code: Option<Vec<u8>>
         ) -> DispatchResult {
+
             let batch_id = NextBatchId::<T>::get();
-        
+
             let release_time = if freeze_for_chargeback {
                 let block_number = <frame_system::Pallet<T>>::block_number();
                 block_number.saturating_add((15u32 * 28800u32).into()) // 15 days
             } else {
                 <frame_system::Pallet<T>>::block_number() // No release time
             };
-        
+
             let batch = Batch {
                 owner: sender.clone(),
                 credit_amount,
@@ -2076,19 +2024,17 @@ pub mod pallet {
                 is_frozen: freeze_for_chargeback,
                 release_time,
             };
-        
+
             Batches::<T>::insert(batch_id, batch);
             UserBatches::<T>::append(&sender, batch_id);
             let next = batch_id.saturating_add(1);
             NextBatchId::<T>::put(next);
             
             AlphaBalances::<T>::mutate(&sender, |alpha| *alpha = alpha.saturating_add(alpha_amount));
-            
-            // This is the critical part - if do_mint fails, the entire transaction rolls back
             CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code)?;
-        
+
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
-        
+
             Ok(())
         }
 
@@ -2156,30 +2102,30 @@ pub mod pallet {
        
                                 // Batch just unfroze - distribute all pending alpha first
                                 batch.is_frozen = false;
-
+ 
                                 if batch.pending_alpha > 0 {
                                     AlphaBalances::<T>::mutate(
                                         &batch.owner,
                                         |alpha| *alpha = alpha.saturating_sub(batch.pending_alpha)
                                     );
-
+        
                                     Self::distribute_alpha(
                                         batch.pending_alpha,
                                         ranking_account.clone(),
                                         marketplace_account.clone(),
                                     )?;
-
+        
                                     batch.pending_alpha = 0;
                                 }
                             }
-
+        
                             // Distribute current alpha
                             if alpha_to_release_u128 > 0 {
                                 AlphaBalances::<T>::mutate(
                                     &batch.owner,
                                     |alpha| *alpha = alpha.saturating_sub(alpha_to_release_u128)
                                 );
-
+            
                                 Self::distribute_alpha(
                                     alpha_to_release_u128,
                                     ranking_account.clone(),
