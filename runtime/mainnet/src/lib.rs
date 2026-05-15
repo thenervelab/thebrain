@@ -255,7 +255,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9191,
+	spec_version: 9192,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -508,7 +508,7 @@ impl pallet_sudo::Config for Runtime {
 }
 
 parameter_types! {
-	pub const MarketplaceMinSubscriptionBlocks: BlockNumber = MONTH;
+	pub const MarketplaceMinSubscriptionBlocks: BlockNumber = 2;
 	pub const MaxActiveSubscriptionsPerUser: u32 = 5;
 }
 
