@@ -385,8 +385,6 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// CDN location added
-        CdnLocationAdded { id: u32 },
         SubscriptionRenewed {
             who: T::AccountId,
             subscription_id: SubscriptionId,
@@ -396,14 +394,7 @@ pub mod pallet {
             amount: BalanceOf<T>,
         },
         PackageSuspensionSet(T::Hash, bool),
-        StoragePlanPriceUpdated {
-            plan_id: T::Hash,
-            new_price_per_gb: u32,
-        },
-        ComputePlanPriceUpdated {
-            plan_id: T::Hash,
-            new_price_per_block: u32,
-        },
+        PlanPriceUpdated(T::Hash, u128),
         PointTransactionRecorded { who: T::AccountId, transaction_type: NativeTransactionType, amount: Points },
         PlanPurchased {
             caller: T::AccountId,
@@ -427,7 +418,6 @@ pub mod pallet {
 			os_name: Vec<u8>,
 			url: Vec<u8>,
 		},
-        PlanPriceUpdated(T::Hash, u128),
         /// Specific miner request fee updated
         SpecificMinerRequestFeeUpdated { fee: BalanceOf<T> },
         BatchDeposited { owner: T::AccountId, batch_id: u64 },
@@ -501,11 +491,9 @@ pub mod pallet {
         InvalidImageSelection,
         NodeNotRegistered,
         InvalidNodeType,
-        /// The plan does not match the user's active subscription
         InvalidPlanForSubscription,
         InvalidPlanConfiguration,
         InvalidOSDiskImageUrl,
-        /// No subscription found for the given user
         NoSubscriptionFound,
         StorageOperationsDisabled,
         PlanOperationDisabled,
@@ -586,7 +574,7 @@ pub mod pallet {
             ensure_root(origin)?;
 
             // Generate a unique ID for the plan (you can use a counter or a random hash)
-            let plan_id = T::Hashing::hash_of(&plan_name); // Example way to generate a unique ID
+            let plan_id = T::Hashing::hash_of(&plan_name);
             ensure!(
                 !Plans::<T>::contains_key(&plan_id),
                 Error::<T>::PlanAlreadyExists
@@ -1084,6 +1072,33 @@ pub mod pallet {
             ensure_root(origin)?;
             StoragePricePerMiner::<T>::put(price);
             Self::deposit_event(Event::StoragePricePerMinerUpdated { price });
+            Ok(())
+        }
+
+        /// Sudo function to update the price of an existing plan.
+        #[pallet::call_index(27)]
+        #[pallet::weight((10_000, Pays::No))]
+        pub fn update_plan_price(
+            origin: OriginFor<T>,
+            plan_id: T::Hash,
+            new_price: u128,
+        ) -> DispatchResult {
+            // Ensure the caller is sudo
+            ensure_root(origin)?;
+
+            // Check if the plan exists
+            Plans::<T>::try_mutate_exists(plan_id, |maybe_plan| -> DispatchResult {
+                if let Some(ref mut plan) = maybe_plan {
+                    plan.price = new_price;
+                } else {
+                    return Err(Error::<T>::PlanNotFound.into());
+                }
+                Ok(())
+            })?;
+
+            // Emit an event
+            Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
+
             Ok(())
         }
 	}
