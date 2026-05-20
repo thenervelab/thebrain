@@ -215,15 +215,22 @@ where
 		for (node_id, maybe) in pallet_registration::ColdkeyNodeRegistration::<T>::iter() {
 			reads = reads.saturating_add(1);
 			if let Some(info) = maybe {
+				let owner = info.owner.clone();
 				let lite = pallet_registration::ColdkeyNodeInfoLite {
 					node_id: node_id.clone(),
 					node_type: info.node_type,
 					status: info.status,
 					registered_at: info.registered_at,
-					owner: info.owner,
+					owner,
 				};
-				pallet_registration::ColdkeyNodeRegistrationV2::<T>::insert(node_id, Some(lite));
-				writes = writes.saturating_add(1);
+				pallet_registration::ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(lite));
+				pallet_registration::OwnerToNode::<T>::mutate(&info.owner, |nodes_opt| {
+					let nodes = nodes_opt.get_or_insert_with(Vec::new);
+					if !nodes.iter().any(|n| n == &node_id) {
+						nodes.push(node_id);
+					}
+				});
+				writes = writes.saturating_add(2);
 			}
 		}
 
@@ -294,5 +301,38 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for MigrateArionUserBackendFileUs
 
 		// `move_storage_from_pallet` cost scales with entries; use a conservative budget.
 		weight.saturating_add(T::DbWeight::get().reads_writes(50_000, 100_000))
+	}
+}
+
+/// Backfill `Registration::OwnerToNode` from existing `ColdkeyNodeRegistrationV2` rows.
+pub struct BackfillOwnerToNode<T>(sp_std::marker::PhantomData<T>);
+
+impl<T> OnRuntimeUpgrade for BackfillOwnerToNode<T>
+where
+	T: frame_system::Config + pallet_registration::Config,
+{
+	fn on_runtime_upgrade() -> Weight {
+		let mut reads: u64 = 0;
+		let mut writes: u64 = 0;
+
+		for (node_id, maybe_info) in pallet_registration::ColdkeyNodeRegistrationV2::<T>::iter() {
+			reads = reads.saturating_add(1);
+			if let Some(info) = maybe_info {
+				let owner = info.owner;
+				let mut inserted = false;
+				pallet_registration::OwnerToNode::<T>::mutate(&owner, |nodes_opt| {
+					let nodes = nodes_opt.get_or_insert_with(Vec::new);
+					if !nodes.iter().any(|n| n == &node_id) {
+						nodes.push(node_id);
+						inserted = true;
+					}
+				});
+				if inserted {
+					writes = writes.saturating_add(1);
+				}
+			}
+		}
+
+		T::DbWeight::get().reads_writes(reads, writes)
 	}
 }
