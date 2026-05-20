@@ -436,6 +436,7 @@ pub mod pallet {
 						for (node_id, is_coldkey) in registrations {
 							if is_coldkey {
 								ColdkeyNodeRegistrationV2::<T>::remove(&node_id);
+								Self::owner_to_node_remove(&owner, &node_id);
 								writes = writes.saturating_add(1);
 							}
 						}
@@ -492,10 +493,9 @@ pub mod pallet {
 				node_type,
 				status: Status::Online,
 				registered_at: current_block_number,
-				owner,
+				owner: owner_for_index.clone(),
 			};
-			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
-			Self::owner_to_node_add(&owner_for_index, &node_id);
+			Self::register_coldkey_node(&owner_for_index, node_id.clone(), node_info);
 
 			Self::deposit_event(Event::MainNodeRegistered { node_id });
 			Ok(().into())
@@ -671,10 +671,9 @@ pub mod pallet {
 				node_type,
 				status: Status::Online,
 				registered_at: current_block_number,
-				owner,
+				owner: owner_for_index.clone(),
 			};
-			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
-			Self::owner_to_node_add(&owner_for_index, &node_id);
+			Self::register_coldkey_node(&owner_for_index, node_id.clone(), node_info);
 
 			// Persist identities (for later audits/liveness checks)
 			Libp2pMainIdentity::<T>::insert(node_id.clone(), (main_key_type, main_public_key));
@@ -834,11 +833,15 @@ pub mod pallet {
 			ensure!(!Self::is_owner_node_registered(&new_owner), Error::<T>::OwnerAlreadyRegistered);
 
 
+			let old_owner = node_info.owner.clone();
+
 			// Update the owner
 			node_info.owner = new_owner.clone();
 
 			// Save the updated node information back to storage
 			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
+			Self::owner_to_node_remove(&old_owner, &node_id);
+			Self::owner_to_node_add(&new_owner, &node_id);
 
 			Self::deposit_event(Event::NodeOwnerSwapped { node_id, new_owner });
 
@@ -969,6 +972,15 @@ pub mod pallet {
 		) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
 			ColdkeyNodeRegistrationV2::<T>::get(node_id)
 				.map(Self::coldkey_lite_to_node_info)
+		}
+
+		fn register_coldkey_node(
+			owner: &T::AccountId,
+			node_id: Vec<u8>,
+			node_info: ColdkeyNodeInfoLite<BlockNumberFor<T>, T::AccountId>,
+		) {
+			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
+			Self::owner_to_node_add(owner, &node_id);
 		}
 
 		fn owner_to_node_add(owner: &T::AccountId, node_id: &Vec<u8>) {
@@ -1543,15 +1555,12 @@ pub mod pallet {
 		pub fn get_registered_node_for_owner(
 			owner: &T::AccountId,
 		) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
-			// First, check ColdkeyNodeRegistrationV2
-			let coldkey_node =
-				ColdkeyNodeRegistrationV2::<T>::iter().find_map(|(node_id, node_info)| {
-					node_info
-						.filter(|info| info.owner == *owner && info.status != Status::Degraded)
-						.map(Self::coldkey_lite_to_node_info)
-				});
-
-			coldkey_node
+			OwnerToNode::<T>::get(owner).and_then(|node_ids| {
+				node_ids.into_iter().find_map(|node_id| {
+					Self::get_coldkey_node_info_v2(&node_id)
+						.filter(|info| info.status != Status::Degraded)
+				})
+			})
 		}
 
 		pub fn do_set_node_status_degraded_or_unregister(node_id: Vec<u8>) {

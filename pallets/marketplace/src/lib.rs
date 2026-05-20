@@ -415,12 +415,6 @@ pub mod pallet {
             selected_image_name: Option<Vec<u8>>,
             cloud_init_cid: Option<Vec<u8>>,
         },
-        PlanPurchaseFailed {
-            caller: T::AccountId,
-            owner: T::AccountId,
-            plan_id: T::Hash,
-            error: DispatchError,
-        },
         PricePerGbUpdated { price: u128 },
         PricePerBandwidthUpdated { price: u128 },
         StorageSubscriptionCancelled { who: T::AccountId },
@@ -441,11 +435,6 @@ pub mod pallet {
         /// Specific miner request fee updated
         SpecificMinerRequestFeeUpdated { fee: BalanceOf<T> },
         BatchDeposited { owner: T::AccountId, batch_id: u64 },
-        DepositFailed {
-            authority: T::AccountId,
-            account: T::AccountId,
-            error: DispatchError,
-        },
         CreditsConsumed { owner: T::AccountId, credits: u128 },
         /// Monthly subscription charge could not be collected; subscriptions were deactivated.
         SubscriptionChargeFailed {
