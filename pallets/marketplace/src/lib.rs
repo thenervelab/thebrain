@@ -617,7 +617,7 @@ pub mod pallet {
             owner: T::AccountId,
             plan_ids: Vec<T::Hash>,
             location_ids: Option<Vec<Option<u32>>>,
-            selected_image_names: Vec<Option<Vec<u8>>>,
+            selected_image_names: Option<Vec<Option<Vec<u8>>>>,
             cloud_init_cids: Option<Vec<Option<Vec<u8>>>>,
             pay_upfront: Option<u128>
         ) -> DispatchResult {
@@ -640,10 +640,9 @@ pub mod pallet {
             );
             UserRequestsCount::<T>::insert(&owner, user_requests_count + (plan_ids.len() as u32));
 
-            ensure!(
-                selected_image_names.len() == plan_ids.len(),
-                Error::<T>::InvalidInput
-            );
+            if let Some(ref xs) = selected_image_names {
+                ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
+            }
             if let Some(ref xs) = location_ids {
                 ensure!(xs.len() == plan_ids.len(), Error::<T>::InvalidInput);
             }
@@ -652,6 +651,8 @@ pub mod pallet {
             }
 
             // Initialize default values for optional parameters
+            let selected_image_names =
+                selected_image_names.unwrap_or_else(|| vec![None; plan_ids.len()]);
             let location_ids = location_ids.unwrap_or_else(|| vec![None; plan_ids.len()]);
             let cloud_init_cids = cloud_init_cids.unwrap_or_else(|| vec![None; plan_ids.len()]);
 
@@ -675,16 +676,14 @@ pub mod pallet {
                         pay_upfront
                     )?;
                 } else {
-                    // For compute plans, image name is required
-                    let image_name = selected_image_names[i]
-                        .clone()
-                        .ok_or(Error::<T>::InvalidImageSelection)?;
-                    // Handle compute plan purchase
+                    // Compute plans: image is optional; omit or pass None/empty for no image.
+                    let image_name =
+                        Self::normalize_image_selection(selected_image_names[i].clone());
                     Self::do_purchase_compute_plan(
                         owner.clone(),
                         plan_id,
                         location_ids[i],
-                        image_name,
+                        image_name.clone(),
                         cloud_init_cids[i].clone(),
                         pay_upfront
                     )?;
@@ -692,12 +691,17 @@ pub mod pallet {
 
                 successful_purchases.push(plan_id);
                 // Emit event for successful purchase
+                let selected_image_name = if plan.is_storage_plan {
+                    None
+                } else {
+                    Self::normalize_image_selection(selected_image_names[i].clone())
+                };
                 Self::deposit_event(Event::PlanPurchased {
                     caller: owner.clone(),
                     owner: owner.clone(),
                     plan_id,
                     location_id: location_ids[i],
-                    selected_image_name: selected_image_names[i].clone(),
+                    selected_image_name,
                     cloud_init_cid: cloud_init_cids[i].clone(),
                 });
             }
@@ -1430,11 +1434,16 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Treat `None` and empty byte vectors as no image selection.
+        fn normalize_image_selection(image: Option<Vec<u8>>) -> Option<Vec<u8>> {
+            image.filter(|name| !name.is_empty())
+        }
+
         fn do_purchase_compute_plan(
             who: T::AccountId,
             plan_id: T::Hash,
             location_id: Option<u32>,
-            selected_image_name: Vec<u8>,
+            selected_image_name: Option<Vec<u8>>,
             cloud_init_cid: Option<Vec<u8>>,
             pay_upfront: Option<u128>
         ) -> DispatchResult {
@@ -1449,13 +1458,13 @@ pub mod pallet {
 
             ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
-            // Check if the selected image name exists in OSDiskImageUrls storage
-            ensure!(
-                Self::os_disk_image_urls(selected_image_name.clone()).is_some(), 
-                Error::<T>::InvalidImageSelection
-            );
-
-            let image_url = Self::os_disk_image_urls(selected_image_name.clone()).unwrap();
+            // Validate image only when one was provided.
+            if let Some(ref name) = selected_image_name {
+                ensure!(
+                    Self::os_disk_image_urls(name.clone()).is_some(),
+                    Error::<T>::InvalidImageSelection
+                );
+            }
 
             // Determine the (monthly) price (pro-rated if purchased mid-month).
             let mut plan_price_native = Self::prorated_monthly_price(plan.price);
@@ -1531,7 +1540,7 @@ pub mod pallet {
                 cdn_location_id: location_id,
                 active: true,
                 last_charged_at: current_block_number,
-                selected_image_name : Some(selected_image_name),
+                selected_image_name,
                 next_charge_unix_day,
                 paid_per_month,
                 _phantom: PhantomData,
