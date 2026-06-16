@@ -154,6 +154,7 @@ pallet-account-profile-precompile = { workspace = true }
 # pallet-notifications-precompile = { workspace = true }
 pallet-ip = { workspace = true }
 pallet-calendar = { workspace = true }
+pallet-compute-scoring = { workspace = true }
 
 
 evm-tracer = { workspace = true }
@@ -279,6 +280,7 @@ std = [
     
     "pallet-ip/std",
     "pallet-calendar/std",
+    "pallet-compute-scoring/std",
     #"ipfs-pallet/std",
     "pallet-alpha-bridge/std",
 	"pallet-registration/std",

@@ -168,6 +168,41 @@ impl pallet_arion::Config for Runtime {
 	type MinerStatsPruneInterval = ArionMinerStatsPruneInterval;
 	type MinerStatsPruneMaxScanPerBlock = ArionMinerStatsPruneMaxScanPerBlock;
 }
+
+// ── pallet-compute-scoring (§23 scheduler signal) ───────────────────────
+//
+// Bridges pallet-arion's deployed, validator-gated node weights into the
+// per-epoch, node_id-keyed `u128` shape the hippius-compute scheduler reads,
+// and holds the §13 miner status state machine. `ComputeScoring` derives its
+// score from Arion — it does NOT compute merit.
+pub struct ArionMerit;
+impl pallet_compute_scoring::MeritSource<AccountId> for ArionMerit {
+	fn registered_miners() -> sp_std::vec::Vec<([u8; 32], AccountId, u128)> {
+		use frame_support::storage::IterableStorageMap;
+		pallet_arion::NodeIdToChild::<Runtime>::iter()
+			.map(|(node_id, child)| {
+				let w = pallet_arion::NodeWeightByChild::<Runtime>::get(&child);
+				(node_id, child, u128::from(w))
+			})
+			.collect()
+	}
+}
+
+parameter_types! {
+	/// Safety cap — a fleet beyond this fails `close_epoch` closed rather
+	/// than silently skip (which would zero the skipped miners' score).
+	pub const MaxMinersPerEpochClose: u32 = 5_000;
+}
+
+impl pallet_compute_scoring::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	// The same validator/council authority that drives Arion's weights.
+	type AuthorityOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type Merit = ArionMerit;
+	type MaxMinersPerEpochClose = MaxMinersPerEpochClose;
+	type WeightInfo = pallet_compute_scoring::weights::SubstrateWeight<Runtime>;
+}
+
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
@@ -1970,6 +2005,10 @@ construct_runtime!(
 		// IpfsPallet: ipfs_pallet = 75,
 		Arion: pallet_arion = 76,
 		PalletCalendar: pallet_calendar = 78,
+		// The name MUST be `ComputeScoring` — the hippius-compute
+		// `read-miner-status` reader hashes `twox_128("ComputeScoring")`
+		// for every storage key it decodes.
+		ComputeScoring: pallet_compute_scoring = 79,
 	}
 );
 

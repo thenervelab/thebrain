@@ -4566,6 +4566,7 @@ dependencies = [
  "pallet-calendar",
  "pallet-child-bounties",
  "pallet-collective",
+ "pallet-compute-scoring",
  "pallet-credits",
  "pallet-democracy",
  "pallet-dynamic-fee",
@@ -8129,6 +8130,22 @@ dependencies = [
  "scale-info",
  "serde",
  "serde_json",
+ "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
+ "sp-io 38.0.0",
+ "sp-runtime 39.0.3",
+ "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
+]
+
+[[package]]
+name = "pallet-compute-scoring"
+version = "0.1.0"
+dependencies = [
+ "frame-benchmarking 37.0.0",
+ "frame-support 37.1.0",
+ "frame-system 37.1.0",
+ "log",
+ "parity-scale-codec",
+ "scale-info",
  "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
  "sp-io 38.0.0",
  "sp-runtime 39.0.3",

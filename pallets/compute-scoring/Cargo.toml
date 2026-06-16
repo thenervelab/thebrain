@@ -1,0 +1,52 @@
+[package]
+name = "pallet-compute-scoring"
+description = "§23 compute-scheduler signal: per-epoch miner reward weight (derived from pallet-arion) + the §13 miner status state machine, in the exact on-chain shape the hippius-compute `read-miner-status` reader decodes."
+version = "0.1.0"
+license = "MIT"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { features = ["derive"], workspace = true }
+scale-info = { features = ["derive"], workspace = true }
+sp-std = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+frame-support.workspace = true
+frame-system.workspace = true
+frame-benchmarking = { optional = true, workspace = true }
+log = { version = "0.4.22", default-features = false }
+
+[dev-dependencies]
+sp-core = { default-features = false, workspace = true }
+sp-io = { default-features = false, workspace = true }
+sp-runtime = { default-features = false, workspace = true }
+
+[features]
+default = ["std"]
+std = [
+	"codec/std",
+	"scale-info/std",
+	"sp-std/std",
+	"sp-runtime/std",
+	"frame-support/std",
+	"frame-system/std",
+	"frame-benchmarking?/std",
+	"log/std",
+]
+runtime-benchmarks = [
+	"frame-benchmarking/runtime-benchmarks",
+	"frame-support/runtime-benchmarks",
+	"frame-system/runtime-benchmarks",
+	"sp-runtime/runtime-benchmarks",
+]
+try-runtime = [
+	"frame-support/try-runtime",
+	"frame-system/try-runtime",
+	"sp-runtime/try-runtime",
+]
