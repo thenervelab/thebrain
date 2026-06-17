@@ -169,7 +169,7 @@ fn test_attestation_on_completed_deposit_fails() {
 				amount,
 				nonce,
 			),
-			Error::<Test>::DepositIdAlreadySettled
+			Error::<Test>::DepositAlreadyCompleted
 		);
 	});
 }
@@ -878,10 +878,10 @@ fn test_set_guardians_and_threshold_replaces_existing() {
 	});
 }
 
-/// Pending deposits that already have enough **current** guardian votes must finalize on rotation
-/// (e.g. threshold lowered from 3 to 2).
+/// Pending deposits are not retroactively finalized on guardian rotation;
+/// the new threshold is applied when the record is next attested.
 #[test]
-fn test_guardian_rotation_reevaluates_pending_deposits() {
+fn test_guardian_rotation_applies_on_next_attestation() {
 	new_test_ext().execute_with(|| {
 		crate::ApproveThreshold::<Test>::put(3);
 
@@ -913,6 +913,19 @@ fn test_guardian_rotation_reevaluates_pending_deposits() {
 			RuntimeOrigin::root(),
 			vec![alice(), bob(), charlie()],
 			2,
+		));
+
+		let deposit = crate::Deposits::<Test>::get(deposit_id).expect("deposit");
+		assert_eq!(deposit.status, DepositStatus::Pending);
+		assert_eq!(Balances::free_balance(&recipient), initial_balance);
+		assert_eq!(crate::TotalMintedByBridge::<Test>::get(), 0);
+
+		assert_ok!(AlphaBridge::<Test>::attest_deposit(
+			RuntimeOrigin::signed(charlie()),
+			deposit_id,
+			recipient.clone(),
+			amount,
+			nonce,
 		));
 
 		let deposit = crate::Deposits::<Test>::get(deposit_id).expect("deposit");
@@ -1446,10 +1459,15 @@ fn test_cleanup_withdrawal_request_after_ttl() {
 		let request =
 			crate::WithdrawalRequests::<Test>::get(request_id).expect("Request should exist");
 
+		assert_ok!(AlphaBridge::<Test>::admin_fail_withdrawal_request(
+			RuntimeOrigin::root(),
+			request_id,
+		));
+
 		// Advance block number past TTL
 		System::set_block_number(request.created_at_block + 11);
 
-		// Cleanup should succeed (guardian only, no status check for withdrawal requests)
+		// Cleanup should succeed once the withdrawal request is failed and past TTL.
 		assert_ok!(AlphaBridge::<Test>::cleanup_withdrawal_request(
 			RuntimeOrigin::signed(alice()),
 			request_id,
@@ -1494,6 +1512,11 @@ fn test_cleanup_withdrawal_request_before_ttl_fails() {
 		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount,));
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
+
+		assert_ok!(AlphaBridge::<Test>::admin_fail_withdrawal_request(
+			RuntimeOrigin::root(),
+			request_id,
+		));
 
 		// Try to cleanup immediately (before TTL expires) as guardian
 		assert_noop!(

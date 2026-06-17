@@ -64,6 +64,76 @@ export async function moveStake(
     await tx.signAndSubmit(signer);
 }
 
+export async function lockStake(
+    api: TypedApi<typeof devnet>,
+    hotkey: string,
+    netuid: number,
+    amount: bigint,
+    signer: PolkadotSigner
+): Promise<void> {
+    const lockStakeTx = (api.tx.SubtensorModule as any).lock_stake;
+    if (!lockStakeTx) {
+        throw new Error("SubtensorModule.lock_stake is unavailable; regenerate descriptors against a Subtensor localnet");
+    }
+
+    const tx = lockStakeTx({
+        hotkey,
+        netuid,
+        amount,
+    });
+
+    await tx.signAndSubmit(signer);
+}
+
+export type StakeAvailability = {
+    total: bigint;
+    locked: bigint;
+    available: bigint;
+};
+
+function getMapValue(mapLike: unknown, key: string | number): unknown {
+    if (mapLike instanceof Map) {
+        return mapLike.get(key);
+    }
+
+    if (Array.isArray(mapLike)) {
+        const match = mapLike.find((entry) => {
+            if (!Array.isArray(entry) || entry.length < 2) {
+                return false;
+            }
+            return String(entry[0]) === String(key);
+        });
+        return match?.[1];
+    }
+
+    if (mapLike && typeof mapLike === "object") {
+        return (mapLike as Record<string, unknown>)[String(key)];
+    }
+
+    return undefined;
+}
+
+export async function getStakeAvailability(
+    api: TypedApi<typeof devnet>,
+    coldkey: string,
+    netuid: number
+): Promise<StakeAvailability> {
+    const runtimeApi = (api.apis.StakeInfoRuntimeApi as any).get_stake_availability_for_coldkeys;
+    if (!runtimeApi) {
+        throw new Error("StakeInfoRuntimeApi.get_stake_availability_for_coldkeys is unavailable; regenerate descriptors against a Subtensor localnet");
+    }
+
+    const response = await runtimeApi([coldkey], [netuid]);
+    const coldkeyAvailability = getMapValue(response, coldkey);
+    const subnetAvailability = getMapValue(coldkeyAvailability, netuid) as Partial<StakeAvailability> | undefined;
+
+    return {
+        total: BigInt(subnetAvailability?.total ?? 0),
+        locked: BigInt(subnetAvailability?.locked ?? 0),
+        available: BigInt(subnetAvailability?.available ?? 0),
+    };
+}
+
 export function formatStakeAmount(amount: bigint): string {
     const alpha = Number(amount) / 1_000_000_000;
     return `${alpha.toFixed(4)} Alpha`;

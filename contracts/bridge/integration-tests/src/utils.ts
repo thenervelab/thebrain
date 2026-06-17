@@ -126,8 +126,7 @@ async function startSubnet(
 		return;
 	}
 
-	const duration = await api.constants.SubtensorModule.DurationOfStartCall();
-	const durationNumber = Number(duration);
+	const durationNumber = await getStartCallDelay(api);
 
 	let currentBlock = await api.query.System.Number.getValue();
 	while (Number(currentBlock) - Number(registerBlock) <= durationNumber) {
@@ -140,6 +139,24 @@ async function startSubnet(
 	});
 	await tx.signAndSubmit(signer);
 	console.log(`Started subnet ${netuid}`);
+}
+
+async function getStartCallDelay(api: TypedApi<typeof devnet>): Promise<number> {
+	const storageValue = (api.query.SubtensorModule as any).StartCallDelay;
+	if (storageValue?.getValue) {
+		return Number(await storageValue.getValue());
+	}
+
+	const legacyConstant = (api.constants.SubtensorModule as any).DurationOfStartCall;
+	if (typeof legacyConstant === "function") {
+		try {
+			return Number(await legacyConstant());
+		} catch {
+			return 0;
+		}
+	}
+
+	return 0;
 }
 
 export async function registerValidator(
@@ -263,13 +280,10 @@ export function findContractEvent<T>(
 }
 
 export interface DepositRequestCreatedEvent {
-	chain_id: number;
-	escrow_contract: string;
 	deposit_nonce: bigint;
 	sender: string;
-	recipient: string;
 	amount: bigint;
-	deposit_request_id: string | Uint8Array;
+	deposit_request_id: string | Uint8Array | { toHex?: () => string };
 }
 
 export interface WithdrawalCompletedEvent {

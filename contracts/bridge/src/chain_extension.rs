@@ -21,6 +21,58 @@ impl StakeInfo {
 		let alpha_currency = self.stake.0;
 		alpha_currency.as_u64()
 	}
+
+	#[cfg(test)]
+	pub(crate) fn new_for_tests(
+		hotkey: AccountId,
+		coldkey: AccountId,
+		netuid: NetUid,
+		stake: AlphaCurrency,
+	) -> Self {
+		Self {
+			hotkey,
+			coldkey,
+			netuid: Compact(netuid),
+			stake: Compact(stake),
+			locked: Compact(0),
+			emission: Compact(AlphaCurrency::from(0)),
+			tao_emission: Compact(0),
+			drain: Compact(0),
+			is_registered: true,
+		}
+	}
+}
+
+/// ABI-coupled to the Subtensor chain-extension `StakeAvailability` type.
+/// The runtime returns plain `u64` fields here, not compact-encoded balances.
+/// `total` and `locked` are retained to keep the SCALE layout pinned to the
+/// runtime type; the contract consumes `total` as an ABI sanity check.
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+#[ink::scale_derive(Encode, Decode, TypeInfo)]
+pub struct StakeAvailability {
+	netuid: NetUid,
+	total: u64,
+	locked: u64,
+	available: u64,
+}
+
+impl StakeAvailability {
+	pub fn netuid(&self) -> NetUid {
+		self.netuid
+	}
+
+	pub fn available_amount(&self) -> u64 {
+		self.available
+	}
+
+	pub fn total_amount(&self) -> u64 {
+		self.total
+	}
+
+	#[cfg(test)]
+	pub(crate) fn new_for_tests(netuid: NetUid, total: u64, locked: u64, available: u64) -> Self {
+		Self { netuid, total, locked, available }
+	}
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -104,4 +156,10 @@ pub trait SubtensorExtension {
 		destination_netuid: NetUid,
 		alpha_amount: AlphaCurrency,
 	) -> Result<(), SubtensorError>;
+
+	#[ink(function = 36)]
+	fn get_stake_availability(
+		coldkey: AccountId,
+		netuid: NetUid,
+	) -> Result<StakeAvailability, SubtensorError>;
 }

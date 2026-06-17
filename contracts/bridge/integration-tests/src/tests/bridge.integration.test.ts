@@ -27,11 +27,17 @@ import {
 	type Wallet,
 } from "../utils";
 import {
+	getStakeAvailability,
 	getStakeBalance,
+	lockStake,
 	moveStake,
 } from "../utils/stake-helpers";
+import { blake2b256, ss58Decode } from "@polkadot-labs/hdkd-helpers";
 
 const MIN_DEPOSIT = 1_000_000_000n;
+const TRANSFER_TOLERANCE = 10n;
+const WITHDRAWAL_REQUEST_DOMAIN = new TextEncoder().encode("WITHDRAWAL_REQUEST-V1");
+let nextWithdrawalNonce = 1n;
 
 async function trackTx(observable: Observable<TxEvent>): Promise<TxFinalized> {
 	return new Promise<TxFinalized>((resolve, reject) => {
@@ -46,7 +52,7 @@ async function trackTx(observable: Observable<TxEvent>): Promise<TxFinalized> {
 				subscription.unsubscribe();
 				reject(error);
 			},
-		});
+			});
 	});
 }
 
@@ -61,6 +67,41 @@ async function signAndFinalize(
 function randomHash(label: string): Binary {
 	const hash = createHash("blake2b512").update(label).update(randomBytes(16)).digest("hex");
 	return Binary.fromHex(hash.slice(0, 64));
+}
+
+function u64Le(value: bigint): Uint8Array {
+	const bytes = new Uint8Array(8);
+	new DataView(bytes.buffer).setBigUint64(0, value, true);
+	return bytes;
+}
+
+function u128Le(value: bigint): Uint8Array {
+	const bytes = new Uint8Array(16);
+	const view = new DataView(bytes.buffer);
+	const lowMask = (1n << 64n) - 1n;
+	view.setBigUint64(0, value & lowMask, true);
+	view.setBigUint64(8, value >> 64n, true);
+	return bytes;
+}
+
+function withdrawalIdFor(recipient: string, amount: bigint, nonce: bigint): Binary {
+	const [accountId] = ss58Decode(recipient);
+	const canonical = new Uint8Array(WITHDRAWAL_REQUEST_DOMAIN.length + accountId.length + 16 + 8);
+	let offset = 0;
+	canonical.set(WITHDRAWAL_REQUEST_DOMAIN, offset);
+	offset += WITHDRAWAL_REQUEST_DOMAIN.length;
+	canonical.set(accountId, offset);
+	offset += accountId.length;
+	canonical.set(u128Le(amount), offset);
+	offset += 16;
+	canonical.set(u64Le(nonce), offset);
+	return Binary.fromBytes(blake2b256(canonical));
+}
+
+function withdrawalRequest(recipient: string, amount: bigint): { id: Binary; nonce: bigint } {
+	const nonce = nextWithdrawalNonce;
+	nextWithdrawalNonce += 1n;
+	return { id: withdrawalIdFor(recipient, amount, nonce), nonce };
 }
 
 function toBinary(value: string | Uint8Array | Binary | { toHex?: () => string }): Binary {
@@ -300,6 +341,20 @@ describe("Bridge Contract Integration", () => {
 				netuid,
 				context.accounts.bob.address
 			);
+			expect(bobHotkey.address).not.toBe(context.contractHotkey.address);
+
+			const contractStakeOnContractHotkeyBefore = await getStakeBalance(
+				context.api,
+				context.contractHotkey.address,
+				netuid,
+				context.contractAddress!
+			);
+			const contractStakeOnBobHotkeyBefore = await getStakeBalance(
+				context.api,
+				bobHotkey.address,
+				netuid,
+				context.contractAddress!
+			);
 
 			const tx = contract.send("deposit", {
 				origin: context.accounts.bob.address,
@@ -356,13 +411,25 @@ describe("Bridge Contract Integration", () => {
 			);
 			expect(bobStakeAfter).toBeLessThan(bobStakeBefore);
 
-			const contractStake = await getStakeBalance(
+			const contractStakeOnContractHotkeyAfter = await getStakeBalance(
 				context.api,
 				context.contractHotkey.address,
 				netuid,
 				context.contractAddress!
 			);
-			expect(contractStake).toBeGreaterThan(0n);
+			const contractStakeOnBobHotkeyAfter = await getStakeBalance(
+				context.api,
+				bobHotkey.address,
+				netuid,
+				context.contractAddress!
+			);
+
+			expect(contractStakeOnContractHotkeyAfter).toBeGreaterThan(
+				contractStakeOnContractHotkeyBefore
+			);
+			expect(contractStakeOnBobHotkeyAfter).toBeLessThanOrEqual(
+				contractStakeOnBobHotkeyBefore + TRANSFER_TOLERANCE
+			);
 		});
 
 		it("rejects deposits below minimum amount", async () => {
@@ -378,6 +445,51 @@ describe("Bridge Contract Integration", () => {
 			if (!result.success) {
 				expect(result.value.type).toBe("FlagReverted");
 			}
+		});
+
+		it("rejects conviction-locked stake but allows currently available stake", async () => {
+			const lockAmount = MIN_DEPOSIT * 2n;
+			await lockStake(
+				context.api,
+				daveHotkey.address,
+				netuid,
+				lockAmount,
+				context.accounts.dave.signer,
+			);
+
+			const availability = await getStakeAvailability(
+				context.api,
+				context.accounts.dave.address,
+				netuid,
+			);
+			expect(availability.locked).toBeGreaterThan(0n);
+			expect(availability.available).toBeGreaterThan(MIN_DEPOSIT);
+
+			const unavailableAmount = availability.available + 1n;
+			const unavailableResult = await contract.query("deposit", {
+				origin: context.accounts.dave.address,
+				data: {
+					amount: unavailableAmount,
+					hotkey: daveHotkey.address,
+				},
+			});
+
+			expect(unavailableResult.success).toBe(false);
+			if (!unavailableResult.success) {
+				expect(unavailableResult.value.type).toBe("FlagReverted");
+			}
+
+			const availableTx = contract.send("deposit", {
+				origin: context.accounts.dave.address,
+				data: {
+					amount: MIN_DEPOSIT,
+					hotkey: daveHotkey.address,
+				},
+			});
+			const finalized = await signAndFinalize(availableTx, context.accounts.dave.signer);
+			const depositEvent = expectDepositRequestCreatedEvent(contract, finalized);
+			expect(depositEvent.sender).toBe(context.accounts.dave.address);
+			expect(depositEvent.amount).toBe(MIN_DEPOSIT);
 		});
 
 		it("rejects deposits when stake is insufficient", async () => {
@@ -416,8 +528,9 @@ describe("Bridge Contract Integration", () => {
 
 	describe("Withdrawal Flow", () => {
 		it("handles guardian attestations and finalizes withdrawal", async () => {
-			const withdrawalId = randomHash("bob-withdrawal");
 			const withdrawalAmount = bobDepositAmount;
+			const withdrawal = withdrawalRequest(context.accounts.bob.address, withdrawalAmount);
+			const withdrawalId = withdrawal.id;
 
 			const contractStakeBefore = await getStakeBalance(
 				context.api,
@@ -433,6 +546,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.bob.address,
 					amount: withdrawalAmount,
+					nonce: withdrawal.nonce,
 				},
 			});
 			const attest1Finalized = await signAndFinalize(attest1Tx, context.guardians[0].signer);
@@ -460,6 +574,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.bob.address,
 					amount: withdrawalAmount,
+					nonce: withdrawal.nonce,
 				},
 			});
 			const attest2Finalized = await signAndFinalize(attest2Tx, context.guardians[1].signer);
@@ -488,7 +603,8 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("rejects attestation with mismatched recipient", async () => {
-			const withdrawalId = randomHash("mismatch-recipient");
+			const withdrawal = withdrawalRequest(context.accounts.bob.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// First guardian attests with correct recipient
 			const attest1Tx = contract.send("attest_withdrawal", {
@@ -497,6 +613,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.bob.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest1Tx, context.guardians[0].signer);
@@ -508,6 +625,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.charlie.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 
@@ -518,7 +636,8 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("rejects attestation with mismatched amount", async () => {
-			const withdrawalId = randomHash("mismatch-amount");
+			const withdrawal = withdrawalRequest(context.accounts.bob.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// First guardian attests
 			const attest1Tx = contract.send("attest_withdrawal", {
@@ -527,6 +646,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.bob.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest1Tx, context.guardians[0].signer);
@@ -538,6 +658,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.bob.address,
 					amount: MIN_DEPOSIT * 2n,
+					nonce: withdrawal.nonce,
 				},
 			});
 
@@ -633,7 +754,8 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("admin cancels a stuck withdrawal", async () => {
-			const withdrawalId = randomHash("cancel-withdrawal");
+			const withdrawal = withdrawalRequest(context.accounts.dave.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// First guardian creates a pending withdrawal
 			const attestTx = contract.send("attest_withdrawal", {
@@ -642,6 +764,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.dave.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attestTx, context.guardians[0].signer);
@@ -703,12 +826,14 @@ describe("Bridge Contract Integration", () => {
 			}
 
 			// attest_withdrawal should also be rejected when paused
+			const pausedWithdrawal = withdrawalRequest(context.accounts.dave.address, MIN_DEPOSIT);
 			const attestAttempt = await contract.query("attest_withdrawal", {
 				origin: context.guardians[0].address,
 				data: {
-					request_id: randomHash("paused-attest"),
+					request_id: pausedWithdrawal.id,
 					recipient: context.accounts.dave.address,
 					amount: MIN_DEPOSIT,
+					nonce: pausedWithdrawal.nonce,
 				},
 			});
 			expect(attestAttempt.success).toBe(false);
@@ -843,13 +968,15 @@ describe("Bridge Contract Integration", () => {
 	describe("Access Control Regression", () => {
 		it("prevents non-guardians from attesting withdrawals", async () => {
 			const nonGuardian = context.accounts.eve;
+			const withdrawal = withdrawalRequest(nonGuardian.address, MIN_DEPOSIT);
 
 			const attestAttempt = await contract.query("attest_withdrawal", {
 				origin: nonGuardian.address,
 				data: {
-					request_id: randomHash("unauthorized-attest"),
+					request_id: withdrawal.id,
 					recipient: nonGuardian.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			expect(attestAttempt.success).toBe(false);
@@ -859,7 +986,8 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("rejects duplicate guardian attestations on the same withdrawal", async () => {
-			const withdrawalId = randomHash("duplicate-attest");
+			const withdrawal = withdrawalRequest(context.accounts.dave.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// Temporarily raise threshold so withdrawal stays pending
 			const adjustTx = contract.send("set_guardians_and_threshold", {
@@ -878,6 +1006,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.dave.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest1Tx, context.guardians[0].signer);
@@ -889,6 +1018,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.dave.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			expect(duplicateAttempt.success).toBe(false);
@@ -917,7 +1047,8 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("rejects attestation on an already completed withdrawal", async () => {
-			const withdrawalId = randomHash("already-completed");
+			const withdrawal = withdrawalRequest(context.accounts.eve.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// First guardian attests
 			const attest1Tx = contract.send("attest_withdrawal", {
@@ -926,6 +1057,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.eve.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest1Tx, context.guardians[0].signer);
@@ -937,6 +1069,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.eve.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest2Tx, context.guardians[1].signer);
@@ -948,6 +1081,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.eve.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			expect(attempt.success).toBe(false);
@@ -973,7 +1107,8 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("rejects admin_cancel_withdrawal from non-owner", async () => {
-			const withdrawalId = randomHash("cancel-non-owner");
+			const withdrawal = withdrawalRequest(context.accounts.dave.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// Create a pending withdrawal
 			const attestTx = contract.send("attest_withdrawal", {
@@ -982,6 +1117,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.dave.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attestTx, context.guardians[0].signer);
@@ -1095,7 +1231,8 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("rejects admin_cancel_withdrawal on already-cancelled withdrawal", async () => {
-			const withdrawalId = randomHash("double-cancel");
+			const withdrawal = withdrawalRequest(context.accounts.dave.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// Create and cancel a withdrawal
 			const attestTx = contract.send("attest_withdrawal", {
@@ -1104,6 +1241,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.dave.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attestTx, context.guardians[0].signer);
@@ -1143,7 +1281,8 @@ describe("Bridge Contract Integration", () => {
 				taoToRao(5),
 			);
 
-			const withdrawalId = randomHash("cancel-completed");
+			const withdrawal = withdrawalRequest(context.accounts.eve.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// Create and complete a withdrawal
 			const attest1Tx = contract.send("attest_withdrawal", {
@@ -1152,6 +1291,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.eve.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest1Tx, context.guardians[0].signer);
@@ -1162,6 +1302,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.eve.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest2Tx, context.guardians[1].signer);
@@ -1301,7 +1442,8 @@ describe("Bridge Contract Integration", () => {
 		});
 
 		it("cleans up a completed withdrawal after TTL expires", async () => {
-			const withdrawalId = randomHash("cleanup-completed");
+			const withdrawal = withdrawalRequest(context.accounts.bob.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// Create and complete a withdrawal
 			const attest1Tx = contract.send("attest_withdrawal", {
@@ -1310,6 +1452,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.bob.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest1Tx, context.guardians[0].signer);
@@ -1320,6 +1463,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.bob.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attest2Tx, context.guardians[1].signer);
@@ -1352,7 +1496,8 @@ describe("Bridge Contract Integration", () => {
 		}, 120000);
 
 		it("cleans up a cancelled withdrawal after TTL expires", async () => {
-			const withdrawalId = randomHash("cleanup-cancelled");
+			const withdrawal = withdrawalRequest(context.accounts.dave.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// Create and cancel a withdrawal
 			const attestTx = contract.send("attest_withdrawal", {
@@ -1361,6 +1506,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.dave.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attestTx, context.guardians[0].signer);
@@ -1390,7 +1536,8 @@ describe("Bridge Contract Integration", () => {
 		}, 120000);
 
 		it("rejects cleanup of a pending (non-finalized) withdrawal", async () => {
-			const withdrawalId = randomHash("cleanup-pending");
+			const withdrawal = withdrawalRequest(context.accounts.dave.address, MIN_DEPOSIT);
+			const withdrawalId = withdrawal.id;
 
 			// Create a pending withdrawal (not finalized)
 			const attestTx = contract.send("attest_withdrawal", {
@@ -1399,6 +1546,7 @@ describe("Bridge Contract Integration", () => {
 					request_id: withdrawalId,
 					recipient: context.accounts.dave.address,
 					amount: MIN_DEPOSIT,
+					nonce: withdrawal.nonce,
 				},
 			});
 			await signAndFinalize(attestTx, context.guardians[0].signer);

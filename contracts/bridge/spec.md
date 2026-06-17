@@ -42,7 +42,7 @@ Users can:
 2. **First-attestation-creates-record** — No separate propose step; first guardian vote creates the record
 3. **Symmetric recovery** — Both directions have admin recovery paths for stuck transactions
 4. **Nonce-based unique IDs** — Monotonic nonces prevent hash collisions
-5. **Hash-based ID verification** — Request IDs are deterministic blake2_256 hashes of (domain, recipient, amount, nonce), so any parameter mismatch produces a different ID
+5. **Hash-based ID verification** — Request IDs are deterministic blake2_256 hashes of a chain-specific domain plus the relevant account, amount, and nonce fields, so any parameter mismatch produces a different ID
 
 ## Architecture
 
@@ -63,7 +63,7 @@ Users can:
 │   │ status=Requested│                                      │                │
 │   └─────────────────┘                                      │                │
 │                                                            ▼                │
-│                                                   attest_deposit()          │
+│                                             attest_deposit(..., nonce)      │
 │                                                            │                │
 │                                                            ▼                │
 │                                                   ┌─────────────────┐       │
@@ -99,7 +99,7 @@ Users can:
 │   │ status=Requested │                                     │                │
 │   └──────────────────┘                                     │                │
 │                                                            ▼                │
-│                                                  attest_withdrawal()        │
+│                                           attest_withdrawal(..., nonce)     │
 │                                                            │                │
 │                                                            ▼                │
 │                                                   ┌─────────────────┐       │
@@ -198,7 +198,7 @@ Users can:
 | Feature | Bittensor Contract | Hippius Pallet |
 |---------|-------------------|----------------|
 | **User: Deposit/Withdraw** | `deposit(amount, hotkey)` | `withdraw(amount)` |
-| **Guardian: Attest** | `attest_withdrawal(id, recipient, amount)` | `attest_deposit(id, recipient, amount)` |
+| **Guardian: Attest** | `attest_withdrawal(id, recipient, amount, nonce)` | `attest_deposit(id, recipient, amount, nonce)` |
 | **Admin: Guardian config** | `set_guardians_and_threshold(guardians, threshold)` | `set_guardians_and_threshold(guardians, threshold)` |
 | **Admin: Pause** | `pause()` / `unpause()` | `pause()` / `unpause()` |
 | **Admin: Fail request** | `admin_fail_deposit_request(id)` | `admin_fail_withdrawal_request(id)` |
@@ -233,7 +233,7 @@ Users can:
 
 | Feature | Contract Event | Pallet Event |
 |---------|---------------|--------------|
-| **Source request created** | `DepositRequestCreated` | `WithdrawalRequestCreated` |
+| **Source request created** | `DepositRequestCreated { deposit_nonce, sender, amount, deposit_request_id }` | `WithdrawalRequestCreated { id, sender, recipient, amount }` |
 | **Source request failed** | `DepositRequestFailed` | `WithdrawalRequestFailed` |
 | **Dest attested** | `WithdrawalAttested` | `DepositAttested` |
 | **Dest completed** | `WithdrawalCompleted` | `DepositCompleted` |
@@ -270,6 +270,8 @@ Users can:
 | **Mint failed** | — | `MintFailed` |
 | **Accounting underflow** | — | `AccountingUnderflow` |
 | **Transfer failed** | `TransferFailed` / `TransferNotVerified` / `RuntimeCallFailed` | — |
+| **Stake conviction-locked** | `StakeUnavailable` | — |
+| **Stake availability query failed** | `StakeAvailabilityQueryFailed` | — |
 | **TTL invalid** | `InvalidTTL` | `InvalidTTL` |
 | **Record not finalized** | `RecordNotFinalized` | `RecordNotFinalized` |
 | **TTL not expired** | `TTLNotExpired` | `TTLNotExpired` |
@@ -282,33 +284,43 @@ Both chains use deterministic ID generation with monotonic nonces:
 
 ```
 ID = blake2_256(
-    DOMAIN_DEPOSIT_REQUEST ||    // "HIPPIUS_DEPOSIT_REQUEST-V2"
-    chain_id ||                  // u16, little-endian
-    contract_account ||          // 32 bytes
-    nonce ||                     // u64, little-endian
-    sender ||                    // 32 bytes
-    recipient ||                 // 32 bytes
-    amount                       // u64, little-endian
+    DOMAIN_DEPOSIT_REQUEST ||    // "DEPOSIT_REQUEST-V1"
+    sender ||                    // encoded AccountId
+    halpha_amount ||             // u128, little-endian, amount converted to halphaRao
+    nonce                        // u64, little-endian
 )
 ```
+
+Guardians use the emitted `DepositRequestCreated.deposit_nonce` as `nonce` when calling
+`attest_deposit`. The pallet recomputes the ID with `recipient = sender` and the hAlpha-side
+amount (`alphaRao * 1_000_000_000`).
 
 ### Withdrawal Request ID (Hippius)
 
 ```
 ID = blake2_256(
-    DOMAIN_WITHDRAWAL_REQUEST || // "HIPPIUS-WITHDRAWAL-REQUEST-v1"
-    sender ||                    // encoded AccountId
+    DOMAIN_WITHDRAWAL_REQUEST || // "WITHDRAWAL_REQUEST-V1"
     recipient ||                 // encoded AccountId
-    amount ||                    // u64, little-endian
+    amount ||                    // u128, little-endian, alphaRao
     nonce                        // u64, little-endian
 )
 ```
+
+The pallet stores the generated nonce in `WithdrawalRequests[id].nonce`. Guardians include that
+nonce when calling `attest_withdrawal`; the contract recomputes the ID with the Alpha-side amount
+(`halphaRao / 1_000_000_000`).
 
 ## Security Considerations
 
 ### Poisoning Prevention (Hash-Based ID Verification)
 
-Request IDs are deterministic blake2_256 hashes over (domain, recipient, amount, nonce). Both `attest_deposit` (pallet) and `attest_withdrawal` (contract) recompute the expected ID from the supplied parameters and reject if it doesn't match:
+Both guardian attestation paths recompute the expected request ID from the supplied parameters and
+reject if it doesn't match:
+
+- `attest_deposit` verifies `DOMAIN_DEPOSIT_REQUEST || recipient || amount || nonce`, where
+  `amount` is in halphaRao.
+- `attest_withdrawal` verifies `DOMAIN_WITHDRAWAL_REQUEST || recipient || amount || nonce`, where
+  `amount` is in alphaRao.
 
 ```rust
 // Hippius pallet - attest_deposit
@@ -333,7 +345,23 @@ The pallet tracks `TotalMintedByBridge` and enforces `GlobalMintCap`:
 
 ### Stake Verification
 
-The contract verifies stake transfers by checking balances before and after:
+Before any Alpha leaves a coldkey through the bridge, the contract checks Bittensor's
+rolled-forward stake availability via chain extension function `36` (`get_stake_availability`).
+The transfer amount must be less than or equal to `available`; total stake that is currently
+locked by conviction cannot be deposited, withdrawn, or manually released.
+
+Stake availability is a coldkey/subnet-wide value, matching Bittensor's conviction-lock model.
+It is not hotkey-scoped. Deposit still keeps the existing `(coldkey, hotkey, netuid)` stake check
+before proxy transfer, and release paths still verify the contract has enough stake on
+`contract_hotkey` before transfer. The availability check complements those hotkey-specific
+checks by rejecting any amount that exceeds the coldkey's currently unlocked stake on the subnet.
+
+Deployments must run against a Bittensor runtime that exposes chain extension function `36`.
+If the extension is missing, fails, returns availability for the wrong subnet, or returns invalid
+availability data such as `available > total`, the bridge fails closed with
+`StakeAvailabilityQueryFailed`.
+
+The contract also verifies deposit stake transfers by checking balances before and after:
 
 ```rust
 let sender_decrease = sender_stake_before.saturating_sub(sender_stake_after);
@@ -348,14 +376,19 @@ let contract_ok = contract_increase >= amount.saturating_sub(TRANSFER_TOLERANCE)
 
 ### Insufficient Stake Check
 
-Before releasing Alpha, the contract verifies it has sufficient stake:
+Before releasing Alpha, the contract verifies it has sufficient stake on the contract hotkey and
+that the contract coldkey has enough available, non-conviction-locked stake:
 
 ```rust
 let contract_stake = self.get_stake_amount(contract_account, contract_hk, netuid)?;
 if contract_stake < withdrawal.amount {
     return Err(Error::InsufficientContractStake);
 }
+self.ensure_alpha_available(contract_account, netuid, withdrawal.amount)?;
 ```
+
+Admin manual release bypasses pause and deposit-record validation for emergency recovery, but it
+does not bypass Bittensor conviction availability.
 
 ### Admin Pause Bypass
 
@@ -410,7 +443,8 @@ Configurable via `set_cleanup_ttl` (admin only). TTL must be greater than zero.
 
 | Constant | Contract | Pallet |
 |----------|----------|--------|
-| Domain separator | `"HIPPIUS_DEPOSIT_REQUEST-V2"` | `"HIPPIUS-WITHDRAWAL-REQUEST-v1"` |
+| Deposit request ID domain | `"DEPOSIT_REQUEST-V1"` | Must match deposit verification |
+| Withdrawal request ID domain | `"WITHDRAWAL_REQUEST-V1"` | Must match withdrawal creation |
 | MAX_GUARDIANS | 10 | 10 |
 | Transfer tolerance | 10 alphaRao | — |
 | Default min amount | 1 Alpha (1e9 alphaRao) | 1 hAlpha (1e9 halphaRao) |

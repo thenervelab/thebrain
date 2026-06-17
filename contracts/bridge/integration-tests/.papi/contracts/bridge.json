@@ -1,10 +1,10 @@
 {
   "source": {
-    "hash": "0xdb4c9dcad6cd05baff5d20e42c067d914483023f2da3da65919170607aba8346",
+    "hash": "0x569380f6a3c38b039008e032991a7c891ad6c9c043014d4fe9d5b087d20d6c02",
     "language": "ink! 5.1.1",
     "compiler": "rustc 1.85.0",
     "build_info": {
-      "build_mode": "Debug",
+      "build_mode": "Release",
       "cargo_contract_version": "5.0.3",
       "rust_toolchain": "stable-aarch64-apple-darwin",
       "wasm_opt_settings": {
@@ -120,35 +120,11 @@
         "args": [
           {
             "docs": [],
-            "indexed": true,
-            "label": "chain_id",
-            "type": {
-              "displayName": [
-                "ChainId"
-              ],
-              "type": 3
-            }
-          },
-          {
-            "docs": [],
-            "indexed": false,
-            "label": "escrow_contract",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
             "indexed": false,
             "label": "deposit_nonce",
             "type": {
               "displayName": [
-                "DepositNonce"
+                "Nonce"
               ],
               "type": 6
             }
@@ -157,19 +133,6 @@
             "docs": [],
             "indexed": true,
             "label": "sender",
-            "type": {
-              "displayName": [
-                "ink",
-                "primitives",
-                "AccountId"
-              ],
-              "type": 0
-            }
-          },
-          {
-            "docs": [],
-            "indexed": true,
-            "label": "recipient",
             "type": {
               "displayName": [
                 "ink",
@@ -192,7 +155,7 @@
           },
           {
             "docs": [],
-            "indexed": false,
+            "indexed": true,
             "label": "deposit_request_id",
             "type": {
               "displayName": [
@@ -208,12 +171,13 @@
           "**Guardian Action Required**: Monitor this event on Bittensor chain.",
           "When seen, call attest_deposit on Hippius pallet with:",
           "- request_id: deposit_request_id from this event",
-          "- recipient: recipient from this event",
-          "- amount: amount from this event (alphaRao converted to halphaRao)"
+          "- recipient: sender from this event (sender == recipient)",
+          "- amount: amount from this event (alphaRao converted to halphaRao)",
+          "- nonce: deposit_nonce from this event"
         ],
         "label": "DepositRequestCreated",
         "module_path": "bridge::events",
-        "signature_topic": "0x739f750c8fc30427bf8e06588886b81420e42526df0bb35290671717d64680d8"
+        "signature_topic": "0xb379fe936c523c93893917cf8c96a5e497768a23882517aaaf1b7a46a39599f4"
       },
       {
         "args": [
@@ -807,6 +771,15 @@
               ],
               "type": 6
             }
+          },
+          {
+            "label": "nonce",
+            "type": {
+              "displayName": [
+                "Nonce"
+              ],
+              "type": 6
+            }
           }
         ],
         "default": false,
@@ -820,7 +793,8 @@
           " # Arguments",
           " * `request_id` - The withdrawal request ID from Hippius",
           " * `recipient` - Recipient to release Alpha to",
-          " * `amount` - Amount to release (in alphaRao)"
+          " * `amount` - Amount to release (in alphaRao)",
+          " * `nonce` - Nonce from the withdrawal request (used for ID verification)"
         ],
         "label": "attest_withdrawal",
         "mutates": true,
@@ -852,7 +826,10 @@
           "",
           " After calling this, admin should manually release Alpha via admin_manual_release.",
           "",
-          " NOTE: Intentionally does not check pause state — admin must operate during emergencies.",
+          " # Pause Behavior",
+          " Intentionally does NOT check pause state. Admin emergency/recovery",
+          " functions must remain operational when the bridge is paused, since",
+          " pausing is the first step in incident response.",
           "",
           " # Arguments",
           " * `request_id` - The deposit request ID to fail"
@@ -903,12 +880,23 @@
         "docs": [
           " Admin manually releases Alpha to a recipient (for stuck deposits)",
           "",
-          " NOTE: Intentionally does not check pause state — admin must operate during emergencies.",
+          " # Pause Behavior",
+          " Intentionally does NOT check pause state. Admin emergency/recovery",
+          " functions must remain operational when the bridge is paused, since",
+          " pausing is the first step in incident response.",
+          "",
+          " The `deposit_request_id` parameter is intentionally optional and is NOT",
+          " validated against storage — it exists solely for the audit trail in",
+          " emitted events. This allows emergency releases even when the deposit",
+          " request record may be missing or corrupted.",
+          "",
+          " This bypass is limited to bridge pause/storage recovery checks. It still",
+          " refuses to move Alpha that Bittensor reports as conviction-locked.",
           "",
           " # Arguments",
           " * `recipient` - Account to receive Alpha",
           " * `amount` - Amount to release (in alphaRao)",
-          " * `deposit_request_id` - Optional deposit request ID for audit trail"
+          " * `deposit_request_id` - Optional deposit request ID for audit trail (not validated)"
         ],
         "label": "admin_manual_release",
         "mutates": true,
@@ -947,7 +935,10 @@
         "docs": [
           " Admin cancels a withdrawal that is stuck",
           "",
-          " NOTE: Intentionally does not check pause state — admin must operate during emergencies.",
+          " # Pause Behavior",
+          " Intentionally does NOT check pause state. Admin emergency/recovery",
+          " functions must remain operational when the bridge is paused, since",
+          " pausing is the first step in incident response.",
           "",
           " # Arguments",
           " * `request_id` - The withdrawal ID to cancel"
@@ -1281,7 +1272,7 @@
             "label": "nonce",
             "type": {
               "displayName": [
-                "DepositNonce"
+                "Nonce"
               ],
               "type": 6
             }
@@ -1921,7 +1912,7 @@
               {
                 "name": "nonce",
                 "type": 6,
-                "typeName": "DepositNonce"
+                "typeName": "Nonce"
               },
               {
                 "name": "hotkey",
@@ -2336,7 +2327,7 @@
               {
                 "name": "next_deposit_nonce",
                 "type": 6,
-                "typeName": "<DepositNonce as::ink::storage::traits::AutoStorableHint<::ink::\nstorage::traits::ManualKey<4139309743u32, ()>,>>::Type"
+                "typeName": "<Nonce as::ink::storage::traits::AutoStorableHint<::ink::storage\n::traits::ManualKey<4139309743u32, ()>,>>::Type"
               },
               {
                 "name": "deposit_requests",
@@ -2346,7 +2337,7 @@
               {
                 "name": "nonce_to_deposit_request_id",
                 "type": 16,
-                "typeName": "<Mapping<DepositNonce, DepositRequestId> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<3491510221u32,\n()>,>>::Type"
+                "typeName": "<Mapping<Nonce, DepositRequestId> as::ink::storage::traits::\nAutoStorableHint<::ink::storage::traits::ManualKey<3491510221u32,\n()>,>>::Type"
               },
               {
                 "name": "withdrawals",
@@ -2557,55 +2548,55 @@
               },
               {
                 "index": 9,
-                "name": "InvalidWithdrawalDetails"
-              },
-              {
-                "index": 10,
                 "name": "InvalidTTL"
               },
               {
-                "index": 11,
+                "index": 10,
                 "name": "BridgePaused"
               },
               {
-                "index": 12,
+                "index": 11,
                 "name": "DepositRequestNotFound"
               },
               {
-                "index": 13,
+                "index": 12,
                 "name": "WithdrawalNotFound"
               },
               {
-                "index": 14,
+                "index": 13,
                 "name": "DepositRequestAlreadyFinalized"
               },
               {
-                "index": 15,
+                "index": 14,
                 "name": "WithdrawalAlreadyFinalized"
               },
               {
-                "index": 16,
+                "index": 15,
                 "name": "Overflow"
               },
               {
-                "index": 17,
+                "index": 16,
                 "name": "RuntimeCallFailed"
               },
               {
-                "index": 18,
+                "index": 17,
                 "name": "StakeQueryFailed"
               },
               {
-                "index": 19,
+                "index": 18,
                 "name": "TransferFailed"
               },
               {
-                "index": 20,
+                "index": 19,
                 "name": "StakeConsolidationFailed"
               },
               {
-                "index": 21,
+                "index": 20,
                 "name": "CodeUpgradeFailed"
+              },
+              {
+                "index": 21,
+                "name": "InvalidRequestId"
               },
               {
                 "index": 22,
@@ -2614,6 +2605,14 @@
               {
                 "index": 23,
                 "name": "TTLNotExpired"
+              },
+              {
+                "index": 24,
+                "name": "StakeUnavailable"
+              },
+              {
+                "index": 25,
+                "name": "StakeAvailabilityQueryFailed"
               }
             ]
           }

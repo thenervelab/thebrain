@@ -139,6 +139,7 @@ mod bridge {
 			if sender_stake_before < amount {
 				return Err(Error::InsufficientStake);
 			}
+			self.ensure_alpha_available(sender, netuid, amount)?;
 
 			let contract_stake_before = self.get_stake_amount(contract_account, hotkey, netuid)?;
 
@@ -384,6 +385,9 @@ mod bridge {
 		/// emitted events. This allows emergency releases even when the deposit
 		/// request record may be missing or corrupted.
 		///
+		/// This bypass is limited to bridge pause/storage recovery checks. It still
+		/// refuses to move Alpha that Bittensor reports as conviction-locked.
+		///
 		/// # Arguments
 		/// * `recipient` - Account to receive Alpha
 		/// * `amount` - Amount to release (in alphaRao)
@@ -399,6 +403,13 @@ mod bridge {
 
 			let contract_hk = self.contract_hotkey;
 			let netuid = NetUid::from(self.chain_id);
+			let contract_account = self.env().account_id();
+
+			let contract_stake = self.get_stake_amount(contract_account, contract_hk, netuid)?;
+			if contract_stake < amount {
+				return Err(Error::InsufficientContractStake);
+			}
+			self.ensure_alpha_available(contract_account, netuid, amount)?;
 
 			self.env()
 				.extension()
@@ -711,6 +722,31 @@ mod bridge {
 			}
 		}
 
+		fn ensure_alpha_available(
+			&self,
+			coldkey: AccountId,
+			netuid: NetUid,
+			amount: Balance,
+		) -> Result<(), Error> {
+			let availability = self
+				.env()
+				.extension()
+				.get_stake_availability(coldkey, netuid)
+				.map_err(|_| Error::StakeAvailabilityQueryFailed)?;
+
+			if availability.netuid() != netuid
+				|| availability.available_amount() > availability.total_amount()
+			{
+				return Err(Error::StakeAvailabilityQueryFailed);
+			}
+
+			if availability.available_amount() < amount {
+				return Err(Error::StakeUnavailable);
+			}
+
+			Ok(())
+		}
+
 		fn finalize_withdrawal(
 			&mut self,
 			withdrawal_id: WithdrawalId,
@@ -725,6 +761,7 @@ mod bridge {
 			if contract_stake < withdrawal.amount {
 				return Err(Error::InsufficientContractStake);
 			}
+			self.ensure_alpha_available(contract_account, netuid, withdrawal.amount)?;
 
 			// Transfer stake to recipient
 			self.env()
@@ -756,6 +793,187 @@ mod bridge {
 	#[cfg(test)]
 	mod tests {
 		use super::*;
+		use crate::chain_extension::{StakeAvailability, StakeInfo};
+		use ink::scale::{Decode, Encode};
+
+		struct MockSubtensorExtension {
+			stakes: Vec<(AccountId, AccountId, NetUid, Balance)>,
+			availabilities: Vec<(AccountId, NetUid, Balance, Balance, Balance)>,
+			fail_availability: bool,
+			returned_availability_netuid: Option<NetUid>,
+		}
+
+		impl MockSubtensorExtension {
+			fn new() -> Self {
+				Self {
+					stakes: Vec::new(),
+					availabilities: Vec::new(),
+					fail_availability: false,
+					returned_availability_netuid: None,
+				}
+			}
+
+			fn with_stake(
+				mut self,
+				hotkey: AccountId,
+				coldkey: AccountId,
+				netuid: NetUid,
+				stake: Balance,
+			) -> Self {
+				self.stakes.push((hotkey, coldkey, netuid, stake));
+				self
+			}
+
+			fn with_availability(
+				mut self,
+				coldkey: AccountId,
+				netuid: NetUid,
+				total: Balance,
+				locked: Balance,
+				available: Balance,
+			) -> Self {
+				self.availabilities.push((coldkey, netuid, total, locked, available));
+				self
+			}
+
+			fn with_availability_failure(mut self) -> Self {
+				self.fail_availability = true;
+				self
+			}
+
+			fn with_returned_availability_netuid(mut self, netuid: NetUid) -> Self {
+				self.returned_availability_netuid = Some(netuid);
+				self
+			}
+		}
+
+		impl ink::env::test::ChainExtension for MockSubtensorExtension {
+			fn ext_id(&self) -> u16 {
+				0
+			}
+
+			fn call(&mut self, func_id: u16, input: &[u8], output: &mut Vec<u8>) -> u32 {
+				match func_id {
+					0 => {
+						let Some((hotkey, coldkey, netuid)) =
+							decode_mock_input::<(AccountId, AccountId, NetUid)>(input)
+						else {
+							return 1;
+						};
+						let stake_info =
+							self.stakes
+								.iter()
+								.find(|(stored_hotkey, stored_coldkey, stored_netuid, _)| {
+									*stored_hotkey == hotkey
+										&& *stored_coldkey == coldkey && *stored_netuid == netuid
+								})
+								.map(|(_, _, _, stake)| {
+									StakeInfo::new_for_tests(
+										hotkey,
+										coldkey,
+										netuid,
+										AlphaCurrency::from(*stake),
+									)
+								});
+						output.clear();
+						output.extend(stake_info.encode());
+						0
+					},
+					36 => {
+						if self.fail_availability {
+							return 1;
+						}
+
+						let Some((coldkey, netuid)) =
+							decode_mock_input::<(AccountId, NetUid)>(input)
+						else {
+							return 1;
+						};
+						let availability = self
+							.availabilities
+							.iter()
+							.find(|(stored_coldkey, stored_netuid, _, _, _)| {
+								*stored_coldkey == coldkey && *stored_netuid == netuid
+							})
+							.map(|(_, _, total, locked, available)| {
+								let returned_netuid =
+									self.returned_availability_netuid.unwrap_or(netuid);
+								StakeAvailability::new_for_tests(
+									returned_netuid,
+									*total,
+									*locked,
+									*available,
+								)
+							})
+							.unwrap_or_else(|| StakeAvailability::new_for_tests(netuid, 0, 0, 0));
+						output.clear();
+						output.extend(availability.encode());
+						0
+					},
+					5 => {
+						let Some((
+							_origin_hotkey,
+							_destination_hotkey,
+							_origin_netuid,
+							_destination_netuid,
+							_amount,
+						)) = decode_mock_input::<(AccountId, AccountId, NetUid, NetUid, AlphaCurrency)>(
+							input,
+						)
+						else {
+							return 1;
+						};
+						0
+					},
+					6 => {
+						let Some((
+							_destination_coldkey,
+							_hotkey,
+							_origin_netuid,
+							_destination_netuid,
+							_amount,
+						)) = decode_mock_input::<(AccountId, AccountId, NetUid, NetUid, AlphaCurrency)>(
+							input,
+						)
+						else {
+							return 1;
+						};
+						0
+					},
+					_ => 1,
+				}
+			}
+		}
+
+		fn decode_mock_input<T: Decode>(input: &[u8]) -> Option<T> {
+			decode_exact(input).or_else(|| {
+				let mut remaining = input;
+				let ink::scale::Compact(payload_len) =
+					ink::scale::Compact::<u32>::decode(&mut remaining).ok()?;
+				if remaining.len() != payload_len as usize {
+					return None;
+				}
+				decode_exact(remaining)
+			})
+		}
+
+		fn decode_exact<T: Decode>(input: &[u8]) -> Option<T> {
+			let mut remaining = input;
+			let decoded = T::decode(&mut remaining).ok()?;
+			if remaining.is_empty() {
+				Some(decoded)
+			} else {
+				None
+			}
+		}
+
+		fn register_mock_extension(extension: MockSubtensorExtension) {
+			ink::env::test::register_chain_extension(extension);
+		}
+
+		fn set_contract_account(account: AccountId) {
+			ink::env::test::set_callee::<SubtensorEnvironment>(account);
+		}
 
 		/// Generate a valid withdrawal request ID using the same hash format as the contract verifies.
 		fn generate_withdrawal_id(recipient: AccountId, amount: Balance, nonce: Nonce) -> Hash {
@@ -852,6 +1070,115 @@ mod bridge {
 		}
 
 		#[ink::test]
+		fn ensure_alpha_available_allows_unlocked_stake() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			register_mock_extension(MockSubtensorExtension::new().with_availability(
+				accounts.bob,
+				netuid,
+				2_000_000_000,
+				500_000_000,
+				1_500_000_000,
+			));
+
+			assert_eq!(bridge.ensure_alpha_available(accounts.bob, netuid, 1_000_000_000), Ok(()));
+		}
+
+		#[ink::test]
+		fn ensure_alpha_available_rejects_locked_stake() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			register_mock_extension(MockSubtensorExtension::new().with_availability(
+				accounts.bob,
+				netuid,
+				2_000_000_000,
+				1_500_000_000,
+				500_000_000,
+			));
+
+			assert_eq!(
+				bridge.ensure_alpha_available(accounts.bob, netuid, 1_000_000_000),
+				Err(Error::StakeUnavailable)
+			);
+		}
+
+		#[ink::test]
+		fn ensure_alpha_available_maps_query_failure() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			register_mock_extension(MockSubtensorExtension::new().with_availability_failure());
+
+			assert_eq!(
+				bridge.ensure_alpha_available(accounts.bob, netuid, 1_000_000_000),
+				Err(Error::StakeAvailabilityQueryFailed)
+			);
+		}
+
+		#[ink::test]
+		fn ensure_alpha_available_rejects_mismatched_netuid_response() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let requested_netuid = NetUid::from(1);
+			let returned_netuid = NetUid::from(2);
+			register_mock_extension(
+				MockSubtensorExtension::new()
+					.with_availability(
+						accounts.bob,
+						requested_netuid,
+						2_000_000_000,
+						0,
+						2_000_000_000,
+					)
+					.with_returned_availability_netuid(returned_netuid),
+			);
+
+			assert_eq!(
+				bridge.ensure_alpha_available(accounts.bob, requested_netuid, 1_000_000_000),
+				Err(Error::StakeAvailabilityQueryFailed)
+			);
+		}
+
+		#[ink::test]
+		fn ensure_alpha_available_rejects_invalid_available_total() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			register_mock_extension(MockSubtensorExtension::new().with_availability(
+				accounts.bob,
+				netuid,
+				1_000_000_000,
+				0,
+				1_000_000_001,
+			));
+
+			assert_eq!(
+				bridge.ensure_alpha_available(accounts.bob, netuid, 1_000_000_000),
+				Err(Error::StakeAvailabilityQueryFailed)
+			);
+		}
+
+		#[ink::test]
+		fn deposit_rejects_stake_locked_by_conviction() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			set_contract_account(accounts.alice);
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			let amount = 1_000_000_000;
+
+			register_mock_extension(
+				MockSubtensorExtension::new()
+					.with_stake(accounts.eve, accounts.bob, netuid, amount)
+					.with_availability(accounts.bob, netuid, amount, amount / 2, amount / 2),
+			);
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			assert_eq!(bridge.deposit(amount, accounts.eve), Err(Error::StakeUnavailable));
+		}
+
+		#[ink::test]
 		fn attest_withdrawal_creates_record_on_first_attestation() {
 			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
@@ -933,7 +1260,7 @@ mod bridge {
 
 			// Second attestation by charlie with wrong recipient — fails ID verification
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.charlie);
-			let wrong_id = generate_withdrawal_id(wrong_recipient, amount, nonce);
+			let _wrong_id = generate_withdrawal_id(wrong_recipient, amount, nonce);
 			// Using the original withdrawal_id but wrong recipient should fail ID check
 			let result = bridge.attest_withdrawal(withdrawal_id, wrong_recipient, amount, nonce);
 			assert_eq!(result, Err(Error::InvalidRequestId));
@@ -1005,6 +1332,55 @@ mod bridge {
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.django);
 			let result = bridge.attest_withdrawal(withdrawal_id, recipient, amount, nonce);
 			assert_eq!(result, Err(Error::NotGuardian));
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_rejects_contract_stake_locked_by_conviction() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			set_contract_account(accounts.alice);
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			let amount = 1_000_000_000;
+
+			register_mock_extension(
+				MockSubtensorExtension::new()
+					.with_stake(accounts.eve, accounts.alice, netuid, amount)
+					.with_availability(accounts.alice, netuid, amount, amount / 2, amount / 2),
+			);
+			bridge.set_guardians_and_threshold(vec![accounts.bob], 1).unwrap();
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let withdrawal_id = generate_withdrawal_id(accounts.charlie, amount, 0);
+			assert_eq!(
+				bridge.attest_withdrawal(withdrawal_id, accounts.charlie, amount, 0),
+				Err(Error::StakeUnavailable)
+			);
+		}
+
+		#[ink::test]
+		fn attest_withdrawal_allows_available_contract_stake() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			set_contract_account(accounts.alice);
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			let amount = 1_000_000_000;
+
+			register_mock_extension(
+				MockSubtensorExtension::new()
+					.with_stake(accounts.eve, accounts.alice, netuid, amount)
+					.with_availability(accounts.alice, netuid, amount, 0, amount),
+			);
+			bridge.set_guardians_and_threshold(vec![accounts.bob], 1).unwrap();
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			let withdrawal_id = generate_withdrawal_id(accounts.charlie, amount, 0);
+			assert_eq!(
+				bridge.attest_withdrawal(withdrawal_id, accounts.charlie, amount, 0),
+				Ok(())
+			);
+
+			let withdrawal = bridge.get_withdrawal(withdrawal_id).unwrap();
+			assert_eq!(withdrawal.status, WithdrawalStatus::Completed);
 		}
 
 		#[ink::test]
@@ -1178,6 +1554,44 @@ mod bridge {
 			let result =
 				bridge.admin_cancel_withdrawal(withdrawal_id, CancelReason::AdminEmergency);
 			assert_eq!(result, Err(Error::WithdrawalAlreadyFinalized));
+		}
+
+		#[ink::test]
+		fn admin_manual_release_rejects_contract_stake_locked_by_conviction() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			set_contract_account(accounts.alice);
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			let amount = 1_000_000_000;
+
+			register_mock_extension(
+				MockSubtensorExtension::new()
+					.with_stake(accounts.eve, accounts.alice, netuid, amount)
+					.with_availability(accounts.alice, netuid, amount, amount / 2, amount / 2),
+			);
+
+			assert_eq!(
+				bridge.admin_manual_release(accounts.bob, amount, None),
+				Err(Error::StakeUnavailable)
+			);
+		}
+
+		#[ink::test]
+		fn admin_manual_release_allows_available_contract_stake() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			set_contract_account(accounts.alice);
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+			let netuid = NetUid::from(1);
+			let amount = 1_000_000_000;
+
+			register_mock_extension(
+				MockSubtensorExtension::new()
+					.with_stake(accounts.eve, accounts.alice, netuid, amount)
+					.with_availability(accounts.alice, netuid, amount, 0, amount),
+			);
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+			assert_eq!(bridge.admin_manual_release(accounts.bob, amount, None), Ok(()));
 		}
 
 		#[ink::test]

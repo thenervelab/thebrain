@@ -69,6 +69,12 @@ pub enum Error {
 	RecordNotFinalized,
 	/// TTL has not expired yet
 	TTLNotExpired,
+
+	// ============ Conviction Lock Errors ============
+	/// Stake is present but currently locked by conviction
+	StakeUnavailable,
+	/// Stake availability query failed or returned invalid data
+	StakeAvailabilityQueryFailed,
 }
 
 impl From<Error> for String {
