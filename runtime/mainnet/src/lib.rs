@@ -168,6 +168,65 @@ impl pallet_arion::Config for Runtime {
 	type MinerStatsPruneInterval = ArionMinerStatsPruneInterval;
 	type MinerStatsPruneMaxScanPerBlock = ArionMinerStatsPruneMaxScanPerBlock;
 }
+
+// compute-scoring pallet configuration
+pub struct ComputeScoringAuthorityMembers;
+impl frame_support::traits::SortedMembers<AccountId> for ComputeScoringAuthorityMembers {
+	fn sorted_members() -> Vec<AccountId> {
+		let account =
+			AccountId32::from_ss58check("5CP9wzk9G3kMdJmNyAsWGWVWDQE7Goe1dUvKtMv51EoXs563")
+				.expect("Invalid SS58 address");
+		vec![account]
+	}
+}
+
+parameter_types! {
+	/// Replay-domain pallet-instance discriminator for audit-VM signed aggregates.
+	pub const ComputePalletInstance: [u8; 32] = hex_literal::hex!(
+		"01d4edff0d4d62f0735960662a177fd5f804c9611b413ee1abac8ecad732fb41"
+	);
+	/// Pinned mainnet chain genesis hash (NOT `block_hash(0)` — prunes after BlockHashCount).
+	pub const ComputeChainGenesis: [u8; 32] = hex_literal::hex!(
+		"28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9"
+	);
+}
+
+impl pallet_compute_scoring::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type ComputeScoringAdminOrigin =
+		frame_system::EnsureSignedBy<ComputeScoringAuthorityMembers, AccountId>;
+	type AuditAuthorityOrigin =
+		frame_system::EnsureSignedBy<ComputeScoringAuthorityMembers, AccountId>;
+	type DepositCurrency = Balances;
+	type FamilyRegistry = pallet_registration::Pallet<Runtime>;
+	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
+	type Registration = pallet_registration::Pallet<Runtime>;
+	type RankingsSink = ();
+
+	type MaxFamilies = ConstU32<600>;
+	type MaxChildrenTotal = ConstU32<1000>;
+	type MaxChildrenPerFamily = ConstU32<35>;
+	type BaseChildDeposit = BaseChildDeposit;
+	type GlobalDepositHalvingPeriodBlocks = GlobalDepositHalvingPeriodBlocks;
+	type UnregisterCooldownBlocks = UnregisterCooldownBlocks;
+	type UnbondingPeriodBlocks = UnbondingPeriodBlocks;
+	type WeightInfo = pallet_compute_scoring::weights::SubstrateWeight<Runtime>;
+
+	type MaxAggregateBody = ConstU32<8192>;
+	type MaxValidatorIdLen = ConstU32<64>;
+	type MaxFamilyIdLen = ConstU32<64>;
+	type MaxAuditVmKeyIdLen = ConstU32<64>;
+	type ComputePalletInstance = ComputePalletInstance;
+	type ComputeChainGenesis = ComputeChainGenesis;
+	type NowUnix = Timestamp;
+
+	type MaxMinerStatusUpdatesPerCall = ConstU32<128>;
+
+	type MaxLiveAttestationBody = ConstU32<1024>;
+	type MaxVmIdLen = ConstU32<64>;
+	type MaxKbsAttestationPubkeys = ConstU32<8>;
+}
+
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
@@ -240,7 +299,7 @@ use fp_rpc::TransactionStatus;
 use pallet_ethereum::{Call::transact, Transaction as EthereumTransaction};
 use pallet_evm::{Account as EVMAccount, FeeCalculator, Runner};
 pub type Nonce = u32;
-
+ 
 /// The BABE epoch configuration at genesis.
 pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
 	sp_consensus_babe::BabeEpochConfiguration {
@@ -255,7 +314,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9194,
+	spec_version: 9182,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1970,6 +2029,7 @@ construct_runtime!(
 		// IpfsPallet: ipfs_pallet = 75,
 		Arion: pallet_arion = 76,
 		PalletCalendar: pallet_calendar = 78,
+		ComputeScoring: pallet_compute_scoring = 79,
 	}
 );
 

@@ -109,6 +109,7 @@ pallet-rankings  = { workspace = true }
 #pallet-backup = { workspace = true }
 pallet-credits = { workspace = true }
 #pallet-compute = { workspace = true }
+pallet-compute-scoring = { workspace = true }
 #pallet-container-registry = { workspace = true }
 
 # Frontier dependencies
@@ -294,6 +295,7 @@ std = [
     #"pallet-backup/std",
     "pallet-credits/std",
     #"pallet-compute/std",   
+    "pallet-compute-scoring/std",   
     #"pallet-container-registry/std",
 
     # Frontier

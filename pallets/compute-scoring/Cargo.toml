@@ -1,0 +1,80 @@
+[package]
+name = "pallet-compute-scoring"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "Hippius DePIN compute scoring pallet — mirrors `thenervelab/thebrain` `pallet-arion`'s deterministic-epoch + family-registration model, adapted for compute workloads (ARCHITECTURE.md §23, issue #40)."
+
+
+[dependencies]
+codec = { workspace = true, default-features = false, features = ["derive"] }
+scale-info = { workspace = true, default-features = false, features = ["derive"] }
+frame-support = { workspace = true, default-features = false }
+frame-system = { workspace = true, default-features = false }
+sp-runtime = { workspace = true, default-features = false }
+sp-std = { workspace = true, default-features = false }
+# PR-I3: `sp_io::hashing::sha2_256` is used by `submit_audit_stats` to
+# chain `prev_aggregate_hash` via the same SHA-256 the off-chain
+# audit-VM (`hippius_types::audit_vm`) uses — `T::Hashing` would
+# typically be BlakeTwo256 and diverge.
+sp-io = { workspace = true, default-features = false }
+# `sp-core` is used by the vendored arion-pallet for `ed25519::Public`
+# / `ed25519::Signature` (attestation verification) and `H256` (event
+# payloads, hash trait). Upstream Cargo.toml lists the same dep —
+# PR-I2 mirrors the version via `workspace = true`.
+sp-core = { workspace = true, default-features = false }
+# PR-I3: the `submit_audit_stats` extrinsic consumes the
+# `hippius_types::audit_vm::SignedServedDeliveryAggregate` schema. We
+# pull the type with `default-features = false` so the no_std runtime
+# build doesn't drag in `std`-only ciborium/serde adapters; the
+# pallet stores the body bytes opaquely and re-verifies the ed25519
+# sig in-pallet via `sp_core::ed25519`.
+hippius-types = { path = "../../hippius-types", default-features = false }
+
+# PR-I5: the local `pallet_registration.rs` / `pallet_proxy.rs` stubs
+# are gone — call sites now resolve to the real `thenervelab/thebrain`
+# crates at the pinned commit (matches `PROVENANCE.md`'s arion-pallet
+# pin). The compute-scoring pallet's own Config DOES NOT inherit
+# `pallet_registration::Config` as a supertrait (it has ~8 heavy
+# supertraits — `pallet_babe`/`pallet_balances`/`pallet_credits`/
+# `pallet_staking`/`pallet_proxy`/`pallet_utils`); instead the
+# scoring pallet exposes the `FamilyRegistry` / `ProxyVerifier` /
+# `NodeRegistrationProvider` trait abstractions in `lib.rs`, and the
+# runtime binds them to `pallet_registration::Pallet<T>` /
+# `pallet_proxy::Pallet<T>`. Tests pass `()` (fail-closed) or a
+# crate-local `MockRegistration` stand-in — see `mock.rs`. This
+# isolates tests from the heavy supertrait wiring while keeping the
+# production code path through the real registry.
+pallet-registration = { workspace = true, default-features = false }
+pallet-proxy = { workspace = true, default-features = false }
+
+[dev-dependencies]
+# PR-I3 mock runtime + tests for `submit_audit_stats`. `sp-io` is now
+# a regular dep so we don't duplicate it in `[dev-dependencies]`; the
+# `std` feature on the dep enables the host-function backed shims
+# (`pallet_balances`, `sp_runtime` test scaffolding) used by the mock
+# runtime.
+pallet-balances = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false, features = ["std"] }
+pallet-timestamp = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false, features = ["std"] }
+sp-runtime = { workspace = true, features = ["std"] }
+# `hippius-types` is already a regular dep — the test crate uses the
+# std-feature build (default) for the `aggregate_view_fields_match_hippius_types`
+# cross-reference test.
+hippius-types = { path = "../../hippius-types" }
+
+[features]
+default = ["std"]
+std = [
+    "codec/std",
+    "scale-info/std",
+    "frame-support/std",
+    "frame-system/std",
+    "sp-runtime/std",
+    "sp-std/std",
+    "sp-core/std",
+    "sp-io/std",
+    "hippius-types/std",
+    "pallet-registration/std",
+    "pallet-proxy/std",
+]
+try-runtime = ["frame-support/try-runtime", "frame-system/try-runtime"]
