@@ -23,6 +23,7 @@ pub trait WeightInfo {
     fn register_child() -> Weight;
     fn deregister_child() -> Weight;
     fn claim_unbonded() -> Weight;
+    fn request_unstake() -> Weight;
 
     // --- Admin ---
     fn set_lockup_enabled() -> Weight;
@@ -65,6 +66,26 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
         Weight::from_parts(20_000_000, 0)
             .saturating_add(T::DbWeight::get().reads(2))
             .saturating_add(T::DbWeight::get().writes(2))
+    }
+
+    /// Gap #2 graceful-exit quarantine. Base unbond cost is 3 reads
+    /// (`StakedAmount`, `StakeUnbonding`, `StakeEnabled`/`StakeFloor`) and 2
+    /// writes (`StakedAmount`, `StakeUnbonding`). On the exit path it adds an
+    /// O(children) loop bounded by `MaxChildrenPerFamily`, where each child
+    /// costs 1 read (`ChildRegistrations`) plus the worst-case status
+    /// transition (1 read and 1 write of `MinerStatuses`) — modelled here at
+    /// the conservative upper bound `MAX_CHILDREN` so the table needs no `n`
+    /// argument. Re-bench in the runtime before mainnet (manual estimate).
+    fn request_unstake() -> Weight {
+        // Conservative bound on `MaxChildrenPerFamily`; the production
+        // runtime sets the real value, the actual loop is `saturating`-safe.
+        const MAX_CHILDREN: u64 = 64;
+        Weight::from_parts(20_000_000, 0)
+            .saturating_add(Weight::from_parts(2_000_000, 0).saturating_mul(MAX_CHILDREN))
+            .saturating_add(T::DbWeight::get().reads(3))
+            .saturating_add(T::DbWeight::get().reads(2u64.saturating_mul(MAX_CHILDREN)))
+            .saturating_add(T::DbWeight::get().writes(2))
+            .saturating_add(T::DbWeight::get().writes(MAX_CHILDREN))
     }
 
     fn set_lockup_enabled() -> Weight {
@@ -146,6 +167,9 @@ impl WeightInfo for () {
         Weight::zero()
     }
     fn claim_unbonded() -> Weight {
+        Weight::zero()
+    }
+    fn request_unstake() -> Weight {
         Weight::zero()
     }
     fn set_lockup_enabled() -> Weight {

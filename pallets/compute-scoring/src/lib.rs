@@ -1248,8 +1248,7 @@ pub mod pallet {
     /// Current effective USD price per resource-unit (fixed-point ×1e6)
     /// for a node. Absent ⇒ the miner hasn't priced yet.
     #[pallet::storage]
-    pub type MinerPrice<T: Config> =
-        StorageMap<_, Blake2_128Concat, [u8; 32], u128, OptionQuery>;
+    pub type MinerPrice<T: Config> = StorageMap<_, Blake2_128Concat, [u8; 32], u128, OptionQuery>;
 
     /// An announced-but-not-yet-effective price change for a node.
     #[pallet::storage]
@@ -1422,6 +1421,13 @@ pub mod pallet {
             amount: BalanceOf<T>,
             unbonding_end: BlockNumberFor<T>,
         },
+        /// Gap #2 — an owner signalled exit via `request_unstake` (unbonded
+        /// everything, or dropped below the eligibility floor while staking is
+        /// live) and `nodes` of their §13 compute nodes were transitioned to
+        /// `Quarantined` so the off-chain validator drains them during the
+        /// unbonding period. `nodes` counts only nodes that ACTUALLY
+        /// transitioned (already-Quarantined nodes are not re-counted).
+        OwnerQuarantinedOnUnstake { who: T::AccountId, nodes: u32 },
         /// Fully-unbonded stake was unreserved and released.
         StakeReleased {
             who: T::AccountId,
@@ -1640,6 +1646,62 @@ pub mod pallet {
             <frame_system::Pallet<T>>::block_number()
         }
 
+        /// Transition a node's §13 status: materialise only non-default
+        /// (non-`Active`) rows, emit [`Event::MinerStatusChanged`] on a real
+        /// transition, and return `true` iff the status actually changed.
+        ///
+        /// The effective previous status when no row exists is
+        /// `MinerStatus::Active` — a node that just registered via the §13
+        /// anti-Sybil flow is implicitly Active until the validator says
+        /// otherwise. Recovery to `Active` REMOVES the row so it doesn't leave
+        /// an explicit `Active` row contradicting the "default-Active implicit
+        /// / only non-default rows materialise" invariant; identical-status
+        /// re-asserts (heartbeats) are silent and write nothing.
+        ///
+        /// Shared by [`Pallet::vali_submit_epoch_close`] (the per-epoch status
+        /// submitter) and the graceful-exit quarantine in
+        /// [`Pallet::request_unstake`].
+        fn transition_node_status(
+            node_id: [u8; 32],
+            new_status: MinerStatus,
+            now: BlockNumberFor<T>,
+            epoch: u64,
+        ) -> bool {
+            let prev = MinerStatuses::<T>::get(node_id);
+            let prev_status = prev
+                .as_ref()
+                .map(|e| e.status)
+                .unwrap_or(MinerStatus::Active);
+            if prev_status == new_status {
+                // Heartbeat — no storage write, no event.
+                return false;
+            }
+            // Recovery to default-Active REMOVES the row so a node that
+            // recovers from Quarantined back to Active doesn't leave an
+            // explicit Active row contradicting the "default-Active implicit /
+            // only non-default rows materialise" invariant. The event still
+            // fires — recovery IS a transition.
+            if new_status == MinerStatus::Active {
+                MinerStatuses::<T>::remove(node_id);
+            } else {
+                MinerStatuses::<T>::insert(
+                    node_id,
+                    MinerStatusEntry {
+                        status: new_status,
+                        last_transition_block: now,
+                        last_transition_epoch: epoch,
+                    },
+                );
+            }
+            Self::deposit_event(Event::MinerStatusChanged {
+                node_id,
+                old_status: prev_status,
+                new_status,
+                epoch,
+            });
+            true
+        }
+
         // --- PR-1 stake helpers ---
 
         /// One asymmetric-EMA step over `alpha_per_usd` (fixed-point ×1e6).
@@ -1734,8 +1796,7 @@ pub mod pallet {
                     repatriated.saturating_add(not_repatriated.saturating_sub(burn_remainder))
                 }
                 None => {
-                    let (_imbalance, remainder) =
-                        T::DepositCurrency::slash_reserved(owner, amount);
+                    let (_imbalance, remainder) = T::DepositCurrency::slash_reserved(owner, amount);
                     amount.saturating_sub(remainder)
                 }
             };
@@ -1752,7 +1813,11 @@ pub mod pallet {
                 StakeUnbonding::<T>::mutate(owner, |slot| {
                     if let Some((amt, end)) = *slot {
                         let left = amt.saturating_sub(from_unbond);
-                        *slot = if left.is_zero() { None } else { Some((left, end)) };
+                        *slot = if left.is_zero() {
+                            None
+                        } else {
+                            Some((left, end))
+                        };
                     }
                 });
             }
@@ -1893,6 +1958,14 @@ pub mod pallet {
         ) -> Vec<u8> {
             // Domain-separated payload:
             // SCALE("HIPPIUS_COMPUTE_NODE_REG_V1", family, child, node_id, nonce)
+            //
+            // The miner-agent reproduces this byte-for-byte off-chain to
+            // produce the `node_sig` (`binaries/miner-agent/src/identity
+            // .rs::registration_message`, the `sign-registration`
+            // subcommand). Every component is fixed-size, so the SCALE
+            // tuple encoding is a plain concatenation — keep BOTH sides
+            // in sync if this payload ever changes (e.g. a v2 domain tag
+            // or a variable-length field).
             (
                 b"HIPPIUS_COMPUTE_NODE_REG_V1",
                 family,
@@ -2561,13 +2634,11 @@ pub mod pallet {
                     weight: u.weight,
                 });
 
-                // (b) Only write + emit `MinerStatusChanged` if
-                //     the **effective** previous status differs.
-                //     Default state when no row exists is
-                //     `MinerStatus::Active` (a node that just
-                //     registered via the §13 anti-Sybil flow is
-                //     implicitly Active until the validator says
-                //     otherwise). So:
+                // (b) Only write + emit `MinerStatusChanged` if the
+                //     **effective** previous status differs. Default state
+                //     when no row exists is `MinerStatus::Active` (a node that
+                //     just registered via the §13 anti-Sybil flow is implicitly
+                //     Active until the validator says otherwise). So:
                 //
                 //     - prev=None, new=Active → no transition
                 //       (heartbeat re-asserting the default;
@@ -2579,42 +2650,13 @@ pub mod pallet {
                 //     - prev=Some(X), new=Y where X != Y →
                 //       transition.
                 //
-                //     This keeps the on-chain state minimal ("1
-                //     row par miner, pas d'historique") — only
-                //     non-default statuses materialise as rows.
-                let prev = MinerStatuses::<T>::get(u.node_id);
-                let prev_status = prev
-                    .as_ref()
-                    .map(|e| e.status)
-                    .unwrap_or(MinerStatus::Active);
-                if prev_status != u.new_status {
-                    // Recovery to default-Active REMOVES the row so
-                    // a node that recovers from Quarantined back to
-                    // Active doesn't leave an explicit Active row
-                    // contradicting the "default-Active implicit /
-                    // only non-default rows materialise" invariant
-                    // (codex/gemini CONVERGENT MEDIUM). The event
-                    // still fires — recovery IS a transition.
-                    if u.new_status == MinerStatus::Active {
-                        MinerStatuses::<T>::remove(u.node_id);
-                    } else {
-                        MinerStatuses::<T>::insert(
-                            u.node_id,
-                            MinerStatusEntry {
-                                status: u.new_status,
-                                last_transition_block: now,
-                                last_transition_epoch: epoch,
-                            },
-                        );
-                    }
-                    Self::deposit_event(Event::MinerStatusChanged {
-                        node_id: u.node_id,
-                        old_status: prev_status,
-                        new_status: u.new_status,
-                        epoch,
-                    });
-                }
-                // else: heartbeat — no storage write, no event.
+                //     This keeps the on-chain state minimal ("1 row par miner,
+                //     pas d'historique") — only non-default statuses
+                //     materialise as rows. The logic lives in the shared
+                //     [`Self::transition_node_status`] helper so the
+                //     graceful-exit quarantine in `request_unstake` is
+                //     byte-identical.
+                Self::transition_node_status(u.node_id, u.new_status, now, epoch);
             }
 
             CurrentEpoch::<T>::put(epoch);
@@ -2754,8 +2796,18 @@ pub mod pallet {
         /// Staker: begin unbonding `amount` of active stake. It stays
         /// reserved (slashable) until [`claim_unstaked`] after the
         /// unbonding period.
+        ///
+        /// **Gap #2 (graceful exit):** if this unstake is an *exit signal* —
+        /// the owner unbonds EVERYTHING (`remaining == 0`, unambiguous and
+        /// works even with the stake layer disabled), OR, when staking is
+        /// live, drops below the eligibility floor — all of the owner's §13
+        /// compute nodes are transitioned to `Quarantined`. This lets the
+        /// off-chain validator auto-drain + warm-migrate their VMs DURING the
+        /// unbonding period rather than after the stake is gone. A partial
+        /// unstake that stays sufficiently collateralised is NOT an exit and
+        /// does not quarantine.
         #[pallet::call_index(37)]
-        #[pallet::weight(<T as pallet::Config>::WeightInfo::deregister_child())]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::request_unstake())]
         pub fn request_unstake(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(!amount.is_zero(), Error::<T>::ZeroStake);
@@ -2770,10 +2822,46 @@ pub mod pallet {
                 *slot = Some((pending.saturating_add(amount), end));
             });
             Self::deposit_event(Event::StakeUnbondRequested {
-                who,
+                who: who.clone(),
                 amount,
                 unbonding_end: end,
             });
+
+            // Gap #2 — graceful-exit quarantine. Run AFTER the unbond
+            // bookkeeping + event so the stake-layer state is final before we
+            // read `remaining`, and so the `StakeUnbondRequested` event
+            // precedes the quarantine event in the log.
+            let remaining = StakedAmount::<T>::get(&who);
+            // Exit signal: unstaking EVERYTHING is unambiguous (works even
+            // when staking is disabled, so it's testable); OR, when the stake
+            // layer is live, dropping below the eligibility floor. A partial
+            // unstake that stays sufficiently collateralised is NOT an exit.
+            let exiting = remaining.is_zero()
+                || (StakeEnabled::<T>::get() && remaining < StakeFloor::<T>::get());
+            if exiting {
+                let now = Self::now();
+                let epoch = CurrentEpoch::<T>::get();
+                let children = FamilyChildren::<T>::get(&who);
+                let mut quarantined: u32 = 0;
+                for child in children.iter() {
+                    if let Some(reg) = ChildRegistrations::<T>::get(child) {
+                        if Self::transition_node_status(
+                            reg.node_id,
+                            MinerStatus::Quarantined,
+                            now,
+                            epoch,
+                        ) {
+                            quarantined = quarantined.saturating_add(1);
+                        }
+                    }
+                }
+                if quarantined > 0 {
+                    Self::deposit_event(Event::OwnerQuarantinedOnUnstake {
+                        who: who.clone(),
+                        nodes: quarantined,
+                    });
+                }
+            }
             Ok(())
         }
 
@@ -2860,7 +2948,10 @@ pub mod pallet {
             // would trap the node — once `MinerPrice == 0` the magnitude
             // bounds collapse to `[0, 0]`, so it could never be raised.
             ensure!(new_price > 0, Error::<T>::PriceOutOfBounds);
-            ensure!(Self::within_price_bounds(new_price), Error::<T>::PriceOutOfBounds);
+            ensure!(
+                Self::within_price_bounds(new_price),
+                Error::<T>::PriceOutOfBounds
+            );
 
             let now = Self::now();
             let last = LastPriceChangeBlock::<T>::get(node_id);
@@ -2883,7 +2974,10 @@ pub mod pallet {
             let effective_block = now.saturating_add(PriceChangeNoticeBlocks::<T>::get());
             PendingPriceChange::<T>::insert(
                 node_id,
-                PriceChange { new_price, effective_block },
+                PriceChange {
+                    new_price,
+                    effective_block,
+                },
             );
             LastPriceChangeBlock::<T>::insert(node_id, now);
             Self::deposit_event(Event::PriceChangeAnnounced {
