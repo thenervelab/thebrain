@@ -1722,18 +1722,27 @@ mod stake {
     fn ema_bootstraps_then_reacts_fast_on_dump_slow_on_pump() {
         new_test_ext().execute_with(|| {
             // First post bootstraps the EMA to spot.
-            assert_ok!(ComputeScoring::set_alpha_per_usd(RuntimeOrigin::root(), 1_000_000));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
             assert_eq!(AlphaPerUsdEma::<TestRuntime>::get(), 1_000_000);
             assert_eq!(AlphaPerUsdSpot::<TestRuntime>::get(), 1_000_000);
 
             // DUMP: alpha_per_usd rises 1.0 → 2.0. Default down=300‰ → EMA
             // jumps 30% of the gap: 1.0 + 0.3*(2.0-1.0) = 1.3.
-            assert_ok!(ComputeScoring::set_alpha_per_usd(RuntimeOrigin::root(), 2_000_000));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                2_000_000
+            ));
             assert_eq!(AlphaPerUsdEma::<TestRuntime>::get(), 1_300_000);
 
             // PUMP from the new EMA: spot drops 1.3 → 1.0. Default up=50‰ →
             // EMA eases only 5% of the gap: 1.3 - 0.05*(1.3-1.0) = 1.285.
-            assert_ok!(ComputeScoring::set_alpha_per_usd(RuntimeOrigin::root(), 1_000_000));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
             assert_eq!(AlphaPerUsdEma::<TestRuntime>::get(), 1_285_000);
 
             // The asymmetry holds: a dump moved the EMA 300k, an equal-size
@@ -1748,7 +1757,10 @@ mod stake {
             assert_eq!(ComputeScoring::required_alpha(100), 0);
 
             // 1 alpha = 1 USD (×1e6). value-at-risk $50 ⇒ 50 alpha.
-            assert_ok!(ComputeScoring::set_alpha_per_usd(RuntimeOrigin::root(), 1_000_000));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
             assert_eq!(ComputeScoring::required_alpha(50), 50);
 
             // Coin dumps to 1 USD = 2 alpha (bootstrap reset). $50 ⇒ 100.
@@ -1763,7 +1775,10 @@ mod stake {
             // Disabled (default): always sufficient, even with nothing staked.
             assert!(ComputeScoring::is_stake_sufficient(&1, 1_000));
 
-            assert_ok!(ComputeScoring::set_stake_enabled(RuntimeOrigin::root(), true));
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
             assert_ok!(ComputeScoring::set_stake_floor(RuntimeOrigin::root(), 100));
 
             // Nothing staked ⇒ below floor ⇒ insufficient.
@@ -1822,7 +1837,10 @@ mod stake {
                 Error::<TestRuntime>::InsufficientStake
             );
 
-            assert_ok!(ComputeScoring::request_unstake(RuntimeOrigin::signed(1), 200));
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(1),
+                200
+            ));
             // Active drops, but balance stays RESERVED (slashable) during unbond.
             assert_eq!(StakedAmount::<TestRuntime>::get(1), 300);
             assert_eq!(Balances::reserved_balance(1), 500);
@@ -1890,7 +1908,11 @@ mod stake {
                     Error::<TestRuntime>::InvalidEmaFactor
                 );
             }
-            assert_ok!(ComputeScoring::set_ema_permille(RuntimeOrigin::root(), 200, 80));
+            assert_ok!(ComputeScoring::set_ema_permille(
+                RuntimeOrigin::root(),
+                200,
+                80
+            ));
             assert_eq!(EmaDownPermille::<TestRuntime>::get(), 200);
             assert_eq!(EmaUpPermille::<TestRuntime>::get(), 80);
         });
@@ -1903,14 +1925,15 @@ mod stake {
 
 mod slashing {
     use super::*;
-    use crate::pallet::{
-        SlashRecord, SlashReason, SlashingEnabled, StakeUnbonding, StakedAmount,
-    };
+    use crate::pallet::{SlashReason, SlashRecord, SlashingEnabled, StakeUnbonding, StakedAmount};
     use frame_support::traits::{Currency, ReservableCurrency};
 
     fn staked(acct: AccountId, amount: Balance) {
         let _ = Balances::make_free_balance_be(&acct, amount * 2);
-        assert_ok!(ComputeScoring::top_up_stake(RuntimeOrigin::signed(acct), amount));
+        assert_ok!(ComputeScoring::top_up_stake(
+            RuntimeOrigin::signed(acct),
+            amount
+        ));
     }
 
     #[test]
@@ -1946,7 +1969,10 @@ mod slashing {
         new_test_ext().execute_with(|| {
             staked(1, 500);
             let issuance_before = Balances::total_issuance();
-            assert_ok!(ComputeScoring::set_slashing_enabled(RuntimeOrigin::root(), true));
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
 
             assert_ok!(ComputeScoring::slash_stake(
                 RuntimeOrigin::root(),
@@ -1969,8 +1995,14 @@ mod slashing {
             staked(1, 500);
             // A live beneficiary (escrow) above ED so repatriation lands.
             let _ = Balances::make_free_balance_be(&9, 10);
-            assert_ok!(ComputeScoring::set_slashing_enabled(RuntimeOrigin::root(), true));
-            assert_ok!(ComputeScoring::set_slash_beneficiary(RuntimeOrigin::root(), Some(9)));
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_slash_beneficiary(
+                RuntimeOrigin::root(),
+                Some(9)
+            ));
 
             assert_ok!(ComputeScoring::slash_stake(
                 RuntimeOrigin::root(),
@@ -1993,8 +2025,14 @@ mod slashing {
             staked(1, 500);
             // Beneficiary 9 stays dead (balance 0 < ED) — repatriation can't
             // land, so the slash must still burn: reserved drops by `amount`.
-            assert_ok!(ComputeScoring::set_slashing_enabled(RuntimeOrigin::root(), true));
-            assert_ok!(ComputeScoring::set_slash_beneficiary(RuntimeOrigin::root(), Some(9)));
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_slash_beneficiary(
+                RuntimeOrigin::root(),
+                Some(9)
+            ));
             assert_ok!(ComputeScoring::slash_stake(
                 RuntimeOrigin::root(),
                 1,
@@ -2012,7 +2050,10 @@ mod slashing {
     fn slash_is_capped_at_total_stake() {
         new_test_ext().execute_with(|| {
             staked(1, 100);
-            assert_ok!(ComputeScoring::set_slashing_enabled(RuntimeOrigin::root(), true));
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
             // Ask for more than staked — only 100 is slashable.
             assert_ok!(ComputeScoring::slash_stake(
                 RuntimeOrigin::root(),
@@ -2030,9 +2071,15 @@ mod slashing {
         new_test_ext().execute_with(|| {
             staked(1, 500);
             // Move 300 into unbonding (still reserved + slashable).
-            assert_ok!(ComputeScoring::request_unstake(RuntimeOrigin::signed(1), 300));
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(1),
+                300
+            ));
             assert_eq!(StakedAmount::<TestRuntime>::get(1), 200);
-            assert_ok!(ComputeScoring::set_slashing_enabled(RuntimeOrigin::root(), true));
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
 
             // Slash 350: 200 from active (→0), 150 from the unbonding chunk.
             assert_ok!(ComputeScoring::slash_stake(
@@ -2079,7 +2126,10 @@ mod slashing {
             // out-of-band so reserved (300) < StakedAmount (500).
             assert_eq!(Balances::unreserve(&1, 200), 0);
             assert_eq!(Balances::reserved_balance(1), 300);
-            assert_ok!(ComputeScoring::set_slashing_enabled(RuntimeOrigin::root(), true));
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
 
             // Ask to slash 400, but only 300 is physically reservable.
             assert_ok!(ComputeScoring::slash_stake(
@@ -2103,9 +2153,7 @@ mod slashing {
 
 mod marketplace {
     use super::*;
-    use crate::pallet::{
-        MinerPrice, NodeIdToChild, PendingPriceChange,
-    };
+    use crate::pallet::{MinerPrice, NodeIdToChild, PendingPriceChange};
 
     const NODE: [u8; 32] = [0xCC; 32];
     const OP: AccountId = 1;
@@ -2163,7 +2211,10 @@ mod marketplace {
             System::set_block_number(6);
             assert_eq!(ComputeScoring::effective_price(&NODE), Some(100));
             // ...and anyone can materialise it.
-            assert_ok!(ComputeScoring::apply_price_change(RuntimeOrigin::signed(2), NODE));
+            assert_ok!(ComputeScoring::apply_price_change(
+                RuntimeOrigin::signed(2),
+                NODE
+            ));
             assert_eq!(MinerPrice::<TestRuntime>::get(NODE), Some(100));
             assert!(PendingPriceChange::<TestRuntime>::get(NODE).is_none());
         });
@@ -2177,7 +2228,10 @@ mod marketplace {
             assert_ok!(announce(500_000));
             // ...but out-of-bounds is rejected (above ceiling).
             PendingPriceChange::<TestRuntime>::remove(NODE);
-            assert_noop!(announce(2_000_000_000), Error::<TestRuntime>::PriceOutOfBounds);
+            assert_noop!(
+                announce(2_000_000_000),
+                Error::<TestRuntime>::PriceOutOfBounds
+            );
             // ...and below floor.
             assert_noop!(announce(0), Error::<TestRuntime>::PriceOutOfBounds);
         });
@@ -2190,7 +2244,10 @@ mod marketplace {
             // Establish a current price of 100.
             assert_ok!(announce(100));
             System::set_block_number(6);
-            assert_ok!(ComputeScoring::apply_price_change(RuntimeOrigin::signed(2), NODE));
+            assert_ok!(ComputeScoring::apply_price_change(
+                RuntimeOrigin::signed(2),
+                NODE
+            ));
             // Past the interval (last announce at block 1, interval 10).
             System::set_block_number(20);
 
@@ -2208,7 +2265,7 @@ mod marketplace {
         new_test_ext().execute_with(|| {
             setup();
             assert_ok!(announce(100)); // block 1
-            // Second announce before block 1 + interval(10) → too soon.
+                                       // Second announce before block 1 + interval(10) → too soon.
             System::set_block_number(5);
             assert_noop!(announce(120), Error::<TestRuntime>::PriceChangeTooSoon);
             // At/after the interval it's allowed.
@@ -2271,7 +2328,10 @@ fn deregister_clears_marketplace_price_state() {
         MinerPrice::<TestRuntime>::insert(node_id, 1_000u128);
         PendingPriceChange::<TestRuntime>::insert(
             node_id,
-            PriceChange { new_price: 1_500u128, effective_block: 99 },
+            PriceChange {
+                new_price: 1_500u128,
+                effective_block: 99,
+            },
         );
         LastPriceChangeBlock::<TestRuntime>::insert(node_id, 5u64);
 
@@ -2287,4 +2347,322 @@ fn deregister_clears_marketplace_price_state() {
         assert!(PendingPriceChange::<TestRuntime>::get(node_id).is_none());
         assert_eq!(LastPriceChangeBlock::<TestRuntime>::get(node_id), 0);
     });
+}
+
+// =====================================================================
+// Gap #2 — request_unstake quarantines the owner's nodes on exit so the
+// off-chain validator drains + warm-migrates their VMs DURING the unbonding
+// period (not after the stake is gone).
+// =====================================================================
+
+mod graceful_exit {
+    use super::*;
+    use crate::pallet::{
+        ChildRegistration, ChildRegistrations, ChildStatus, FamilyChildren, MinerStatusUpdate,
+        StakeEnabled, StakedAmount,
+    };
+    use frame_support::traits::Currency;
+
+    const OWNER: AccountId = 7;
+    const CHILD_1: AccountId = 71;
+    const CHILD_2: AccountId = 72;
+    const G_NODE_A: [u8; 32] = [0xA1; 32];
+    const G_NODE_B: [u8; 32] = [0xB2; 32];
+
+    fn fund(acct: AccountId, amount: Balance) {
+        let _ = Balances::make_free_balance_be(&acct, amount);
+    }
+
+    /// Seed the owner→child→node mapping the way `register_child` would,
+    /// without the ed25519 ceremony — we only exercise the unstake→quarantine
+    /// path here, not registration.
+    fn attach_child(owner: AccountId, child: AccountId, node_id: [u8; 32]) {
+        ChildRegistrations::<TestRuntime>::insert(
+            child,
+            ChildRegistration {
+                family: owner,
+                node_id,
+                status: ChildStatus::Active,
+                deposit: 0,
+                unbonding_end: 0,
+            },
+        );
+        FamilyChildren::<TestRuntime>::try_mutate(owner, |v| v.try_push(child))
+            .expect("within MaxChildrenPerFamily");
+    }
+
+    /// Stake `amount` from `OWNER` (reserve real balance so the lifecycle is
+    /// honest), returning nothing — `StakedAmount` is now `amount`.
+    fn stake_owner(amount: Balance) {
+        fund(OWNER, 1_000_000);
+        assert_ok!(ComputeScoring::top_up_stake(
+            RuntimeOrigin::signed(OWNER),
+            amount
+        ));
+        assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), amount);
+    }
+
+    fn status_of(node_id: [u8; 32]) -> Option<MinerStatus> {
+        MinerStatuses::<TestRuntime>::get(node_id).map(|e| e.status)
+    }
+
+    fn quarantine_events() -> Vec<u32> {
+        frame_system::Pallet::<TestRuntime>::events()
+            .iter()
+            .filter_map(|e| match &e.event {
+                RuntimeEvent::ComputeScoring(ComputeEvent::OwnerQuarantinedOnUnstake {
+                    nodes,
+                    ..
+                }) => Some(*nodes),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn status_change_events() -> Vec<([u8; 32], MinerStatus, MinerStatus)> {
+        frame_system::Pallet::<TestRuntime>::events()
+            .iter()
+            .filter_map(|e| match &e.event {
+                RuntimeEvent::ComputeScoring(ComputeEvent::MinerStatusChanged {
+                    node_id,
+                    old_status,
+                    new_status,
+                    ..
+                }) => Some((*node_id, *old_status, *new_status)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 1. Full exit (works with `StakeEnabled = false`): unbond EVERYTHING ⇒
+    ///    remaining 0 ⇒ both nodes Quarantined + a `MinerStatusChanged`
+    ///    {Active→Quarantined} each + one `OwnerQuarantinedOnUnstake{nodes:2}`.
+    #[test]
+    fn full_exit_quarantines_all_nodes_even_when_staking_disabled() {
+        new_test_ext().execute_with(|| {
+            // StakeEnabled defaults to false — the zero-remaining rule must
+            // still fire so this is testable without the stake layer live.
+            assert!(!StakeEnabled::<TestRuntime>::get());
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            attach_child(OWNER, CHILD_2, G_NODE_B);
+            stake_owner(500);
+
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                500
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 0);
+
+            // Both nodes materialised a Quarantined row.
+            assert_eq!(status_of(G_NODE_A), Some(MinerStatus::Quarantined));
+            assert_eq!(status_of(G_NODE_B), Some(MinerStatus::Quarantined));
+
+            // One MinerStatusChanged{Active→Quarantined} per node.
+            let changes = status_change_events();
+            assert!(changes.contains(&(G_NODE_A, MinerStatus::Active, MinerStatus::Quarantined)));
+            assert!(changes.contains(&(G_NODE_B, MinerStatus::Active, MinerStatus::Quarantined)));
+            assert_eq!(changes.len(), 2);
+
+            // Exactly one aggregate event counting both nodes.
+            assert_eq!(quarantine_events(), vec![2]);
+        });
+    }
+
+    /// 2. Partial-but-sufficient (StakeEnabled = true, remaining ≥ floor): a
+    ///    small unstake that stays collateralised is NOT an exit — no row, no
+    ///    quarantine event.
+    #[test]
+    fn partial_sufficient_does_not_quarantine() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_stake_floor(RuntimeOrigin::root(), 100));
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            stake_owner(500);
+
+            // Unstake 100 ⇒ remaining 400 ≥ floor 100 ⇒ NOT an exit.
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                100
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 400);
+
+            assert_eq!(status_of(G_NODE_A), None); // still implicit-Active
+            assert!(quarantine_events().is_empty());
+            assert!(status_change_events().is_empty());
+        });
+    }
+
+    /// 3. Partial-deficient (StakeEnabled = true, 0 < remaining < floor): drops
+    ///    below the eligibility floor ⇒ exit ⇒ quarantine fires.
+    #[test]
+    fn partial_below_floor_quarantines() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_stake_floor(RuntimeOrigin::root(), 300));
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            stake_owner(500);
+
+            // Unstake 250 ⇒ remaining 250, which is > 0 but < floor 300 ⇒ exit.
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                250
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 250);
+
+            assert_eq!(status_of(G_NODE_A), Some(MinerStatus::Quarantined));
+            assert_eq!(quarantine_events(), vec![1]);
+        });
+    }
+
+    /// 4. Partial with StakeEnabled = false, remaining > 0: only the
+    ///    zero-remaining case triggers when the stake layer is disabled — a
+    ///    leftover balance is NOT an exit.
+    #[test]
+    fn partial_with_staking_disabled_does_not_quarantine() {
+        new_test_ext().execute_with(|| {
+            assert!(!StakeEnabled::<TestRuntime>::get());
+            // A floor is set but ignored because StakeEnabled is false.
+            assert_ok!(ComputeScoring::set_stake_floor(RuntimeOrigin::root(), 400));
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            stake_owner(500);
+
+            // Unstake 250 ⇒ remaining 250 (> 0). StakeEnabled=false ⇒ the
+            // floor branch is dead, only `remaining == 0` would fire.
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                250
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 250);
+
+            assert_eq!(status_of(G_NODE_A), None);
+            assert!(quarantine_events().is_empty());
+        });
+    }
+
+    /// 5. Idempotent: a node already Quarantined (via `vali_submit_epoch_close`)
+    ///    then the owner unstakes ⇒ stays Quarantined, no duplicate transition
+    ///    (`transition_node_status` returns false ⇒ not counted; with only one
+    ///    node and zero real transitions, NO aggregate event is emitted).
+    #[test]
+    fn already_quarantined_node_is_not_recounted() {
+        new_test_ext().execute_with(|| {
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            stake_owner(500);
+
+            // Pre-quarantine the single node via the validator path.
+            let updates: BoundedVec<_, _> = BoundedVec::try_from(vec![MinerStatusUpdate {
+                node_id: G_NODE_A,
+                new_status: MinerStatus::Quarantined,
+                weight: 0,
+            }])
+            .unwrap();
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                1,
+                updates,
+            ));
+            assert_eq!(status_of(G_NODE_A), Some(MinerStatus::Quarantined));
+
+            frame_system::Pallet::<TestRuntime>::set_block_number(2);
+            frame_system::Pallet::<TestRuntime>::reset_events();
+
+            // Full exit. The node is ALREADY Quarantined ⇒ no transition ⇒
+            // not counted ⇒ quarantined == 0 ⇒ no aggregate event.
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                500
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 0);
+            assert_eq!(status_of(G_NODE_A), Some(MinerStatus::Quarantined));
+            assert!(status_change_events().is_empty());
+            assert!(quarantine_events().is_empty());
+        });
+    }
+
+    /// 6. Recovery still works: after an unstake-quarantine, the validator's
+    ///    `vali_submit_epoch_close` with a `set Active` update REMOVES the row
+    ///    (back to implicit-Active) — the shared helper's recovery path is
+    ///    intact.
+    #[test]
+    fn recovery_after_unstake_quarantine_clears_the_row() {
+        new_test_ext().execute_with(|| {
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            stake_owner(500);
+
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                500
+            ));
+            assert_eq!(status_of(G_NODE_A), Some(MinerStatus::Quarantined));
+
+            // Validator restores the node to Active in a later epoch.
+            let updates: BoundedVec<_, _> = BoundedVec::try_from(vec![MinerStatusUpdate {
+                node_id: G_NODE_A,
+                new_status: MinerStatus::Active,
+                weight: 1_000,
+            }])
+            .unwrap();
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                1,
+                updates,
+            ));
+            // Row removed ⇒ implicit-Active again.
+            assert_eq!(status_of(G_NODE_A), None);
+        });
+    }
+
+    /// 7. An owner with ZERO children unstaking full ⇒ no quarantine event, no
+    ///    panic (the loop just doesn't run).
+    #[test]
+    fn full_exit_with_no_children_is_a_noop_quarantine() {
+        new_test_ext().execute_with(|| {
+            stake_owner(500);
+            assert!(FamilyChildren::<TestRuntime>::get(OWNER).is_empty());
+
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                500
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 0);
+            assert!(quarantine_events().is_empty());
+        });
+    }
+
+    /// Event ordering: `StakeUnbondRequested` precedes
+    /// `OwnerQuarantinedOnUnstake` in the log (the unstake first, then the
+    /// quarantine it triggered).
+    #[test]
+    fn unbond_event_precedes_quarantine_event() {
+        new_test_ext().execute_with(|| {
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            stake_owner(500);
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                500
+            ));
+
+            let events = frame_system::Pallet::<TestRuntime>::events();
+            let unbond_idx = events.iter().position(|e| {
+                matches!(
+                    &e.event,
+                    RuntimeEvent::ComputeScoring(ComputeEvent::StakeUnbondRequested { .. })
+                )
+            });
+            let quar_idx = events.iter().position(|e| {
+                matches!(
+                    &e.event,
+                    RuntimeEvent::ComputeScoring(ComputeEvent::OwnerQuarantinedOnUnstake { .. })
+                )
+            });
+            assert!(unbond_idx.is_some() && quar_idx.is_some());
+            assert!(unbond_idx < quar_idx);
+        });
+    }
 }
