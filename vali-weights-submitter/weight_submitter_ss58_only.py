@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple, Optional
 import time
 
 import bittensor as bt
-from bittensor.core.extrinsics.set_weights import set_weights_extrinsic
+from bittensor.wallet import Wallet
 from substrateinterface import SubstrateInterface, Keypair
 
 
@@ -50,8 +50,8 @@ class WeightSubmitterSS58:
         """Initialize connections to Bittensor and Hippius chain."""
         self.logger.info("Initializing connections...")
         
-        # Initialize Bittensor subtensor
-        self.subtensor = bt.subtensor(
+        # Initialize Bittensor subtensor (v11: blocking when called directly)
+        self.subtensor = bt.Subtensor(
             network=self.config['bittensor']['chain_endpoint']
         )
         
@@ -70,7 +70,7 @@ class WeightSubmitterSS58:
             self.logger.info(f"Using SS58 address for querying: {self.validator_ss58}")
             
             # Still need a wallet for weight submission, but we'll use it minimally
-            self.wallet = bt.wallet(
+            self.wallet = Wallet(
                 name=self.config['wallet']['name'],
                 hotkey=self.config['wallet']['hotkey'],
                 path=self.config['wallet']['path']
@@ -78,7 +78,7 @@ class WeightSubmitterSS58:
             self.logger.info(f"Using local wallet for submission: {self.wallet.hotkey.ss58_address}")
         else:
             # Use local wallet for both querying and submission
-            self.wallet = bt.wallet(
+            self.wallet = Wallet(
                 name=self.config['wallet']['name'],
                 hotkey=self.config['wallet']['hotkey'],
                 path=self.config['wallet']['path']
@@ -98,20 +98,15 @@ class WeightSubmitterSS58:
         self.logger.info(f"Fetching metagraph for subnet {self.config['bittensor']['subnet_id']}...")
         
         try:
-            # Get metagraph for the subnet
-            metagraph = bt.metagraph(
-                netuid=self.config['bittensor']['subnet_id'],
-                subtensor=self.subtensor
+            # v11: metagraph lives under the subnets namespace, neurons are typed records
+            metagraph = self.subtensor.subnets.metagraph(
+                netuid=self.config['bittensor']['subnet_id']
             )
-            
-            # Get active neurons
-            active_neurons = metagraph.neurons
-            
+
             # Create mapping of UID to hotkey
-            uid_to_hotkey = {}
-            for uid, neuron in enumerate(active_neurons):
-                if neuron.axon_info.ip != 0:  # Active neuron
-                    uid_to_hotkey[uid] = neuron.axon_info.hotkey
+            # Note: no axon filter — subnet 75 miners don't serve axons, and the
+            # legacy code's `axon_info.ip != 0` check was a no-op (ip was a str)
+            uid_to_hotkey = {neuron.uid: neuron.hotkey for neuron in metagraph}
             
             self.logger.info(f"Found {len(uid_to_hotkey)} active neurons in subnet {self.config['bittensor']['subnet_id']}")
             return uid_to_hotkey
@@ -213,27 +208,21 @@ class WeightSubmitterSS58:
         self.logger.info(f"Submitting weights for {len(matched_weights)} neurons...")
         
         try:
-            # Extract UIDs and weights
-            uids = [uid for uid, _ in matched_weights]
-            weights = [weight for _, weight in matched_weights]
-            
-            # Convert to numpy arrays as expected by the function
-            uids_array = np.array(uids, dtype=np.int64)
-            weights_array = np.array(weights, dtype=np.float32)
-            
-            # Submit weights using the bittensor function
-            # Note: We still need a wallet for submission, but we can use the SS58 for querying
-            success = set_weights_extrinsic(
-                subtensor=self.subtensor,
-                wallet=self.wallet,
-                netuid=self.config['bittensor']['subnet_id'],
-                uids=uids_array,
-                weights=weights_array,
-                version_key=self.config['weights']['version_key'],
+            # v11: submit via SetWeights intent (normalization handled by SDK)
+            result = self.subtensor.execute(
+                bt.SetWeights(
+                    netuid=self.config['bittensor']['subnet_id'],
+                    weights={uid: float(weight) for uid, weight in matched_weights},
+                    version_key=self.config['weights']['version_key']
+                ),
+                self.wallet,
                 wait_for_inclusion=self.config['weights']['wait_for_inclusion'],
                 wait_for_finalization=self.config['weights']['wait_for_finalization'],
                 period=self.config['weights']['period']
             )
+            success = result.success
+            if not success and result.error is not None:
+                self.logger.error(f"SetWeights failed: {result.error.name} - {result.error.remediation}")
             
             if success:
                 self.logger.info("Weights submitted successfully")
@@ -278,8 +267,8 @@ class WeightSubmitterSS58:
             self.logger.error(f"Error in main execution: {e}")
             raise
         finally:
-            # Clean up connections
-            if self.subtensor:
+            # Clean up connections (v11: subtensor close is optional, auto on GC)
+            if self.subtensor and hasattr(self.subtensor, "close"):
                 self.subtensor.close()
             if self.hippius_interface:
                 self.hippius_interface.close()
