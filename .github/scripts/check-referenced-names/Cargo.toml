@@ -1,0 +1,16 @@
+[package]
+name = "check-referenced-names"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Deliberately its own workspace (see the `[workspace]` table below), not a member of
+# the root Cargo.toml — this must never affect the node's own dependency graph or
+# build. Run standalone: `cargo run --manifest-path .github/scripts/check-referenced-names/Cargo.toml`.
+[workspace]
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
