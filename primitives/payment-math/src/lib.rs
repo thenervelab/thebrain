@@ -10,6 +10,8 @@
 //! enforce.
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use primitive_types::U256;
+
 /// One GiB — the denominator unit of [`UsdPerGibBlock`].
 pub const GIB: u128 = 1 << 30;
 /// Fixed-point scale shared by USD prices and token planck (18 decimals).
@@ -129,6 +131,30 @@ impl Amount for Credits {
 	}
 }
 
+/// Tokens owed for `byte_blocks` at `price` USD per GiB-block, with the
+/// token at `token_price` USD (both fixed-point [`E18`]).
+///
+/// `tokens = byte_blocks × price × 10^18 / (2^30 × token_price)`
+///
+/// Deterministic integer math via `U256`; rounds down (error < 1 planck),
+/// saturates at `u128::MAX`. A zero token price yields zero rather than
+/// dividing by zero.
+pub fn tokens_for(byte_blocks: ByteBlocks, price: UsdPerGibBlock, token_price: Usd) -> Tokens {
+	if token_price.0 == 0 {
+		return Tokens(0);
+	}
+	let num = U256::from(byte_blocks.0)
+		.saturating_mul(U256::from(price.0))
+		.saturating_mul(U256::from(E18));
+	let den = U256::from(GIB).saturating_mul(U256::from(token_price.0));
+	let out = num / den;
+	if out > U256::from(u128::MAX) {
+		Tokens(u128::MAX)
+	} else {
+		Tokens(out.as_u128())
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -161,6 +187,39 @@ mod tests {
 		let a = ByteBlocks::new(u128::MAX - 1);
 		assert_eq!(a.saturating_add(ByteBlocks::new(5)).get(), u128::MAX);
 		assert!(ByteBlocks::new(0).is_zero());
+	}
+
+	const USD: u128 = E18;
+
+	fn t(bb: u128, price: u128, tp: u128) -> u128 {
+		tokens_for(ByteBlocks::new(bb), UsdPerGibBlock::new(price), Usd::new(tp)).get()
+	}
+
+	#[test]
+	fn one_gib_block_at_one_usd_each_is_one_token() {
+		assert_eq!(t(GIB, USD, USD), USD);
+	}
+
+	#[test]
+	fn scales_linearly_with_bytes_price_and_token_price() {
+		assert_eq!(t(100 * GIB, 2 * USD, 4 * USD), 50 * USD);
+		assert_eq!(t(GIB / 2, USD, USD), USD / 2);
+	}
+
+	#[test]
+	fn realistic_magnitudes_do_not_overflow() {
+		let byte_blocks = 100 * 1024 * GIB * 14_400;
+		assert_eq!(t(byte_blocks, USD / 100_000_000, USD / 20), 294_912 * USD / 1_000);
+	}
+
+	#[test]
+	fn zero_token_price_pays_zero() {
+		assert_eq!(t(GIB, USD, 0), 0);
+	}
+
+	#[test]
+	fn extreme_inputs_saturate_at_u128_max() {
+		assert_eq!(t(u128::MAX, u128::MAX, 1), u128::MAX);
 	}
 
 	#[test]
