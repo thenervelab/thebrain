@@ -94,5 +94,7 @@ In-crate, native (no mock runtime):
   route through `available` / `payable`.
 
 Existing runtime integration tests
-(`runtime/mainnet/tests/miner_payments.rs`) stay untouched as the
-no-behavior-change safety net.
+(`runtime/mainnet/tests/miner_payments.rs`) keep every assertion unchanged
+as the no-behavior-change safety net; their five calls to the deleted
+`pallet_arion::tokens_for_byte_blocks` are mechanically renamed to a local
+delegate that calls `payment_math::tokens_for`.
