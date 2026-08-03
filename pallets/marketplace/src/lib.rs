@@ -2193,32 +2193,43 @@ pub mod pallet {
             ranking_account: T::AccountId,
             marketplace_account: T::AccountId,
         ) -> DispatchResult {
-        
+
             let rankings_amount = alpha_to_release
                 .checked_mul(70)
                 .and_then(|x| x.checked_div(100))
                 .unwrap_or_default();
-        
+
             let marketplace_amount = alpha_to_release
                 .saturating_sub(rankings_amount);
 
-            if let Some(sudo_account) = Self::sudo_key() {
-
-                <pallet_balances::Pallet<T>>::transfer(
-                    &sudo_account,
-                    &ranking_account,
-                    rankings_amount.try_into().unwrap_or_default(),
-                    ExistenceRequirement::AllowDeath
-                )?;
-        
-                <pallet_balances::Pallet<T>>::transfer(
-                    &sudo_account,
-                    &marketplace_account,
-                    marketplace_amount.try_into().unwrap_or_default(),
-                    ExistenceRequirement::AllowDeath
-                )?;
+            // Released alpha is paid out of the bank, which received 100% of
+            // the alpha backing at deposit time — the sudo account is debited
+            // exactly once per alpha unit (at deposit), never here. The
+            // marketplace pallet account must be whitelisted as a bank
+            // requester. A rejection or shortfall never blocks the billing
+            // flow: the bank pays what it can (visible in PaymentReleased
+            // events) and the rest is logged.
+            let requester = Self::account_id();
+            for (dest, amount) in
+                [(ranking_account, rankings_amount), (marketplace_account, marketplace_amount)]
+            {
+                if amount == 0 {
+                    continue;
+                }
+                if let Err(e) = pallet_bank::Pallet::<T>::request_payment(
+                    &requester,
+                    &dest,
+                    amount.saturated_into(),
+                ) {
+                    log::warn!(
+                        target: "runtime::marketplace",
+                        "bank rejected revenue distribution to {:?}: {:?}",
+                        dest,
+                        e
+                    );
+                }
             }
-        
+
             Ok(())
         }
 
