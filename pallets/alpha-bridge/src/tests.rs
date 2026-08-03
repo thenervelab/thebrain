@@ -1,4 +1,4 @@
-use crate::{mock::*, pallet::DepositStatus, Error, Event, Pallet as AlphaBridge, RewardMints, RewardMintStatus};
+use crate::{mock::*, pallet::DepositStatus, Error, Event, Pallet as AlphaBridge, StakingRewardTransfers, StakingRewardTransferStatus};
 use frame_support::{assert_noop, assert_ok};
 use sp_core::H256;
 use codec::Encode;
@@ -1764,7 +1764,7 @@ fn test_attest_deposit_with_correct_nonce_passes() {
 // ============ Reward Minting Tests ============
 
 #[test]
-fn test_propose_reward_mint_creates_pending_record() {
+fn test_propose_staking_reward_transfer_creates_pending_record() {
 	new_test_ext().execute_with(|| {
 		println!("\n=== Test: Propose Reward Mint ===\n");
 
@@ -1780,7 +1780,7 @@ fn test_propose_reward_mint_creates_pending_record() {
 		println!("Guardian {} whitelisted", guardian1);
 
 		// Propose a reward mint
-		assert_ok!(AlphaBridge::<Test>::propose_reward_mint(
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
 			RuntimeOrigin::signed(guardian1.clone()),
 			reward_amount
 		));
@@ -1789,14 +1789,14 @@ fn test_propose_reward_mint_creates_pending_record() {
 
 		// Verify the mint was recorded - nonce should be 1 after the call
 		let mint_id = generate_mint_id(reward_amount, 0);
-		let mint_record = RewardMints::<Test>::get(mint_id);
+		let mint_record = StakingRewardTransfers::<Test>::get(mint_id);
 
 		assert!(mint_record.is_some(), "Reward mint should be recorded");
 		let mint = mint_record.unwrap();
 		assert_eq!(mint.amount, reward_amount, "Amount should match");
 		assert_eq!(
 			mint.status,
-			RewardMintStatus::Pending,
+			StakingRewardTransferStatus::Pending,
 			"Status should be Pending"
 		);
 		assert!(
@@ -1842,7 +1842,7 @@ fn test_attest_staking_reward_transfer_reaches_threshold_and_mints() {
 		println!("Approve threshold set to 2 guardians");
 
 		// Guardian 1 proposes
-		assert_ok!(AlphaBridge::<Test>::propose_reward_mint(
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
 			RuntimeOrigin::signed(guardian1.clone()),
 			reward_amount
 		));
@@ -1874,12 +1874,12 @@ fn test_attest_staking_reward_transfer_reaches_threshold_and_mints() {
 		);
 
 		// Verify reward mint status changed to Completed
-		let mint_record = RewardMints::<Test>::get(mint_id);
+		let mint_record = StakingRewardTransfers::<Test>::get(mint_id);
 		assert!(mint_record.is_some(), "Reward mint should exist");
 		let mint = mint_record.unwrap();
 		assert_eq!(
 			mint.status,
-			RewardMintStatus::Completed,
+			StakingRewardTransferStatus::Completed,
 			"Status should be Completed"
 		);
 
@@ -1890,7 +1890,7 @@ fn test_attest_staking_reward_transfer_reaches_threshold_and_mints() {
 }
 
 #[test]
-fn test_propose_reward_mint_not_whitelisted_fails() {
+fn test_propose_staking_reward_transfer_not_whitelisted_fails() {
 	new_test_ext().execute_with(|| {
 		println!("\n=== Test: Propose Without Whitelist (Should Fail) ===\n");
 
@@ -1900,7 +1900,7 @@ fn test_propose_reward_mint_not_whitelisted_fails() {
 		println!("Attempting propose without whitelist...");
 
 		// Try to propose without being whitelisted
-		let result = AlphaBridge::<Test>::propose_reward_mint(
+		let result = AlphaBridge::<Test>::propose_staking_reward_transfer(
 			RuntimeOrigin::signed(guardian_not_whitelisted.clone()),
 			reward_amount
 		);
@@ -1934,7 +1934,7 @@ fn test_attest_staking_reward_transfer_single_guardian_approves() {
 		println!("Single guardian threshold setup");
 
 		// Guardian proposes AND attests in one call
-		assert_ok!(AlphaBridge::<Test>::propose_reward_mint(
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
 			RuntimeOrigin::signed(guardian.clone()),
 			reward_amount
 		));
@@ -1942,13 +1942,13 @@ fn test_attest_staking_reward_transfer_single_guardian_approves() {
 		let mint_id = generate_mint_id(reward_amount, 0);
 
 		// Check if it's already completed (threshold was 1)
-		let mint_record = RewardMints::<Test>::get(mint_id);
+		let mint_record = StakingRewardTransfers::<Test>::get(mint_id);
 		assert!(mint_record.is_some(), "Reward mint should exist");
 		let mint = mint_record.unwrap();
 
 		assert_eq!(
 			mint.status,
-			RewardMintStatus::Completed,
+			StakingRewardTransferStatus::Completed,
 			"Should be completed immediately (threshold=1)"
 		);
 
@@ -1959,7 +1959,7 @@ fn test_attest_staking_reward_transfer_single_guardian_approves() {
 }
 
 #[test]
-fn test_multiple_reward_mints_sequential() {
+fn test_multiple_staking_reward_transfers_sequential() {
 	new_test_ext().execute_with(|| {
 		println!("\n=== Test: Multiple Sequential Reward Mints ===\n");
 
@@ -1985,7 +1985,7 @@ fn test_multiple_reward_mints_sequential() {
 
 		// First mint: 1M (nonce=0)
 		let amount1 = 1_000_000_000u128;
-		assert_ok!(AlphaBridge::<Test>::propose_reward_mint(
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
 			RuntimeOrigin::signed(guardian1.clone()),
 			amount1
 		));
@@ -2000,7 +2000,7 @@ fn test_multiple_reward_mints_sequential() {
 
 		// Second mint: 2M (nonce=1)
 		let amount2 = 2_000_000_000u128;
-		assert_ok!(AlphaBridge::<Test>::propose_reward_mint(
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
 			RuntimeOrigin::signed(guardian1.clone()),
 			amount2
 		));

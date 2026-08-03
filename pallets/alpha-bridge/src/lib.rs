@@ -110,7 +110,7 @@ pub mod pallet {
 	#[derive(
 		Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default,
 	)]
-	pub enum RewardMintStatus {
+	pub enum StakingRewardTransferStatus {
 		#[default]
 		Pending,  // Collecting guardian votes
 		Completed, // Rewards minted and transferred to staking pallet
@@ -120,7 +120,7 @@ pub mod pallet {
 	/// Guardians vote to authorize minting rewards for distribution to stakers
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
 	#[scale_info(skip_type_params(T))]
-	pub struct RewardMint<T: Config> {
+	pub struct StakingRewardTransfer<T: Config> {
 		/// Unique ID for this reward mint request
 		pub request_id: H256,
 		/// Amount of hAlpha to mint (in halphaRao)
@@ -128,7 +128,7 @@ pub mod pallet {
 		/// Guardian votes for approval
 		pub votes: BTreeSet<T::AccountId>,
 		/// Current status
-		pub status: RewardMintStatus,
+		pub status: StakingRewardTransferStatus,
 		/// Block when first guardian attested
 		pub created_at_block: BlockNumberFor<T>,
 		/// Block when reward mint was finalized
@@ -247,16 +247,16 @@ pub mod pallet {
 	// ============ Reward Mint Storage (Multi-sig) ============
 
 	/// Pending reward mints requiring guardian approval (multi-sig with 2+ votes)
-	/// Key: RewardMintId
+	/// Key: StakingRewardTransferId
 	#[pallet::storage]
-	#[pallet::getter(fn reward_mints)]
-	pub type RewardMints<T: Config> =
-		StorageMap<_, Blake2_128Concat, H256, RewardMint<T>, OptionQuery>;
+	#[pallet::getter(fn staking_reward_transfers)]
+	pub type StakingRewardTransfers<T: Config> =
+		StorageMap<_, Blake2_128Concat, H256, StakingRewardTransfer<T>, OptionQuery>;
 
 	/// Nonce for generating unique reward mint request IDs
 	#[pallet::storage]
-	#[pallet::getter(fn next_reward_mint_nonce)]
-	pub type NextRewardMintNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
+	#[pallet::getter(fn next_staking_reward_transfer_nonce)]
+	pub type NextStakingRewardTransferNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
 
 	/// Default max mint per era (prevents unlimited minting in a time window)
 	#[pallet::type_value]
@@ -390,13 +390,13 @@ pub mod pallet {
 
 		// ============ Reward Mint Events ============
 		/// Guardian attested a reward mint request
-		RewardMintAttested { id: H256, guardian: T::AccountId },
+		StakingRewardTransferAttested { id: H256, guardian: T::AccountId },
 
 		/// Reward mint completed - hAlpha minted and transferred to staking pallet
-		RewardMintCompleted { id: H256, amount: u128 },
+		StakingRewardTransferCompleted { id: H256, amount: u128 },
 
 		/// Reward mint cancelled by admin
-		RewardMintCancelled { id: H256 },
+		StakingRewardTransferCancelled { id: H256 },
 
 		// ============ Whitelist Events ============
 		/// Address added to reward bridge whitelist
@@ -461,11 +461,11 @@ pub mod pallet {
 		/// Withdrawal amount must be divisible by the conversion factor (no dust)
 		AmountNotBridgeable,
 		/// Reward mint request not found
-		RewardMintNotFound,
+		StakingRewardTransferNotFound,
 		/// Guardian has already voted on this reward mint
-		RewardMintAlreadyVoted,
+		StakingRewardTransferAlreadyVoted,
 		/// Reward mint already completed
-		RewardMintAlreadyCompleted,
+		StakingRewardTransferAlreadyCompleted,
 		/// Caller is not whitelisted to bridge rewards
 		NotWhitelisted,
 		/// Minting would exceed the per-era limit
@@ -712,14 +712,14 @@ pub mod pallet {
 		/// * `amount` - Amount of hAlpha to mint and send to staking pallet (in halphaRao)
 		#[pallet::call_index(13)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_deposit())]
-		pub fn propose_reward_mint(origin: OriginFor<T>, amount: u128) -> DispatchResult {
+		pub fn propose_staking_reward_transfer(origin: OriginFor<T>, amount: u128) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
 			Self::ensure_whitelisted(&guardian)?;
 			Self::ensure_not_paused()?;
 			ensure!(amount > 0, Error::<T>::AmountTooSmall);
 
-			let nonce = NextRewardMintNonce::<T>::get();
-			NextRewardMintNonce::<T>::put(nonce.saturating_add(1));
+			let nonce = NextStakingRewardTransferNonce::<T>::get();
+			NextStakingRewardTransferNonce::<T>::put(nonce.saturating_add(1));
 
 			let mut data = Vec::new();
 			data.extend_from_slice(b"REWARD_MINT-V1");
@@ -730,21 +730,21 @@ pub mod pallet {
 			let mut votes = BTreeSet::new();
 			votes.insert(guardian.clone());
 
-			let reward_mint = RewardMint {
+			let staking_reward_transfer = StakingRewardTransfer {
 				request_id,
 				amount,
 				votes,
-				status: RewardMintStatus::Pending,
+				status: StakingRewardTransferStatus::Pending,
 				created_at_block: frame_system::Pallet::<T>::block_number(),
 				finalized_at_block: None,
 			};
 
-			Self::deposit_event(Event::RewardMintAttested { id: request_id, guardian });
+			Self::deposit_event(Event::StakingRewardTransferAttested { id: request_id, guardian });
 
-			if reward_mint.votes.len() >= ApproveThreshold::<T>::get() as usize {
-				Self::finalize_reward_mint(request_id, reward_mint)?;
+			if staking_reward_transfer.votes.len() >= ApproveThreshold::<T>::get() as usize {
+				Self::finalize_staking_reward_transfer(request_id, staking_reward_transfer)?;
 			} else {
-				RewardMints::<T>::insert(request_id, reward_mint);
+				StakingRewardTransfers::<T>::insert(request_id, staking_reward_transfer);
 			}
 
 			Ok(())
@@ -756,34 +756,34 @@ pub mod pallet {
 		///
 		/// # Arguments
 		/// * `origin` - Must be signed by a whitelisted guardian
-		/// * `reward_mint_id` - The reward mint request ID to approve
+		/// * `staking_reward_transfer_id` - The reward mint request ID to approve
 		#[pallet::call_index(14)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_deposit())]
-		pub fn attest_staking_reward_transfer(origin: OriginFor<T>, reward_mint_id: H256) -> DispatchResult {
+		pub fn attest_staking_reward_transfer(origin: OriginFor<T>, staking_reward_transfer_id: H256) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
 			Self::ensure_whitelisted(&guardian)?;
 			Self::ensure_not_paused()?;
 
-			let mut reward_mint = RewardMints::<T>::get(reward_mint_id)
-				.ok_or(Error::<T>::RewardMintNotFound)?;
+			let mut staking_reward_transfer = StakingRewardTransfers::<T>::get(staking_reward_transfer_id)
+				.ok_or(Error::<T>::StakingRewardTransferNotFound)?;
 
 			ensure!(
-				reward_mint.status == RewardMintStatus::Pending,
-				Error::<T>::RewardMintAlreadyCompleted
+				staking_reward_transfer.status == StakingRewardTransferStatus::Pending,
+				Error::<T>::StakingRewardTransferAlreadyCompleted
 			);
 			ensure!(
-				!reward_mint.votes.contains(&guardian),
-				Error::<T>::RewardMintAlreadyVoted
+				!staking_reward_transfer.votes.contains(&guardian),
+				Error::<T>::StakingRewardTransferAlreadyVoted
 			);
 
-			reward_mint.votes.insert(guardian.clone());
+			staking_reward_transfer.votes.insert(guardian.clone());
 
-			Self::deposit_event(Event::RewardMintAttested { id: reward_mint_id, guardian });
+			Self::deposit_event(Event::StakingRewardTransferAttested { id: staking_reward_transfer_id, guardian });
 
-			if reward_mint.votes.len() >= ApproveThreshold::<T>::get() as usize {
-				Self::finalize_reward_mint(reward_mint_id, reward_mint)?;
+			if staking_reward_transfer.votes.len() >= ApproveThreshold::<T>::get() as usize {
+				Self::finalize_staking_reward_transfer(staking_reward_transfer_id, staking_reward_transfer)?;
 			} else {
-				RewardMints::<T>::insert(reward_mint_id, reward_mint);
+				StakingRewardTransfers::<T>::insert(staking_reward_transfer_id, staking_reward_transfer);
 			}
 
 			Ok(())
@@ -797,23 +797,23 @@ pub mod pallet {
 		///
 		/// # Arguments
 		/// * `origin` - Must be root
-		/// * `reward_mint_id` - The reward mint ID to cancel
+		/// * `staking_reward_transfer_id` - The reward mint ID to cancel
 		#[pallet::call_index(15)]
 		#[pallet::weight(<T as pallet::Config>::WeightInfo::admin_cancel_deposit())]
-		pub fn admin_cancel_reward_mint(origin: OriginFor<T>, reward_mint_id: H256) -> DispatchResult {
+		pub fn admin_cancel_staking_reward_transfer(origin: OriginFor<T>, staking_reward_transfer_id: H256) -> DispatchResult {
 			ensure_root(origin)?;
 
-			RewardMints::<T>::try_mutate(reward_mint_id, |maybe_reward_mint| -> DispatchResult {
-				let reward_mint = maybe_reward_mint.as_mut().ok_or(Error::<T>::RewardMintNotFound)?;
+			StakingRewardTransfers::<T>::try_mutate(staking_reward_transfer_id, |maybe_staking_reward_transfer| -> DispatchResult {
+				let staking_reward_transfer = maybe_staking_reward_transfer.as_mut().ok_or(Error::<T>::StakingRewardTransferNotFound)?;
 				ensure!(
-					reward_mint.status == RewardMintStatus::Pending,
-					Error::<T>::RewardMintAlreadyCompleted
+					staking_reward_transfer.status == StakingRewardTransferStatus::Pending,
+					Error::<T>::StakingRewardTransferAlreadyCompleted
 				);
 
-				reward_mint.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
-				reward_mint.status = RewardMintStatus::Completed;
+				staking_reward_transfer.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
+				staking_reward_transfer.status = StakingRewardTransferStatus::Completed;
 
-				Self::deposit_event(Event::RewardMintCancelled { id: reward_mint_id });
+				Self::deposit_event(Event::StakingRewardTransferCancelled { id: staking_reward_transfer_id });
 
 				Ok(())
 			})
@@ -1197,11 +1197,11 @@ pub mod pallet {
 		}
 
 		/// Finalize a reward mint by minting hAlpha and transferring to reward destination
-		fn finalize_reward_mint(
-			reward_mint_id: H256,
-			mut reward_mint: RewardMint<T>,
+		fn finalize_staking_reward_transfer(
+			staking_reward_transfer_id: H256,
+			mut staking_reward_transfer: StakingRewardTransfer<T>,
 		) -> DispatchResult {
-			let amount = reward_mint.amount;
+			let amount = staking_reward_transfer.amount;
 			let destination = T::RewardDestination::get();
 
 			// Check and update global mint cap
@@ -1226,11 +1226,11 @@ pub mod pallet {
 			Self::mint_to_recipient(&destination, amount)?;
 
 			// Update reward mint status
-			reward_mint.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
-			reward_mint.status = RewardMintStatus::Completed;
-			RewardMints::<T>::insert(reward_mint_id, reward_mint);
+			staking_reward_transfer.finalized_at_block = Some(frame_system::Pallet::<T>::block_number());
+			staking_reward_transfer.status = StakingRewardTransferStatus::Completed;
+			StakingRewardTransfers::<T>::insert(staking_reward_transfer_id, staking_reward_transfer);
 
-			Self::deposit_event(Event::RewardMintCompleted { id: reward_mint_id, amount });
+			Self::deposit_event(Event::StakingRewardTransferCompleted { id: staking_reward_transfer_id, amount });
 
 			Ok(())
 		}
