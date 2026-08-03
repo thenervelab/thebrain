@@ -189,6 +189,24 @@ pub fn split<A: Amount>(amount: A, part_ratio: BasisPoints) -> (A, A) {
 	(A::from_raw(part), A::from_raw(amount.raw() - part))
 }
 
+/// First-month charge for a subscription starting mid-month:
+/// `monthly_price × days_remaining / days_in_month`, rounded **up** so a
+/// tiny non-zero price never prorates to zero.
+///
+/// A zero `days_in_month` (calendar not initialised) charges the full month.
+pub fn prorate_first_month<A: Amount>(
+	monthly_price: A,
+	days_remaining: u32,
+	days_in_month: u32,
+) -> A {
+	if days_in_month == 0 {
+		return monthly_price;
+	}
+	let dim = u128::from(days_in_month);
+	let num = monthly_price.raw().saturating_mul(u128::from(days_remaining));
+	A::from_raw(num.saturating_add(dim - 1) / dim)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -294,6 +312,24 @@ mod tests {
 		assert_eq!((p.get(), r.get()), (u128::MAX, 0));
 		let (p, r) = split(Tokens::new(u128::MAX), BasisPoints::new(0));
 		assert_eq!((p.get(), r.get()), (0, u128::MAX));
+	}
+
+	#[test]
+	fn prorate_mid_month_rounds_up() {
+		// 10 days of 30 at price 100 → ceil(1000/30) = 34
+		assert_eq!(prorate_first_month(Credits::new(100), 10, 30).get(), 34);
+		// tiny non-zero price never prorates to zero
+		assert_eq!(prorate_first_month(Credits::new(1), 1, 31).get(), 1);
+	}
+
+	#[test]
+	fn prorate_full_month_is_full_price() {
+		assert_eq!(prorate_first_month(Credits::new(100), 30, 30).get(), 100);
+	}
+
+	#[test]
+	fn prorate_uninitialised_calendar_charges_full_month() {
+		assert_eq!(prorate_first_month(Credits::new(100), 0, 0).get(), 100);
 	}
 
 	#[test]
