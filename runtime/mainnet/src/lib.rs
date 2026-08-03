@@ -1364,11 +1364,20 @@ impl frame_support::traits::Get<AccountId> for GetStakingPotAccount {
 	}
 }
 
+pub struct StakingActiveEraIndex;
+impl frame_support::traits::Get<u32> for StakingActiveEraIndex {
+	fn get() -> u32 {
+		// No active era only before the first era starts, when no rewards can exist yet
+		pallet_staking::ActiveEra::<Runtime>::get().map(|era| era.index).unwrap_or(0)
+	}
+}
+
 impl pallet_alpha_bridge::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Balance = Balance;
 	type PalletId = AlphaPalletId;
 	type RewardDestination = GetStakingPotAccount;
+	type ActiveEraIndex = StakingActiveEraIndex;
 	type Currency = Balances;
 	type WeightInfo = pallet_alpha_bridge::weights::SubstrateWeight<Runtime>;
 }
