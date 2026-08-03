@@ -133,16 +133,7 @@ pub mod pallet {
 			deposit_type: DepositType,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
-			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
-			T::Currency::transfer(
-				&who,
-				&Self::account_id(),
-				amount,
-				ExistenceRequirement::KeepAlive,
-			)?;
-			TotalDeposited::<T>::mutate(deposit_type, |t| *t = t.saturating_add(amount));
-			Self::deposit_event(Event::Deposited { who, amount, deposit_type });
-			Ok(())
+			Self::deposit_from(&who, amount, deposit_type)
 		}
 
 		/// Add an account to the requester whitelist.
@@ -175,6 +166,26 @@ pub mod pallet {
 		/// The bank sovereign account.
 		pub fn account_id() -> T::AccountId {
 			T::PalletId::get().into_account_truncating()
+		}
+
+		/// Transfer `amount` from `who` into the bank and record it. Shared by
+		/// the `deposit` extrinsic and other pallets (e.g. the marketplace
+		/// routing deposit alpha backing to the bank).
+		pub fn deposit_from(
+			who: &T::AccountId,
+			amount: BalanceOf<T>,
+			deposit_type: DepositType,
+		) -> DispatchResult {
+			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
+			T::Currency::transfer(
+				who,
+				&Self::account_id(),
+				amount,
+				ExistenceRequirement::KeepAlive,
+			)?;
+			TotalDeposited::<T>::mutate(deposit_type, |t| *t = t.saturating_add(amount));
+			Self::deposit_event(Event::Deposited { who: who.clone(), amount, deposit_type });
+			Ok(())
 		}
 
 		/// Free balance held by the bank.

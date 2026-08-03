@@ -148,6 +148,7 @@ pub mod pallet {
                     pallet_registration::Config + 
                     pallet_credits::Config + 
                     pallet_arion::Config +
+                    pallet_bank::Config +
                     pallet_balances::Config + 
                     pallet_calendar::Config +
                     // pallet_notifications::Config +
@@ -2041,6 +2042,31 @@ pub mod pallet {
             
             AlphaBalances::<T>::mutate(&sender, |alpha| *alpha = alpha.saturating_add(alpha_amount));
             CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code)?;
+
+            // Route the alpha backing of this deposit to the bank (miner
+            // payment funds). Sourced from the marketplace sudo account; never
+            // blocks the deposit itself if the transfer cannot be made.
+            if alpha_amount > 0 {
+                if let Some(sudo_account) = Self::sudo_key() {
+                    let backing: pallet_bank::BalanceOf<T> = alpha_amount.saturated_into();
+                    if let Err(e) = pallet_bank::Pallet::<T>::deposit_from(
+                        &sudo_account,
+                        backing,
+                        pallet_bank::DepositType::MarketplaceRevenue,
+                    ) {
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "deposit: routing alpha backing to bank failed: {:?}",
+                            e
+                        );
+                    }
+                } else {
+                    log::warn!(
+                        target: "runtime::marketplace",
+                        "deposit: no sudo key set, alpha backing not routed to bank"
+                    );
+                }
+            }
 
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 

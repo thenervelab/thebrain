@@ -37,6 +37,7 @@ pallet-credits = { default-features = false, workspace = true }
 num-traits = { version = "0.2.17", default-features = false }
 pallet-utils = { default-features = false, workspace = true }
 pallet-arion = { workspace = true, default-features = false }
+pallet-bank = { workspace = true, default-features = false }
 
 [dev-dependencies]
 sp-io = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407" }
@@ -65,7 +66,8 @@ std = [
     "pallet-utils/std",
     "pallet-rankings/std",
     "sp-io/std",
-    "pallet-arion/std"
+    "pallet-arion/std",
+    "pallet-bank/std",
 ]
 runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
 try-runtime = ["frame-support/try-runtime"]

@@ -9035,6 +9035,7 @@ dependencies = [
  "pallet-arion",
  "pallet-assets 39.0.0",
  "pallet-balances 38.0.1",
+ "pallet-bank",
  "pallet-calendar",
  "pallet-credits",
  "pallet-rankings",
