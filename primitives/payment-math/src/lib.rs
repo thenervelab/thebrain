@@ -385,6 +385,16 @@ mod tests {
 	}
 
 	#[test]
+	fn is_zero_discriminates_zero_from_nonzero() {
+		assert!(ByteBlocks::new(0).is_zero());
+		assert!(!ByteBlocks::new(1).is_zero());
+		assert!(Tokens::new(0).is_zero());
+		assert!(!Tokens::new(1).is_zero());
+		assert!(Credits::new(0).is_zero());
+		assert!(!Credits::new(u128::MAX).is_zero());
+	}
+
+	#[test]
 	fn amounts_saturate_instead_of_wrapping() {
 		assert_eq!(Tokens::new(u128::MAX).saturating_add(Tokens::new(1)), Tokens::new(u128::MAX));
 		assert_eq!(Credits::new(0).saturating_sub(Credits::new(1)), Credits::new(0));
