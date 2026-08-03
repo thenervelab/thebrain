@@ -52,6 +52,26 @@ unit!(/// Native token amount in planck (18 decimals).
 unit!(/// Marketplace credit amount.
 	Credits);
 
+impl core::ops::Mul<Blocks> for Bytes {
+	type Output = ByteBlocks;
+
+	/// Byte-blocks accumulated by holding `self` bytes for `rhs` blocks.
+	/// Saturates at `u128::MAX` instead of wrapping.
+	fn mul(self, rhs: Blocks) -> ByteBlocks {
+		ByteBlocks(self.0.saturating_mul(rhs.0))
+	}
+}
+
+impl ByteBlocks {
+	pub const fn saturating_add(self, other: Self) -> Self {
+		Self(self.0.saturating_add(other.0))
+	}
+
+	pub const fn is_zero(self) -> bool {
+		self.0 == 0
+	}
+}
+
 /// A split ratio in basis points (1/10_000).
 ///
 /// The constructor clamps to 100% so a split part can never exceed the
@@ -124,6 +144,23 @@ mod tests {
 		assert_eq!(BasisPoints::new(7_000).get(), 7_000);
 		assert_eq!(BasisPoints::new(10_001).get(), BPS_DENOM);
 		assert_eq!(BasisPoints::new(u128::MAX).get(), BPS_DENOM);
+	}
+
+	const GIB_B: Bytes = Bytes::new(GIB);
+
+	#[test]
+	fn accrue_is_bytes_times_blocks() {
+		assert_eq!((Bytes::new(0) * Blocks::new(100)).get(), 0);
+		assert_eq!((GIB_B * Blocks::new(0)).get(), 0);
+		assert_eq!((GIB_B * Blocks::new(100)).get(), GIB * 100);
+		assert_eq!((Bytes::new(u128::MAX) * Blocks::new(2)).get(), u128::MAX);
+	}
+
+	#[test]
+	fn byte_blocks_accumulate_saturating() {
+		let a = ByteBlocks::new(u128::MAX - 1);
+		assert_eq!(a.saturating_add(ByteBlocks::new(5)).get(), u128::MAX);
+		assert!(ByteBlocks::new(0).is_zero());
 	}
 
 	#[test]
