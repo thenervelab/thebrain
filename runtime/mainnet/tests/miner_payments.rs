@@ -4,7 +4,7 @@
 
 use frame_support::traits::{Currency, Hooks, OnRuntimeUpgrade};
 use hippius_mainnet_runtime::{
-	AccountId, Arion, Balances, Bank, BlockNumber, Credits, Marketplace, Runtime, RuntimeEvent,
+	AccountId, Arion, Balances, Hippocampus, BlockNumber, Credits, Marketplace, Runtime, RuntimeEvent,
 	RuntimeOrigin, System,
 };
 use pallet_arion::{
@@ -74,8 +74,8 @@ fn enable_payments(price_usd_per_gb_block: u128, alpha_price: u128, bank_funds: 
 	Arion::set_miner_price(RuntimeOrigin::signed(admin()), price_usd_per_gb_block)
 		.expect("set price");
 	pallet_credits::AlphaPrice::<Runtime>::put(alpha_price);
-	let _ = Balances::deposit_creating(&Bank::account_id(), bank_funds);
-	Bank::add_requester(RuntimeOrigin::signed(admin()), Arion::account_id())
+	let _ = Balances::deposit_creating(&Hippocampus::account_id(), bank_funds);
+	Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Arion::account_id())
 		.expect("whitelist arion escrow");
 }
 
@@ -133,10 +133,10 @@ fn settlement_pays_family_and_bonds_stake() {
 		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
 		// Accrual was reset by the settlement.
 		assert_eq!(MinerAccruals::<Runtime>::get(7).expect("entry").byte_blocks, 0);
-		// Bank accounting.
-		assert_eq!(pallet_bank::TotalPaidOut::<Runtime>::get(), expected);
+		// Hippocampus accounting.
+		assert_eq!(pallet_hippocampus::TotalPaidOut::<Runtime>::get(), expected);
 		assert_eq!(
-			pallet_bank::TotalPaidByRequester::<Runtime>::get(Arion::account_id()),
+			pallet_hippocampus::TotalPaidByRequester::<Runtime>::get(Arion::account_id()),
 			expected
 		);
 
@@ -192,7 +192,7 @@ fn shortfall_pays_pro_rata_and_carries_arrears() {
 		let extra_b = pallet_arion::tokens_for_byte_blocks(100 * GIB, price, alpha_price);
 
 		// Refill the bank: next settlement clears arrears (+ the one-block tail).
-		let _ = Balances::deposit_creating(&Bank::account_id(), total_due);
+		let _ = Balances::deposit_creating(&Hippocampus::account_id(), total_due);
 		settle_at(2 * SETTLEMENT_BLOCK);
 
 		assert_eq!(FamilyArrears::<Runtime>::get(&family_a), 0);
@@ -252,8 +252,8 @@ fn extreme_values_saturate_without_panicking() {
 		// Must complete: saturating math end to end, payment capped by the bank.
 		settle_at(SETTLEMENT_BLOCK);
 
-		// Bank paid out everything it could (down to its ED)...
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 500);
+		// Hippocampus paid out everything it could (down to its ED)...
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 500);
 		assert_eq!(Balances::free_balance(&family), UNIT - 500);
 		// ...and the un-payable remainder is carried as (saturated) arrears.
 		assert!(FamilyArrears::<Runtime>::get(&family) > 0);
@@ -280,11 +280,11 @@ fn marketplace_deposit_routes_alpha_backing_to_bank() {
 		)
 		.expect("marketplace deposit");
 
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT);
 		assert_eq!(Balances::free_balance(&sudo), 97 * UNIT);
 		assert_eq!(
-			pallet_bank::TotalDeposited::<Runtime>::get(
-				pallet_bank::DepositType::MarketplaceRevenue
+			pallet_hippocampus::TotalDeposited::<Runtime>::get(
+				pallet_hippocampus::DepositType::MarketplaceRevenue
 			),
 			3 * UNIT
 		);
@@ -301,7 +301,7 @@ fn marketplace_deposit_routes_alpha_backing_to_bank() {
 			None,
 		)
 		.expect("deposit without sudo");
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT);
 	});
 }
 
@@ -359,10 +359,10 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 			None,
 		)
 		.expect("marketplace deposit");
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT);
 
 		// The marketplace pallet account distributes from the bank — whitelist it.
-		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 
 		// Consume 2 of the 5 credits → releases 2×3/5 = 1.2 alpha, paid by the
@@ -382,9 +382,9 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 		assert_eq!(Balances::free_balance(&marketplace_pot), marketplace_share);
 		// Sudo was debited exactly once, at deposit time.
 		assert_eq!(Balances::free_balance(&sudo), 97 * UNIT);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT - released);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT - released);
 		assert_eq!(
-			pallet_bank::TotalPaidByRequester::<Runtime>::get(Marketplace::account_id()),
+			pallet_hippocampus::TotalPaidByRequester::<Runtime>::get(Marketplace::account_id()),
 			released
 		);
 	});
@@ -403,7 +403,7 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
 		let _ = Balances::deposit_creating(&sudo, 1_000);
 		let _ = Balances::deposit_creating(&funder, 100 * UNIT);
-		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 
 		// Routing fails (sudo unfunded): deposit still succeeds, nothing is
@@ -418,7 +418,7 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		)
 		.expect("deposit succeeds despite failed routing");
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 0);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 0);
 
 		// Billing still succeeds; the pots get nothing — but the shortfall is
 		// carried as arrears instead of silently discarded.
@@ -443,7 +443,7 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		);
 
 		// Refill the bank; the next distribution pays arrears + new share.
-		Bank::deposit(RuntimeOrigin::signed(funder), 10 * UNIT, pallet_bank::DepositType::Grant)
+		Hippocampus::deposit(RuntimeOrigin::signed(funder), 10 * UNIT, pallet_hippocampus::DepositType::Grant)
 			.expect("refill");
 		Marketplace::consume_credits(
 			user.clone(),
@@ -490,9 +490,9 @@ fn miner_settlement_cannot_drain_pot_backing() {
 			None,
 		)
 		.expect("deposit");
-		Bank::deposit(RuntimeOrigin::signed(funder), 2 * UNIT, pallet_bank::DepositType::Grant)
+		Hippocampus::deposit(RuntimeOrigin::signed(funder), 2 * UNIT, pallet_hippocampus::DepositType::Grant)
 			.expect("miner budget");
-		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 
 		// Miner due far above the bank balance: even a runaway due can only
@@ -500,7 +500,7 @@ fn miner_settlement_cannot_drain_pot_backing() {
 		enable_payments(1_000_000_000_000, UNIT / 20, 0);
 		settle_at(SETTLEMENT_BLOCK);
 		assert_eq!(Balances::free_balance(&family), 2 * UNIT - 500);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT + 500);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT + 500);
 		assert!(pallet_arion::FamilyArrears::<Runtime>::get(&family) > 0);
 
 		// The pots are paid in full from the protected backing.
@@ -554,7 +554,7 @@ fn chargeback_refunds_backing_from_bank_to_sudo() {
 		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
 		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
 		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
-		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 
 		let batch_id = pallet_marketplace::NextBatchId::<Runtime>::get();
@@ -568,14 +568,14 @@ fn chargeback_refunds_backing_from_bank_to_sudo() {
 			None,
 		)
 		.expect("frozen deposit");
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT);
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
 
 		// Chargeback: the reversed backing is refunded to sudo (minus the ED
 		// the bank always keeps) and no longer counted as owed to the pots.
 		Marketplace::chargeback(RuntimeOrigin::root(), batch_id).expect("chargeback");
 		assert_eq!(Balances::free_balance(&sudo), 100 * UNIT - 500);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 500);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 500);
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
 		// The user's credits from the reversed batch were burned.
 		assert_eq!(Credits::get_free_credits(&user), 0);
@@ -593,7 +593,7 @@ fn unbacked_batch_release_does_not_reduce_backed_ledger() {
 		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
 		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
 		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
-		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 
 		// Batch A is backed: its 3 UNIT of alpha backing reach the bank.
@@ -652,7 +652,7 @@ fn chargeback_bank_shortfall_keeps_refund_pending_and_retries() {
 		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
 		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
 		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
-		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 
 		// First chargeback: the bank keeps its ED, so 500 of the refund cannot
@@ -670,7 +670,7 @@ fn chargeback_bank_shortfall_keeps_refund_pending_and_retries() {
 		Marketplace::chargeback(RuntimeOrigin::root(), batch_1).expect("chargeback 1");
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
 		assert_eq!(pallet_marketplace::PendingSudoRefunds::<Runtime>::get(), 500);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 500);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 500);
 
 		// Second chargeback folds the pending remainder into its own refund.
 		let batch_2 = pallet_marketplace::NextBatchId::<Runtime>::get();
@@ -701,7 +701,7 @@ fn chargeback_without_sudo_key_walls_refund_from_miners() {
 		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
 		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
 		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
-		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 		register_miner(&family, &child, 7);
 		submit_stats(7, 100 * GIB);
@@ -724,7 +724,7 @@ fn chargeback_without_sudo_key_walls_refund_from_miners() {
 		Marketplace::chargeback(RuntimeOrigin::root(), batch_id).expect("chargeback");
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
 		assert_eq!(pallet_marketplace::PendingSudoRefunds::<Runtime>::get(), 3 * UNIT);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT);
 		assert_eq!(Balances::free_balance(&sudo), 100 * UNIT - 3 * UNIT);
 
 		// The pending refund is walled off from miner settlement exactly like
@@ -733,7 +733,7 @@ fn chargeback_without_sudo_key_walls_refund_from_miners() {
 		settle_at(SETTLEMENT_BLOCK);
 		assert_eq!(Balances::free_balance(&family), 0);
 		assert!(FamilyArrears::<Runtime>::get(&family) > 0);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT);
 	});
 }
 
@@ -774,20 +774,20 @@ fn activation_migration_whitelists_and_seeds_backing() {
 		hippius_mainnet_runtime::migrations::ActivateMinerPaymentBank::<Runtime>::on_runtime_upgrade();
 
 		// Both pallet accounts are whitelisted as bank requesters.
-		assert!(pallet_bank::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()));
-		assert!(pallet_bank::WhitelistedRequesters::<Runtime>::contains_key(
+		assert!(pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()));
+		assert!(pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(
 			Marketplace::account_id()
 		));
 		// The outstanding backing (remaining + pending across batches) moved
 		// from sudo to the bank and is counted as owed to the pots.
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 5 * UNIT);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 5 * UNIT);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 5 * UNIT);
 		assert_eq!(Balances::free_balance(&sudo), 95 * UNIT);
 
 		// Idempotent: a second run (next runtime upgrade) must not seed again.
 		hippius_mainnet_runtime::migrations::ActivateMinerPaymentBank::<Runtime>::on_runtime_upgrade();
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 5 * UNIT);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 5 * UNIT);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 5 * UNIT);
 	});
 }
 
@@ -826,9 +826,9 @@ fn activation_migration_marks_batches_unbacked_when_sudo_cannot_seed() {
 		// Whitelisting still happens; the un-seedable backing is not counted
 		// as owed (nothing reached the bank) — instead every batch is marked
 		// unbacked so later releases keep the ledger conservative.
-		assert!(pallet_bank::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()));
+		assert!(pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()));
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 0);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 0);
 		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_1), 3 * UNIT);
 		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_2), 2 * UNIT);
 	});

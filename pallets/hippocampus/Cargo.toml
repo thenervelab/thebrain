@@ -1,6 +1,6 @@
 [package]
-name = "pallet-bank"
-description = "Bank pallet holding funds used to pay Arion storage miners"
+name = "pallet-hippocampus"
+description = "Hippocampus pallet — the bank holding the funds used to pay Arion storage miners"
 version = "0.1.0"
 license = "Unlicense"
 authors.workspace = true

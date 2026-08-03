@@ -96,7 +96,7 @@ hippius-crypto-primitives = { workspace = true }
 
 #ipfs-pallet = { workspace = true }
 pallet-alpha-bridge = { workspace = true }
-pallet-bank = { workspace = true }
+pallet-hippocampus = { workspace = true }
 pallet-utils = { workspace = true }
 pallet-registration = { workspace = true }
 pallet-arion = { workspace = true }
@@ -282,7 +282,7 @@ std = [
     "pallet-calendar/std",
     #"ipfs-pallet/std",
     "pallet-alpha-bridge/std",
-    "pallet-bank/std",
+    "pallet-hippocampus/std",
 	"pallet-registration/std",
     "pallet-execution-unit/std",
     "pallet-metagraph/std",

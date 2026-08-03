@@ -1,4 +1,4 @@
-//! Weights for pallet-bank
+//! Weights for pallet-hippocampus
 //!
 //! TODO: benchmark — these are hand-written estimates on fund-moving paths.
 //! Real `frame-benchmarking` weights are required before serious mainnet

@@ -148,7 +148,7 @@ pub mod pallet {
                     pallet_registration::Config + 
                     pallet_credits::Config + 
                     pallet_arion::Config +
-                    pallet_bank::Config +
+                    pallet_hippocampus::Config +
                     pallet_balances::Config + 
                     pallet_calendar::Config +
                     // pallet_notifications::Config +
@@ -2082,11 +2082,11 @@ pub mod pallet {
             // blocks the deposit itself if the transfer cannot be made.
             if alpha_amount > 0 {
                 if let Some(sudo_account) = Self::sudo_key() {
-                    let backing: pallet_bank::BalanceOf<T> = alpha_amount.saturated_into();
-                    match pallet_bank::Pallet::<T>::deposit_from(
+                    let backing: pallet_hippocampus::BalanceOf<T> = alpha_amount.saturated_into();
+                    match pallet_hippocampus::Pallet::<T>::deposit_from(
                         &sudo_account,
                         backing,
-                        pallet_bank::DepositType::MarketplaceRevenue,
+                        pallet_hippocampus::DepositType::MarketplaceRevenue,
                     ) {
                         Ok(()) => {
                             TotalUndistributedBacking::<T>::mutate(|t| {
@@ -2298,7 +2298,7 @@ pub mod pallet {
                 if owed == 0 {
                     continue;
                 }
-                let paid: u128 = match pallet_bank::Pallet::<T>::request_payment(
+                let paid: u128 = match pallet_hippocampus::Pallet::<T>::request_payment(
                     &requester,
                     &dest,
                     owed.saturated_into(),
@@ -2364,7 +2364,7 @@ pub mod pallet {
                     let refund_owed = backed.saturating_add(PendingSudoRefunds::<T>::take());
                     let refunded: u128 = if let Some(sudo_account) = Self::sudo_key() {
                         if refund_owed > 0 {
-                            match pallet_bank::Pallet::<T>::request_payment(
+                            match pallet_hippocampus::Pallet::<T>::request_payment(
                                 &Self::account_id(),
                                 &sudo_account,
                                 refund_owed.saturated_into(),

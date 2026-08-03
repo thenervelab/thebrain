@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-//! # Bank Pallet
+//! # Hippocampus Pallet (the bank)
 //!
 //! Holds the funds used to pay Arion storage miners.
 //!

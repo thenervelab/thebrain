@@ -6,12 +6,12 @@ use frame_support::{assert_noop, assert_ok};
 #[test]
 fn deposit_works() {
 	new_test_ext().execute_with(|| {
-		assert_ok!(Bank::deposit(
+		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(alice()),
 			1_000,
 			DepositType::MarketplaceRevenue
 		));
-		assert_eq!(Balances::free_balance(bank_account()), 1_000);
+		assert_eq!(Balances::free_balance(hippocampus_account()), 1_000);
 		assert_eq!(Balances::free_balance(alice()), INITIAL_BALANCE - 1_000);
 		assert_eq!(TotalDeposited::<Test>::get(DepositType::MarketplaceRevenue), 1_000);
 		System::assert_last_event(
@@ -24,8 +24,8 @@ fn deposit_works() {
 		);
 
 		// A second deposit with a different type is accounted separately.
-		assert_ok!(Bank::deposit(RuntimeOrigin::signed(bob()), 500, DepositType::Grant));
-		assert_eq!(Balances::free_balance(bank_account()), 1_500);
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(bob()), 500, DepositType::Grant));
+		assert_eq!(Balances::free_balance(hippocampus_account()), 1_500);
 		assert_eq!(TotalDeposited::<Test>::get(DepositType::Grant), 500);
 		assert_eq!(TotalDeposited::<Test>::get(DepositType::MarketplaceRevenue), 1_000);
 	});
@@ -35,7 +35,7 @@ fn deposit_works() {
 fn deposit_zero_fails() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			Bank::deposit(RuntimeOrigin::signed(alice()), 0, DepositType::Other),
+			Hippocampus::deposit(RuntimeOrigin::signed(alice()), 0, DepositType::Other),
 			Error::<Test>::ZeroAmount
 		);
 	});
@@ -46,25 +46,25 @@ fn whitelist_management_works() {
 	new_test_ext().execute_with(|| {
 		// Only the admin origin can manage the whitelist.
 		assert_noop!(
-			Bank::add_requester(RuntimeOrigin::signed(alice()), charlie()),
+			Hippocampus::add_requester(RuntimeOrigin::signed(alice()), charlie()),
 			sp_runtime::DispatchError::BadOrigin
 		);
 
-		assert_ok!(Bank::add_requester(RuntimeOrigin::root(), charlie()));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), charlie()));
 		System::assert_last_event(Event::RequesterAdded { who: charlie() }.into());
 		assert_noop!(
-			Bank::add_requester(RuntimeOrigin::root(), charlie()),
+			Hippocampus::add_requester(RuntimeOrigin::root(), charlie()),
 			Error::<Test>::AlreadyWhitelisted
 		);
 
 		assert_noop!(
-			Bank::remove_requester(RuntimeOrigin::signed(alice()), charlie()),
+			Hippocampus::remove_requester(RuntimeOrigin::signed(alice()), charlie()),
 			sp_runtime::DispatchError::BadOrigin
 		);
-		assert_ok!(Bank::remove_requester(RuntimeOrigin::root(), charlie()));
+		assert_ok!(Hippocampus::remove_requester(RuntimeOrigin::root(), charlie()));
 		System::assert_last_event(Event::RequesterRemoved { who: charlie() }.into());
 		assert_noop!(
-			Bank::remove_requester(RuntimeOrigin::root(), charlie()),
+			Hippocampus::remove_requester(RuntimeOrigin::root(), charlie()),
 			Error::<Test>::NotWhitelisted
 		);
 	});
@@ -73,13 +73,13 @@ fn whitelist_management_works() {
 #[test]
 fn request_payment_requires_whitelist() {
 	new_test_ext().execute_with(|| {
-		assert_ok!(Bank::deposit(
+		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(alice()),
 			1_000,
 			DepositType::MarketplaceRevenue
 		));
 		assert_noop!(
-			Bank::request_payment(&charlie(), &bob(), 100),
+			Hippocampus::request_payment(&charlie(), &bob(), 100),
 			Error::<Test>::RequesterNotWhitelisted
 		);
 	});
@@ -88,18 +88,18 @@ fn request_payment_requires_whitelist() {
 #[test]
 fn request_payment_pays_in_full_when_funded() {
 	new_test_ext().execute_with(|| {
-		assert_ok!(Bank::deposit(
+		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(alice()),
 			1_000,
 			DepositType::MarketplaceRevenue
 		));
-		assert_ok!(Bank::add_requester(RuntimeOrigin::root(), charlie()));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), charlie()));
 
 		let bob_before = Balances::free_balance(bob());
-		let paid = Bank::request_payment(&charlie(), &bob(), 400).unwrap();
+		let paid = Hippocampus::request_payment(&charlie(), &bob(), 400).unwrap();
 		assert_eq!(paid, 400);
 		assert_eq!(Balances::free_balance(bob()), bob_before + 400);
-		assert_eq!(Balances::free_balance(bank_account()), 600);
+		assert_eq!(Balances::free_balance(hippocampus_account()), 600);
 		assert_eq!(TotalPaidOut::<Test>::get(), 400);
 		assert_eq!(TotalPaidByRequester::<Test>::get(charlie()), 400);
 		System::assert_last_event(
@@ -112,17 +112,17 @@ fn request_payment_pays_in_full_when_funded() {
 #[test]
 fn request_payment_is_capped_at_available_balance() {
 	new_test_ext().execute_with(|| {
-		assert_ok!(Bank::deposit(
+		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(alice()),
 			1_000,
 			DepositType::MarketplaceRevenue
 		));
-		assert_ok!(Bank::add_requester(RuntimeOrigin::root(), charlie()));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), charlie()));
 
 		// Asks for more than the bank holds: pays balance minus ED, never fails.
-		let paid = Bank::request_payment(&charlie(), &bob(), 5_000).unwrap();
+		let paid = Hippocampus::request_payment(&charlie(), &bob(), 5_000).unwrap();
 		assert_eq!(paid, 1_000 - EXISTENTIAL_DEPOSIT);
-		assert_eq!(Balances::free_balance(bank_account()), EXISTENTIAL_DEPOSIT);
+		assert_eq!(Balances::free_balance(hippocampus_account()), EXISTENTIAL_DEPOSIT);
 		assert_eq!(TotalPaidOut::<Test>::get(), 1_000 - EXISTENTIAL_DEPOSIT);
 		System::assert_last_event(
 			Event::PaymentReleased {
@@ -134,8 +134,8 @@ fn request_payment_is_capped_at_available_balance() {
 			.into(),
 		);
 
-		// Bank is now empty (only ED left): next request pays zero.
-		let paid = Bank::request_payment(&charlie(), &bob(), 100).unwrap();
+		// Hippocampus is now empty (only ED left): next request pays zero.
+		let paid = Hippocampus::request_payment(&charlie(), &bob(), 100).unwrap();
 		assert_eq!(paid, 0);
 	});
 }
@@ -143,8 +143,8 @@ fn request_payment_is_capped_at_available_balance() {
 #[test]
 fn request_payment_zero_is_noop() {
 	new_test_ext().execute_with(|| {
-		assert_ok!(Bank::add_requester(RuntimeOrigin::root(), charlie()));
-		let paid = Bank::request_payment(&charlie(), &bob(), 0).unwrap();
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), charlie()));
+		let paid = Hippocampus::request_payment(&charlie(), &bob(), 0).unwrap();
 		assert_eq!(paid, 0);
 		assert_eq!(TotalPaidOut::<Test>::get(), 0);
 	});

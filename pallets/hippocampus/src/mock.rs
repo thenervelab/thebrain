@@ -1,4 +1,4 @@
-use crate as pallet_bank;
+use crate as pallet_hippocampus;
 use frame_support::{derive_impl, parameter_types, PalletId};
 use sp_keyring::AccountKeyring;
 use sp_runtime::{
@@ -18,7 +18,7 @@ frame_support::construct_runtime!(
 	{
 		System: frame_system,
 		Balances: pallet_balances,
-		Bank: pallet_bank,
+		Hippocampus: pallet_hippocampus,
 	}
 );
 
@@ -42,13 +42,13 @@ impl pallet_balances::Config for Test {
 }
 
 parameter_types! {
-	pub const BankPalletId: PalletId = PalletId(*b"hip/bank");
+	pub const HippocampusPalletId: PalletId = PalletId(*b"hipocamp");
 }
 
-impl pallet_bank::Config for Test {
+impl pallet_hippocampus::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
-	type PalletId = BankPalletId;
+	type PalletId = HippocampusPalletId;
 	type AdminOrigin = frame_system::EnsureRoot<AccountId>;
 	type WeightInfo = ();
 }
@@ -65,8 +65,8 @@ pub fn charlie() -> AccountId {
 	AccountKeyring::Charlie.to_account_id()
 }
 
-pub fn bank_account() -> AccountId {
-	pallet_bank::Pallet::<Test>::account_id()
+pub fn hippocampus_account() -> AccountId {
+	pallet_hippocampus::Pallet::<Test>::account_id()
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {

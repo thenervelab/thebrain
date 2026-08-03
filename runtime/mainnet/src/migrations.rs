@@ -347,20 +347,20 @@ pub struct ActivateMinerPaymentBank<T>(sp_std::marker::PhantomData<T>);
 
 impl<T> OnRuntimeUpgrade for ActivateMinerPaymentBank<T>
 where
-	T: pallet_bank::Config + pallet_marketplace::Config + pallet_arion::Config,
+	T: pallet_hippocampus::Config + pallet_marketplace::Config + pallet_arion::Config,
 {
 	fn on_runtime_upgrade() -> Weight {
 		use sp_runtime::SaturatedConversion;
 
 		let arion = pallet_arion::Pallet::<T>::account_id();
 		let marketplace = pallet_marketplace::Pallet::<T>::account_id();
-		if pallet_bank::WhitelistedRequesters::<T>::contains_key(&arion)
-			|| pallet_bank::WhitelistedRequesters::<T>::contains_key(&marketplace)
+		if pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&arion)
+			|| pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&marketplace)
 		{
 			return T::DbWeight::get().reads(2);
 		}
-		pallet_bank::WhitelistedRequesters::<T>::insert(&arion, ());
-		pallet_bank::WhitelistedRequesters::<T>::insert(&marketplace, ());
+		pallet_hippocampus::WhitelistedRequesters::<T>::insert(&arion, ());
+		pallet_hippocampus::WhitelistedRequesters::<T>::insert(&marketplace, ());
 		let mut reads = 2u64;
 		let mut writes = 2u64;
 
@@ -379,10 +379,10 @@ where
 			return T::DbWeight::get().reads_writes(reads, writes);
 		}
 		let seeded = match pallet_marketplace::Pallet::<T>::sudo_key() {
-			Some(sudo) => match pallet_bank::Pallet::<T>::deposit_from(
+			Some(sudo) => match pallet_hippocampus::Pallet::<T>::deposit_from(
 				&sudo,
 				outstanding.saturated_into(),
-				pallet_bank::DepositType::MarketplaceRevenue,
+				pallet_hippocampus::DepositType::MarketplaceRevenue,
 			) {
 				Ok(()) => true,
 				Err(e) => {

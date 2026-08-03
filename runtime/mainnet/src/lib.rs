@@ -121,7 +121,7 @@ impl frame_support::traits::SortedMembers<AccountId> for ArionAdminMembers {
 pub struct ArionPayoutSource;
 impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	fn request_payment(requester: &AccountId, dest: &AccountId, amount: Balance) -> Balance {
-		match pallet_bank::Pallet::<Runtime>::request_payment(requester, dest, amount) {
+		match pallet_hippocampus::Pallet::<Runtime>::request_payment(requester, dest, amount) {
 			Ok(paid) => paid,
 			Err(e) => {
 				// A rejection here (e.g. requester not whitelisted — a manual
@@ -143,7 +143,7 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 		// sudo account — is not spendable by the miner settlement: a runaway
 		// miner due (bad stats, bad price, compromised authority key) can at
 		// worst drain the miner budget, never funds owed to someone else.
-		pallet_bank::Pallet::<Runtime>::available_for_payout()
+		pallet_hippocampus::Pallet::<Runtime>::available_for_payout()
 			.saturating_sub(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get())
 			.saturating_sub(pallet_marketplace::PendingSudoRefunds::<Runtime>::get())
 	}
@@ -217,17 +217,17 @@ impl pallet_arion::Config for Runtime {
 }
 
 parameter_types! {
-	pub const BankPalletId: PalletId = PalletId(*b"hip/bank");
+	pub const HippocampusPalletId: PalletId = PalletId(*b"hipocamp");
 	/// Miner payment settlement interval (~24h at 6s/block). `0` = disabled.
 	pub const ArionSettlementInterval: BlockNumber = 14_400;
 }
 
-impl pallet_bank::Config for Runtime {
+impl pallet_hippocampus::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
-	type PalletId = BankPalletId;
+	type PalletId = HippocampusPalletId;
 	type AdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
-	type WeightInfo = pallet_bank::weights::SubstrateWeight<Runtime>;
+	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
 }
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -2031,7 +2031,7 @@ construct_runtime!(
 		// IpfsPallet: ipfs_pallet = 75,
 		Arion: pallet_arion = 76,
 		PalletCalendar: pallet_calendar = 78,
-		Bank: pallet_bank = 80,
+		Hippocampus: pallet_hippocampus = 80,
 	}
 );
 

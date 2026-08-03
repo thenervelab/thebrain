@@ -359,7 +359,7 @@ pallet-execution-unit = { path = "pallets/execution-unit", default-features = fa
 pallet-arion  = { path = "pallets/arion-pallet", default-features = false }
 ipfs-pallet  = { path = "pallets/ipfs", default-features = false }
 pallet-alpha-bridge = { path = "pallets/alpha-bridge", default-features = false }
-pallet-bank = { path = "pallets/bank", default-features = false }
+pallet-hippocampus = { path = "pallets/hippocampus", default-features = false }
 pallet-ip = { path = "pallets/ip", default-features = false }
 pallet-calendar = { path = "pallets/calendar", default-features = false }
 pallet-rankings   = { path = "pallets/ranking", default-features = false }
