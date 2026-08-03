@@ -61,10 +61,9 @@ pub mod pallet {
 	/// Source of deposited funds.
 	#[derive(Clone, Copy, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 	pub enum DepositType {
-		/// Revenue collected from storage users.
-		StorageRevenue,
-		/// Revenue collected from compute users.
-		ComputeRevenue,
+		/// Revenue collected through the marketplace (credits deposits,
+		/// subscriptions) — storage and compute are not distinguishable there.
+		MarketplaceRevenue,
 		/// Protocol emissions.
 		Emission,
 		/// One-off grant / treasury top-up.

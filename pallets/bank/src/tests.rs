@@ -9,16 +9,16 @@ fn deposit_works() {
 		assert_ok!(Bank::deposit(
 			RuntimeOrigin::signed(alice()),
 			1_000,
-			DepositType::StorageRevenue
+			DepositType::MarketplaceRevenue
 		));
 		assert_eq!(Balances::free_balance(bank_account()), 1_000);
 		assert_eq!(Balances::free_balance(alice()), INITIAL_BALANCE - 1_000);
-		assert_eq!(TotalDeposited::<Test>::get(DepositType::StorageRevenue), 1_000);
+		assert_eq!(TotalDeposited::<Test>::get(DepositType::MarketplaceRevenue), 1_000);
 		System::assert_last_event(
 			Event::Deposited {
 				who: alice(),
 				amount: 1_000,
-				deposit_type: DepositType::StorageRevenue,
+				deposit_type: DepositType::MarketplaceRevenue,
 			}
 			.into(),
 		);
@@ -27,7 +27,7 @@ fn deposit_works() {
 		assert_ok!(Bank::deposit(RuntimeOrigin::signed(bob()), 500, DepositType::Grant));
 		assert_eq!(Balances::free_balance(bank_account()), 1_500);
 		assert_eq!(TotalDeposited::<Test>::get(DepositType::Grant), 500);
-		assert_eq!(TotalDeposited::<Test>::get(DepositType::StorageRevenue), 1_000);
+		assert_eq!(TotalDeposited::<Test>::get(DepositType::MarketplaceRevenue), 1_000);
 	});
 }
 
@@ -76,7 +76,7 @@ fn request_payment_requires_whitelist() {
 		assert_ok!(Bank::deposit(
 			RuntimeOrigin::signed(alice()),
 			1_000,
-			DepositType::StorageRevenue
+			DepositType::MarketplaceRevenue
 		));
 		assert_noop!(
 			Bank::request_payment(&charlie(), &bob(), 100),
@@ -91,7 +91,7 @@ fn request_payment_pays_in_full_when_funded() {
 		assert_ok!(Bank::deposit(
 			RuntimeOrigin::signed(alice()),
 			1_000,
-			DepositType::StorageRevenue
+			DepositType::MarketplaceRevenue
 		));
 		assert_ok!(Bank::add_requester(RuntimeOrigin::root(), charlie()));
 
@@ -115,7 +115,7 @@ fn request_payment_is_capped_at_available_balance() {
 		assert_ok!(Bank::deposit(
 			RuntimeOrigin::signed(alice()),
 			1_000,
-			DepositType::StorageRevenue
+			DepositType::MarketplaceRevenue
 		));
 		assert_ok!(Bank::add_requester(RuntimeOrigin::root(), charlie()));
 
