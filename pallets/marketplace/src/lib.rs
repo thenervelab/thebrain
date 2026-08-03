@@ -540,12 +540,30 @@ pub mod pallet {
     pub type DistributionArrears<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
 
-    /// Alpha backing sitting in the bank that is still owed to the pots
-    /// (incremented when deposit backing is routed to the bank, decremented by
-    /// actual distributions and chargeback reversals). Ops invariant to alert
-    /// on: bank balance >= TotalUndistributedBacking + expected miner due.
+    /// Alpha backing sitting in the bank that is still owed to the pots.
+    /// Incremented when deposit backing actually reaches the bank, decremented
+    /// by the nominal backed alpha a release or chargeback takes out of
+    /// circulation — payment success is tracked separately ([`DistributionArrears`],
+    /// [`PendingSudoRefunds`]), so a bank shortfall never desyncs this ledger.
+    /// Ops invariant to alert on:
+    /// bank balance >= TotalUndistributedBacking + PendingSudoRefunds + expected miner due.
     #[pallet::storage]
     pub type TotalUndistributedBacking<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+    /// Per-batch alpha whose backing never reached the bank (no sudo key, or
+    /// an underfunded sudo account, at deposit time). Releases and chargebacks
+    /// of this alpha must not reduce [`TotalUndistributedBacking`] — that
+    /// backing was never added to it.
+    #[pallet::storage]
+    pub type UnbackedBatchAlpha<T: Config> =
+        StorageMap<_, Blake2_128Concat, u64, u128, ValueQuery>;
+
+    /// Chargeback refunds the bank could not deliver (no sudo key, or bank
+    /// shortfall) — still sitting in the bank, owed to the current sudo key,
+    /// retried at the next chargeback. Excluded from the miner payout budget
+    /// alongside [`TotalUndistributedBacking`].
+    #[pallet::storage]
+    pub type PendingSudoRefunds<T: Config> = StorageValue<_, u128, ValueQuery>;
 
     /// Unix-day marker (unix_ms / 86_400_000) of the last time we ran the monthly subscription charge.
     ///
@@ -1284,8 +1302,10 @@ pub mod pallet {
                     *alpha = alpha.saturating_sub(batch.pending_alpha)
                 });
 
+                let backed = Self::take_backed_portion(batch_id, batch.pending_alpha);
                 Self::distribute_alpha(
                     batch.pending_alpha,
+                    backed,
                     RankingsPallet::<T>::account_id(),
                     Self::account_id(),
                 )?;
@@ -2074,6 +2094,7 @@ pub mod pallet {
                             });
                         },
                         Err(e) => {
+                            UnbackedBatchAlpha::<T>::insert(batch_id, alpha_amount);
                             log::warn!(
                                 target: "runtime::marketplace",
                                 "deposit: routing alpha backing to bank failed: {:?}",
@@ -2082,6 +2103,7 @@ pub mod pallet {
                         },
                     }
                 } else {
+                    UnbackedBatchAlpha::<T>::insert(batch_id, alpha_amount);
                     log::warn!(
                         target: "runtime::marketplace",
                         "deposit: no sudo key set, alpha backing not routed to bank"
@@ -2164,9 +2186,12 @@ pub mod pallet {
                                         &batch.owner,
                                         |alpha| *alpha = alpha.saturating_sub(batch.pending_alpha)
                                     );
-        
+
+                                    let backed =
+                                        Self::take_backed_portion(batch_id, batch.pending_alpha);
                                     Self::distribute_alpha(
                                         batch.pending_alpha,
+                                        backed,
                                         ranking_account.clone(),
                                         marketplace_account.clone(),
                                     )?;
@@ -2181,9 +2206,12 @@ pub mod pallet {
                                     &batch.owner,
                                     |alpha| *alpha = alpha.saturating_sub(alpha_to_release_u128)
                                 );
-            
+
+                                let backed =
+                                    Self::take_backed_portion(batch_id, alpha_to_release_u128);
                                 Self::distribute_alpha(
                                     alpha_to_release_u128,
+                                    backed,
                                     ranking_account.clone(),
                                     marketplace_account.clone(),
                                 )?;
@@ -2209,8 +2237,28 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Consume a release of `released` alpha from `batch_id`: split off the
+        /// portion whose backing actually reached the bank at deposit time and
+        /// shrink the batch's unbacked marker accordingly. Unbacked alpha is
+        /// consumed first, so [`TotalUndistributedBacking`] stays conservative
+        /// (never undercounts) across partial releases.
+        fn take_backed_portion(batch_id: u64, released: u128) -> u128 {
+            let unbacked = UnbackedBatchAlpha::<T>::get(batch_id);
+            if unbacked == 0 {
+                return released;
+            }
+            let consumed = unbacked.min(released);
+            if consumed == unbacked {
+                UnbackedBatchAlpha::<T>::remove(batch_id);
+            } else {
+                UnbackedBatchAlpha::<T>::insert(batch_id, unbacked.saturating_sub(consumed));
+            }
+            released.saturating_sub(consumed)
+        }
+
         fn distribute_alpha(
             alpha_to_release: u128,
+            backed_alpha: u128,
             ranking_account: T::AccountId,
             marketplace_account: T::AccountId,
         ) -> DispatchResult {
@@ -2223,13 +2271,24 @@ pub mod pallet {
             let marketplace_amount = alpha_to_release
                 .saturating_sub(rankings_amount);
 
-            // Released alpha is paid out of the bank, which received 100% of
-            // the alpha backing at deposit time — the sudo account is debited
-            // exactly once per alpha unit (at deposit), never here. The
-            // marketplace pallet account must be whitelisted as a bank
-            // requester. A rejection or shortfall never blocks the billing
-            // flow: the bank pays what it can (visible in PaymentReleased
-            // events) and the rest is logged.
+            // The released alpha's backed portion leaves the "owed to pots"
+            // ledger now, nominally — whether the bank can actually pay is
+            // tracked separately in DistributionArrears, so a shortfall never
+            // desyncs the ledger while unbacked alpha (whose backing never
+            // reached the bank) never deducts from it.
+            if backed_alpha > 0 {
+                TotalUndistributedBacking::<T>::mutate(|t| {
+                    *t = t.saturating_sub(backed_alpha)
+                });
+            }
+
+            // Released alpha is paid out of the bank, which received the
+            // backed alpha's backing at deposit time — the sudo account is
+            // debited exactly once per backed alpha unit (at deposit), never
+            // here. The marketplace pallet account must be whitelisted as a
+            // bank requester. A rejection or shortfall never blocks the
+            // billing flow: the bank pays what it can (visible in
+            // PaymentReleased events) and the rest is logged.
             let requester = Self::account_id();
             for (dest, amount) in
                 [(ranking_account, rankings_amount), (marketplace_account, marketplace_amount)]
@@ -2266,9 +2325,6 @@ pub mod pallet {
                     );
                     DistributionArrears::<T>::insert(&dest, owed.saturating_sub(paid));
                 }
-                if paid > 0 {
-                    TotalUndistributedBacking::<T>::mutate(|t| *t = t.saturating_sub(paid));
-                }
             }
 
             Ok(())
@@ -2291,37 +2347,61 @@ pub mod pallet {
                     });
 
                     // The reversed batch's backing will never be released to
-                    // the pots: stop counting it as owed and refund it from
-                    // the bank to the sudo account (the buyer is refunded
-                    // off-chain from there). A partial refund is a warn, not
-                    // an error — a chargeback must never fail on bank state.
+                    // the pots: its backed portion (the part that actually
+                    // reached the bank) stops counting as owed and is refunded
+                    // from the bank to the sudo account (the buyer is refunded
+                    // off-chain from there); the unbacked portion just cancels
+                    // the routing debt recorded at deposit time. Whatever the
+                    // bank cannot deliver right now — partial pay, rejection,
+                    // or no sudo key — stays tracked in PendingSudoRefunds
+                    // (walled off from miner settlement) and is folded into
+                    // the next chargeback's refund. A chargeback must never
+                    // fail on bank state.
+                    let backed = Self::take_backed_portion(batch_id, total_alpha_to_remove);
                     TotalUndistributedBacking::<T>::mutate(|t| {
-                        *t = t.saturating_sub(total_alpha_to_remove)
+                        *t = t.saturating_sub(backed)
                     });
-                    if let Some(sudo_account) = Self::sudo_key() {
-                        let refunded: u128 = pallet_bank::Pallet::<T>::request_payment(
-                            &Self::account_id(),
-                            &sudo_account,
-                            total_alpha_to_remove.saturated_into(),
-                        )
-                        .map(|p| p.saturated_into())
-                        .unwrap_or(0);
-                        if refunded < total_alpha_to_remove {
-                            log::warn!(
-                                target: "runtime::marketplace",
-                                "chargeback {}: refunded {} of {} backing to sudo",
-                                batch_id,
-                                refunded,
-                                total_alpha_to_remove
-                            );
+                    let refund_owed = backed.saturating_add(PendingSudoRefunds::<T>::take());
+                    let refunded: u128 = if let Some(sudo_account) = Self::sudo_key() {
+                        if refund_owed > 0 {
+                            match pallet_bank::Pallet::<T>::request_payment(
+                                &Self::account_id(),
+                                &sudo_account,
+                                refund_owed.saturated_into(),
+                            ) {
+                                Ok(p) => p.saturated_into(),
+                                Err(e) => {
+                                    log::warn!(
+                                        target: "runtime::marketplace",
+                                        "chargeback {}: bank rejected refund to sudo: {:?}",
+                                        batch_id,
+                                        e
+                                    );
+                                    0
+                                },
+                            }
+                        } else {
+                            0
                         }
                     } else {
                         log::warn!(
                             target: "runtime::marketplace",
-                            "chargeback {}: no sudo key, {} backing left in the bank",
+                            "chargeback {}: no sudo key, {} backing kept pending in the bank",
                             batch_id,
-                            total_alpha_to_remove
+                            refund_owed
                         );
+                        0
+                    };
+                    let pending = refund_owed.saturating_sub(refunded);
+                    if pending > 0 {
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "chargeback {}: refunded {} of {}, remainder kept pending",
+                            batch_id,
+                            refunded,
+                            refund_owed
+                        );
+                        PendingSudoRefunds::<T>::put(pending);
                     }
                 }
  

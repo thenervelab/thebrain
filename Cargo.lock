@@ -7776,6 +7776,7 @@ version = "0.1.0"
 dependencies = [
  "frame-support 37.1.0",
  "frame-system 37.1.0",
+ "log",
  "pallet-proxy 37.0.0",
  "pallet-registration",
  "parity-scale-codec",

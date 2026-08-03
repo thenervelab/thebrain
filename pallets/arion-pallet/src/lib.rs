@@ -1621,11 +1621,20 @@ pub mod pallet {
 				let amount: BalanceOf<T> = paid.saturated_into();
 				// Lock the payout as stake. On failure the tokens remain as free
 				// balance on the family account — never roll back the payment.
-				let staked = if T::Staking::stake(family).is_ok() {
-					T::Staking::bond_extra(family, amount).is_ok()
+				let bond_result = if T::Staking::stake(family).is_ok() {
+					T::Staking::bond_extra(family, amount)
 				} else {
-					T::Staking::bond(family, amount, family).is_ok()
+					T::Staking::bond(family, amount, family)
 				};
+				if let Err(e) = &bond_result {
+					log::warn!(
+						target: "runtime::arion",
+						"settlement: bonding payout for family {:?} failed (funds stay liquid): {:?}",
+						family,
+						e
+					);
+				}
+				let staked = bond_result.is_ok();
 				families = families.saturating_add(1);
 				tokens_paid_sum = tokens_paid_sum.saturating_add(paid);
 				Self::deposit_event(Event::FamilyPaid {
@@ -2174,8 +2183,14 @@ pub mod pallet {
 			let now = Self::now();
 			for u in updates.iter() {
 				// Integrate the *previous* stored bytes over the elapsed blocks
-				// before overwriting them — payment accrual (byte-blocks).
-				Self::accrue_miner_bytes(u.uid, now);
+				// before overwriting them — payment accrual (byte-blocks). Only
+				// uids claimed by a registered child accrue: an unclaimed uid
+				// would accumulate byte-blocks that no settlement can pay and
+				// no deregistration can forfeit, protected from pruning by
+				// epoch membership.
+				if MinerUidToChild::<T>::contains_key(u.uid) {
+					Self::accrue_miner_bytes(u.uid, now);
+				}
 				MinerStatsByUid::<T>::insert(u.uid, u.stats.clone());
 			}
 			CurrentStatsBucket::<T>::put(bucket);

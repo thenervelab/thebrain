@@ -581,3 +581,175 @@ fn chargeback_refunds_backing_from_bank_to_sudo() {
 		assert_eq!(Credits::get_free_credits(&user), 0);
 	});
 }
+
+#[test]
+fn unbacked_batch_release_does_not_reduce_backed_ledger() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let sudo = account(11);
+		let (user_a, user_b) = (account(12), account(13));
+		let ranking_pot = account(20);
+		let marketplace_pot = account(21);
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+
+		// Batch A is backed: its 3 UNIT of alpha backing reach the bank.
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority.clone()),
+			user_a.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			false,
+			None,
+		)
+		.expect("backed deposit");
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
+
+		// Batch B is unbacked: no sudo key, nothing reaches the bank.
+		pallet_marketplace::SudoKey::<Runtime>::kill();
+		let batch_b = pallet_marketplace::NextBatchId::<Runtime>::get();
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user_b.clone(),
+			5 * UNIT,
+			2 * UNIT,
+			false,
+			None,
+		)
+		.expect("unbacked deposit");
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
+		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_b), 2 * UNIT);
+
+		// Releasing batch B pays the pots from the shared pool, but must not
+		// reduce the ledger of backing owed for batch A — batch B contributed
+		// nothing to it.
+		Marketplace::consume_credits(
+			user_b.clone(),
+			5 * UNIT,
+			marketplace_pot.clone(),
+			ranking_pot.clone(),
+		)
+		.expect("consume unbacked batch");
+		let released = 2 * UNIT;
+		assert_eq!(
+			Balances::free_balance(&ranking_pot) + Balances::free_balance(&marketplace_pot),
+			released
+		);
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
+		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_b), 0);
+	});
+}
+
+#[test]
+fn chargeback_bank_shortfall_keeps_refund_pending_and_retries() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let sudo = account(11);
+		let user = account(12);
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+
+		// First chargeback: the bank keeps its ED, so 500 of the refund cannot
+		// be delivered — it must stay tracked, not silently vanish.
+		let batch_1 = pallet_marketplace::NextBatchId::<Runtime>::get();
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority.clone()),
+			user.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			true,
+			None,
+		)
+		.expect("frozen deposit 1");
+		Marketplace::chargeback(RuntimeOrigin::root(), batch_1).expect("chargeback 1");
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
+		assert_eq!(pallet_marketplace::PendingSudoRefunds::<Runtime>::get(), 500);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 500);
+
+		// Second chargeback folds the pending remainder into its own refund.
+		let batch_2 = pallet_marketplace::NextBatchId::<Runtime>::get();
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user.clone(),
+			5 * UNIT,
+			2 * UNIT,
+			true,
+			None,
+		)
+		.expect("frozen deposit 2");
+		Marketplace::chargeback(RuntimeOrigin::root(), batch_2).expect("chargeback 2");
+		// Owed 2 UNIT + 500 pending; the bank can deliver everything but its ED.
+		assert_eq!(pallet_marketplace::PendingSudoRefunds::<Runtime>::get(), 500);
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
+		assert_eq!(Balances::free_balance(&sudo), 100 * UNIT - 500);
+	});
+}
+
+#[test]
+fn chargeback_without_sudo_key_walls_refund_from_miners() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let sudo = account(11);
+		let user = account(12);
+		let (family, child) = (account(1), account(2));
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		let batch_id = pallet_marketplace::NextBatchId::<Runtime>::get();
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			true,
+			None,
+		)
+		.expect("frozen deposit");
+
+		// Sudo key removed before the chargeback: the refund cannot be
+		// delivered, so the full backing stays in the bank, tracked as a
+		// pending refund.
+		pallet_marketplace::SudoKey::<Runtime>::kill();
+		Marketplace::chargeback(RuntimeOrigin::root(), batch_id).expect("chargeback");
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
+		assert_eq!(pallet_marketplace::PendingSudoRefunds::<Runtime>::get(), 3 * UNIT);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+		assert_eq!(Balances::free_balance(&sudo), 100 * UNIT - 3 * UNIT);
+
+		// The pending refund is walled off from miner settlement exactly like
+		// undistributed backing: a runaway miner due must not consume it.
+		enable_payments(1_000_000_000_000, UNIT / 20, 0);
+		settle_at(SETTLEMENT_BLOCK);
+		assert_eq!(Balances::free_balance(&family), 0);
+		assert!(FamilyArrears::<Runtime>::get(&family) > 0);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+	});
+}
+
+#[test]
+fn stats_for_unclaimed_uid_do_not_accrue() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+
+		// Uid 99 has no registered claimant: storing its stats must not open
+		// an accrual nothing can ever settle or forfeit.
+		submit_stats(99, 100 * GIB);
+		assert!(!MinerAccruals::<Runtime>::contains_key(99));
+
+		// Once a child claims the uid, accrual starts from that point.
+		register_miner(&family, &child, 99);
+		submit_stats(99, 100 * GIB);
+		assert!(MinerAccruals::<Runtime>::contains_key(99));
+	});
+}
