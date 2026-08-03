@@ -155,6 +155,26 @@ pub fn tokens_for(byte_blocks: ByteBlocks, price: UsdPerGibBlock, token_price: U
 	}
 }
 
+/// Pro-rata share of `pool` owed to one claimant with `due` out of
+/// `total_due`.
+///
+/// When the pool covers everything the share is exactly `due`; otherwise
+/// `due × pool / total_due`, rounded down — so the sum of all shares never
+/// exceeds `pool` and each share never exceeds `due`. The caller keeps
+/// `due − share` as arrears, making `share + arrears == due` exact: a
+/// shortfall defers value, never destroys it.
+pub fn pro_rata(due: Tokens, pool: Tokens, total_due: Tokens) -> Tokens {
+	if total_due.0 == 0 {
+		return Tokens(0);
+	}
+	if pool.0 >= total_due.0 {
+		return due;
+	}
+	// pool < total_due ⇒ due × pool / total_due < due ≤ u128::MAX, so the
+	// U256 quotient always fits back into u128.
+	Tokens((U256::from(due.0) * U256::from(pool.0) / U256::from(total_due.0)).as_u128())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -220,6 +240,25 @@ mod tests {
 	#[test]
 	fn extreme_inputs_saturate_at_u128_max() {
 		assert_eq!(t(u128::MAX, u128::MAX, 1), u128::MAX);
+	}
+
+	#[test]
+	fn pro_rata_full_pool_pays_due_exactly() {
+		let d = Tokens::new(30);
+		assert_eq!(pro_rata(d, Tokens::new(100), Tokens::new(100)), d);
+		assert_eq!(pro_rata(d, Tokens::new(500), Tokens::new(100)), d); // surplus pool
+	}
+
+	#[test]
+	fn pro_rata_shortfall_rounds_down_and_never_overpays() {
+		// pool 10 over total 30: floor(10*10/30)=3
+		assert_eq!(pro_rata(Tokens::new(10), Tokens::new(10), Tokens::new(30)).get(), 3);
+		assert_eq!(pro_rata(Tokens::new(0), Tokens::new(10), Tokens::new(30)).get(), 0);
+	}
+
+	#[test]
+	fn pro_rata_zero_total_due_pays_zero() {
+		assert_eq!(pro_rata(Tokens::new(5), Tokens::new(10), Tokens::new(0)).get(), 0);
 	}
 
 	#[test]
