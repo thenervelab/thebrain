@@ -6,7 +6,7 @@ use codec::Encode;
 // Helper to generate reward mint ID
 fn generate_mint_id(amount: u128, nonce: u64) -> H256 {
 	let mut data = Vec::new();
-	data.extend_from_slice(b"REWARD_MINT-V1");
+	data.extend_from_slice(b"STAKING_REWARD_TRANSFER-V1");
 	data.extend_from_slice(&amount.to_le_bytes());
 	data.extend_from_slice(&nonce.to_le_bytes());
 	H256::from(sp_core::hashing::blake2_256(&data))
@@ -2026,5 +2026,52 @@ fn test_multiple_staking_reward_transfers_sequential() {
 		println!("   First mint: {} hAlpha", amount1);
 		println!("   Second mint: {} hAlpha", amount2);
 		println!("   Total: {} hAlpha\n", total_minted);
+	});
+}
+
+#[test]
+fn test_era_limit_exceeded() {
+	new_test_ext().execute_with(|| {
+		let guardian = alice();
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian.clone()
+		));
+
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			vec![guardian.clone()],
+			1
+		));
+
+		// Set a low per-era limit (100 hAlpha)
+		let low_limit = 100_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::set_max_mint_per_era(
+			RuntimeOrigin::root(),
+			low_limit
+		));
+
+		// First transfer succeeds (under limit)
+		let amount1 = 50_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount1
+		));
+
+		// Second transfer succeeds (total 100 hAlpha, at limit)
+		let amount2 = 50_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount2
+		));
+
+		// Third transfer fails (would exceed limit)
+		assert_noop!(
+			AlphaBridge::<Test>::propose_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian.clone()),
+				1_000_000_000u128
+			),
+			Error::<Test>::EraLimitExceeded
+		);
 	});
 }
