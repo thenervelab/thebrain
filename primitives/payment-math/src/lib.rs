@@ -9,3 +9,126 @@
 //! rather than panicking, and states the conservation invariant its tests
 //! enforce.
 #![cfg_attr(not(feature = "std"), no_std)]
+
+/// One GiB — the denominator unit of [`UsdPerGibBlock`].
+pub const GIB: u128 = 1 << 30;
+/// Fixed-point scale shared by USD prices and token planck (18 decimals).
+pub const E18: u128 = 1_000_000_000_000_000_000;
+/// Denominator of [`BasisPoints`]: 10_000 bps = 100%.
+pub const BPS_DENOM: u128 = 10_000;
+
+macro_rules! unit {
+	($(#[$doc:meta])* $name:ident) => {
+		$(#[$doc])*
+		#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+		pub struct $name(u128);
+
+		impl $name {
+			/// Wrap a raw `u128` read from storage or config.
+			pub const fn new(raw: u128) -> Self {
+				Self(raw)
+			}
+
+			/// Unwrap to the raw `u128` for storage, events, or transfers.
+			pub const fn get(self) -> u128 {
+				self.0
+			}
+		}
+	};
+}
+
+unit!(/// Shard bytes held by a miner at a point in time.
+	Bytes);
+unit!(/// Elapsed chain blocks.
+	Blocks);
+unit!(/// Bytes integrated over blocks — the unit storage is priced in.
+	ByteBlocks);
+unit!(/// Storage price in USD per GiB per block, fixed-point [`E18`].
+	UsdPerGibBlock);
+unit!(/// A USD value, fixed-point [`E18`].
+	Usd);
+unit!(/// Native token amount in planck (18 decimals).
+	Tokens);
+unit!(/// Marketplace credit amount.
+	Credits);
+
+/// A split ratio in basis points (1/10_000).
+///
+/// The constructor clamps to 100% so a split part can never exceed the
+/// whole — misuse (e.g. `BasisPoints::new(70_000)` meaning 70%) caps the
+/// damage at "give everything to the part".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct BasisPoints(u128);
+
+impl BasisPoints {
+	pub const fn new(raw: u128) -> Self {
+		Self(if raw > BPS_DENOM { BPS_DENOM } else { raw })
+	}
+
+	pub const fn get(self) -> u128 {
+		self.0
+	}
+}
+
+/// Currency-like quantities that can be split, prorated, or paid out.
+///
+/// Implemented only for [`Tokens`] and [`Credits`]; dimensioned units
+/// (bytes, blocks, prices) deliberately cannot be split by a ratio.
+pub trait Amount: Copy + Ord {
+	fn raw(self) -> u128;
+	fn from_raw(raw: u128) -> Self;
+
+	fn saturating_add(self, other: Self) -> Self {
+		Self::from_raw(self.raw().saturating_add(other.raw()))
+	}
+
+	fn saturating_sub(self, other: Self) -> Self {
+		Self::from_raw(self.raw().saturating_sub(other.raw()))
+	}
+
+	fn is_zero(self) -> bool {
+		self.raw() == 0
+	}
+}
+
+impl Amount for Tokens {
+	fn raw(self) -> u128 {
+		self.0
+	}
+	fn from_raw(raw: u128) -> Self {
+		Self(raw)
+	}
+}
+
+impl Amount for Credits {
+	fn raw(self) -> u128 {
+		self.0
+	}
+	fn from_raw(raw: u128) -> Self {
+		Self(raw)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn units_round_trip_raw_values() {
+		assert_eq!(Bytes::new(7).get(), 7);
+		assert_eq!(Tokens::new(u128::MAX).get(), u128::MAX);
+	}
+
+	#[test]
+	fn basis_points_clamp_at_one_hundred_percent() {
+		assert_eq!(BasisPoints::new(7_000).get(), 7_000);
+		assert_eq!(BasisPoints::new(10_001).get(), BPS_DENOM);
+		assert_eq!(BasisPoints::new(u128::MAX).get(), BPS_DENOM);
+	}
+
+	#[test]
+	fn amounts_saturate_instead_of_wrapping() {
+		assert_eq!(Tokens::new(u128::MAX).saturating_add(Tokens::new(1)), Tokens::new(u128::MAX));
+		assert_eq!(Credits::new(0).saturating_sub(Credits::new(1)), Credits::new(0));
+	}
+}
