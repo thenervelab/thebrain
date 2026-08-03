@@ -37,7 +37,6 @@ pub use pallet::*;
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use pallet_registration::{NodeType, Pallet as RegistrationPallet};
 
 	/// Domain separator for attestation signing.
 	///
