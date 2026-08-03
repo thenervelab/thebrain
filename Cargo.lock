@@ -9061,6 +9061,7 @@ dependencies = [
  "pallet-timestamp 36.0.1",
  "pallet-utils",
  "parity-scale-codec",
+ "payment-math",
  "scale-info",
  "serde",
  "sp-arithmetic 26.0.0",

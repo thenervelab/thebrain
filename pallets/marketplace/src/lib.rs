@@ -89,6 +89,7 @@ pub mod pallet {
     use sp_runtime::traits::Zero;
     use sp_core::U256;
     use sp_runtime::traits::Bounded;
+    use payment_math::{split, prorate_first_month, BasisPoints, Credits, Tokens};
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -1118,7 +1119,7 @@ pub mod pallet {
 
         fn referral_discount_and_owner(who: &T::AccountId, face_credits: u128) -> (u128, Option<T::AccountId>) {
             if let Some(ref_code) = CreditsPallet::<T>::referred_users(who) {
-                let discount = face_credits.saturating_mul(5) / 100u128;
+                let discount = split(Credits::new(face_credits), BasisPoints::new(500)).0.get();
                 let owner = CreditsPallet::<T>::referral_codes(ref_code);
                 (discount, owner)
             } else {
@@ -1266,16 +1267,12 @@ pub mod pallet {
                     
         fn prorated_monthly_price(monthly_price: u128) -> u128 {
             // days_remaining_in_current_month is inclusive of today.
-            let dim: u128 = pallet_calendar::Pallet::<T>::days_in_current_month() as u128;
-            let drm: u128 = pallet_calendar::Pallet::<T>::days_remaining_in_current_month() as u128;
-            if dim == 0 {
-                return monthly_price;
-            }
-            // Use ceil division to avoid rounding tiny (but non-zero) prices down to 0.
-            let numerator = monthly_price.saturating_mul(drm);
-            numerator
-                .saturating_add(dim.saturating_sub(1))
-                / dim
+            prorate_first_month(
+                Credits::new(monthly_price),
+                u32::from(pallet_calendar::Pallet::<T>::days_remaining_in_current_month()),
+                u32::from(pallet_calendar::Pallet::<T>::days_in_current_month()),
+            )
+            .get()
         }
 
         /// Total upfront charge when buying `upfront_months` starting mid-month:
@@ -1435,7 +1432,7 @@ pub mod pallet {
 
             // Create subscription (simplified due to removed plan_type)
             let paid_per_month = if CreditsPallet::<T>::referred_users(&who).is_some() {
-                plan.price.saturating_mul(9_500u128) / 10_000u128
+                split(Credits::new(plan.price), BasisPoints::new(9_500)).0.get()
             } else {
                 plan.price
             };
@@ -1564,7 +1561,7 @@ pub mod pallet {
 
             // Create subscription (simplified due to removed plan_type)
             let paid_per_month = if CreditsPallet::<T>::referred_users(&who).is_some() {
-                plan.price.saturating_mul(9_500u128) / 10_000u128
+                split(Credits::new(plan.price), BasisPoints::new(9_500)).0.get()
             } else {
                 plan.price
             };
@@ -1789,7 +1786,8 @@ pub mod pallet {
                     if total_charged > 0 {
                         if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
                             if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
-                                let commission = total_charged.saturating_mul(5) / 100;
+                                let commission =
+                                    split(Credits::new(total_charged), BasisPoints::new(500)).0.get();
                                 Self::try_mint_referral_reward_credits(&referrer, commission);
                             }
                         }
@@ -2263,13 +2261,14 @@ pub mod pallet {
             marketplace_account: T::AccountId,
         ) -> DispatchResult {
 
-            let rankings_amount = alpha_to_release
-                .checked_mul(70)
-                .and_then(|x| x.checked_div(100))
-                .unwrap_or_default();
-
-            let marketplace_amount = alpha_to_release
-                .saturating_sub(rankings_amount);
+            // 70% ranking / 30% marketplace, conserving alpha_to_release exactly.
+            // (The old checked_mul(70).unwrap_or_default() sent 100% to the
+            // marketplace account on overflow; split computes in U256 and cannot
+            // overflow.)
+            let (rankings, marketplace) =
+                split(Tokens::new(alpha_to_release), BasisPoints::new(7_000));
+            let rankings_amount = rankings.get();
+            let marketplace_amount = marketplace.get();
 
             // The released alpha's backed portion leaves the "owed to pots"
             // ledger now, nominally — whether the bank can actually pay is
