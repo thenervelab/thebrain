@@ -175,6 +175,20 @@ pub fn pro_rata(due: Tokens, pool: Tokens, total_due: Tokens) -> Tokens {
 	Tokens((U256::from(due.0) * U256::from(pool.0) / U256::from(total_due.0)).as_u128())
 }
 
+/// Split `amount` into `(part, rest)`: `part = amount × ratio / 10_000`
+/// rounded down, `rest` the exact remainder.
+///
+/// Conservation is exact — `part + rest == amount` always, because `rest`
+/// comes from subtraction, never a second rounding division: a split can
+/// neither mint nor burn value.
+pub fn split<A: Amount>(amount: A, part_ratio: BasisPoints) -> (A, A) {
+	// ratio ≤ 10_000 (clamped in the constructor) ⇒ part ≤ amount: the
+	// U256 quotient fits u128 and the subtraction cannot underflow.
+	let part =
+		(U256::from(amount.raw()) * U256::from(part_ratio.0) / U256::from(BPS_DENOM)).as_u128();
+	(A::from_raw(part), A::from_raw(amount.raw() - part))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -259,6 +273,27 @@ mod tests {
 	#[test]
 	fn pro_rata_zero_total_due_pays_zero() {
 		assert_eq!(pro_rata(Tokens::new(5), Tokens::new(10), Tokens::new(0)).get(), 0);
+	}
+
+	#[test]
+	fn split_seventy_thirty_matches_distribute_alpha() {
+		let (rankings, marketplace) = split(Tokens::new(1_000), BasisPoints::new(7_000));
+		assert_eq!((rankings.get(), marketplace.get()), (700, 300));
+	}
+
+	#[test]
+	fn split_conserves_odd_amounts_exactly() {
+		let (part, rest) = split(Credits::new(101), BasisPoints::new(500)); // 5%
+		assert_eq!(part.get(), 5); // floor(101 × 500 / 10_000)
+		assert_eq!(part.get() + rest.get(), 101);
+	}
+
+	#[test]
+	fn split_extremes() {
+		let (p, r) = split(Tokens::new(u128::MAX), BasisPoints::new(BPS_DENOM));
+		assert_eq!((p.get(), r.get()), (u128::MAX, 0));
+		let (p, r) = split(Tokens::new(u128::MAX), BasisPoints::new(0));
+		assert_eq!((p.get(), r.get()), (0, u128::MAX));
 	}
 
 	#[test]
