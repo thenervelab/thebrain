@@ -207,6 +207,18 @@ pub fn prorate_first_month<A: Amount>(
 	A::from_raw(num.saturating_add(dim - 1) / dim)
 }
 
+/// Balance a payout source can spend without reaping itself: everything
+/// above the existential deposit.
+pub fn available(balance: Tokens, existential_deposit: Tokens) -> Tokens {
+	balance.saturating_sub(existential_deposit)
+}
+
+/// Amount actually payable for a request: never more than requested, never
+/// more than available.
+pub fn payable(requested: Tokens, available: Tokens) -> Tokens {
+	requested.min(available)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -330,6 +342,19 @@ mod tests {
 	#[test]
 	fn prorate_uninitialised_calendar_charges_full_month() {
 		assert_eq!(prorate_first_month(Credits::new(100), 0, 0).get(), 100);
+	}
+
+	#[test]
+	fn available_is_balance_above_existential_deposit() {
+		assert_eq!(available(Tokens::new(100), Tokens::new(1)).get(), 99);
+		assert_eq!(available(Tokens::new(1), Tokens::new(1)).get(), 0);
+		assert_eq!(available(Tokens::new(0), Tokens::new(1)).get(), 0); // no underflow
+	}
+
+	#[test]
+	fn payable_caps_at_both_request_and_availability() {
+		assert_eq!(payable(Tokens::new(50), Tokens::new(99)).get(), 50);
+		assert_eq!(payable(Tokens::new(150), Tokens::new(99)).get(), 99);
 	}
 
 	#[test]
