@@ -35,7 +35,7 @@ sp-core = { workspace = true }
 
 
 [dev-dependencies]
-pallet-balances = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
+pallet-balances = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false, features = ["std"] }
 sp-tracing= { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
 sp-core = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }
 sp-npos-elections = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407", default-features = false }

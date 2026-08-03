@@ -1,5 +1,18 @@
-use crate::{mock::*, pallet::DepositStatus, Error, Event, Pallet as AlphaBridge};
+use crate::{
+	mock::*, pallet::DepositStatus, Error, Event, Pallet as AlphaBridge,
+	StakingRewardTransferStatus, StakingRewardTransfers,
+};
 use frame_support::{assert_noop, assert_ok};
+use sp_core::H256;
+
+// Rebuilds a staking reward transfer ID the same way the pallet derives it
+fn generate_mint_id(amount: u128, nonce: u64) -> H256 {
+	let mut data = Vec::new();
+	data.extend_from_slice(b"STAKING_REWARD_TRANSFER-V1");
+	data.extend_from_slice(&amount.to_le_bytes());
+	data.extend_from_slice(&nonce.to_le_bytes());
+	H256::from(sp_core::hashing::blake2_256(&data))
+}
 
 // ============================================================================
 // Deposit Flow Tests (Guardian attests deposit -> hAlpha minted to recipient)
@@ -169,7 +182,7 @@ fn test_attestation_on_completed_deposit_fails() {
 				amount,
 				nonce,
 			),
-			Error::<Test>::DepositIdAlreadySettled
+			Error::<Test>::DepositAlreadyCompleted
 		);
 	});
 }
@@ -1446,10 +1459,17 @@ fn test_cleanup_withdrawal_request_after_ttl() {
 		let request =
 			crate::WithdrawalRequests::<Test>::get(request_id).expect("Request should exist");
 
+		// Only finalized (Failed) requests may be cleaned up — this protects the
+		// user's burned hAlpha during the admin recovery window
+		assert_ok!(AlphaBridge::<Test>::admin_fail_withdrawal_request(
+			RuntimeOrigin::root(),
+			request_id,
+		));
+
 		// Advance block number past TTL
 		System::set_block_number(request.created_at_block + 11);
 
-		// Cleanup should succeed (guardian only, no status check for withdrawal requests)
+		// Cleanup should succeed (guardian only)
 		assert_ok!(AlphaBridge::<Test>::cleanup_withdrawal_request(
 			RuntimeOrigin::signed(alice()),
 			request_id,
@@ -1494,6 +1514,12 @@ fn test_cleanup_withdrawal_request_before_ttl_fails() {
 		assert_ok!(AlphaBridge::<Test>::withdraw(RuntimeOrigin::signed(user1()), withdraw_amount,));
 
 		let request_id = crate::WithdrawalRequests::<Test>::iter().next().unwrap().0;
+
+		// Mark as Failed so only the TTL check stands between guardian and cleanup
+		assert_ok!(AlphaBridge::<Test>::admin_fail_withdrawal_request(
+			RuntimeOrigin::root(),
+			request_id,
+		));
 
 		// Try to cleanup immediately (before TTL expires) as guardian
 		assert_noop!(
@@ -1747,5 +1773,509 @@ fn test_attest_deposit_with_correct_nonce_passes() {
 			amount,
 			nonce,
 		));
+	});
+}
+
+// ============ Staking Reward Transfer Tests ============
+
+#[test]
+fn test_propose_staking_reward_transfer_creates_pending_record() {
+	new_test_ext().execute_with(|| {
+		let reward_amount = 1_000_000_000u128; // 1 hAlpha
+		let guardian1 = alice();
+
+		// Whitelist the guardian first (default genesis threshold is 2, so the
+		// proposal stays Pending with the proposer's single vote)
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian1.clone()
+		));
+
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian1.clone()),
+			reward_amount
+		));
+
+		// The proposal was created with nonce 0 and records the proposer's vote
+		let transfer_id = generate_mint_id(reward_amount, 0);
+		let transfer = StakingRewardTransfers::<Test>::get(transfer_id)
+			.expect("staking reward transfer should be recorded");
+		assert_eq!(transfer.amount, reward_amount);
+		assert_eq!(transfer.status, StakingRewardTransferStatus::Pending);
+		assert!(transfer.votes.contains(&guardian1));
+		assert_eq!(transfer.votes.len(), 1);
+	});
+}
+
+#[test]
+fn test_attest_staking_reward_transfer_reaches_threshold_and_mints() {
+	new_test_ext().execute_with(|| {
+		let reward_amount = 1_000_000_000u128; // 1 hAlpha
+		let guardian1 = alice();
+		let guardian2 = bob();
+
+		// Whitelist both guardians
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian1.clone()
+		));
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian2.clone()
+		));
+
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			vec![guardian1.clone(), guardian2.clone()],
+			2
+		));
+
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian1.clone()),
+			reward_amount
+		));
+		let transfer_id = generate_mint_id(reward_amount, 0);
+
+		let staking_pot_before = Balances::free_balance(&reward_destination());
+
+		// Second guardian's attestation reaches the threshold and mints
+		assert_ok!(AlphaBridge::<Test>::attest_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian2.clone()),
+			transfer_id
+		));
+
+		let staking_pot_after = Balances::free_balance(&reward_destination());
+		assert_eq!(staking_pot_after - staking_pot_before, reward_amount);
+
+		let transfer = StakingRewardTransfers::<Test>::get(transfer_id)
+			.expect("staking reward transfer should exist");
+		assert_eq!(transfer.status, StakingRewardTransferStatus::Completed);
+		assert!(transfer.finalized_at_block.is_some());
+		System::assert_has_event(
+			Event::StakingRewardTransferCompleted { id: transfer_id, amount: reward_amount }.into(),
+		);
+	});
+}
+
+#[test]
+fn test_propose_staking_reward_transfer_not_guardian_fails() {
+	new_test_ext().execute_with(|| {
+		// Whitelisted but not in the guardian set
+		let non_guardian = user1();
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			non_guardian.clone()
+		));
+
+		assert_noop!(
+			AlphaBridge::<Test>::propose_staking_reward_transfer(
+				RuntimeOrigin::signed(non_guardian),
+				1_000_000_000u128
+			),
+			Error::<Test>::NotGuardian
+		);
+	});
+}
+
+#[test]
+fn test_propose_staking_reward_transfer_not_whitelisted_fails() {
+	new_test_ext().execute_with(|| {
+		// A genesis guardian that was never whitelisted for reward bridging
+		assert_noop!(
+			AlphaBridge::<Test>::propose_staking_reward_transfer(
+				RuntimeOrigin::signed(bob()),
+				1_000_000_000u128
+			),
+			Error::<Test>::NotWhitelisted
+		);
+	});
+}
+
+#[test]
+fn test_attest_staking_reward_transfer_single_guardian_approves() {
+	new_test_ext().execute_with(|| {
+		let reward_amount = 500_000_000u128; // 0.5 hAlpha
+		let guardian = single_guardian_setup();
+
+		// With threshold 1 the proposal finalizes in the same call
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			reward_amount
+		));
+
+		let transfer_id = generate_mint_id(reward_amount, 0);
+		let transfer = StakingRewardTransfers::<Test>::get(transfer_id)
+			.expect("staking reward transfer should exist");
+		assert_eq!(transfer.status, StakingRewardTransferStatus::Completed);
+	});
+}
+
+#[test]
+fn test_multiple_staking_reward_transfers_sequential() {
+	new_test_ext().execute_with(|| {
+		let guardian1 = alice();
+		let guardian2 = bob();
+
+		for guardian in &[guardian1.clone(), guardian2.clone()] {
+			assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+				RuntimeOrigin::root(),
+				guardian.clone()
+			));
+		}
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			vec![guardian1.clone(), guardian2.clone()],
+			2
+		));
+
+		let staking_pot_before = Balances::free_balance(&reward_destination());
+
+		// The nonce increments per proposal, giving each transfer a distinct ID
+		let amount1 = 1_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian1.clone()),
+			amount1
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian2.clone()),
+			generate_mint_id(amount1, 0)
+		));
+
+		let amount2 = 2_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian1.clone()),
+			amount2
+		));
+		assert_ok!(AlphaBridge::<Test>::attest_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian2.clone()),
+			generate_mint_id(amount2, 1)
+		));
+
+		let staking_pot_after = Balances::free_balance(&reward_destination());
+		assert_eq!(staking_pot_after - staking_pot_before, amount1 + amount2);
+	});
+}
+
+#[test]
+fn test_attest_staking_reward_transfer_double_vote_fails() {
+	new_test_ext().execute_with(|| {
+		let guardian = alice();
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian.clone()
+		));
+
+		// Default genesis threshold is 2: the proposal stays Pending with the
+		// proposer's own vote already recorded
+		let amount = 1_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount
+		));
+
+		assert_noop!(
+			AlphaBridge::<Test>::attest_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian),
+				generate_mint_id(amount, 0)
+			),
+			Error::<Test>::StakingRewardTransferAlreadyVoted
+		);
+	});
+}
+
+#[test]
+fn test_attest_staking_reward_transfer_after_completed_fails() {
+	new_test_ext().execute_with(|| {
+		let guardian = single_guardian_setup();
+		// bob is also made guardian+whitelisted so his late attestation passes
+		// the origin checks and fails on status alone
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(RuntimeOrigin::root(), bob()));
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			vec![guardian.clone(), bob()],
+			1
+		));
+
+		// Threshold 1: completed immediately
+		let amount = 1_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian),
+			amount
+		));
+
+		assert_noop!(
+			AlphaBridge::<Test>::attest_staking_reward_transfer(
+				RuntimeOrigin::signed(bob()),
+				generate_mint_id(amount, 0)
+			),
+			Error::<Test>::StakingRewardTransferAlreadyCompleted
+		);
+	});
+}
+
+#[test]
+fn test_admin_cancel_staking_reward_transfer() {
+	new_test_ext().execute_with(|| {
+		let guardian = alice();
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian.clone()
+		));
+
+		// Default genesis threshold is 2: stays Pending
+		let amount = 1_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount
+		));
+		let transfer_id = generate_mint_id(amount, 0);
+
+		// Only root may cancel
+		assert_noop!(
+			AlphaBridge::<Test>::admin_cancel_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian.clone()),
+				transfer_id
+			),
+			sp_runtime::DispatchError::BadOrigin
+		);
+
+		let pot_before = Balances::free_balance(&reward_destination());
+		assert_ok!(AlphaBridge::<Test>::admin_cancel_staking_reward_transfer(
+			RuntimeOrigin::root(),
+			transfer_id
+		));
+
+		// Cancelled is distinguishable from Completed and nothing was minted
+		let transfer = StakingRewardTransfers::<Test>::get(transfer_id)
+			.expect("staking reward transfer should exist");
+		assert_eq!(transfer.status, StakingRewardTransferStatus::Cancelled);
+		assert!(transfer.finalized_at_block.is_some());
+		assert_eq!(Balances::free_balance(&reward_destination()), pot_before);
+		System::assert_has_event(Event::StakingRewardTransferCancelled { id: transfer_id }.into());
+
+		// A cancelled transfer can no longer be attested
+		assert_noop!(
+			AlphaBridge::<Test>::attest_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian),
+				transfer_id
+			),
+			Error::<Test>::StakingRewardTransferAlreadyCompleted
+		);
+
+		// Nor cancelled twice
+		assert_noop!(
+			AlphaBridge::<Test>::admin_cancel_staking_reward_transfer(
+				RuntimeOrigin::root(),
+				transfer_id
+			),
+			Error::<Test>::StakingRewardTransferAlreadyCompleted
+		);
+	});
+}
+
+#[test]
+fn test_staking_reward_transfer_global_mint_cap_enforced() {
+	new_test_ext().execute_with(|| {
+		let guardian = single_guardian_setup();
+
+		// Give the per-era limit more headroom than the global cap so the
+		// global cap is the binding constraint
+		assert_ok!(AlphaBridge::<Test>::set_max_mint_per_era(
+			RuntimeOrigin::root(),
+			DEFAULT_MINT_CAP * 2
+		));
+
+		assert_noop!(
+			AlphaBridge::<Test>::propose_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian),
+				DEFAULT_MINT_CAP + 1
+			),
+			Error::<Test>::CapExceeded
+		);
+	});
+}
+
+#[test]
+fn test_era_limit_exceeded() {
+	new_test_ext().execute_with(|| {
+		let guardian = alice();
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian.clone()
+		));
+
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			vec![guardian.clone()],
+			1
+		));
+
+		// Set a low per-era limit (100 hAlpha)
+		let low_limit = 100_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::set_max_mint_per_era(RuntimeOrigin::root(), low_limit));
+
+		// First transfer succeeds (under limit)
+		let amount1 = 50_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount1
+		));
+
+		// Second transfer succeeds (total 100 hAlpha, at limit)
+		let amount2 = 50_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount2
+		));
+
+		// Third transfer fails (would exceed limit)
+		assert_noop!(
+			AlphaBridge::<Test>::propose_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian.clone()),
+				1_000_000_000u128
+			),
+			Error::<Test>::EraLimitExceeded
+		);
+	});
+}
+
+#[test]
+fn test_era_limit_resets_when_staking_era_advances() {
+	new_test_ext().execute_with(|| {
+		let guardian = alice();
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian.clone()
+		));
+		assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+			RuntimeOrigin::root(),
+			vec![guardian.clone()],
+			1
+		));
+
+		// Exhaust the per-era limit in era 0
+		let limit = 100_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::set_max_mint_per_era(RuntimeOrigin::root(), limit));
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			limit
+		));
+		assert_noop!(
+			AlphaBridge::<Test>::propose_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian.clone()),
+				1_000_000_000u128
+			),
+			Error::<Test>::EraLimitExceeded
+		);
+
+		// Staking era advances: the per-era counter must reset, allowing a full
+		// limit's worth of transfers again
+		MockActiveEraIndex::set(1);
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			limit
+		));
+		assert_eq!(AlphaBridge::<Test>::era_minted_amount(), limit);
+		assert_eq!(AlphaBridge::<Test>::last_transfer_era(), 1);
+
+		// And the new era's limit is enforced independently
+		assert_noop!(
+			AlphaBridge::<Test>::propose_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian.clone()),
+				1_000_000_000u128
+			),
+			Error::<Test>::EraLimitExceeded
+		);
+	});
+}
+
+/// Sets up a single whitelisted guardian with threshold 1 and returns it
+fn single_guardian_setup() -> AccountId {
+	let guardian = alice();
+	assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+		RuntimeOrigin::root(),
+		guardian.clone()
+	));
+	assert_ok!(AlphaBridge::<Test>::set_guardians_and_threshold(
+		RuntimeOrigin::root(),
+		vec![guardian.clone()],
+		1
+	));
+	guardian
+}
+
+#[test]
+fn test_cleanup_staking_reward_transfer_after_ttl() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 10));
+		let guardian = single_guardian_setup();
+
+		let amount = 1_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount
+		));
+		// Threshold 1: completed (finalized) immediately at the current block
+		let transfer_id = generate_mint_id(amount, 0);
+
+		System::set_block_number(System::block_number() + 11);
+		assert_ok!(AlphaBridge::<Test>::cleanup_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			transfer_id,
+		));
+		assert!(StakingRewardTransfers::<Test>::get(transfer_id).is_none());
+		System::assert_has_event(Event::StakingRewardTransferCleanedUp { id: transfer_id }.into());
+	});
+}
+
+#[test]
+fn test_cleanup_staking_reward_transfer_before_ttl_fails() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 100));
+		let guardian = single_guardian_setup();
+
+		let amount = 1_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount
+		));
+		let transfer_id = generate_mint_id(amount, 0);
+
+		assert_noop!(
+			AlphaBridge::<Test>::cleanup_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian.clone()),
+				transfer_id,
+			),
+			Error::<Test>::TTLNotExpired
+		);
+		assert!(StakingRewardTransfers::<Test>::get(transfer_id).is_some());
+	});
+}
+
+#[test]
+fn test_cleanup_staking_reward_transfer_pending_fails() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(AlphaBridge::<Test>::set_cleanup_ttl(RuntimeOrigin::root(), 1));
+		let guardian = alice();
+		assert_ok!(AlphaBridge::<Test>::add_reward_bridge_whitelist(
+			RuntimeOrigin::root(),
+			guardian.clone()
+		));
+		// Default threshold is 2, so a single proposal stays Pending
+		let amount = 1_000_000_000u128;
+		assert_ok!(AlphaBridge::<Test>::propose_staking_reward_transfer(
+			RuntimeOrigin::signed(guardian.clone()),
+			amount
+		));
+		let transfer_id = generate_mint_id(amount, 0);
+
+		System::set_block_number(System::block_number() + 100);
+		assert_noop!(
+			AlphaBridge::<Test>::cleanup_staking_reward_transfer(
+				RuntimeOrigin::signed(guardian.clone()),
+				transfer_id,
+			),
+			Error::<Test>::RecordNotFinalized
+		);
 	});
 }
