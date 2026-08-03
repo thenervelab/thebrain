@@ -1786,9 +1786,9 @@ pub mod pallet {
                     if total_charged > 0 {
                         if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
                             if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
-                                let commission =
-                                    split(Credits::new(total_charged), BasisPoints::new(500)).0.get();
-                                Self::try_mint_referral_reward_credits(&referrer, commission);
+                                let (commission, _) =
+                                    split(Credits::new(total_charged), BasisPoints::new(500));
+                                Self::try_mint_referral_reward_credits(&referrer, commission.get());
                             }
                         }
                     }
