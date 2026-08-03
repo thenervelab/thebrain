@@ -251,8 +251,11 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
         Weight::from_parts(10_000_000, 0).saturating_add(T::DbWeight::get().writes(1))
     }
 
+    /// TODO: benchmark — hand-written estimate on a fund-moving on_initialize
+    /// hook that gates block production; needs real frame-benchmarking weights
+    /// before serious mainnet traffic (PR #36 review).
     /// Per child: ChildRegistrations + ChildMinerUid + MinerStatsByUid reads, MinerAccruals r/w.
-    /// Per family: arrears r/w, balance transfer, staking ledger read + bond write.
+    /// Per family: arrears r/w, bank request_payment (transfer + accounting), staking ledger read + bond write.
     fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
         let children = max_children_total as u64;
         let families = max_families as u64;

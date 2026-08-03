@@ -117,11 +117,28 @@ impl frame_support::traits::SortedMembers<AccountId> for ArionAdminMembers {
 }
 
 /// Adapter: arion pulls miner-payment funds from the bank pallet.
-/// The arion escrow account must be whitelisted via `bank.add_requester`.
+/// The arion pallet account must be whitelisted via `bank.add_requester`.
 pub struct ArionPayoutSource;
 impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	fn request_payment(requester: &AccountId, dest: &AccountId, amount: Balance) -> Balance {
-		pallet_bank::Pallet::<Runtime>::request_payment(requester, dest, amount).unwrap_or(0)
+		match pallet_bank::Pallet::<Runtime>::request_payment(requester, dest, amount) {
+			Ok(paid) => paid,
+			Err(e) => {
+				// A rejection here (e.g. requester not whitelisted — a manual
+				// post-upgrade setup step) must be diagnosable, not silent.
+				log::warn!(
+					target: "runtime::arion",
+					"bank rejected miner payment request from {:?}: {:?}",
+					requester,
+					e
+				);
+				0
+			},
+		}
+	}
+
+	fn available() -> Balance {
+		pallet_bank::Pallet::<Runtime>::available_for_payout()
 	}
 }
 

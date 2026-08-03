@@ -168,6 +168,13 @@ pub mod pallet {
 			T::PalletId::get().into_account_truncating()
 		}
 
+		/// Funds `request_payment` could release right now (free balance minus
+		/// the existential deposit the bank always keeps).
+		pub fn available_for_payout() -> BalanceOf<T> {
+			T::Currency::free_balance(&Self::account_id())
+				.saturating_sub(T::Currency::minimum_balance())
+		}
+
 		/// Transfer `amount` from `who` into the bank and record it. Shared by
 		/// the `deposit` extrinsic and other pallets (e.g. the marketplace
 		/// routing deposit alpha backing to the bank).
@@ -212,9 +219,7 @@ pub mod pallet {
 				return Ok(Zero::zero());
 			}
 			let bank = Self::account_id();
-			let available =
-				T::Currency::free_balance(&bank).saturating_sub(T::Currency::minimum_balance());
-			let paid = amount.min(available);
+			let paid = amount.min(Self::available_for_payout());
 			if !paid.is_zero() {
 				T::Currency::transfer(&bank, dest, paid, ExistenceRequirement::KeepAlive)?;
 				TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));

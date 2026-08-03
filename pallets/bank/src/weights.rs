@@ -1,8 +1,8 @@
 //! Weights for pallet-bank
 //!
-//! Hand-written estimates following the repo convention (see
-//! `pallets/arion-pallet/src/weights.rs`) — run actual benchmarks in your
-//! runtime to refine.
+//! TODO: benchmark — these are hand-written estimates on fund-moving paths.
+//! Real `frame-benchmarking` weights are required before serious mainnet
+//! traffic (tracked in a follow-up issue; raised in PR #36 review).
 
 #![allow(unused_imports)]
 
