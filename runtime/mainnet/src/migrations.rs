@@ -336,3 +336,93 @@ where
 		T::DbWeight::get().reads_writes(reads, writes)
 	}
 }
+
+/// One-shot activation of the miner-payment bank: whitelists the arion and
+/// marketplace pallet accounts as bank requesters and seeds the bank with the
+/// alpha backing of batches deposited before the upgrade (their backing still
+/// sits on the marketplace sudo account — the old runtime had no routing).
+/// Runs only while neither account is whitelisted, so subsequent runtime
+/// upgrades are no-ops and a manually pre-activated chain is left untouched.
+pub struct ActivateMinerPaymentBank<T>(sp_std::marker::PhantomData<T>);
+
+impl<T> OnRuntimeUpgrade for ActivateMinerPaymentBank<T>
+where
+	T: pallet_bank::Config + pallet_marketplace::Config + pallet_arion::Config,
+{
+	fn on_runtime_upgrade() -> Weight {
+		use sp_runtime::SaturatedConversion;
+
+		let arion = pallet_arion::Pallet::<T>::account_id();
+		let marketplace = pallet_marketplace::Pallet::<T>::account_id();
+		if pallet_bank::WhitelistedRequesters::<T>::contains_key(&arion)
+			|| pallet_bank::WhitelistedRequesters::<T>::contains_key(&marketplace)
+		{
+			return T::DbWeight::get().reads(2);
+		}
+		pallet_bank::WhitelistedRequesters::<T>::insert(&arion, ());
+		pallet_bank::WhitelistedRequesters::<T>::insert(&marketplace, ());
+		let mut reads = 2u64;
+		let mut writes = 2u64;
+
+		// Batches deposited before this upgrade never routed their backing to
+		// the bank. Seed it from sudo in one transfer; if that cannot be done
+		// (no key, underfunded sudo), mark every batch unbacked instead so
+		// release and chargeback accounting stays conservative.
+		let mut outstanding: u128 = 0;
+		for (_, batch) in pallet_marketplace::Batches::<T>::iter() {
+			outstanding = outstanding
+				.saturating_add(batch.remaining_alpha)
+				.saturating_add(batch.pending_alpha);
+			reads = reads.saturating_add(1);
+		}
+		if outstanding == 0 {
+			return T::DbWeight::get().reads_writes(reads, writes);
+		}
+		let seeded = match pallet_marketplace::Pallet::<T>::sudo_key() {
+			Some(sudo) => match pallet_bank::Pallet::<T>::deposit_from(
+				&sudo,
+				outstanding.saturated_into(),
+				pallet_bank::DepositType::MarketplaceRevenue,
+			) {
+				Ok(()) => true,
+				Err(e) => {
+					log::warn!(
+						target: "runtime::migration",
+						"ActivateMinerPaymentBank: seeding {} backing from sudo failed: {:?}",
+						outstanding,
+						e
+					);
+					false
+				},
+			},
+			None => {
+				log::warn!(
+					target: "runtime::migration",
+					"ActivateMinerPaymentBank: no sudo key, {} backing not seeded",
+					outstanding
+				);
+				false
+			},
+		};
+		if seeded {
+			pallet_marketplace::TotalUndistributedBacking::<T>::mutate(|t| {
+				*t = t.saturating_add(outstanding)
+			});
+			writes = writes.saturating_add(2);
+			log::info!(
+				target: "runtime::migration",
+				"ActivateMinerPaymentBank: seeded {} outstanding backing into the bank",
+				outstanding
+			);
+		} else {
+			for (id, batch) in pallet_marketplace::Batches::<T>::iter() {
+				let amount = batch.remaining_alpha.saturating_add(batch.pending_alpha);
+				if amount > 0 {
+					pallet_marketplace::UnbackedBatchAlpha::<T>::insert(id, amount);
+					writes = writes.saturating_add(1);
+				}
+			}
+		}
+		T::DbWeight::get().reads_writes(reads, writes)
+	}
+}

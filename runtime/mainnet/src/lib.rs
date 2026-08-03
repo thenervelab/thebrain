@@ -2061,7 +2061,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
-type Migrations = ();
+type Migrations = (migrations::ActivateMinerPaymentBank<Runtime>,);
 
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;

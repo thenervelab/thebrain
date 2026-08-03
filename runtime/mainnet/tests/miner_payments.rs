@@ -2,7 +2,7 @@
 //! runtime: stats accrual → settlement → bank withdrawal → transfer → staking
 //! bond, plus the marketplace deposit → bank revenue routing.
 
-use frame_support::traits::{Currency, Hooks};
+use frame_support::traits::{Currency, Hooks, OnRuntimeUpgrade};
 use hippius_mainnet_runtime::{
 	AccountId, Arion, Balances, Bank, BlockNumber, Credits, Marketplace, Runtime, RuntimeEvent,
 	RuntimeOrigin, System,
@@ -527,7 +527,7 @@ fn migration_builds_uid_reverse_index_and_drops_duplicates() {
 		ChildMinerUid::<Runtime>::insert(&child_b, 7u32);
 		ChildMinerUid::<Runtime>::insert(&child_c, 9u32);
 
-		Arion::on_runtime_upgrade();
+		<Arion as OnRuntimeUpgrade>::on_runtime_upgrade();
 
 		// Reverse index built; uid 9 is unambiguous.
 		assert_eq!(pallet_arion::MinerUidToChild::<Runtime>::get(9), Some(child_c));
@@ -734,6 +734,103 @@ fn chargeback_without_sudo_key_walls_refund_from_miners() {
 		assert_eq!(Balances::free_balance(&family), 0);
 		assert!(FamilyArrears::<Runtime>::get(&family) > 0);
 		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+	});
+}
+
+#[test]
+fn activation_migration_whitelists_and_seeds_backing() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let sudo = account(11);
+		let user = account(12);
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+
+		// Pre-upgrade state: batches exist but their backing never reached the
+		// bank (the old runtime had no routing). Deposit with no sudo key,
+		// then wipe the unbacked markers the new runtime writes — pre-upgrade
+		// code wrote neither markers nor ledger entries.
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority.clone()),
+			user.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			false,
+			None,
+		)
+		.expect("pre-upgrade deposit");
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user.clone(),
+			5 * UNIT,
+			2 * UNIT,
+			true,
+			None,
+		)
+		.expect("pre-upgrade frozen deposit");
+		let _ = pallet_marketplace::UnbackedBatchAlpha::<Runtime>::clear(u32::MAX, None);
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+
+		hippius_mainnet_runtime::migrations::ActivateMinerPaymentBank::<Runtime>::on_runtime_upgrade();
+
+		// Both pallet accounts are whitelisted as bank requesters.
+		assert!(pallet_bank::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()));
+		assert!(pallet_bank::WhitelistedRequesters::<Runtime>::contains_key(
+			Marketplace::account_id()
+		));
+		// The outstanding backing (remaining + pending across batches) moved
+		// from sudo to the bank and is counted as owed to the pots.
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 5 * UNIT);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 5 * UNIT);
+		assert_eq!(Balances::free_balance(&sudo), 95 * UNIT);
+
+		// Idempotent: a second run (next runtime upgrade) must not seed again.
+		hippius_mainnet_runtime::migrations::ActivateMinerPaymentBank::<Runtime>::on_runtime_upgrade();
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 5 * UNIT);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 5 * UNIT);
+	});
+}
+
+#[test]
+fn activation_migration_marks_batches_unbacked_when_sudo_cannot_seed() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let user = account(12);
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+
+		let batch_1 = pallet_marketplace::NextBatchId::<Runtime>::get();
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority.clone()),
+			user.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			false,
+			None,
+		)
+		.expect("pre-upgrade deposit");
+		let batch_2 = pallet_marketplace::NextBatchId::<Runtime>::get();
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user.clone(),
+			5 * UNIT,
+			2 * UNIT,
+			false,
+			None,
+		)
+		.expect("pre-upgrade deposit 2");
+		let _ = pallet_marketplace::UnbackedBatchAlpha::<Runtime>::clear(u32::MAX, None);
+		// No sudo key: the seed cannot be transferred.
+
+		hippius_mainnet_runtime::migrations::ActivateMinerPaymentBank::<Runtime>::on_runtime_upgrade();
+
+		// Whitelisting still happens; the un-seedable backing is not counted
+		// as owed (nothing reached the bank) — instead every batch is marked
+		// unbacked so later releases keep the ledger conservative.
+		assert!(pallet_bank::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()));
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 0);
+		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_1), 3 * UNIT);
+		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_2), 2 * UNIT);
 	});
 }
 
