@@ -50,6 +50,7 @@ fn register_miner(family: &AccountId, child: &AccountId, uid: u32) {
 		},
 	);
 	ChildMinerUid::<Runtime>::insert(child, uid);
+	pallet_arion::MinerUidToChild::<Runtime>::insert(uid, child.clone());
 }
 
 /// Submit miner stats for `uid` at the current block (bucket = block number).
@@ -316,6 +317,7 @@ fn deregistration_forfeits_unpaid_accrual() {
 		// is dropped and the event carries the exact unpaid amount.
 		Arion::clear_miner_uid_and_stats_for_child(&child);
 		assert!(MinerAccruals::<Runtime>::get(7).is_none());
+		assert!(pallet_arion::MinerUidToChild::<Runtime>::get(7).is_none());
 		let forfeited = System::events().iter().any(|r| {
 			matches!(
 				&r.event,
@@ -389,21 +391,23 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 }
 
 #[test]
-fn pot_shortfall_is_carried_as_distribution_arrears_and_retried() {
+fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 	new_test_ext().execute_with(|| {
 		let authority = account(10);
-		let sudo = account(11);
+		let sudo = account(11); // set but unfunded: deposit routing fails
 		let user = account(12);
+		let funder = account(30);
 		let ranking_pot = account(20);
 		let marketplace_pot = account(21);
-		let (family, child) = (account(1), account(2));
 		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
 		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
-		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
-		register_miner(&family, &child, 7);
-		submit_stats(7, 100 * GIB);
+		let _ = Balances::deposit_creating(&sudo, 1_000);
+		let _ = Balances::deposit_creating(&funder, 100 * UNIT);
+		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
 
-		// Deposit: 3 UNIT backing routed to the bank and counted as owed.
+		// Routing fails (sudo unfunded): deposit still succeeds, nothing is
+		// counted as backing, the bank is empty.
 		Marketplace::deposit(
 			RuntimeOrigin::signed(authority),
 			user.clone(),
@@ -412,18 +416,12 @@ fn pot_shortfall_is_carried_as_distribution_arrears_and_retried() {
 			false,
 			None,
 		)
-		.expect("deposit");
-		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
-		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
-			.expect("whitelist marketplace");
+		.expect("deposit succeeds despite failed routing");
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 0);
 
-		// Miner due far above the bank balance: settlement drains the pot.
-		enable_payments(1_000_000_000_000, UNIT / 20, 0);
-		settle_at(SETTLEMENT_BLOCK);
-		assert_eq!(Balances::free_balance(&Bank::account_id()), 500); // only ED left
-
-		// Consumption still succeeds, pots get nothing — but the shortfall is
-		// now carried as arrears instead of silently discarded.
+		// Billing still succeeds; the pots get nothing — but the shortfall is
+		// carried as arrears instead of silently discarded.
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
@@ -435,7 +433,6 @@ fn pot_shortfall_is_carried_as_distribution_arrears_and_retried() {
 		let ranking_owed_1 = released_1 * 70 / 100;
 		let marketplace_owed_1 = released_1 - ranking_owed_1;
 		assert_eq!(Balances::free_balance(&ranking_pot), 0);
-		assert_eq!(Balances::free_balance(&marketplace_pot), 0);
 		assert_eq!(
 			pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot),
 			ranking_owed_1
@@ -444,16 +441,10 @@ fn pot_shortfall_is_carried_as_distribution_arrears_and_retried() {
 			pallet_marketplace::DistributionArrears::<Runtime>::get(&marketplace_pot),
 			marketplace_owed_1
 		);
-		// The invariant violation is observable: owed backing > bank balance.
-		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
 
 		// Refill the bank; the next distribution pays arrears + new share.
-		Bank::deposit(
-			RuntimeOrigin::signed(sudo.clone()),
-			10 * UNIT,
-			pallet_bank::DepositType::Grant,
-		)
-		.expect("refill");
+		Bank::deposit(RuntimeOrigin::signed(funder), 10 * UNIT, pallet_bank::DepositType::Grant)
+			.expect("refill");
 		Marketplace::consume_credits(
 			user.clone(),
 			1 * UNIT,
@@ -469,9 +460,87 @@ fn pot_shortfall_is_carried_as_distribution_arrears_and_retried() {
 		assert_eq!(Balances::free_balance(&marketplace_pot), marketplace_total);
 		assert_eq!(pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot), 0);
 		assert_eq!(pallet_marketplace::DistributionArrears::<Runtime>::get(&marketplace_pot), 0);
+	});
+}
+
+#[test]
+fn miner_settlement_cannot_drain_pot_backing() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let sudo = account(11);
+		let user = account(12);
+		let funder = account(30);
+		let ranking_pot = account(20);
+		let marketplace_pot = account(21);
+		let (family, child) = (account(1), account(2));
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+		let _ = Balances::deposit_creating(&funder, 100 * UNIT);
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		// 3 UNIT of pot backing + 2 UNIT of miner budget in the bank.
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			false,
+			None,
+		)
+		.expect("deposit");
+		Bank::deposit(RuntimeOrigin::signed(funder), 2 * UNIT, pallet_bank::DepositType::Grant)
+			.expect("miner budget");
+		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+
+		// Miner due far above the bank balance: even a runaway due can only
+		// take the miner budget, never the backing owed to the pots.
+		enable_payments(1_000_000_000_000, UNIT / 20, 0);
+		settle_at(SETTLEMENT_BLOCK);
+		assert_eq!(Balances::free_balance(&family), 2 * UNIT - 500);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT + 500);
+		assert!(pallet_arion::FamilyArrears::<Runtime>::get(&family) > 0);
+
+		// The pots are paid in full from the protected backing.
+		Marketplace::consume_credits(
+			user.clone(),
+			2 * UNIT,
+			marketplace_pot.clone(),
+			ranking_pot.clone(),
+		)
+		.expect("consume");
+		let released = 2 * UNIT * 3 / 5;
+		assert_eq!(Balances::free_balance(&ranking_pot), released * 70 / 100);
+		assert_eq!(Balances::free_balance(&marketplace_pot), released - released * 70 / 100);
+	});
+}
+
+#[test]
+fn migration_builds_uid_reverse_index_and_drops_duplicates() {
+	new_test_ext().execute_with(|| {
+		use frame_support::traits::{GetStorageVersion, StorageVersion};
+		let (child_a, child_b, child_c) = (account(1), account(2), account(3));
+		// Pre-migration state: forward mappings only, uid 7 claimed twice.
+		ChildMinerUid::<Runtime>::insert(&child_a, 7u32);
+		ChildMinerUid::<Runtime>::insert(&child_b, 7u32);
+		ChildMinerUid::<Runtime>::insert(&child_c, 9u32);
+
+		Arion::on_runtime_upgrade();
+
+		// Reverse index built; uid 9 is unambiguous.
+		assert_eq!(pallet_arion::MinerUidToChild::<Runtime>::get(9), Some(child_c));
+		// Exactly one claimant kept uid 7; the duplicate lost its mapping.
+		let winner = pallet_arion::MinerUidToChild::<Runtime>::get(7).expect("one winner");
+		let a_kept = ChildMinerUid::<Runtime>::get(&child_a).is_some();
+		let b_kept = ChildMinerUid::<Runtime>::get(&child_b).is_some();
+		assert!(a_kept ^ b_kept, "exactly one forward mapping survives");
+		assert_eq!(ChildMinerUid::<Runtime>::get(&winner), Some(7));
+		// Version bumped: running again is a no-op.
 		assert_eq!(
-			pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(),
-			3 * UNIT - total_released
+			<pallet_arion::Pallet<Runtime> as GetStorageVersion>::on_chain_storage_version(),
+			StorageVersion::new(1)
 		);
 	});
 }

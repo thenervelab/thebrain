@@ -735,12 +735,56 @@ pub mod pallet {
 		type SettlementInterval: Get<BlockNumberFor<Self>>;
 	}
 
+	/// Storage version 1: `MinerUidToChild` reverse index (uid uniqueness).
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
+	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_runtime_upgrade() -> Weight {
+			let onchain = Pallet::<T>::on_chain_storage_version();
+			if onchain >= 1 {
+				return T::DbWeight::get().reads(1);
+			}
+			// v0 → v1: build the `MinerUidToChild` reverse index from existing
+			// registrations (bounded by MaxChildrenTotal). If two children
+			// claim the same uid, the first keeps it and the duplicate's
+			// forward mapping is dropped (it must re-register with a real uid).
+			let mut reads: u64 = 1;
+			let mut writes: u64 = 1;
+			let entries: Vec<(T::AccountId, u32)> = ChildMinerUid::<T>::iter().collect();
+			for (child, uid) in entries {
+				reads = reads.saturating_add(2);
+				if uid == 0 {
+					continue;
+				}
+				match MinerUidToChild::<T>::get(uid) {
+					Some(existing) if existing != child => {
+						log::warn!(
+							target: "runtime::arion",
+							"migration v1: duplicate miner uid {} — kept {:?}, dropped mapping of {:?}",
+							uid,
+							existing,
+							child
+						);
+						ChildMinerUid::<T>::remove(&child);
+						writes = writes.saturating_add(1);
+					},
+					Some(_) => {},
+					None => {
+						MinerUidToChild::<T>::insert(uid, &child);
+						writes = writes.saturating_add(1);
+					},
+				}
+			}
+			StorageVersion::new(1).put::<Pallet<T>>();
+			T::DbWeight::get().reads_writes(reads, writes)
+		}
+
 		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
 			let mut weight = Weight::zero();
 
@@ -806,6 +850,13 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type ChildMinerUid<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u32, OptionQuery>;
+
+	/// Reverse index of [`ChildMinerUid`]. Enforces that a miner uid is claimed
+	/// by at most one child: without this, a registered family could claim
+	/// another miner's uid and capture its payment accrual at settlement.
+	#[pallet::storage]
+	pub type MinerUidToChild<T: Config> =
+		StorageMap<_, Blake2_128Concat, u32, T::AccountId, OptionQuery>;
 
 	/// Last `MinerStatsByUid` key processed by batched pruning (`None` = next pass from the start).
 	#[pallet::storage]
@@ -1212,6 +1263,8 @@ pub mod pallet {
 	pub enum Error<T> {
 		/// Epoch is not strictly increasing.
 		EpochRegression,
+		/// The miner uid is already claimed by another registered child.
+		MinerUidAlreadyTaken,
 		/// Epoch already exists.
 		EpochAlreadyExists,
 		/// Miner list must be sorted by uid and unique.
@@ -1378,6 +1431,7 @@ pub mod pallet {
 				}
 				MinerStatsByUid::<T>::remove(uid);
 				ChildMinerUid::<T>::remove(child);
+				MinerUidToChild::<T>::remove(uid);
 			}
 		}
 
@@ -2256,7 +2310,12 @@ pub mod pallet {
 			NodeIdNonce::<T>::insert(node_id, nonce.saturating_add(1));
 
 			if miner_uid != 0 {
+				ensure!(
+					!MinerUidToChild::<T>::contains_key(miner_uid),
+					Error::<T>::MinerUidAlreadyTaken
+				);
 				ChildMinerUid::<T>::insert(&child, miner_uid);
+				MinerUidToChild::<T>::insert(miner_uid, &child);
 			}
 
 			// Update counts

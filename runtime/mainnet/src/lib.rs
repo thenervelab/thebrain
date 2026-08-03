@@ -138,7 +138,12 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	}
 
 	fn available() -> Balance {
+		// Compartmentalization: the alpha backing still owed to the ranking /
+		// marketplace pots is not spendable by the miner settlement — a runaway
+		// miner due (bad stats, bad price, compromised authority key) can at
+		// worst drain the miner budget, never the pots' revenue.
 		pallet_bank::Pallet::<Runtime>::available_for_payout()
+			.saturating_sub(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get())
 	}
 }
 
