@@ -28,3 +28,6 @@ polkadot.*
 .envrc
 .aider*
 .env
+
+# cargo-mutants output
+mutants.out*
