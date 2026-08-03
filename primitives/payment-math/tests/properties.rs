@@ -4,8 +4,8 @@
 //! build entirely — dev-dependencies never reach the runtime Wasm.
 
 use payment_math::{
-	available, payable, pro_rata, prorate_first_month, split, tokens_for, Amount, BasisPoints,
-	Blocks, ByteBlocks, Bytes, Credits, Tokens, Usd, UsdPerGibBlock, BPS_DENOM, E18, GIB,
+	available, payable, pro_rata, prorate_first_month, split, tokens_for, BasisPoints, Blocks,
+	ByteBlocks, Bytes, Credits, Tokens, Usd, UsdPerGibBlock, BPS_DENOM, E18, GIB,
 };
 use primitive_types::U256;
 use proptest::prelude::*;
@@ -55,8 +55,10 @@ proptest! {
 	}
 
 	/// Bank-never-overpays: for any partition of total_due, the pro-rata
-	/// shares sum to at most the pool, and each claimant's share + arrears
-	/// reconstructs their due exactly.
+	/// shares sum to at most the pool, and each share stays within its due —
+	/// the bound that makes the caller's `arrears = due − share` recipe an
+	/// exact reconstruction (given share ≤ due, `share + (due − share) == due`
+	/// is arithmetic identity, so only the bound needs asserting).
 	///
 	/// A raw `any::<u128>()` pool alone would dwarf `total` (dues cap at
 	/// 2^100) and near-never exercise the shortfall branch — verified by a
@@ -77,9 +79,9 @@ proptest! {
 			let mut sum = 0u128;
 			for d in &dues {
 				let share = pro_rata(Tokens::new(*d), pool_t, total_t);
+				// The load-bearing per-claimant bound: share ≤ due is what
+				// keeps the caller's `due − share` arrears subtraction exact.
 				prop_assert!(share.get() <= *d);
-				let arrears = Tokens::new(*d).saturating_sub(share);
-				prop_assert_eq!(share.get() + arrears.get(), *d);
 				sum += share.get(); // each share ≤ its due, Σ dues = total < MAX
 			}
 			prop_assert!(sum <= total);
@@ -100,6 +102,17 @@ proptest! {
 		let (part, rest) = split(Tokens::new(amount), BasisPoints::new(bps));
 		prop_assert!(part.get() <= amount);
 		prop_assert_eq!(part.get().checked_add(rest.get()), Some(amount));
+		// Floor characterization: part is exactly ⌊amount × ratio / 10_000⌋.
+		// Conservation alone cannot see the rounding direction (rest absorbs
+		// it either way), so pin the documented round-down explicitly.
+		let eff = bps.min(BPS_DENOM);
+		prop_assert!(
+			U256::from(part.get()) * U256::from(BPS_DENOM) <= U256::from(amount) * U256::from(eff)
+		);
+		prop_assert!(
+			U256::from(amount) * U256::from(eff)
+				< (U256::from(part.get()) + U256::from(1u8)) * U256::from(BPS_DENOM)
+		);
 	}
 
 	#[test]
@@ -115,6 +128,19 @@ proptest! {
 		let (p, d, m) = (U256::from(price), U256::from(eff), U256::from(dim));
 		prop_assert!(U256::from(out) * m >= p * d);
 		prop_assert!(U256::from(out) * m < p * d + m);
+	}
+
+	/// The part-never-exceeds-whole clamp must hold over the FULL u128 price
+	/// range — including where the internal `price × days` and `+ (dim − 1)`
+	/// steps saturate, a region the ceil-characterization test above excludes
+	/// by capping price at `u128::MAX / 31`.
+	#[test]
+	fn prorate_never_exceeds_full_price_even_when_saturating(
+		price in any::<u128>(),
+		drm in any::<u32>(),
+		dim in 1u32..=u32::MAX,
+	) {
+		prop_assert!(prorate_first_month(Credits::new(price), drm, dim).get() <= price);
 	}
 
 	#[test]
