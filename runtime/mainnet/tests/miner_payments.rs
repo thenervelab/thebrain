@@ -303,3 +303,87 @@ fn marketplace_deposit_routes_alpha_backing_to_bank() {
 		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
 	});
 }
+
+#[test]
+fn deregistration_forfeits_unpaid_accrual() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+		System::set_block_number(11);
+
+		// Explicit forfeiture (deregistration = loss, by design): the accrual
+		// is dropped and the event carries the exact unpaid amount.
+		Arion::clear_miner_uid_and_stats_for_child(&child);
+		assert!(MinerAccruals::<Runtime>::get(7).is_none());
+		let forfeited = System::events().iter().any(|r| {
+			matches!(
+				&r.event,
+				RuntimeEvent::Arion(pallet_arion::Event::MinerAccrualForfeited {
+					family: f,
+					uid: 7,
+					byte_blocks,
+				}) if *f == family && *byte_blocks == 100 * GIB * 10
+			)
+		});
+		assert!(forfeited, "MinerAccrualForfeited event with exact byte-blocks expected");
+
+		// Settlement pays nothing afterwards: the uid mapping is gone.
+		enable_payments(10_000_000_000, UNIT / 20, 10 * UNIT);
+		settle_at(SETTLEMENT_BLOCK);
+		assert_eq!(Balances::free_balance(&family), 0);
+	});
+}
+
+#[test]
+fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let sudo = account(11);
+		let user = account(12);
+		let ranking_pot = account(20);
+		let marketplace_pot = account(21);
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+
+		// Deposit: 5 credits backed by 3 alpha — 100% routed to the bank.
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			false,
+			None,
+		)
+		.expect("marketplace deposit");
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+
+		// The marketplace pallet account distributes from the bank — whitelist it.
+		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+
+		// Consume 2 of the 5 credits → releases 2×3/5 = 1.2 alpha, paid by the
+		// bank to the pots (70/30) — the sudo account is not touched again.
+		Marketplace::consume_credits(
+			user.clone(),
+			2 * UNIT,
+			marketplace_pot.clone(),
+			ranking_pot.clone(),
+		)
+		.expect("consume credits");
+
+		let released = 2 * UNIT * 3 / 5;
+		let ranking_share = released * 70 / 100;
+		let marketplace_share = released - ranking_share;
+		assert_eq!(Balances::free_balance(&ranking_pot), ranking_share);
+		assert_eq!(Balances::free_balance(&marketplace_pot), marketplace_share);
+		// Sudo was debited exactly once, at deposit time.
+		assert_eq!(Balances::free_balance(&sudo), 97 * UNIT);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT - released);
+		assert_eq!(
+			pallet_bank::TotalPaidByRequester::<Runtime>::get(Marketplace::account_id()),
+			released
+		);
+	});
+}
