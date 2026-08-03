@@ -1,10 +1,11 @@
 use crate as pallet_alpha_bridge;
-use frame_support::{derive_impl, parameter_types, traits::ConstU64, PalletId};
+use frame_support::{derive_impl, parameter_types, traits::{ConstU64, Get}, PalletId};
 use sp_keyring::AccountKeyring;
 use sp_runtime::{
-	traits::{IdentifyAccount, IdentityLookup, Verify},
+	traits::{IdentifyAccount, IdentityLookup, Verify, AccountIdConversion},
 	BuildStorage,
 };
+use sp_core::H256;
 
 pub type Signature = sp_runtime::MultiSignature;
 pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::AccountId;
@@ -79,12 +80,20 @@ parameter_types! {
 	pub const AlphaBridgePalletId: PalletId = PalletId(*b"alphbrdg");
 }
 
+pub struct GetStakingRewardPot;
+impl Get<AccountId> for GetStakingRewardPot {
+	fn get() -> AccountId {
+		PalletId(*b"stk/rpot").into_account_truncating()
+	}
+}
+
 impl pallet_alpha_bridge::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type Balance = Balance;
 	type PalletId = AlphaBridgePalletId;
 	type WeightInfo = ();
 	type Currency = Balances;
+	type RewardDestination = GetStakingRewardPot;
 }
 
 // Test accounts
@@ -115,6 +124,11 @@ pub fn new_account() -> AccountId {
 // Bridge pallet account - used for ED transfers
 pub fn bridge_account() -> AccountId {
 	pallet_alpha_bridge::Pallet::<Test>::account_id()
+}
+
+// Staking reward destination account
+pub fn reward_destination() -> AccountId {
+	GetStakingRewardPot::get()
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {

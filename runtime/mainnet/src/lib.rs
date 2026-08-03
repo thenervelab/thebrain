@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 use sp_api::impl_runtime_apis;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata, H160, H256, U256};
 use sp_genesis_builder::PresetId;
-use sp_runtime::traits::ConstU64;
+use sp_runtime::traits::{ConstU64, AccountIdConversion};
 use sp_runtime::SaturatedConversion;
 use sp_runtime::{
 	create_runtime_str,
@@ -255,7 +255,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9194,
+	spec_version: 9186,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1357,10 +1357,18 @@ parameter_types! {
 	pub const AlphaPalletId: PalletId = PalletId(*b"Alpha123");
 }
 
+pub struct GetStakingPotAccount;
+impl frame_support::traits::Get<AccountId> for GetStakingPotAccount {
+	fn get() -> AccountId {
+		StakingPotId::get().into_account_truncating()
+	}
+}
+
 impl pallet_alpha_bridge::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Balance = Balance;
 	type PalletId = AlphaPalletId;
+	type RewardDestination = GetStakingPotAccount;
 	type Currency = Balances;
 	type WeightInfo = pallet_alpha_bridge::weights::SubstrateWeight<Runtime>;
 }
