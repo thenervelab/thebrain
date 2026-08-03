@@ -533,6 +533,20 @@ pub mod pallet {
     #[pallet::getter(fn sudo_key)]
     pub type SudoKey<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
 
+    /// Revenue owed to a distribution destination (ranking/marketplace pots)
+    /// that the bank could not cover at the time — folded into the next
+    /// distribution to that destination. Pot analog of arion's FamilyArrears.
+    #[pallet::storage]
+    pub type DistributionArrears<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+    /// Alpha backing sitting in the bank that is still owed to the pots
+    /// (incremented when deposit backing is routed to the bank, decremented by
+    /// actual distributions and chargeback reversals). Ops invariant to alert
+    /// on: bank balance >= TotalUndistributedBacking + expected miner due.
+    #[pallet::storage]
+    pub type TotalUndistributedBacking<T: Config> = StorageValue<_, u128, ValueQuery>;
+
     /// Unix-day marker (unix_ms / 86_400_000) of the last time we ran the monthly subscription charge.
     ///
     /// This prevents double-charging on the 1st of the month when `on_initialize` runs multiple times.
@@ -2049,16 +2063,23 @@ pub mod pallet {
             if alpha_amount > 0 {
                 if let Some(sudo_account) = Self::sudo_key() {
                     let backing: pallet_bank::BalanceOf<T> = alpha_amount.saturated_into();
-                    if let Err(e) = pallet_bank::Pallet::<T>::deposit_from(
+                    match pallet_bank::Pallet::<T>::deposit_from(
                         &sudo_account,
                         backing,
                         pallet_bank::DepositType::MarketplaceRevenue,
                     ) {
-                        log::warn!(
-                            target: "runtime::marketplace",
-                            "deposit: routing alpha backing to bank failed: {:?}",
-                            e
-                        );
+                        Ok(()) => {
+                            TotalUndistributedBacking::<T>::mutate(|t| {
+                                *t = t.saturating_add(alpha_amount)
+                            });
+                        },
+                        Err(e) => {
+                            log::warn!(
+                                target: "runtime::marketplace",
+                                "deposit: routing alpha backing to bank failed: {:?}",
+                                e
+                            );
+                        },
                     }
                 } else {
                     log::warn!(
@@ -2213,20 +2234,40 @@ pub mod pallet {
             for (dest, amount) in
                 [(ranking_account, rankings_amount), (marketplace_account, marketplace_amount)]
             {
-                if amount == 0 {
+                // Fold in revenue the bank could not cover previously.
+                let owed = amount.saturating_add(DistributionArrears::<T>::take(&dest));
+                if owed == 0 {
                     continue;
                 }
-                if let Err(e) = pallet_bank::Pallet::<T>::request_payment(
+                let paid: u128 = match pallet_bank::Pallet::<T>::request_payment(
                     &requester,
                     &dest,
-                    amount.saturated_into(),
+                    owed.saturated_into(),
                 ) {
+                    Ok(paid) => paid.saturated_into(),
+                    Err(e) => {
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "bank rejected revenue distribution to {:?}: {:?}",
+                            dest,
+                            e
+                        );
+                        0
+                    },
+                };
+                if paid < owed {
+                    // Shortfall: never silent, retried at the next distribution.
                     log::warn!(
                         target: "runtime::marketplace",
-                        "bank rejected revenue distribution to {:?}: {:?}",
+                        "bank shortfall distributing to {:?}: owed {}, paid {}",
                         dest,
-                        e
+                        owed,
+                        paid
                     );
+                    DistributionArrears::<T>::insert(&dest, owed.saturating_sub(paid));
+                }
+                if paid > 0 {
+                    TotalUndistributedBacking::<T>::mutate(|t| *t = t.saturating_sub(paid));
                 }
             }
 
@@ -2248,6 +2289,40 @@ pub mod pallet {
                     AlphaBalances::<T>::mutate(&batch.owner, |alpha| {
                         *alpha = alpha.saturating_sub(total_alpha_to_remove);
                     });
+
+                    // The reversed batch's backing will never be released to
+                    // the pots: stop counting it as owed and refund it from
+                    // the bank to the sudo account (the buyer is refunded
+                    // off-chain from there). A partial refund is a warn, not
+                    // an error — a chargeback must never fail on bank state.
+                    TotalUndistributedBacking::<T>::mutate(|t| {
+                        *t = t.saturating_sub(total_alpha_to_remove)
+                    });
+                    if let Some(sudo_account) = Self::sudo_key() {
+                        let refunded: u128 = pallet_bank::Pallet::<T>::request_payment(
+                            &Self::account_id(),
+                            &sudo_account,
+                            total_alpha_to_remove.saturated_into(),
+                        )
+                        .map(|p| p.saturated_into())
+                        .unwrap_or(0);
+                        if refunded < total_alpha_to_remove {
+                            log::warn!(
+                                target: "runtime::marketplace",
+                                "chargeback {}: refunded {} of {} backing to sudo",
+                                batch_id,
+                                refunded,
+                                total_alpha_to_remove
+                            );
+                        }
+                    } else {
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "chargeback {}: no sudo key, {} backing left in the bank",
+                            batch_id,
+                            total_alpha_to_remove
+                        );
+                    }
                 }
  
                 // Remove the batch from the user's batch list

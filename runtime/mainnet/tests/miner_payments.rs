@@ -387,3 +387,128 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 		);
 	});
 }
+
+#[test]
+fn pot_shortfall_is_carried_as_distribution_arrears_and_retried() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let sudo = account(11);
+		let user = account(12);
+		let ranking_pot = account(20);
+		let marketplace_pot = account(21);
+		let (family, child) = (account(1), account(2));
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		// Deposit: 3 UNIT backing routed to the bank and counted as owed.
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			false,
+			None,
+		)
+		.expect("deposit");
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
+		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+
+		// Miner due far above the bank balance: settlement drains the pot.
+		enable_payments(1_000_000_000_000, UNIT / 20, 0);
+		settle_at(SETTLEMENT_BLOCK);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 500); // only ED left
+
+		// Consumption still succeeds, pots get nothing — but the shortfall is
+		// now carried as arrears instead of silently discarded.
+		Marketplace::consume_credits(
+			user.clone(),
+			2 * UNIT,
+			marketplace_pot.clone(),
+			ranking_pot.clone(),
+		)
+		.expect("billing succeeds");
+		let released_1 = 2 * UNIT * 3 / 5;
+		let ranking_owed_1 = released_1 * 70 / 100;
+		let marketplace_owed_1 = released_1 - ranking_owed_1;
+		assert_eq!(Balances::free_balance(&ranking_pot), 0);
+		assert_eq!(Balances::free_balance(&marketplace_pot), 0);
+		assert_eq!(
+			pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot),
+			ranking_owed_1
+		);
+		assert_eq!(
+			pallet_marketplace::DistributionArrears::<Runtime>::get(&marketplace_pot),
+			marketplace_owed_1
+		);
+		// The invariant violation is observable: owed backing > bank balance.
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
+
+		// Refill the bank; the next distribution pays arrears + new share.
+		Bank::deposit(
+			RuntimeOrigin::signed(sudo.clone()),
+			10 * UNIT,
+			pallet_bank::DepositType::Grant,
+		)
+		.expect("refill");
+		Marketplace::consume_credits(
+			user.clone(),
+			1 * UNIT,
+			marketplace_pot.clone(),
+			ranking_pot.clone(),
+		)
+		.expect("second consume");
+		let released_2 = 1 * UNIT * 3 / 5;
+		let total_released = released_1 + released_2;
+		let ranking_total = ranking_owed_1 + released_2 * 70 / 100;
+		let marketplace_total = total_released - ranking_total;
+		assert_eq!(Balances::free_balance(&ranking_pot), ranking_total);
+		assert_eq!(Balances::free_balance(&marketplace_pot), marketplace_total);
+		assert_eq!(pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot), 0);
+		assert_eq!(pallet_marketplace::DistributionArrears::<Runtime>::get(&marketplace_pot), 0);
+		assert_eq!(
+			pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(),
+			3 * UNIT - total_released
+		);
+	});
+}
+
+#[test]
+fn chargeback_refunds_backing_from_bank_to_sudo() {
+	new_test_ext().execute_with(|| {
+		let authority = account(10);
+		let sudo = account(11);
+		let user = account(12);
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+		Bank::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+
+		let batch_id = pallet_marketplace::NextBatchId::<Runtime>::get();
+		// Frozen deposit (chargeback window open): backing goes to the bank.
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user.clone(),
+			5 * UNIT,
+			3 * UNIT,
+			true,
+			None,
+		)
+		.expect("frozen deposit");
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 3 * UNIT);
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
+
+		// Chargeback: the reversed backing is refunded to sudo (minus the ED
+		// the bank always keeps) and no longer counted as owed to the pots.
+		Marketplace::chargeback(RuntimeOrigin::root(), batch_id).expect("chargeback");
+		assert_eq!(Balances::free_balance(&sudo), 100 * UNIT - 500);
+		assert_eq!(Balances::free_balance(&Bank::account_id()), 500);
+		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
+		// The user's credits from the reversed batch were burned.
+		assert_eq!(Credits::get_free_credits(&user), 0);
+	});
+}
