@@ -19,7 +19,7 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
 	dispatch::DispatchResult,
 	pallet_prelude::*,
-	traits::{Currency, EnsureOrigin, ExistenceRequirement, Get, ReservableCurrency},
+	traits::{Currency, EnsureOrigin, Get, ReservableCurrency},
 	BoundedVec, PalletId,
 };
 use frame_system::pallet_prelude::*;
@@ -94,6 +94,10 @@ pub mod pallet {
 	/// Source of funds for miner payments. Implemented by the bank pallet through
 	/// a runtime-side adapter (no crate coupling), `()` disables payments.
 	pub trait PayoutSource<AccountId, Balance> {
+		/// Funds the source could release right now. Read before any transfer
+		/// so the caller can compute a pro-rata split over the whole pool.
+		fn available() -> Balance;
+
 		/// Ask the source to transfer up to `amount` to `dest` on behalf of
 		/// `requester`. Returns the amount actually transferred (`0` on refusal
 		/// or shortfall — the caller accounts for the difference).
@@ -101,6 +105,9 @@ pub mod pallet {
 	}
 
 	impl<AccountId, Balance: Zero> PayoutSource<AccountId, Balance> for () {
+		fn available() -> Balance {
+			Zero::zero()
+		}
 		fn request_payment(_: &AccountId, _: &AccountId, _: Balance) -> Balance {
 			Zero::zero()
 		}
@@ -835,9 +842,17 @@ pub mod pallet {
 	pub type MinerAccruals<T: Config> =
 		StorageMap<_, Blake2_128Concat, u32, MinerAccrual<BlockNumberFor<T>>, OptionQuery>;
 
-	/// Tokens owed to a family but not yet paid (carry-over from bank shortfalls).
+	/// Tokens owed to a family but not yet paid (bank shortfalls and payouts
+	/// that could not be delivered — both retried at the next settlement).
 	#[pallet::storage]
 	pub type FamilyArrears<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// Byte-blocks earned by children deregistered since the last settlement,
+	/// keyed by family. Deregistration drops the child→uid mapping settlement
+	/// relies on, so the unpaid accrual is parked here until the next payout.
+	#[pallet::storage]
+	pub type FamilyPendingByteBlocks<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
 
 	/// Last block a payment settlement ran at.
@@ -1340,9 +1355,27 @@ pub mod pallet {
 			UserTotalFilesCount::<T>::remove(&account_id);
 		}
 
-		/// Remove [`MinerStatsByUid`] and [`ChildMinerUid`] for a deregistered child account.
+		/// Remove [`MinerStatsByUid`] and [`ChildMinerUid`] for a deregistered
+		/// child account, folding its unpaid accrual into
+		/// [`FamilyPendingByteBlocks`] first — settlement can no longer reach
+		/// the accrual once the uid mapping is gone.
 		pub fn clear_miner_uid_and_stats_for_child(child: &T::AccountId) {
 			if let Some(uid) = ChildMinerUid::<T>::get(child) {
+				if uid != 0 {
+					// Integrate the stored bytes up to now while the stats
+					// entry still exists, then park the earned byte-blocks
+					// on the family for the next settlement.
+					Self::accrue_miner_bytes(uid, Self::now());
+					if let Some(acc) = MinerAccruals::<T>::take(uid) {
+						if acc.byte_blocks > 0 {
+							if let Some(reg) = ChildRegistrations::<T>::get(child) {
+								FamilyPendingByteBlocks::<T>::mutate(&reg.family, |b| {
+									*b = b.saturating_add(acc.byte_blocks)
+								});
+							}
+						}
+					}
+				}
 				MinerStatsByUid::<T>::remove(uid);
 				ChildMinerUid::<T>::remove(child);
 			}
@@ -1411,7 +1444,9 @@ pub mod pallet {
 			}
 		}
 
-		/// Escrow account funds transit through during payment settlement.
+		/// The pallet account, used as the whitelisted requester identity
+		/// towards the payout source (funds are paid to families directly and
+		/// never transit this account).
 		pub fn account_id() -> T::AccountId {
 			<T as Config>::PalletId::get().into_account_truncating()
 		}
@@ -1432,9 +1467,10 @@ pub mod pallet {
 		}
 
 		/// Miner payment settlement: accrue all active children up to `now`,
-		/// aggregate per family, pull funds from the payout source, distribute
-		/// pro-rata on shortfall (delta → [`FamilyArrears`]) and bond each
-		/// payout as stake on the family account.
+		/// fold in parked byte-blocks of deregistered children, aggregate per
+		/// family, and have the payout source pay each family directly —
+		/// pro-rata on shortfall, with anything undelivered carried in
+		/// [`FamilyArrears`] — bonding each payout as stake on the family.
 		fn settle_miner_payments(now: BlockNumberFor<T>) {
 			let price = MinerPriceUsdPerGbBlock::<T>::get();
 			if price == 0 {
@@ -1480,6 +1516,21 @@ pub mod pallet {
 					.or_insert(tokens);
 			}
 
+			// Byte-blocks earned by children deregistered since the last
+			// settlement (their uid mappings are gone; the accrual was parked
+			// on the family).
+			let pending: Vec<(T::AccountId, u128)> = FamilyPendingByteBlocks::<T>::drain().collect();
+			for (family, byte_blocks) in pending {
+				let tokens = crate::tokens_for_byte_blocks(byte_blocks, price, token_price);
+				if tokens == 0 {
+					continue;
+				}
+				family_due
+					.entry(family)
+					.and_modify(|d| *d = d.saturating_add(tokens))
+					.or_insert(tokens);
+			}
+
 			// Include arrears carried over from previous shortfalls.
 			for (family, owed) in FamilyArrears::<T>::iter() {
 				if owed > 0 {
@@ -1496,44 +1547,40 @@ pub mod pallet {
 				return;
 			}
 
-			// Pull funds from the bank into the arion escrow account.
-			let escrow = Self::account_id();
-			let requested: BalanceOf<T> = total_due.saturated_into();
-			let paid_balance = T::PayoutSource::request_payment(&escrow, &escrow, requested);
-			let total_paid: u128 = paid_balance.saturated_into::<u128>();
+			// The bank pays each family directly. Funds never transit an
+			// intermediate account, so an undeliverable payout (e.g. below the
+			// destination's existential deposit) stays in the bank — nothing
+			// is stranded on the pallet account or burned as dust — and is
+			// retried via arrears at the next settlement.
+			let requester = Self::account_id();
+			let pool = T::PayoutSource::available().saturated_into::<u128>().min(total_due);
 
 			let mut families = 0u32;
 			let mut tokens_paid_sum = 0u128;
 			for (family, due) in family_due.iter() {
-				// Pro-rata split when the bank could not cover everything.
-				let pay = if total_paid >= total_due {
+				// Pro-rata split when the bank cannot cover everything.
+				let pay = if pool >= total_due {
 					*due
 				} else {
 					// total_due > 0 checked above
-					(U256::from(*due) * U256::from(total_paid) / U256::from(total_due)).as_u128()
+					(U256::from(*due) * U256::from(pool) / U256::from(total_due)).as_u128()
 				};
-				let arrears = due.saturating_sub(pay);
+				let paid: u128 = if pay == 0 {
+					0
+				} else {
+					T::PayoutSource::request_payment(&requester, family, pay.saturated_into())
+						.saturated_into()
+				};
+				let arrears = due.saturating_sub(paid);
 				if arrears > 0 {
 					FamilyArrears::<T>::insert(family, arrears);
 				} else {
 					FamilyArrears::<T>::remove(family);
 				}
-				if pay == 0 {
+				if paid == 0 {
 					continue;
 				}
-				let amount: BalanceOf<T> = pay.saturated_into();
-				if T::DepositCurrency::transfer(
-					&escrow,
-					family,
-					amount,
-					ExistenceRequirement::AllowDeath,
-				)
-				.is_err()
-				{
-					// Funds stay in escrow; owe the family for the next round.
-					FamilyArrears::<T>::mutate(family, |a| *a = a.saturating_add(pay));
-					continue;
-				}
+				let amount: BalanceOf<T> = paid.saturated_into();
 				// Lock the payout as stake. On failure the tokens remain as free
 				// balance on the family account — never roll back the payment.
 				let staked = if T::Staking::stake(family).is_ok() {
@@ -1542,10 +1589,10 @@ pub mod pallet {
 					T::Staking::bond(family, amount, family).is_ok()
 				};
 				families = families.saturating_add(1);
-				tokens_paid_sum = tokens_paid_sum.saturating_add(pay);
+				tokens_paid_sum = tokens_paid_sum.saturating_add(paid);
 				Self::deposit_event(Event::FamilyPaid {
 					family: family.clone(),
-					tokens: pay,
+					tokens: paid,
 					staked,
 				});
 			}

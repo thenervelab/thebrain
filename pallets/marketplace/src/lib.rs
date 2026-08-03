@@ -2043,30 +2043,9 @@ pub mod pallet {
             AlphaBalances::<T>::mutate(&sender, |alpha| *alpha = alpha.saturating_add(alpha_amount));
             CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code)?;
 
-            // Route the alpha backing of this deposit to the bank (miner
-            // payment funds). Sourced from the marketplace sudo account; never
-            // blocks the deposit itself if the transfer cannot be made.
-            if alpha_amount > 0 {
-                if let Some(sudo_account) = Self::sudo_key() {
-                    let backing: pallet_bank::BalanceOf<T> = alpha_amount.saturated_into();
-                    if let Err(e) = pallet_bank::Pallet::<T>::deposit_from(
-                        &sudo_account,
-                        backing,
-                        pallet_bank::DepositType::MarketplaceRevenue,
-                    ) {
-                        log::warn!(
-                            target: "runtime::marketplace",
-                            "deposit: routing alpha backing to bank failed: {:?}",
-                            e
-                        );
-                    }
-                } else {
-                    log::warn!(
-                        target: "runtime::marketplace",
-                        "deposit: no sudo key set, alpha backing not routed to bank"
-                    );
-                }
-            }
+            // The bank's miner-payment share of this deposit is routed by
+            // `distribute_alpha` when the credits are consumed — routing it
+            // here as well would debit the sudo account twice per alpha unit.
 
             Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 
@@ -2193,16 +2172,45 @@ pub mod pallet {
             ranking_account: T::AccountId,
             marketplace_account: T::AccountId,
         ) -> DispatchResult {
-        
-            let rankings_amount = alpha_to_release
+
+            // Revenue split per consumed alpha unit: 30% funds miner payments
+            // through the bank, the remainder keeps the historical 70/30
+            // ranking/marketplace split. One sudo debit per unit — the bank
+            // share must never also be charged at deposit time.
+            let bank_amount = alpha_to_release
+                .checked_mul(30)
+                .and_then(|x| x.checked_div(100))
+                .unwrap_or_default();
+
+            let distributable = alpha_to_release.saturating_sub(bank_amount);
+
+            let rankings_amount = distributable
                 .checked_mul(70)
                 .and_then(|x| x.checked_div(100))
                 .unwrap_or_default();
-        
-            let marketplace_amount = alpha_to_release
+
+            let marketplace_amount = distributable
                 .saturating_sub(rankings_amount);
 
             if let Some(sudo_account) = Self::sudo_key() {
+
+                if bank_amount > 0 {
+                    if let Err(e) = pallet_bank::Pallet::<T>::deposit_from(
+                        &sudo_account,
+                        bank_amount.saturated_into(),
+                        pallet_bank::DepositType::MarketplaceRevenue,
+                    ) {
+                        // Billing must not fail over the bank share (e.g. a
+                        // dust amount below the bank account's existential
+                        // deposit); the ranking/marketplace transfers below
+                        // keep their hard errors.
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "consume: routing bank revenue share failed: {:?}",
+                            e
+                        );
+                    }
+                }
 
                 <pallet_balances::Pallet<T>>::transfer(
                     &sudo_account,
