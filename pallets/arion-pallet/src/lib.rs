@@ -19,17 +19,18 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
 	dispatch::DispatchResult,
 	pallet_prelude::*,
-	traits::{Currency, EnsureOrigin, Get, ReservableCurrency},
-	BoundedVec,
+	traits::{Currency, EnsureOrigin, ExistenceRequirement, Get, ReservableCurrency},
+	BoundedVec, PalletId,
 };
 use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
-use sp_core::{ed25519, H256};
+use sp_core::{ed25519, H256, U256};
 use sp_runtime::{
-	traits::{Hash, Saturating, Verify, Zero},
-	RuntimeDebug,
+	traits::{AccountIdConversion, Hash, Saturating, Verify, Zero},
+	RuntimeDebug, SaturatedConversion,
 };
-use sp_std::prelude::*;
+use sp_staking::StakingInterface;
+use sp_std::{collections::btree_map::BTreeMap, prelude::*};
 
 pub use pallet::*;
 
@@ -88,6 +89,21 @@ pub mod pallet {
 			//     &p.delegate == child &&
 			//     matches!(p.proxy_type, ProxyType::NonTransfer)
 			// })
+		}
+	}
+
+	/// Source of funds for miner payments. Implemented by the bank pallet through
+	/// a runtime-side adapter (no crate coupling), `()` disables payments.
+	pub trait PayoutSource<AccountId, Balance> {
+		/// Ask the source to transfer up to `amount` to `dest` on behalf of
+		/// `requester`. Returns the amount actually transferred (`0` on refusal
+		/// or shortfall — the caller accounts for the difference).
+		fn request_payment(requester: &AccountId, dest: &AccountId, amount: Balance) -> Balance;
+	}
+
+	impl<AccountId, Balance: Zero> PayoutSource<AccountId, Balance> for () {
+		fn request_payment(_: &AccountId, _: &AccountId, _: Balance) -> Balance {
+			Zero::zero()
 		}
 	}
 
@@ -432,7 +448,9 @@ pub mod pallet {
 	}
 
 	/// Aggregate user storage usage metrics reported by validators.
-	#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
+	#[derive(
+		Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default,
+	)]
 	pub struct UserStorageUsageUpdate<AccountId> {
 		pub account_id: AccountId,
 		pub file_size: u128,
@@ -685,6 +703,29 @@ pub mod pallet {
 		/// Max `MinerStatsByUid` keys examined per pruning tick (removals are a subset).
 		#[pallet::constant]
 		type MinerStatsPruneMaxScanPerBlock: Get<u32>;
+
+		// --- Miner payments ---
+
+		/// Pallet id from which the arion escrow account (miner payment flow) is derived.
+		#[pallet::constant]
+		type PalletId: Get<PalletId>;
+
+		/// Funding source for miner payments (the bank pallet in the runtime).
+		type PayoutSource: PayoutSource<Self::AccountId, BalanceOf<Self>>;
+
+		/// Staking interface used to lock family payouts as bonded stake.
+		type Staking: sp_staking::StakingInterface<
+			Balance = BalanceOf<Self>,
+			AccountId = Self::AccountId,
+		>;
+
+		/// Current token price in USD, fixed-point 18 decimals
+		/// (`0` = unknown → settlement is skipped, accruals keep accumulating).
+		type TokenPriceUsd: Get<u128>;
+
+		/// Run miner payment settlement every N blocks (`0` = disabled).
+		#[pallet::constant]
+		type SettlementInterval: Get<BlockNumberFor<Self>>;
 	}
 
 	#[pallet::pallet]
@@ -694,18 +735,29 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
-			let interval = T::MinerStatsPruneInterval::get();
-			if interval.is_zero() {
-				return Weight::zero();
+			let mut weight = Weight::zero();
+
+			let prune_interval = T::MinerStatsPruneInterval::get();
+			if !prune_interval.is_zero() && n % prune_interval == Zero::zero() {
+				Self::prune_stale_miner_stats();
+				weight = weight.saturating_add(<T as Config>::WeightInfo::miner_stats_prune_hook(
+					T::MinerStatsPruneMaxScanPerBlock::get(),
+					T::MaxChildrenTotal::get(),
+				));
 			}
-			if n % interval != Zero::zero() {
-				return Weight::zero();
+
+			let settle_interval = T::SettlementInterval::get();
+			if !settle_interval.is_zero() && n % settle_interval == Zero::zero() {
+				Self::settle_miner_payments(n);
+				weight = weight.saturating_add(
+					<T as Config>::WeightInfo::miner_payment_settlement_hook(
+						T::MaxChildrenTotal::get(),
+						T::MaxFamilies::get(),
+					),
+				);
 			}
-			Self::prune_stale_miner_stats();
-			<T as Config>::WeightInfo::miner_stats_prune_hook(
-				T::MinerStatsPruneMaxScanPerBlock::get(),
-				T::MaxChildrenTotal::get(),
-			)
+
+			weight
 		}
 	}
 
@@ -751,6 +803,47 @@ pub mod pallet {
 	/// Last `MinerStatsByUid` key processed by batched pruning (`None` = next pass from the start).
 	#[pallet::storage]
 	pub type MinerStatsPruneCursor<T> = StorageValue<_, u32, OptionQuery>;
+
+	// -------------------------
+	// Miner payment state
+	// -------------------------
+
+	/// Payment accrual for one miner uid: raw shard bytes integrated over blocks.
+	#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	pub struct MinerAccrual<BlockNumber> {
+		/// Σ `shard_data_bytes × elapsed_blocks` since the last settlement.
+		pub byte_blocks: u128,
+		/// Block up to which `byte_blocks` has been accumulated.
+		pub last_block: BlockNumber,
+	}
+
+	/// Why a payment settlement tick did not run.
+	#[derive(Clone, Copy, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	pub enum SettlementSkipReason {
+		/// [`MinerPriceUsdPerGbBlock`] is zero (payments disabled).
+		PriceUnset,
+		/// The token price feed returned zero.
+		TokenPriceUnavailable,
+	}
+
+	/// Price paid to miners, in USD per GiB of raw shard data per block
+	/// (fixed-point, 18 decimals). `0` disables payment settlement entirely.
+	#[pallet::storage]
+	pub type MinerPriceUsdPerGbBlock<T> = StorageValue<_, u128, ValueQuery>;
+
+	/// Payment accrual per miner uid (byte-blocks since the last settlement).
+	#[pallet::storage]
+	pub type MinerAccruals<T: Config> =
+		StorageMap<_, Blake2_128Concat, u32, MinerAccrual<BlockNumberFor<T>>, OptionQuery>;
+
+	/// Tokens owed to a family but not yet paid (carry-over from bank shortfalls).
+	#[pallet::storage]
+	pub type FamilyArrears<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// Last block a payment settlement ran at.
+	#[pallet::storage]
+	pub type LastSettlementBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, OptionQuery>;
 
 	// -------------------------
 	// Attestation state
@@ -1077,6 +1170,28 @@ pub mod pallet {
 			s3_file_size: u128,
 			s3_file_count: u128,
 		},
+		/// Miner payment price was set by admin (USD per GiB per block, 18 decimals).
+		MinerPriceSet {
+			price_usd_per_gb_block: u128,
+		},
+		/// A miner payment settlement completed.
+		MinerPaymentSettled {
+			block: BlockNumberFor<T>,
+			families: u32,
+			tokens_due: u128,
+			tokens_paid: u128,
+		},
+		/// A family received a payout. `staked` is false when bonding failed and
+		/// the amount was left as free balance on the family account.
+		FamilyPaid {
+			family: T::AccountId,
+			tokens: u128,
+			staked: bool,
+		},
+		/// A settlement tick was skipped. Accruals keep accumulating.
+		MinerPaymentSkipped {
+			reason: SettlementSkipReason,
+		},
 	}
 
 	#[pallet::error]
@@ -1235,12 +1350,8 @@ pub mod pallet {
 		}
 
 		fn find_uid_for_node_in_epoch(epoch: u64, node_id: &[u8; 32]) -> Option<u32> {
-			EpochMiners::<T>::get(epoch).and_then(|miners| {
-				miners
-					.iter()
-					.find(|m| m.node_id == *node_id)
-					.map(|m| m.uid)
-			})
+			EpochMiners::<T>::get(epoch)
+				.and_then(|miners| miners.iter().find(|m| m.node_id == *node_id).map(|m| m.uid))
 		}
 
 		/// Uids that still correspond to **active** children (registration + optional CRUSH map).
@@ -1289,6 +1400,7 @@ pub mod pallet {
 				let keep = protected.iter().any(|&p| p == *uid);
 				if !keep {
 					MinerStatsByUid::<T>::remove(uid);
+					MinerAccruals::<T>::remove(uid);
 				}
 			}
 
@@ -1298,6 +1410,154 @@ pub mod pallet {
 			} else {
 				MinerStatsPruneCursor::<T>::put(last);
 			}
+		}
+
+		/// Escrow account funds transit through during payment settlement.
+		pub fn account_id() -> T::AccountId {
+			<T as Config>::PalletId::get().into_account_truncating()
+		}
+
+		/// Integrate the currently stored `shard_data_bytes` of `uid` over the
+		/// blocks elapsed since the last accrual, up to `now`.
+		fn accrue_miner_bytes(uid: u32, now: BlockNumberFor<T>) {
+			let prev_bytes =
+				MinerStatsByUid::<T>::get(uid).map(|s| s.shard_data_bytes).unwrap_or(0);
+			MinerAccruals::<T>::mutate(uid, |acc| {
+				let mut a = acc.take().unwrap_or(MinerAccrual { byte_blocks: 0, last_block: now });
+				let elapsed: u128 = now.saturating_sub(a.last_block).saturated_into::<u128>();
+				a.byte_blocks =
+					a.byte_blocks.saturating_add(crate::accrue_byte_blocks(prev_bytes, elapsed));
+				a.last_block = now;
+				*acc = Some(a);
+			});
+		}
+
+		/// Miner payment settlement: accrue all active children up to `now`,
+		/// aggregate per family, pull funds from the payout source, distribute
+		/// pro-rata on shortfall (delta → [`FamilyArrears`]) and bond each
+		/// payout as stake on the family account.
+		fn settle_miner_payments(now: BlockNumberFor<T>) {
+			let price = MinerPriceUsdPerGbBlock::<T>::get();
+			if price == 0 {
+				Self::deposit_event(Event::MinerPaymentSkipped {
+					reason: SettlementSkipReason::PriceUnset,
+				});
+				return;
+			}
+			let token_price = T::TokenPriceUsd::get();
+			if token_price == 0 {
+				Self::deposit_event(Event::MinerPaymentSkipped {
+					reason: SettlementSkipReason::TokenPriceUnavailable,
+				});
+				return;
+			}
+
+			// Accrue every active child up to `now`, convert and aggregate per family.
+			let mut family_due: BTreeMap<T::AccountId, u128> = BTreeMap::new();
+			for (child, reg) in ChildRegistrations::<T>::iter() {
+				if reg.status != ChildStatus::Active {
+					continue;
+				}
+				let Some(uid) = ChildMinerUid::<T>::get(&child) else {
+					continue;
+				};
+				if uid == 0 {
+					continue;
+				}
+				Self::accrue_miner_bytes(uid, now);
+				let byte_blocks = MinerAccruals::<T>::mutate(uid, |acc| {
+					acc.as_mut().map(|a| core::mem::take(&mut a.byte_blocks)).unwrap_or(0)
+				});
+				if byte_blocks == 0 {
+					continue;
+				}
+				let tokens = crate::tokens_for_byte_blocks(byte_blocks, price, token_price);
+				if tokens == 0 {
+					continue;
+				}
+				family_due
+					.entry(reg.family.clone())
+					.and_modify(|d| *d = d.saturating_add(tokens))
+					.or_insert(tokens);
+			}
+
+			// Include arrears carried over from previous shortfalls.
+			for (family, owed) in FamilyArrears::<T>::iter() {
+				if owed > 0 {
+					family_due
+						.entry(family)
+						.and_modify(|d| *d = d.saturating_add(owed))
+						.or_insert(owed);
+				}
+			}
+
+			let total_due: u128 = family_due.values().fold(0u128, |a, v| a.saturating_add(*v));
+			if total_due == 0 {
+				LastSettlementBlock::<T>::put(now);
+				return;
+			}
+
+			// Pull funds from the bank into the arion escrow account.
+			let escrow = Self::account_id();
+			let requested: BalanceOf<T> = total_due.saturated_into();
+			let paid_balance = T::PayoutSource::request_payment(&escrow, &escrow, requested);
+			let total_paid: u128 = paid_balance.saturated_into::<u128>();
+
+			let mut families = 0u32;
+			let mut tokens_paid_sum = 0u128;
+			for (family, due) in family_due.iter() {
+				// Pro-rata split when the bank could not cover everything.
+				let pay = if total_paid >= total_due {
+					*due
+				} else {
+					// total_due > 0 checked above
+					(U256::from(*due) * U256::from(total_paid) / U256::from(total_due)).as_u128()
+				};
+				let arrears = due.saturating_sub(pay);
+				if arrears > 0 {
+					FamilyArrears::<T>::insert(family, arrears);
+				} else {
+					FamilyArrears::<T>::remove(family);
+				}
+				if pay == 0 {
+					continue;
+				}
+				let amount: BalanceOf<T> = pay.saturated_into();
+				if T::DepositCurrency::transfer(
+					&escrow,
+					family,
+					amount,
+					ExistenceRequirement::AllowDeath,
+				)
+				.is_err()
+				{
+					// Funds stay in escrow; owe the family for the next round.
+					FamilyArrears::<T>::mutate(family, |a| *a = a.saturating_add(pay));
+					continue;
+				}
+				// Lock the payout as stake. On failure the tokens remain as free
+				// balance on the family account — never roll back the payment.
+				let staked = if T::Staking::stake(family).is_ok() {
+					T::Staking::bond_extra(family, amount).is_ok()
+				} else {
+					T::Staking::bond(family, amount, family).is_ok()
+				};
+				families = families.saturating_add(1);
+				tokens_paid_sum = tokens_paid_sum.saturating_add(pay);
+				Self::deposit_event(Event::FamilyPaid {
+					family: family.clone(),
+					tokens: pay,
+					staked,
+				});
+			}
+
+			LastSettlementBlock::<T>::put(now);
+			Self::deposit_event(Event::MinerPaymentSettled {
+				block: now,
+				families,
+				tokens_due: total_due,
+				tokens_paid: tokens_paid_sum,
+			});
 		}
 
 		/// Remove per-child weight / quality tracking (avoids stale keys after deregistration).
@@ -1827,7 +2087,11 @@ pub mod pallet {
 			let cur = CurrentStatsBucket::<T>::get();
 			ensure!(bucket >= cur, Error::<T>::StatsBucketRegression);
 
+			let now = Self::now();
 			for u in updates.iter() {
+				// Integrate the *previous* stored bytes over the elapsed blocks
+				// before overwriting them — payment accrual (byte-blocks).
+				Self::accrue_miner_bytes(u.uid, now);
 				MinerStatsByUid::<T>::insert(u.uid, u.stats.clone());
 			}
 			CurrentStatsBucket::<T>::put(bucket);
@@ -1836,6 +2100,20 @@ pub mod pallet {
 			}
 
 			Self::deposit_event(Event::MinerStatsUpdated { bucket, updates: updates.len() as u32 });
+			Ok(())
+		}
+
+		/// Set the price paid to miners, in USD per GiB of raw shard data per
+		/// block (fixed-point, 18 decimals). `0` disables payment settlement.
+		#[pallet::call_index(4)]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::set_miner_price(), Pays::No))]
+		pub fn set_miner_price(
+			origin: OriginFor<T>,
+			price_usd_per_gb_block: u128,
+		) -> DispatchResult {
+			T::ArionAdminOrigin::ensure_origin(origin)?;
+			MinerPriceUsdPerGbBlock::<T>::put(price_usd_per_gb_block);
+			Self::deposit_event(Event::MinerPriceSet { price_usd_per_gb_block });
 			Ok(())
 		}
 
@@ -2668,12 +2946,94 @@ pub mod pallet {
 				e = e.saturating_add(1);
 			}
 
-			Self::deposit_event(Event::CrushEpochsPruned {
-				start_epoch,
-				pruned,
-				next_epoch: e,
-			});
+			Self::deposit_event(Event::CrushEpochsPruned { start_epoch, pruned, next_epoch: e });
 			Ok(())
 		}
+	}
+}
+
+/// Pure payment math — kept outside the pallet so it can be unit-tested
+/// without a mock runtime.
+///
+/// Byte-blocks accumulated by holding `prev_bytes` for `elapsed_blocks`.
+pub fn accrue_byte_blocks(prev_bytes: u128, elapsed_blocks: u128) -> u128 {
+	prev_bytes.saturating_mul(elapsed_blocks)
+}
+
+/// Tokens owed for `byte_blocks`, given a price in USD per GiB per block and a
+/// token price in USD (both fixed-point 18 decimals). Deterministic integer
+/// math via `U256`, saturating at `u128::MAX`.
+///
+/// `tokens = byte_blocks × price × 10^18 / (2^30 × token_price)`
+pub fn tokens_for_byte_blocks(
+	byte_blocks: u128,
+	price_usd_per_gb_block: u128,
+	token_price_usd: u128,
+) -> u128 {
+	if token_price_usd == 0 {
+		return 0;
+	}
+	let num = U256::from(byte_blocks)
+		.saturating_mul(U256::from(price_usd_per_gb_block))
+		.saturating_mul(U256::from(1_000_000_000_000_000_000_u128));
+	let den = U256::from(1_u128 << 30).saturating_mul(U256::from(token_price_usd));
+	let out = num / den;
+	if out > U256::from(u128::MAX) {
+		u128::MAX
+	} else {
+		out.as_u128()
+	}
+}
+
+#[cfg(test)]
+mod payment_math_tests {
+	use super::{accrue_byte_blocks, tokens_for_byte_blocks};
+
+	const USD: u128 = 1_000_000_000_000_000_000; // 18 decimals
+	const GIB: u128 = 1 << 30;
+
+	#[test]
+	fn accrue_is_bytes_times_blocks() {
+		assert_eq!(accrue_byte_blocks(0, 100), 0);
+		assert_eq!(accrue_byte_blocks(GIB, 0), 0);
+		assert_eq!(accrue_byte_blocks(GIB, 100), GIB * 100);
+		// saturates instead of overflowing
+		assert_eq!(accrue_byte_blocks(u128::MAX, 2), u128::MAX);
+	}
+
+	#[test]
+	fn one_gib_block_at_one_usd_each_is_one_token() {
+		// 1 GiB held for 1 block, $1 per GiB-block, token at $1 → exactly 1 token.
+		assert_eq!(tokens_for_byte_blocks(GIB, USD, USD), USD);
+	}
+
+	#[test]
+	fn scales_linearly_with_bytes_price_and_token_price() {
+		// 100 GiB-blocks at $2/GiB-block with token at $4 → 50 tokens.
+		assert_eq!(tokens_for_byte_blocks(100 * GIB, 2 * USD, 4 * USD), 50 * USD);
+		// Sub-GiB amounts round down deterministically.
+		assert_eq!(tokens_for_byte_blocks(GIB / 2, USD, USD), USD / 2);
+	}
+
+	#[test]
+	fn realistic_magnitudes_do_not_overflow() {
+		// 100 TiB held for one day of 6s blocks (14_400), price $0.000_000_01
+		// per GiB-block, token at $0.05.
+		let byte_blocks = 100 * 1024 * GIB * 14_400;
+		let price = USD / 100_000_000;
+		let token_price = USD / 20;
+		let tokens = tokens_for_byte_blocks(byte_blocks, price, token_price);
+		// 102_400 GiB × 14_400 blocks × 1e-8 $ / 0.05 $ ≈ 294.9 tokens
+		assert_eq!(tokens, 294_912 * USD / 1_000);
+	}
+
+	#[test]
+	fn zero_token_price_pays_zero() {
+		assert_eq!(tokens_for_byte_blocks(GIB, USD, 0), 0);
+	}
+
+	#[test]
+	fn extreme_inputs_saturate_at_u128_max() {
+		assert_eq!(tokens_for_byte_blocks(u128::MAX, u128::MAX, 1), u128::MAX);
 	}
 }
