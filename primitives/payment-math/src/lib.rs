@@ -163,10 +163,21 @@ pub fn tokens_for(byte_blocks: ByteBlocks, price: UsdPerGibBlock, token_price: U
 /// exceeds `pool` and each share never exceeds `due`. The caller keeps
 /// `due − share` as arrears, making `share + arrears == due` exact: a
 /// shortfall defers value, never destroys it.
+///
+/// Caller contract: `total_due` must be the sum of all claimants' dues
+/// (so `due ≤ total_due`); the conservation claims above assume it. A
+/// violation is a caller accounting bug — asserted in debug builds, not
+/// masked by capping the result in release.
 pub fn pro_rata(due: Tokens, pool: Tokens, total_due: Tokens) -> Tokens {
 	if total_due.0 == 0 {
 		return Tokens(0);
 	}
+	debug_assert!(
+		due.0 <= total_due.0,
+		"pro_rata caller contract violated: due {} > total_due {}",
+		due.0,
+		total_due.0,
+	);
 	if pool.0 >= total_due.0 {
 		return due;
 	}
@@ -193,6 +204,9 @@ pub fn split<A: Amount>(amount: A, part_ratio: BasisPoints) -> (A, A) {
 /// `monthly_price × days_remaining / days_in_month`, rounded **up** so a
 /// tiny non-zero price never prorates to zero.
 ///
+/// `days_remaining` is clamped to `days_in_month`, so the charge can never
+/// exceed one monthly price — a part can never exceed the whole.
+///
 /// A zero `days_in_month` (calendar not initialised) charges the full month.
 pub fn prorate_first_month<A: Amount>(
 	monthly_price: A,
@@ -202,8 +216,9 @@ pub fn prorate_first_month<A: Amount>(
 	if days_in_month == 0 {
 		return monthly_price;
 	}
+	let days = days_remaining.min(days_in_month);
 	let dim = u128::from(days_in_month);
-	let num = monthly_price.raw().saturating_mul(u128::from(days_remaining));
+	let num = monthly_price.raw().saturating_mul(u128::from(days));
 	A::from_raw(num.saturating_add(dim - 1) / dim)
 }
 
@@ -342,6 +357,18 @@ mod tests {
 	#[test]
 	fn prorate_uninitialised_calendar_charges_full_month() {
 		assert_eq!(prorate_first_month(Credits::new(100), 0, 0).get(), 100);
+	}
+
+	#[test]
+	fn prorate_clamps_excess_days_to_one_full_month() {
+		assert_eq!(prorate_first_month(Credits::new(100), 60, 30).get(), 100);
+	}
+
+	#[cfg(debug_assertions)]
+	#[test]
+	#[should_panic(expected = "pro_rata caller contract")]
+	fn pro_rata_debug_asserts_due_within_total() {
+		let _ = pro_rata(Tokens::new(31), Tokens::new(10), Tokens::new(30));
 	}
 
 	#[test]
