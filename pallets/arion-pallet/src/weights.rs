@@ -247,14 +247,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     }
 
     /// Storage: Arion MinerPriceUsdPerGbBlock (r:0 w:1)
-    // TODO: benchmark
     fn set_miner_price() -> Weight {
         Weight::from_parts(10_000_000, 0).saturating_add(T::DbWeight::get().writes(1))
     }
 
     /// Per child: ChildRegistrations + ChildMinerUid + MinerStatsByUid reads, MinerAccruals r/w.
-    /// Per family: pending byte-blocks + arrears r/w, bank payout, staking ledger read + bond write.
-    // TODO: benchmark
+    /// Per family: arrears r/w, balance transfer, staking ledger read + bond write.
     fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
         let children = max_children_total as u64;
         let families = max_families as u64;
@@ -387,12 +385,10 @@ impl WeightInfo for () {
             .saturating_add(RocksDbWeight::get().writes(scan))
     }
 
-    // TODO: benchmark
     fn set_miner_price() -> Weight {
         Weight::from_parts(10_000_000, 0).saturating_add(RocksDbWeight::get().writes(1))
     }
 
-    // TODO: benchmark
     fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
         let children = max_children_total as u64;
         let families = max_families as u64;

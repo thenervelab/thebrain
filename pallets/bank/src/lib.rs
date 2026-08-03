@@ -193,12 +193,6 @@ pub mod pallet {
 			T::Currency::free_balance(&Self::account_id())
 		}
 
-		/// Funds the bank can release right now: free balance minus the
-		/// existential deposit it always retains.
-		pub fn available() -> BalanceOf<T> {
-			Self::balance().saturating_sub(T::Currency::minimum_balance())
-		}
-
 		/// Internal payment API — deliberately NOT an extrinsic.
 		///
 		/// Releases up to `amount` from the bank to `dest` on behalf of a
@@ -218,7 +212,9 @@ pub mod pallet {
 				return Ok(Zero::zero());
 			}
 			let bank = Self::account_id();
-			let paid = amount.min(Self::available());
+			let available =
+				T::Currency::free_balance(&bank).saturating_sub(T::Currency::minimum_balance());
+			let paid = amount.min(available);
 			if !paid.is_zero() {
 				T::Currency::transfer(&bank, dest, paid, ExistenceRequirement::KeepAlive)?;
 				TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
