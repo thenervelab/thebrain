@@ -116,6 +116,24 @@ impl frame_support::traits::SortedMembers<AccountId> for ArionAdminMembers {
 	}
 }
 
+/// Adapter: arion pulls miner-payment funds from the bank pallet.
+/// The arion escrow account must be whitelisted via `bank.add_requester`.
+pub struct ArionPayoutSource;
+impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
+	fn request_payment(requester: &AccountId, dest: &AccountId, amount: Balance) -> Balance {
+		pallet_bank::Pallet::<Runtime>::request_payment(requester, dest, amount).unwrap_or(0)
+	}
+}
+
+/// Adapter: token price in USD (fixed-point 18 decimals) from the credits
+/// pallet alpha price feed.
+pub struct AlphaTokenPriceUsd;
+impl frame_support::traits::Get<u128> for AlphaTokenPriceUsd {
+	fn get() -> u128 {
+		pallet_credits::Pallet::<Runtime>::alpha_price()
+	}
+}
+
 // Implement Arion pallet configuration
 impl pallet_arion::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
@@ -167,6 +185,25 @@ impl pallet_arion::Config for Runtime {
 	type IntegrityFailPenalty = IntegrityFailPenalty;
 	type MinerStatsPruneInterval = ArionMinerStatsPruneInterval;
 	type MinerStatsPruneMaxScanPerBlock = ArionMinerStatsPruneMaxScanPerBlock;
+	type PalletId = ArionPalletId;
+	type PayoutSource = ArionPayoutSource;
+	type Staking = Staking;
+	type TokenPriceUsd = AlphaTokenPriceUsd;
+	type SettlementInterval = ArionSettlementInterval;
+}
+
+parameter_types! {
+	pub const BankPalletId: PalletId = PalletId(*b"hip/bank");
+	/// Miner payment settlement interval (~24h at 6s/block). `0` = disabled.
+	pub const ArionSettlementInterval: BlockNumber = 14_400;
+}
+
+impl pallet_bank::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type Currency = Balances;
+	type PalletId = BankPalletId;
+	type AdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type WeightInfo = pallet_bank::weights::SubstrateWeight<Runtime>;
 }
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -255,7 +292,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9194,
+	spec_version: 9195,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1970,6 +2007,7 @@ construct_runtime!(
 		// IpfsPallet: ipfs_pallet = 75,
 		Arion: pallet_arion = 76,
 		PalletCalendar: pallet_calendar = 78,
+		Bank: pallet_bank = 80,
 	}
 );
 
