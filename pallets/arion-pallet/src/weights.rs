@@ -260,7 +260,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
         let children = max_children_total as u64;
         let families = max_families as u64;
         Weight::from_parts(25_000_000, 0)
-            .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(families.into()))
+            .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(families))
             .saturating_add(T::DbWeight::get().reads(children.saturating_mul(4).saturating_add(2)))
             .saturating_add(T::DbWeight::get().writes(children))
             .saturating_add(T::DbWeight::get().reads(families.saturating_mul(4)))
@@ -396,7 +396,7 @@ impl WeightInfo for () {
         let children = max_children_total as u64;
         let families = max_families as u64;
         Weight::from_parts(25_000_000, 0)
-            .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(families.into()))
+            .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(families))
             .saturating_add(RocksDbWeight::get().reads(children.saturating_mul(4).saturating_add(2)))
             .saturating_add(RocksDbWeight::get().writes(children))
             .saturating_add(RocksDbWeight::get().reads(families.saturating_mul(4)))
