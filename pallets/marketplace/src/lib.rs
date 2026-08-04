@@ -787,6 +787,69 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Retry any pending sudo refunds stuck in the bank.
+        /// If chargebacks have stopped, remainder can sit forever. This extrinsic
+        /// allows manual retries when the bank or sudo account is ready.
+        /// Correctly walled from miner settlement; only affects sudo account refunds.
+        #[pallet::call_index(14)]
+        #[pallet::weight((10_000, Pays::No))]
+        pub fn retry_pending_sudo_refunds(origin: OriginFor<T>) -> DispatchResult {
+            ensure_root(origin)?;
+
+            let pending = PendingSudoRefunds::<T>::take();
+            if pending == 0 {
+                return Ok(());
+            }
+
+            let requester = Self::account_id();
+            if let Some(sudo_account) = Self::sudo_key() {
+                match pallet_hippocampus::Pallet::<T>::request_payment(
+                    &requester,
+                    &sudo_account,
+                    pending.saturated_into(),
+                ) {
+                    Ok(refunded) => {
+                        let refunded_u128: u128 = refunded.saturated_into();
+                        if refunded_u128 < pending {
+                            let remainder = pending.saturating_sub(refunded_u128);
+                            log::warn!(
+                                target: "runtime::marketplace",
+                                "retry_pending_sudo_refunds: refunded {} of {}, remainder {} kept pending",
+                                refunded_u128,
+                                pending,
+                                remainder
+                            );
+                            PendingSudoRefunds::<T>::put(remainder);
+                        } else {
+                            log::info!(
+                                target: "runtime::marketplace",
+                                "retry_pending_sudo_refunds: successfully refunded {} pending",
+                                refunded_u128
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "retry_pending_sudo_refunds: bank rejected refund of {}: {:?}",
+                            pending,
+                            e
+                        );
+                        PendingSudoRefunds::<T>::put(pending);
+                    },
+                }
+            } else {
+                log::warn!(
+                    target: "runtime::marketplace",
+                    "retry_pending_sudo_refunds: no sudo key, {} kept pending",
+                    pending
+                );
+                PendingSudoRefunds::<T>::put(pending);
+            }
+
+            Ok(())
+        }
+
         // Extrinsic to set OS Disk Image URL
         #[pallet::call_index(9)]
         #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]

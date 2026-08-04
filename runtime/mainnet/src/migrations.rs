@@ -354,8 +354,11 @@ where
 
 		let arion = pallet_arion::Pallet::<T>::account_id();
 		let marketplace = pallet_marketplace::Pallet::<T>::account_id();
+		// Both accounts must be whitelisted for this migration to skip.
+		// If either is missing, we must whitelist both — manual setup of just
+		// one would leave the other forever unwhitelisted and payment would fail.
 		if pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&arion)
-			|| pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&marketplace)
+			&& pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&marketplace)
 		{
 			return T::DbWeight::get().reads(2);
 		}

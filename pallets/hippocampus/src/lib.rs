@@ -77,6 +77,14 @@ pub mod pallet {
 	pub type WhitelistedRequesters<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, (), OptionQuery>;
 
+	/// Per-requester withdrawal cap (optional). Prevents any whitelisted caller
+	/// from draining the entire bank. Compartmentalization: limits per-pallet risk.
+	/// If not set (None), requester can withdraw up to available balance (legacy behavior).
+	/// If set, requester is capped at min(requested, cap).
+	#[pallet::storage]
+	pub type RequesterWithdrawalCap<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, OptionQuery>;
+
 	/// Lifetime total deposited, per deposit type.
 	#[pallet::storage]
 	pub type TotalDeposited<T: Config> =
@@ -100,6 +108,10 @@ pub mod pallet {
 		RequesterAdded { who: T::AccountId },
 		/// An account was removed from the requester whitelist.
 		RequesterRemoved { who: T::AccountId },
+		/// A withdrawal cap was set for a whitelisted requester.
+		RequesterCapSet { who: T::AccountId, cap: BalanceOf<T> },
+		/// A withdrawal cap was removed for a whitelisted requester.
+		RequesterCapRemoved { who: T::AccountId },
 		/// A payment was released to `dest`. `paid` may be lower than `requested`
 		/// when the bank balance is insufficient.
 		PaymentReleased {
@@ -160,6 +172,30 @@ pub mod pallet {
 			Self::deposit_event(Event::RequesterRemoved { who });
 			Ok(())
 		}
+
+		/// Set a per-requester withdrawal cap. Prevents any single whitelisted caller
+		/// from draining the entire bank, compartmentalizing risk per pallet.
+		/// The requester will be capped at min(requested, cap) in request_payment.
+		#[pallet::call_index(3)]
+		#[pallet::weight(<T as Config>::WeightInfo::add_requester())]
+		pub fn set_requester_cap(origin: OriginFor<T>, who: T::AccountId, cap: BalanceOf<T>) -> DispatchResult {
+			T::AdminOrigin::ensure_origin(origin)?;
+			ensure!(WhitelistedRequesters::<T>::contains_key(&who), Error::<T>::NotWhitelisted);
+			RequesterWithdrawalCap::<T>::insert(&who, cap);
+			Self::deposit_event(Event::RequesterCapSet { who, cap });
+			Ok(())
+		}
+
+		/// Remove a per-requester withdrawal cap (restores unlimited withdrawal up to available balance).
+		#[pallet::call_index(4)]
+		#[pallet::weight(<T as Config>::WeightInfo::remove_requester())]
+		pub fn remove_requester_cap(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
+			T::AdminOrigin::ensure_origin(origin)?;
+			ensure!(WhitelistedRequesters::<T>::contains_key(&who), Error::<T>::NotWhitelisted);
+			RequesterWithdrawalCap::<T>::remove(&who);
+			Self::deposit_event(Event::RequesterCapRemoved { who });
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -204,8 +240,10 @@ pub mod pallet {
 		///
 		/// Releases up to `amount` from the bank to `dest` on behalf of a
 		/// whitelisted `requester` (typically another pallet's sovereign
-		/// account). Never overdraws: pays `min(amount, free - ED)` and returns
+		/// account). Never overdraws: pays `min(amount, free - ED, cap)` and returns
 		/// the amount actually paid so the caller can account for the shortfall.
+		/// Per-requester caps (if set) prevent any single caller from draining the bank,
+		/// compartmentalizing risk across pallets.
 		pub fn request_payment(
 			requester: &T::AccountId,
 			dest: &T::AccountId,
@@ -219,7 +257,12 @@ pub mod pallet {
 				return Ok(Zero::zero());
 			}
 			let bank = Self::account_id();
-			let paid = amount.min(Self::available_for_payout());
+			let mut capped_amount = amount.min(Self::available_for_payout());
+			// Apply per-requester cap if set (compartmentalization wall).
+			if let Some(cap) = RequesterWithdrawalCap::<T>::get(requester) {
+				capped_amount = capped_amount.min(cap);
+			}
+			let paid = capped_amount;
 			if !paid.is_zero() {
 				T::Currency::transfer(&bank, dest, paid, ExistenceRequirement::KeepAlive)?;
 				TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
