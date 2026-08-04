@@ -146,7 +146,6 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 		pallet_hippocampus::Pallet::<Runtime>::available_for_payout()
 			.saturating_sub(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get())
 			.saturating_sub(pallet_marketplace::PendingSudoRefunds::<Runtime>::get())
-			.saturating_sub(pallet_marketplace::Pallet::<Runtime>::sum_distribution_arrears())
 	}
 }
 

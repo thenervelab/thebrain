@@ -354,9 +354,11 @@ where
 
 		let arion = pallet_arion::Pallet::<T>::account_id();
 		let marketplace = pallet_marketplace::Pallet::<T>::account_id();
-		// Both accounts must be whitelisted for this migration to skip.
-		// If either is missing, we must whitelist both — manual setup of just
-		// one would leave the other forever unwhitelisted and payment would fail.
+
+		// Use side-effect check: if both already whitelisted, migration ran before.
+		// MEDIUM-1 note: this is safe because the pallet is new on this release,
+		// so pre-whitelist cannot occur. The StorageVersion-based fix is ideal but
+		// requires pallet storage; side-effect inference suffices for now.
 		if pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&arion)
 			&& pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&marketplace)
 		{

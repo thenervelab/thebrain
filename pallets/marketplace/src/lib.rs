@@ -791,7 +791,7 @@ pub mod pallet {
         /// If chargebacks have stopped, remainder can sit forever. This extrinsic
         /// allows manual retries when the bank or sudo account is ready.
         /// Correctly walled from miner settlement; only affects sudo account refunds.
-        #[pallet::call_index(14)]
+        #[pallet::call_index(10)]
         #[pallet::weight((10_000, Pays::No))]
         pub fn retry_pending_sudo_refunds(origin: OriginFor<T>) -> DispatchResult {
             ensure_root(origin)?;
@@ -1411,16 +1411,6 @@ pub mod pallet {
                 .unwrap_or_default();
             // Distribution amount per era
             total_amount / eras_balance
-        }
-
-        /// Sum all outstanding distribution arrears across both pots (ranking + marketplace).
-        /// Used by the arion adapter to wall off pot debt from miner settlement.
-        /// Compartmentalization: miners cannot spend funds owed to the pots.
-        pub fn sum_distribution_arrears() -> u128 {
-            let ranking_pot = pallet_rankings::Pallet::<T>::account_id();
-            let marketplace_pot = Self::account_id();
-            DistributionArrears::<T>::get(&ranking_pot)
-                .saturating_add(DistributionArrears::<T>::get(&marketplace_pot))
         }
 
         fn do_purchase_storage_plan(
@@ -2364,15 +2354,11 @@ pub mod pallet {
             let ranking_unbacked = rankings_amount.saturating_sub(ranking_backed);
             let marketplace_unbacked = marketplace_amount.saturating_sub(marketplace_backed);
 
-            // Only backed portion leaves the "owed to pots" ledger now, nominally —
-            // whether the bank can actually pay is tracked separately in
-            // DistributionArrears, so a shortfall never desyncs the ledger.
-            // Unbacked alpha (whose backing never reached the bank) never deducts from it.
-            if backed_alpha > 0 {
-                TotalUndistributedBacking::<T>::mutate(|t| {
-                    *t = t.saturating_sub(backed_alpha)
-                });
-            }
+            // HIGH-1 fix: only decrement TotalUndistributedBacking by the amount
+            // ACTUALLY paid, not by backed_alpha before payment. This ensures that
+            // shortfalls don't create arrears that fall outside available() calculation.
+            // Track total actually paid and decrement at the end.
+            let mut total_paid: u128 = 0;
 
             // Backed alpha is paid out of the bank, which received the backing at
             // deposit time — the sudo account is debited exactly once per backed
@@ -2401,6 +2387,7 @@ pub mod pallet {
                             0
                         },
                     };
+                    total_paid = total_paid.saturating_add(paid);
                     if paid < owed {
                         log::warn!(
                             target: "runtime::marketplace",
@@ -2439,6 +2426,7 @@ pub mod pallet {
                             0
                         },
                     };
+                    total_paid = total_paid.saturating_add(paid);
                     if paid < owed {
                         log::warn!(
                             target: "runtime::marketplace",
@@ -2456,6 +2444,15 @@ pub mod pallet {
                         *a = a.saturating_add(marketplace_unbacked)
                     });
                 }
+            }
+
+            // HIGH-1 fix: only decrement TotalUndistributedBacking by what was
+            // actually paid, not by the backed_alpha amount before payment. This
+            // prevents shortfalls from creating uncounted arrears.
+            if total_paid > 0 {
+                TotalUndistributedBacking::<T>::mutate(|t| {
+                    *t = t.saturating_sub(total_paid)
+                });
             }
 
             Ok(())
