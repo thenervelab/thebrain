@@ -66,12 +66,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// The weight includes `n` miners being processed.
     fn submit_crush_map(n: u32) -> Weight {
         // Base: read epoch + write 4 storage items; up to 4 extra writes when pruning an old epoch
-        // Per miner: bounded vec encoding overhead
+        // Per miner: bounded vec encoding overhead, plus uid binding — reads
+        // NodeIdToChild + ChildMinerUid + MinerUidToChild and writes the two
+        // uid indices when a node's uid is new or changed.
         Weight::from_parts(25_000_000, 0)
             .saturating_add(Weight::from_parts(500_000, 0).saturating_mul(n.into()))
             .saturating_add(T::DbWeight::get().reads(1))
             .saturating_add(T::DbWeight::get().writes(4))
             .saturating_add(T::DbWeight::get().writes(4))
+            .saturating_add(T::DbWeight::get().reads(3u64.saturating_mul(n.into())))
+            .saturating_add(T::DbWeight::get().writes(3u64.saturating_mul(n.into())))
     }
 
     /// Storage: Arion LastStatsBucket (r:1 w:1)

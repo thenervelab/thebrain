@@ -123,6 +123,16 @@ pub mod pallet {
 		pub ec_m: u16,
 	}
 
+	/// The miner list carried by one CRUSH map epoch.
+	pub type EpochMinerList<T> = BoundedVec<
+		MinerRecord<
+			<T as frame_system::Config>::AccountId,
+			<T as Config>::MaxEndpointLen,
+			<T as Config>::MaxHttpAddrLen,
+		>,
+		<T as Config>::MaxMiners,
+	>;
+
 	/// A miner entry in the on-chain CRUSH map.
 	///
 	/// **Important:** only include fields that are required to:
@@ -782,6 +792,41 @@ pub mod pallet {
 					},
 				}
 			}
+			// Miners registered before uids were tracked have no `ChildMinerUid`
+			// entry, so the loop above finds nothing for them. Bind them from
+			// the map that is already published on-chain.
+			//
+			// Without this they would wait for the *next* `submit_crush_map`,
+			// and publication is event-driven: the validator only bumps the
+			// epoch on cluster churn, and weight-driven bumps are off by
+			// default. A stable cluster could therefore go indefinitely without
+			// publishing, leaving every existing miner unpayable.
+			let epoch = CurrentEpoch::<T>::get();
+			reads = reads.saturating_add(1);
+			if let Some(miners) = EpochMiners::<T>::get(epoch) {
+				reads = reads.saturating_add(1);
+				for m in miners.iter() {
+					reads = reads.saturating_add(3);
+					if let Some(child) = NodeIdToChild::<T>::get(m.node_id) {
+						if ChildMinerUid::<T>::get(&child).is_none()
+							&& MinerUidToChild::<T>::get(m.uid).is_none()
+							&& m.uid != 0
+						{
+							ChildMinerUid::<T>::insert(&child, m.uid);
+							MinerUidToChild::<T>::insert(m.uid, &child);
+							// Same signal as a live binding: this bulk bind is
+							// exactly the legacy population, so ops needs to see
+							// it rather than infer it.
+							Self::deposit_event(Event::MinerUidBound {
+								child: child.clone(),
+								uid: m.uid,
+							});
+							writes = writes.saturating_add(2);
+						}
+					}
+				}
+			}
+
 			StorageVersion::new(1).put::<Pallet<T>>();
 			T::DbWeight::get().reads_writes(reads, writes)
 		}
@@ -1258,14 +1303,28 @@ pub mod pallet {
 			uid: u32,
 			byte_blocks: u128,
 		},
+		/// A registered child was bound to the uid the CRUSH map assigns its
+		/// node. Until this fires the child accrues nothing, so its absence is
+		/// the signal that a miner is onboarded but unpayable.
+		MinerUidBound {
+			child: T::AccountId,
+			uid: u32,
+		},
+		/// The map moved `uid` from `from` to `to`. Accrual follows the uid, so
+		/// the map has to win here: leaving `from` bound would pay it for `to`'s
+		/// bytes. Any unpaid accrual `from` had under `uid` is forfeited and
+		/// reported separately as [`Event::MinerAccrualForfeited`].
+		MinerUidReassigned {
+			uid: u32,
+			from: T::AccountId,
+			to: T::AccountId,
+		},
 	}
 
 	#[pallet::error]
 	pub enum Error<T> {
 		/// Epoch is not strictly increasing.
 		EpochRegression,
-		/// The miner uid is already claimed by another registered child.
-		MinerUidAlreadyTaken,
 		/// Epoch already exists.
 		EpochAlreadyExists,
 		/// Miner list must be sorted by uid and unique.
@@ -1441,6 +1500,122 @@ pub mod pallet {
 				.and_then(|miners| miners.iter().find(|m| m.node_id == *node_id).map(|m| m.uid))
 		}
 
+		/// Bind each mapped node's authority-assigned uid to the child that
+		/// registered it.
+		///
+		/// This is the only binding that fires in the steady state. A node
+		/// cannot be in the CRUSH map before it is registered on-chain — the
+		/// validator refuses to admit unregistered nodes to the cluster — so
+		/// `register_child` always runs *before* the node has a uid, and the
+		/// lookup there finds nothing. Binding here, when the authority-signed
+		/// map arrives, is what makes a registered miner payable at all.
+		///
+		/// The uid is never taken from the registrant, so a family cannot claim
+		/// a uid belonging to a node it does not run.
+		/// Make the on-chain uid bindings match the authority-signed map.
+		///
+		/// The map is authoritative because **accrual follows the uid, not the
+		/// binding**: `submit_miner_stats` writes `MinerStatsByUid[uid]` from the
+		/// authority's view of who holds that uid. So if a binding disagrees
+		/// with the map, the stale holder is paid for the new node's bytes.
+		/// Refusing to move a uid would not avoid that — it would cause it.
+		///
+		/// Two passes: retire every binding the map contradicts, then install
+		/// the map's. One pass cannot work, because the uid a node is losing may
+		/// be the uid another node in the same map is gaining.
+		fn bind_uids_from_crush_map(miners: &EpochMinerList<T>) {
+			let now = Self::now();
+			let mut desired: Vec<(T::AccountId, u32)> = Vec::new();
+			for m in miners.iter() {
+				if m.uid == 0 {
+					continue;
+				}
+				if let Some(child) = NodeIdToChild::<T>::get(m.node_id) {
+					desired.push((child, m.uid));
+				}
+			}
+
+			// Pass 1: detach every mapped child from a uid the map disagrees
+			// with, holding its accrued byte-blocks aside. Doing all of these
+			// before any insert is what lets two nodes exchange uids: the uid
+			// one is losing is free by the time the other claims it.
+			let mut carried: Vec<(T::AccountId, u128)> = Vec::new();
+			for (child, uid) in desired.iter() {
+				if let Some(old_uid) = ChildMinerUid::<T>::get(child) {
+					if old_uid != *uid {
+						let bb = Self::detach_uid(child, old_uid, now);
+						if bb > 0 {
+							carried.push((child.clone(), bb));
+						}
+					}
+				}
+			}
+
+			// Pass 2: a uid still held here belongs to a child the map has
+			// dropped. It loses the uid, and its unpaid accrual is forfeited
+			// explicitly rather than stranded for a later prune to delete.
+			for (child, uid) in desired.iter() {
+				if let Some(holder) = MinerUidToChild::<T>::get(uid) {
+					if holder != *child {
+						let bb = Self::detach_uid(&holder, *uid, now);
+						if bb > 0 {
+							if let Some(reg) = ChildRegistrations::<T>::get(&holder) {
+								Self::deposit_event(Event::MinerAccrualForfeited {
+									family: reg.family,
+									uid: *uid,
+									byte_blocks: bb,
+								});
+							}
+						}
+						Self::deposit_event(Event::MinerUidReassigned {
+							uid: *uid,
+							from: holder,
+							to: child.clone(),
+						});
+					}
+				}
+			}
+
+			// Pass 3: install the map's bindings and restore carried accrual.
+			for (child, uid) in desired {
+				if ChildMinerUid::<T>::get(&child) == Some(uid) {
+					continue;
+				}
+				ChildMinerUid::<T>::insert(&child, uid);
+				MinerUidToChild::<T>::insert(uid, &child);
+				Self::deposit_event(Event::MinerUidBound { child: child.clone(), uid });
+			}
+			for (child, bb) in carried {
+				if let Some(uid) = ChildMinerUid::<T>::get(&child) {
+					MinerAccruals::<T>::mutate(uid, |acc| {
+						let mut a =
+							acc.take().unwrap_or(MinerAccrual { byte_blocks: 0, last_block: now });
+						a.byte_blocks = a.byte_blocks.saturating_add(bb);
+						a.last_block = now;
+						*acc = Some(a);
+					});
+				}
+			}
+		}
+
+		/// Detach `old_uid` from `child` and return the byte-blocks it had
+		/// accrued but not been paid for.
+		///
+		/// Integrates up to `now` first, so the amount returned is exact rather
+		/// than whatever happened to be banked at the last settlement. The
+		/// caller decides whether that work follows the child to a new uid or is
+		/// forfeited — leaving it attached to the old uid would strand it, since
+		/// settlement only ever reads the uid a child currently holds.
+		fn detach_uid(child: &T::AccountId, old_uid: u32, now: BlockNumberFor<T>) -> u128 {
+			Self::accrue_miner_bytes(old_uid, now);
+			let accrued = MinerAccruals::<T>::take(old_uid).map(|a| a.byte_blocks).unwrap_or(0);
+			MinerStatsByUid::<T>::remove(old_uid);
+			MinerUidToChild::<T>::remove(old_uid);
+			ChildMinerUid::<T>::remove(child);
+			accrued
+		}
+
+
 		/// Uids that still correspond to **active** children (registration + optional CRUSH map).
 		fn collect_protected_miner_uids() -> Vec<u32> {
 			let epoch = CurrentEpoch::<T>::get();
@@ -1567,9 +1742,12 @@ pub mod pallet {
 					// Dust: preserve byte_blocks for next settlement
 					continue;
 				}
-				// Only consume byte_blocks if tokens > 0
-				let byte_blocks = MinerAccruals::<T>::mutate(uid, |acc| {
-					acc.as_mut().map(|a| core::mem::take(&mut a.byte_blocks)).unwrap_or(0)
+				// Consume the accrual only now that it converts to a payable
+				// amount; a zero-token settlement above leaves it for next time.
+				MinerAccruals::<T>::mutate(uid, |acc| {
+					if let Some(a) = acc.as_mut() {
+						a.byte_blocks = 0;
+					}
 				});
 				family_due
 					.entry(reg.family.clone())
@@ -2162,6 +2340,10 @@ pub mod pallet {
 			EpochRoot::<T>::insert(epoch, root_h256);
 			CurrentEpoch::<T>::put(epoch);
 
+			// Registration happens before a node can enter the map, so this is
+			// where a registered miner actually becomes payable.
+			Self::bind_uids_from_crush_map(&miners);
+
 			let retention = T::EpochCrushMapRetention::get();
 			if retention > 0 && epoch > retention {
 				let prune_epoch = epoch.saturating_sub(retention);
@@ -2240,9 +2422,11 @@ pub mod pallet {
 		/// Signature payload (domain-separated, SCALE-encoded):
 		/// - ("ARION_NODE_REG_V1", family, child, node_id, nonce)
 		///
-		/// `miner_uid`: CRUSH / stats uid for this node (`0` = not tracked; prefer the uid used in
-		/// `submit_miner_stats` and the epoch map so deregistration and periodic pruning can clear
-		/// [`MinerStatsByUid`]).
+		/// The CRUSH / stats uid is **not** supplied by the caller: it is taken
+		/// from the authority-published epoch map, either here if the node is
+		/// already listed or by [`Pallet::submit_crush_map`] when the map that
+		/// lists it is published. Until a uid is bound the child accrues
+		/// nothing; [`Event::MinerUidBound`] marks the transition.
 		#[pallet::call_index(10)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::register_child(), Pays::No))]
 		pub fn register_child(
@@ -2335,18 +2519,23 @@ pub mod pallet {
 			NodeIdToChild::<T>::insert(node_id, &child);
 			NodeIdNonce::<T>::insert(node_id, nonce.saturating_add(1));
 
-			// Bind uid from authority-signed crush map (not self-declared).
-			// Lookup node_id in current epoch's miners to get its authority-defined uid.
-			let current_epoch = CurrentEpoch::<T>::get();
-			if let Some(miners) = EpochMiners::<T>::get(current_epoch) {
-				if let Some(miner_record) = miners.iter().find(|m| m.node_id == node_id) {
-					let miner_uid = miner_record.uid;
-					ensure!(
-						!MinerUidToChild::<T>::contains_key(miner_uid),
-						Error::<T>::MinerUidAlreadyTaken
-					);
-					ChildMinerUid::<T>::insert(&child, miner_uid);
-					MinerUidToChild::<T>::insert(miner_uid, &child);
+			// If the node is already in the published map, bind its uid now
+			// rather than waiting for the next map. The uid is never supplied
+			// by the caller, so a family cannot claim a uid for a node it does
+			// not run. A node that is not yet mapped — the normal case, since
+			// the validator will not admit an unregistered node — is bound by
+			// `submit_crush_map` when the map that lists it is published.
+			if let Some(uid) =
+				Self::find_uid_for_node_in_epoch(CurrentEpoch::<T>::get(), &node_id)
+			{
+				// Only bind a uid nobody holds. If a stale child still holds it,
+				// leave the conflict for `submit_crush_map` to resolve against
+				// the whole map, where the displaced child's accrual can be
+				// settled correctly — a single registration lacks that context.
+				if MinerUidToChild::<T>::get(uid).is_none() {
+					ChildMinerUid::<T>::insert(&child, uid);
+					MinerUidToChild::<T>::insert(uid, &child);
+					Self::deposit_event(Event::MinerUidBound { child: child.clone(), uid });
 				}
 			}
 
@@ -2560,9 +2749,14 @@ pub mod pallet {
 			// no stale weight keys if a registration path ever skipped cleanup.
 			Self::remove_child_node_weight_entries(&child);
 
+			// Clear both uid directions, not just the forward one: a reverse
+			// entry left pointing at a removed child would block that uid for
+			// every future node, since the map binding refuses to move a uid
+			// away from whoever the chain says holds it.
+			Self::clear_miner_uid_and_stats_for_child(&child);
+
 			// Remove record; cooldown tombstones remain in separate storage.
 			ChildRegistrations::<T>::remove(&child);
-			ChildMinerUid::<T>::remove(&child);
 
 			Self::deposit_event(Event::ChildUnbonded {
 				family: reg.family,
