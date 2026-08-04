@@ -2251,7 +2251,6 @@ pub mod pallet {
 			child: T::AccountId,
 			node_id: [u8; 32],
 			node_sig: [u8; 64],
-			miner_uid: u32,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(who == family, DispatchError::BadOrigin);
@@ -2336,13 +2335,19 @@ pub mod pallet {
 			NodeIdToChild::<T>::insert(node_id, &child);
 			NodeIdNonce::<T>::insert(node_id, nonce.saturating_add(1));
 
-			if miner_uid != 0 {
-				ensure!(
-					!MinerUidToChild::<T>::contains_key(miner_uid),
-					Error::<T>::MinerUidAlreadyTaken
-				);
-				ChildMinerUid::<T>::insert(&child, miner_uid);
-				MinerUidToChild::<T>::insert(miner_uid, &child);
+			// Bind uid from authority-signed crush map (not self-declared).
+			// Lookup node_id in current epoch's miners to get its authority-defined uid.
+			let current_epoch = CurrentEpoch::<T>::get();
+			if let Some(miners) = EpochMiners::<T>::get(current_epoch) {
+				if let Some(miner_record) = miners.iter().find(|m| m.node_id == node_id) {
+					let miner_uid = miner_record.uid;
+					ensure!(
+						!MinerUidToChild::<T>::contains_key(miner_uid),
+						Error::<T>::MinerUidAlreadyTaken
+					);
+					ChildMinerUid::<T>::insert(&child, miner_uid);
+					MinerUidToChild::<T>::insert(miner_uid, &child);
+				}
 			}
 
 			// Update counts
