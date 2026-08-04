@@ -79,7 +79,6 @@ pub mod pallet {
     use sp_core::H256;
     use sp_std::{vec, vec::Vec};
     use num_traits::float::FloatCore;
-    use pallet_rankings::Pallet as RankingsPallet;
     use pallet_credits::AlphaBalances;
     use pallet_credits::TotalCreditsPurchased;
     use frame_system::offchain::SendTransactionTypes;
@@ -89,6 +88,7 @@ pub mod pallet {
     use sp_runtime::traits::Zero;
     use sp_core::U256;
     use sp_runtime::traits::Bounded;
+    use payment_math::{split, prorate_first_month, BasisPoints, Credits};
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -1187,7 +1187,9 @@ pub mod pallet {
 
         fn referral_discount_and_owner(who: &T::AccountId, face_credits: u128) -> (u128, Option<T::AccountId>) {
             if let Some(ref_code) = CreditsPallet::<T>::referred_users(who) {
-                let discount = face_credits.saturating_mul(5) / 100u128;
+                // Exact 5% via payment-math (U256), not saturating_mul which
+                // under-computes above u128::MAX/5.
+                let discount = split(Credits::new(face_credits), BasisPoints::new(500)).0.get();
                 let owner = CreditsPallet::<T>::referral_codes(ref_code);
                 (discount, owner)
             } else {
@@ -1334,17 +1336,14 @@ pub mod pallet {
         }
                     
         fn prorated_monthly_price(monthly_price: u128) -> u128 {
-            // days_remaining_in_current_month is inclusive of today.
-            let dim: u128 = pallet_calendar::Pallet::<T>::days_in_current_month() as u128;
-            let drm: u128 = pallet_calendar::Pallet::<T>::days_remaining_in_current_month() as u128;
-            if dim == 0 {
-                return monthly_price;
-            }
-            // Use ceil division to avoid rounding tiny (but non-zero) prices down to 0.
-            let numerator = monthly_price.saturating_mul(drm);
-            numerator
-                .saturating_add(dim.saturating_sub(1))
-                / dim
+            // days_remaining is inclusive of today; crate ceil-rounds and clamps
+            // days_remaining to days_in_month so a part never exceeds a full month.
+            prorate_first_month(
+                Credits::new(monthly_price),
+                u32::from(pallet_calendar::Pallet::<T>::days_remaining_in_current_month()),
+                u32::from(pallet_calendar::Pallet::<T>::days_in_current_month()),
+            )
+            .get()
         }
 
         /// Total upfront charge when buying `upfront_months` starting mid-month:
@@ -1484,7 +1483,6 @@ pub mod pallet {
             Self::consume_credits(
                 who.clone(),
                 charged_credits,
-                pallet_rankings::Pallet::<T>::account_id().clone(),
             )?;
                     
             // Record transaction
@@ -1500,8 +1498,10 @@ pub mod pallet {
             }
 
             // Create subscription (simplified due to removed plan_type)
+            // 95% of face price for referred users — conserved split, not
+            // saturating_mul which under-charges above u128::MAX/9_500.
             let paid_per_month = if CreditsPallet::<T>::referred_users(&who).is_some() {
-                plan.price.saturating_mul(9_500u128) / 10_000u128
+                split(Credits::new(plan.price), BasisPoints::new(9_500)).0.get()
             } else {
                 plan.price
             };
@@ -1612,7 +1612,6 @@ pub mod pallet {
             Self::consume_credits(
                 who.clone(),
                 charged_credits,
-                pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone(),
             )?;
                     
             // Record transaction
@@ -1628,8 +1627,9 @@ pub mod pallet {
             }
 
             // Create subscription (simplified due to removed plan_type)
+            // 95% of face price for referred users — conserved split.
             let paid_per_month = if CreditsPallet::<T>::referred_users(&who).is_some() {
-                plan.price.saturating_mul(9_500u128) / 10_000u128
+                split(Credits::new(plan.price), BasisPoints::new(9_500)).0.get()
             } else {
                 plan.price
             };
@@ -1772,7 +1772,6 @@ pub mod pallet {
                             storage_ok = Self::consume_credits(
                                 account_id.clone(),
                                 total_storage_charge,
-                                pallet_rankings::Pallet::<T>::account_id().clone(),
                             )
                             .and_then(|_| {
                                 Self::record_credits_transaction(
@@ -1799,7 +1798,6 @@ pub mod pallet {
                             if Self::consume_credits(
                                 account_id.clone(),
                                 price,
-                                pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone(),
                             )
                             .and_then(|_| {
                                 Self::record_credits_transaction(
@@ -1852,7 +1850,12 @@ pub mod pallet {
                     if total_charged > 0 {
                         if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
                             if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
-                                let commission = total_charged.saturating_mul(5) / 100;
+                                let commission = split(
+                                    Credits::new(total_charged),
+                                    BasisPoints::new(500),
+                                )
+                                .0
+                                .get();
                                 Self::try_mint_referral_reward_credits(&referrer, commission);
                             }
                         }
@@ -1977,7 +1980,6 @@ pub mod pallet {
                         let charge_result = Self::consume_credits(
                             user.clone(),
                             charge_amount,
-                            RankingsPallet::<T>::account_id().clone(),
                         );
 
                         if charge_result.is_ok() {

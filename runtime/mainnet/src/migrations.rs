@@ -372,8 +372,7 @@ where
 		// Set per-requester withdrawal caps (no hard limit, set to max for now).
 		// NOTE: This cap is per-call, not cumulative/per-era. Consider redesign
 		// if stricter enforcement is needed. Currently set high to not restrict.
-		let cap: <T as pallet_hippocampus::Config>::Balance =
-			<<T as pallet_hippocampus::Config>::Balance>::from(u128::MAX);
+		let cap: pallet_hippocampus::BalanceOf<T> = u128::MAX.saturated_into();
 		pallet_hippocampus::RequesterWithdrawalCap::<T>::insert(&arion, cap);
 		pallet_hippocampus::RequesterWithdrawalCap::<T>::insert(&marketplace, cap);
 		writes = writes.saturating_add(2);
