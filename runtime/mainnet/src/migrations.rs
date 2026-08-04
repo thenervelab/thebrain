@@ -1,6 +1,6 @@
 use super::*;
 use frame_support::StorageHasher;
-use frame_support::traits::OnRuntimeUpgrade;
+use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use sp_runtime::{BoundToRuntimeAppPublic, RuntimeAppPublic, RuntimeDebug};
 
@@ -355,27 +355,25 @@ where
 		let arion = pallet_arion::Pallet::<T>::account_id();
 		let marketplace = pallet_marketplace::Pallet::<T>::account_id();
 
-		// Use side-effect check: if both already whitelisted, migration ran before.
-		// MEDIUM-1 note: this is safe because the pallet is new on this release,
-		// so pre-whitelist cannot occur. The StorageVersion-based fix is ideal but
-		// requires pallet storage; side-effect inference suffices for now.
-		if pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&arion)
-			&& pallet_hippocampus::WhitelistedRequesters::<T>::contains_key(&marketplace)
-		{
-			return T::DbWeight::get().reads(2);
+		// One-shot guard on the pallet's storage version, not on whitelist
+		// contents. The body below moves real funds from sudo and increments
+		// TotalUndistributedBacking, so it must never run twice — and an admin
+		// removing a requester (a normal operation) would make any
+		// whitelist-derived "already ran" inference re-seed.
+		if pallet_hippocampus::Pallet::<T>::on_chain_storage_version() >= 1 {
+			return T::DbWeight::get().reads(1);
 		}
+		StorageVersion::new(1).put::<pallet_hippocampus::Pallet<T>>();
 		pallet_hippocampus::WhitelistedRequesters::<T>::insert(&arion, ());
 		pallet_hippocampus::WhitelistedRequesters::<T>::insert(&marketplace, ());
-		let mut reads = 2u64;
-		let mut writes = 2u64;
+		// One version read above; version write plus the two whitelist inserts.
+		let mut reads = 1u64;
+		let mut writes = 3u64;
 
-		// Set per-requester withdrawal caps (no hard limit, set to max for now).
-		// NOTE: This cap is per-call, not cumulative/per-era. Consider redesign
-		// if stricter enforcement is needed. Currently set high to not restrict.
-		let cap: pallet_hippocampus::BalanceOf<T> = u128::MAX.saturated_into();
-		pallet_hippocampus::RequesterWithdrawalCap::<T>::insert(&arion, cap);
-		pallet_hippocampus::RequesterWithdrawalCap::<T>::insert(&marketplace, cap);
-		writes = writes.saturating_add(2);
+		// No withdrawal caps are seeded. A cap of `u128::MAX` is indistinguishable
+		// from no cap, so writing one would only cost storage and suggest a
+		// protection that is not there. Set a real per-call cap with
+		// `hippocampus.set_requester_cap` if one is ever wanted.
 
 		// Batches deposited before this upgrade never routed their backing to
 		// the bank. Seed it from sudo in one transfer; if that cannot be done

@@ -365,6 +365,12 @@ fn mainnet_genesis(
 		// Vesting configuration is temporarily disabled
 		"vesting": {
 			"vesting": Vec::<(AccountId, u64, u64, u128)>::new(),
+		},
+		// A genesis chain never runs `ActivateMinerPaymentBank` — FRAME stamps
+		// the storage version at genesis, so the migration sees a current chain.
+		// Whitelist the drawing pallets here or no miner payment ever succeeds.
+		"hippocampus": {
+			"requesters": vec![arion_account(), marketplace_account()],
 		}
 	})
 }
@@ -461,6 +467,22 @@ fn testnet_genesis(
 		"evmChainId": { "chainId": chain_id },
 		"vesting": {
 			"vesting": Vec::<(AccountId, u64, u64, u128)>::new(),
+		},
+		// A genesis chain never runs `ActivateMinerPaymentBank` — FRAME stamps
+		// the storage version at genesis, so the migration sees a current chain.
+		// Whitelist the drawing pallets here or no miner payment ever succeeds.
+		"hippocampus": {
+			"requesters": vec![arion_account(), marketplace_account()],
 		}
 	})
+}
+
+/// Sovereign account of the arion pallet, which draws miner settlements.
+fn arion_account() -> AccountId {
+	pallet_arion::Pallet::<hippius_mainnet_runtime::Runtime>::account_id()
+}
+
+/// Sovereign account of the marketplace pallet, which draws chargeback refunds.
+fn marketplace_account() -> AccountId {
+	pallet_marketplace::Pallet::<hippius_mainnet_runtime::Runtime>::account_id()
 }

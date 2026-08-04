@@ -4466,6 +4466,7 @@ dependencies = [
  "hippius-primitives",
  "jsonrpsee 0.23.2",
  "log",
+ "pallet-arion",
  "pallet-babe 37.0.0",
  "pallet-execution-unit",
  "pallet-im-online",

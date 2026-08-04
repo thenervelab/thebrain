@@ -145,11 +145,12 @@ fn probe_requester_cap_is_per_call_not_lifetime() {
 	});
 }
 
-/// The `&&` early-exit in `ActivateMinerPaymentBank` re-executes the whole
-/// seeding body whenever EITHER requester has been removed from the whitelist.
-/// `remove_requester` is a live admin dispatchable, so this is reachable.
+/// `ActivateMinerPaymentBank` moves real funds from sudo, so it must run once.
+/// It used to infer "already ran" from whitelist contents, which meant a normal
+/// `remove_requester` made the next upgrade re-seed — double-charging sudo and
+/// double-counting the backing ledger. The guard is now the storage version.
 #[test]
-fn probe_activation_migration_double_seeds_after_remove_requester() {
+fn activation_migration_is_one_shot_after_remove_requester() {
 	new_test_ext().execute_with(|| {
 		let authority = account(10);
 		let sudo = account(11);
@@ -181,16 +182,26 @@ fn probe_activation_migration_double_seeds_after_remove_requester() {
 		// Next runtime upgrade re-runs the migration.
 		hippius_mainnet_runtime::migrations::ActivateMinerPaymentBank::<Runtime>::on_runtime_upgrade();
 
+		// The StorageVersion guard makes the migration one-shot, so removing a
+		// requester no longer makes a later upgrade re-seed.
 		assert_eq!(
 			pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(),
-			6 * UNIT,
-			"backing ledger double-counted"
+			3 * UNIT,
+			"backing ledger not double-counted"
 		);
 		assert_eq!(
 			Balances::free_balance(&Hippocampus::account_id()),
-			6 * UNIT,
-			"sudo charged a second time"
+			3 * UNIT,
+			"sudo not charged a second time"
 		);
-		assert_eq!(Balances::free_balance(&sudo), 94 * UNIT);
+		assert_eq!(Balances::free_balance(&sudo), 97 * UNIT);
+		// The guard is the storage version, not the whitelist: the removed
+		// requester stays removed rather than being silently re-added.
+		assert!(
+			!pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(
+				&Marketplace::account_id()
+			),
+			"a re-run must not undo a deliberate admin removal"
+		);
 	});
 }

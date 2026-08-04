@@ -34,12 +34,21 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 	use payment_math::Tokens;
 	use sp_runtime::traits::{AccountIdConversion, SaturatedConversion, Saturating, Zero};
+	use sp_std::vec::Vec;
 
 	pub type BalanceOf<T> =
 		<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
+	/// Version 1 is "activated": requesters whitelisted and pre-upgrade backing
+	/// seeded by `ActivateMinerPaymentBank`. That migration seeds real funds
+	/// from sudo, so it keys its one-shot guard on this rather than on
+	/// whitelist contents — a requester can be removed by an admin at any time,
+	/// and inferring "already ran" from that would re-seed.
+	pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
+	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
@@ -92,7 +101,42 @@ pub mod pallet {
 	pub type TotalPaidByRequester<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
 
-	/// Per-requester withdrawal cap (compartmentalization wall).
+	/// Accounts allowed to draw from the bank at genesis.
+	///
+	/// A genesis-built chain never runs `ActivateMinerPaymentBank` — FRAME's
+	/// `on_genesis` stamps the pallet's storage version, so the migration's
+	/// one-shot guard sees an already-current chain and does nothing. New chains
+	/// must therefore whitelist here or no payment ever succeeds; the migration
+	/// exists only to carry an already-running chain across the upgrade.
+	#[pallet::genesis_config]
+	pub struct GenesisConfig<T: Config> {
+		pub requesters: Vec<T::AccountId>,
+	}
+
+	impl<T: Config> Default for GenesisConfig<T> {
+		fn default() -> Self {
+			Self { requesters: Vec::new() }
+		}
+	}
+
+	#[pallet::genesis_build]
+	impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+		fn build(&self) {
+			for who in &self.requesters {
+				WhitelistedRequesters::<T>::insert(who, ());
+			}
+		}
+	}
+
+	/// Largest amount a single `request_payment` call from this requester may
+	/// move. Absent means uncapped.
+	///
+	/// This is a per-call bound, **not** a spend limit: a requester that calls
+	/// repeatedly still withdraws without limit, and arion calls once per
+	/// family per settlement. Treat it as a blast-radius limiter on one bad
+	/// request, not as compartmentalization — the wall that keeps money owed
+	/// to others out of the miner budget lives in the runtime's `PayoutSource`
+	/// adapter.
 	#[pallet::storage]
 	pub type RequesterWithdrawalCap<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, OptionQuery>;
@@ -171,6 +215,7 @@ pub mod pallet {
 			Ok(())
 		}
 
+		#[pallet::call_index(3)]
 		#[pallet::weight(T::DbWeight::get().writes(1))]
 		pub fn set_requester_cap(
 			origin: OriginFor<T>,
@@ -183,6 +228,7 @@ pub mod pallet {
 			Ok(())
 		}
 
+		#[pallet::call_index(4)]
 		#[pallet::weight(T::DbWeight::get().writes(1))]
 		pub fn remove_requester_cap(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
 			T::AdminOrigin::ensure_origin(origin)?;
@@ -253,11 +299,13 @@ pub mod pallet {
 				return Ok(Zero::zero());
 			}
 			let bank = Self::account_id();
-			let mut capped_amount = amount.min(amount);
-			// Apply per-requester cap if set (compartmentalization wall).
-			if let Some(cap) = RequesterWithdrawalCap::<T>::get(requester) {
-				capped_amount = capped_amount.min(cap);
-			}
+			// Bound how much a single call can move. This limits the blast
+			// radius of one runaway request; it does not bound total spend,
+			// because nothing here consults what the requester already took.
+			let capped_amount = match RequesterWithdrawalCap::<T>::get(requester) {
+				Some(cap) => amount.min(cap),
+				None => amount,
+			};
 			let paid: BalanceOf<T> = payment_math::payable(
 				Tokens::new(capped_amount.saturated_into()),
 				Tokens::new(Self::available_for_payout().saturated_into()),
