@@ -1,14 +1,11 @@
 use crate as pallet_alpha_bridge;
-use frame_support::{
-	derive_impl, parameter_types,
-	traits::{ConstU64, Get},
-	PalletId,
-};
+use frame_support::{derive_impl, parameter_types, traits::{ConstU64, Get}, PalletId};
 use sp_keyring::AccountKeyring;
 use sp_runtime::{
-	traits::{AccountIdConversion, IdentifyAccount, IdentityLookup, Verify},
+	traits::{IdentifyAccount, IdentityLookup, Verify, AccountIdConversion},
 	BuildStorage,
 };
+use sp_core::H256;
 
 pub type Signature = sp_runtime::MultiSignature;
 pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::AccountId;
@@ -81,8 +78,6 @@ impl pallet_ip::Config for Test {
 
 parameter_types! {
 	pub const AlphaBridgePalletId: PalletId = PalletId(*b"alphbrdg");
-	// `pub static` so tests can advance the staking era via MockActiveEraIndex::set(..)
-	pub static MockActiveEraIndex: u32 = 0;
 }
 
 pub struct GetStakingRewardPot;
@@ -99,7 +94,6 @@ impl pallet_alpha_bridge::Config for Test {
 	type WeightInfo = ();
 	type Currency = Balances;
 	type RewardDestination = GetStakingRewardPot;
-	type ActiveEraIndex = MockActiveEraIndex;
 }
 
 // Test accounts

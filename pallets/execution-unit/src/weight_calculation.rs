@@ -142,7 +142,7 @@ impl NodeMetricsData {
 		final_weight
 	}
 
-	pub fn uid_zero_weight<
+	pub fn uid_238_weight<
 		T: pallet_marketplace::Config + pallet_credits::Config + pallet_arion::Config,
 	>() -> u16 {
 		let price_per_gb = pallet_marketplace::Pallet::<T>::get_storage_price_per_miner();
