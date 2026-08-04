@@ -90,6 +90,17 @@ fn staking_ledger_active(who: &AccountId) -> u128 {
 		.active
 }
 
+/// Expected payout for raw byte-blocks — the same shared money math the
+/// pallet settles with (formerly `pallet_arion::tokens_for_byte_blocks`).
+fn tokens_for(byte_blocks: u128, price: u128, token_price: u128) -> u128 {
+	payment_math::tokens_for(
+		payment_math::ByteBlocks::new(byte_blocks),
+		payment_math::UsdPerGibBlock::new(price),
+		payment_math::Usd::new(token_price),
+	)
+	.get()
+}
+
 #[test]
 fn accrual_integrates_bytes_over_blocks() {
 	new_test_ext().execute_with(|| {
@@ -124,7 +135,7 @@ fn settlement_pays_family_and_bonds_stake() {
 
 		// Settlement accrues 100 GiB from block 1 to SETTLEMENT_BLOCK.
 		let byte_blocks = 100 * GIB * (SETTLEMENT_BLOCK as u128 - 1);
-		let expected = pallet_arion::tokens_for_byte_blocks(byte_blocks, price, alpha_price);
+		let expected = tokens_for(byte_blocks, price, alpha_price);
 		assert!(expected > 0);
 
 		// Paid in full and locked as bonded stake on the family account.
@@ -167,8 +178,8 @@ fn shortfall_pays_pro_rata_and_carries_arrears() {
 		let price = 10_000_000_000_u128;
 		let alpha_price = UNIT / 20;
 		let elapsed = SETTLEMENT_BLOCK as u128 - 1;
-		let due_a = pallet_arion::tokens_for_byte_blocks(200 * GIB * elapsed, price, alpha_price);
-		let due_b = pallet_arion::tokens_for_byte_blocks(100 * GIB * elapsed, price, alpha_price);
+		let due_a = tokens_for(200 * GIB * elapsed, price, alpha_price);
+		let due_b = tokens_for(100 * GIB * elapsed, price, alpha_price);
 		let total_due = due_a + due_b;
 
 		// Fund the bank with only half of what is owed (+ ED it always keeps).
@@ -188,8 +199,8 @@ fn shortfall_pays_pro_rata_and_carries_arrears() {
 		System::set_block_number(SETTLEMENT_BLOCK + 1);
 		submit_stats(1, 0);
 		submit_stats(2, 0);
-		let extra_a = pallet_arion::tokens_for_byte_blocks(200 * GIB, price, alpha_price);
-		let extra_b = pallet_arion::tokens_for_byte_blocks(100 * GIB, price, alpha_price);
+		let extra_a = tokens_for(200 * GIB, price, alpha_price);
+		let extra_b = tokens_for(100 * GIB, price, alpha_price);
 
 		// Refill the bank: next settlement clears arrears (+ the one-block tail).
 		let _ = Balances::deposit_creating(&Hippocampus::account_id(), total_due);
@@ -370,7 +381,6 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
-			marketplace_pot.clone(),
 			ranking_pot.clone(),
 		)
 		.expect("consume credits");
@@ -425,7 +435,6 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
-			marketplace_pot.clone(),
 			ranking_pot.clone(),
 		)
 		.expect("billing succeeds");
@@ -448,7 +457,6 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		Marketplace::consume_credits(
 			user.clone(),
 			1 * UNIT,
-			marketplace_pot.clone(),
 			ranking_pot.clone(),
 		)
 		.expect("second consume");
@@ -507,7 +515,6 @@ fn miner_settlement_cannot_drain_pot_backing() {
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
-			marketplace_pot.clone(),
 			ranking_pot.clone(),
 		)
 		.expect("consume");
@@ -628,7 +635,6 @@ fn unbacked_batch_release_does_not_reduce_backed_ledger() {
 		Marketplace::consume_credits(
 			user_b.clone(),
 			5 * UNIT,
-			marketplace_pot.clone(),
 			ranking_pot.clone(),
 		)
 		.expect("consume unbacked batch");

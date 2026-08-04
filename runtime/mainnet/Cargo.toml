@@ -177,6 +177,11 @@ xcm-builder = { workspace = true }
 xcm-executor = { workspace = true }
 polkadot-parachain-primitives = { workspace = true }
 
+[dev-dependencies]
+# Integration tests compute expected payouts with the same money math the
+# pallets use on-chain.
+payment-math = { workspace = true, features = ["std"] }
+
 [features]
 runtime-benchmarks = [
     "frame-benchmarking",

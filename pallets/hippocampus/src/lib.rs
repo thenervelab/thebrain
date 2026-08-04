@@ -32,7 +32,8 @@ pub mod pallet {
 		PalletId,
 	};
 	use frame_system::pallet_prelude::*;
-	use sp_runtime::traits::{AccountIdConversion, Saturating, Zero};
+	use payment_math::Tokens;
+	use sp_runtime::traits::{AccountIdConversion, SaturatedConversion, Saturating, Zero};
 
 	pub type BalanceOf<T> =
 		<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
@@ -77,25 +78,12 @@ pub mod pallet {
 	pub type WhitelistedRequesters<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, (), OptionQuery>;
 
-	/// Per-requester withdrawal cap (optional). Prevents any whitelisted caller
-	/// from draining the entire bank. Compartmentalization: limits per-pallet risk.
-	/// If not set (None), requester can withdraw up to available balance (legacy behavior).
-	/// If set, requester is capped at min(requested, cap).
-	#[pallet::storage]
-	pub type RequesterWithdrawalCap<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, OptionQuery>;
-
 	/// Lifetime total deposited, per deposit type.
-	/// NOTE: Not a solvency proof. Can desync from reality if funds are transferred
-	/// directly into the bank account without going through `deposit_from`. Only the
-	/// free balance (`balance()`) reflects actual bank state; ops dashboards must use
-	/// that for solvency checks, not this counter.
 	#[pallet::storage]
 	pub type TotalDeposited<T: Config> =
 		StorageMap<_, Blake2_128Concat, DepositType, BalanceOf<T>, ValueQuery>;
 
 	/// Lifetime total released through `request_payment`.
-	/// NOTE: Not a solvency proof; see TotalDeposited warning. Use free balance for truth.
 	#[pallet::storage]
 	pub type TotalPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
@@ -103,6 +91,11 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type TotalPaidByRequester<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
+
+	/// Per-requester withdrawal cap (compartmentalization wall).
+	#[pallet::storage]
+	pub type RequesterWithdrawalCap<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, OptionQuery>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -113,10 +106,6 @@ pub mod pallet {
 		RequesterAdded { who: T::AccountId },
 		/// An account was removed from the requester whitelist.
 		RequesterRemoved { who: T::AccountId },
-		/// A withdrawal cap was set for a whitelisted requester.
-		RequesterCapSet { who: T::AccountId, cap: BalanceOf<T> },
-		/// A withdrawal cap was removed for a whitelisted requester.
-		RequesterCapRemoved { who: T::AccountId },
 		/// A payment was released to `dest`. `paid` may be lower than `requested`
 		/// when the bank balance is insufficient.
 		PaymentReleased {
@@ -125,6 +114,10 @@ pub mod pallet {
 			requested: BalanceOf<T>,
 			paid: BalanceOf<T>,
 		},
+		/// Per-requester withdrawal cap was set.
+		RequesterCapSet { who: T::AccountId, cap: BalanceOf<T> },
+		/// Per-requester withdrawal cap was removed.
+		RequesterCapRemoved { who: T::AccountId },
 	}
 
 	#[pallet::error]
@@ -178,25 +171,21 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Set a per-requester withdrawal cap. Prevents any single whitelisted caller
-		/// from draining the entire bank, compartmentalizing risk per pallet.
-		/// The requester will be capped at min(requested, cap) in request_payment.
-		#[pallet::call_index(3)]
-		#[pallet::weight(<T as Config>::WeightInfo::add_requester())]
-		pub fn set_requester_cap(origin: OriginFor<T>, who: T::AccountId, cap: BalanceOf<T>) -> DispatchResult {
+		#[pallet::weight(T::DbWeight::get().writes(1))]
+		pub fn set_requester_cap(
+			origin: OriginFor<T>,
+			who: T::AccountId,
+			cap: BalanceOf<T>,
+		) -> DispatchResult {
 			T::AdminOrigin::ensure_origin(origin)?;
-			ensure!(WhitelistedRequesters::<T>::contains_key(&who), Error::<T>::NotWhitelisted);
 			RequesterWithdrawalCap::<T>::insert(&who, cap);
 			Self::deposit_event(Event::RequesterCapSet { who, cap });
 			Ok(())
 		}
 
-		/// Remove a per-requester withdrawal cap (restores unlimited withdrawal up to available balance).
-		#[pallet::call_index(4)]
-		#[pallet::weight(<T as Config>::WeightInfo::remove_requester())]
+		#[pallet::weight(T::DbWeight::get().writes(1))]
 		pub fn remove_requester_cap(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
 			T::AdminOrigin::ensure_origin(origin)?;
-			ensure!(WhitelistedRequesters::<T>::contains_key(&who), Error::<T>::NotWhitelisted);
 			RequesterWithdrawalCap::<T>::remove(&who);
 			Self::deposit_event(Event::RequesterCapRemoved { who });
 			Ok(())
@@ -212,8 +201,12 @@ pub mod pallet {
 		/// Funds `request_payment` could release right now (free balance minus
 		/// the existential deposit the bank always keeps).
 		pub fn available_for_payout() -> BalanceOf<T> {
-			T::Currency::free_balance(&Self::account_id())
-				.saturating_sub(T::Currency::minimum_balance())
+			payment_math::available(
+				Tokens::new(T::Currency::free_balance(&Self::account_id()).saturated_into()),
+				Tokens::new(T::Currency::minimum_balance().saturated_into()),
+			)
+			.get()
+			.saturated_into()
 		}
 
 		/// Transfer `amount` from `who` into the bank and record it. Shared by
@@ -245,10 +238,8 @@ pub mod pallet {
 		///
 		/// Releases up to `amount` from the bank to `dest` on behalf of a
 		/// whitelisted `requester` (typically another pallet's sovereign
-		/// account). Never overdraws: pays `min(amount, free - ED, cap)` and returns
+		/// account). Never overdraws: pays `min(amount, free - ED)` and returns
 		/// the amount actually paid so the caller can account for the shortfall.
-		/// Per-requester caps (if set) prevent any single caller from draining the bank,
-		/// compartmentalizing risk across pallets.
 		pub fn request_payment(
 			requester: &T::AccountId,
 			dest: &T::AccountId,
@@ -262,12 +253,17 @@ pub mod pallet {
 				return Ok(Zero::zero());
 			}
 			let bank = Self::account_id();
-			let mut capped_amount = amount.min(Self::available_for_payout());
+			let mut capped_amount = amount.min(amount);
 			// Apply per-requester cap if set (compartmentalization wall).
 			if let Some(cap) = RequesterWithdrawalCap::<T>::get(requester) {
 				capped_amount = capped_amount.min(cap);
 			}
-			let paid = capped_amount;
+			let paid: BalanceOf<T> = payment_math::payable(
+				Tokens::new(capped_amount.saturated_into()),
+				Tokens::new(Self::available_for_payout().saturated_into()),
+			)
+			.get()
+			.saturated_into();
 			if !paid.is_zero() {
 				T::Currency::transfer(&bank, dest, paid, ExistenceRequirement::KeepAlive)?;
 				TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
