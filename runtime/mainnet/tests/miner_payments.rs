@@ -384,7 +384,6 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 		)
 		.expect("consume credits");
 
-		let released = 2 * UNIT * 3 / 5;
 		// Alpha stays in bank, pots get nothing
 		assert_eq!(Balances::free_balance(&ranking_pot), 0);
 		assert_eq!(Balances::free_balance(&marketplace_pot), 0);
@@ -401,23 +400,20 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 }
 
 #[test]
-fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
+fn failed_deposit_routing_leaves_alpha_unbacked_and_out_of_the_ledger() {
 	new_test_ext().execute_with(|| {
 		let authority = account(10);
 		let sudo = account(11); // set but unfunded: deposit routing fails
 		let user = account(12);
 		let funder = account(30);
-		let ranking_pot = account(20);
-		let marketplace_pot = account(21);
 		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("add authority");
 		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
 		let _ = Balances::deposit_creating(&sudo, 1_000);
 		let _ = Balances::deposit_creating(&funder, 100 * UNIT);
-		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
-			.expect("whitelist marketplace");
 
-		// Routing fails (sudo unfunded): deposit still succeeds, nothing is
-		// counted as backing, the bank is empty.
+		// Routing fails (sudo unfunded): the deposit still succeeds, but the
+		// backing never reaches the bank so it must not enter the ledger.
+		let batch_id = pallet_marketplace::NextBatchId::<Runtime>::get();
 		Marketplace::deposit(
 			RuntimeOrigin::signed(authority),
 			user.clone(),
@@ -429,38 +425,33 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		.expect("deposit succeeds despite failed routing");
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
 		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 0);
+		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_id), 3 * UNIT);
 
-		// Billing succeeds; alpha stays in bank, no distribution to pots
-		Marketplace::consume_credits(
-			user.clone(),
-			2 * UNIT,
+		// A grant arrives that is genuinely the miner budget.
+		Hippocampus::deposit(
+			RuntimeOrigin::signed(funder),
+			20 * UNIT,
+			pallet_hippocampus::DepositType::Grant,
 		)
-		.expect("billing succeeds");
-		// No payout to pots since distribution is removed
-		assert_eq!(Balances::free_balance(&ranking_pot), 0);
-		// No arrears tracked since distribution removed
+		.expect("grant");
+
+		// Consuming unbacked alpha must not decrement the ledger — there was
+		// never any backing behind it — and must not touch the grant.
+		Marketplace::consume_credits(user.clone(), 2 * UNIT).expect("billing succeeds");
 		assert_eq!(
-			pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot),
-			0
+			pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(),
+			0,
+			"unbacked release cannot drive the ledger negative"
 		);
 		assert_eq!(
-			pallet_marketplace::DistributionArrears::<Runtime>::get(&marketplace_pot),
-			0
+			Balances::free_balance(&Hippocampus::account_id()),
+			20 * UNIT,
+			"the grant is untouched by an unbacked release"
 		);
-
-		// Refill the bank; the next distribution pays arrears + new share.
-		Hippocampus::deposit(RuntimeOrigin::signed(funder), 20 * UNIT, pallet_hippocampus::DepositType::Grant)
-			.expect("refill");
-		Marketplace::consume_credits(
-			user.clone(),
-			1 * UNIT,
-		)
-		.expect("second consume");
-		// Alpha stays in bank, no distribution to pots
-		let ranking_paid = Balances::free_balance(&ranking_pot);
-		let marketplace_paid = Balances::free_balance(&marketplace_pot);
-		assert_eq!(ranking_paid, 0, "ranking pot should not be paid (distribution removed)");
-		assert_eq!(marketplace_paid, 0, "marketplace pot should not be paid (distribution removed)");
+		assert!(
+			pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_id) < 3 * UNIT,
+			"the unbacked marker is drawn down as the alpha is consumed"
+		);
 	});
 }
 
@@ -621,25 +612,19 @@ fn unbacked_batch_release_does_not_reduce_backed_ledger() {
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
 		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_b), 2 * UNIT);
 
-		// Releasing batch B: unbacked alpha queues as arrears, not paid from bank now
-		// (HIGH-2 fix: unbacked doesn't drain backing from batch A).
-		Marketplace::consume_credits(
-			user_b.clone(),
-			5 * UNIT,
-		)
-		.expect("consume unbacked batch");
-		// No distribution to pots, so no arrears tracking needed
-		let total_arrears = pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot)
-			+ pallet_marketplace::DistributionArrears::<Runtime>::get(&marketplace_pot);
-		assert_eq!(total_arrears, 0, "no distribution means no arrears");
-		// Pots get nothing (distribution removed)
+		// Releasing batch B consumes only its own unbacked marker: batch A's
+		// backing must stay in the ledger and in the bank.
+		Marketplace::consume_credits(user_b.clone(), 5 * UNIT).expect("consume unbacked batch");
 		assert_eq!(
 			Balances::free_balance(&ranking_pot) + Balances::free_balance(&marketplace_pot),
 			0,
-			"pots receive nothing (distribution removed)"
+			"pots receive nothing — the marketplace no longer distributes"
 		);
-		// Backing ledger unchanged (HIGH-2 wall)
-		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
+		assert_eq!(
+			pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(),
+			3 * UNIT,
+			"batch A's backing is untouched by batch B's unbacked release"
+		);
 		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_b), 0);
 	});
 }
@@ -852,95 +837,6 @@ fn stats_for_unclaimed_uid_do_not_accrue() {
 	});
 }
 
-#[test]
-fn high1_pot_shortfall_walled_from_miners() {
-	new_test_ext().execute_with(|| {
-		use pallet_marketplace::{DistributionArrears, TotalUndistributedBacking};
-
-		let (family, child) = (account(1), account(2));
-		let ranking_pot = pallet_rankings::Pallet::<Runtime>::account_id();
-
-		register_miner(&family, &child, 7);
-		submit_stats(7, 100 * GIB);
-
-		let price = 10_000_000_000_u128;
-		let alpha_price = UNIT / 20;
-		enable_payments(price, alpha_price, 10 * UNIT);
-
-		// Set up marketplace payment flow: whitelist marketplace to pull from bank.
-		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
-			.expect("whitelist marketplace");
-
-		// Simulate a blocked deposit that marks funds as owed to pots.
-		// We'll manually set TUB to simulate backed alpha pending distribution.
-		let pot_backing = 5 * UNIT;
-		TotalUndistributedBacking::<Runtime>::put(pot_backing);
-
-		// Before settlement, available should exclude TUB (via the adapter).
-		let bank_before = Hippocampus::balance();
-		let available_before = pallet_hippocampus::Pallet::<Runtime>::available_for_payout()
-			.saturating_sub(pot_backing);
-		assert!(available_before <= bank_before.saturating_sub(pot_backing));
-
-		// Simulate a distribution shortfall by setting arrears (e.g., bank rejection).
-		// This represents unpaid pot debt after a distribution attempt.
-		let arrears = 2 * UNIT;
-		DistributionArrears::<Runtime>::insert(&ranking_pot, arrears);
-
-		// Now arrears should be recorded for the shortfall.
-		let ranking_arrears = pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot);
-		assert_eq!(ranking_arrears, arrears, "ranking arrears should be recorded after shortfall");
-
-		// Miners cannot spend the arrears-owed amount (HIGH-1 wall).
-		let bank_balance_after = Hippocampus::balance();
-		assert!(bank_balance_after >= pot_backing + arrears, "bank must hold all owed amounts");
-
-		// Verify arrears are properly recorded after shortfall
-		let recorded_arrears = pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot);
-		assert_eq!(recorded_arrears, arrears, "arrears must be recorded for retry");
-	});
-}
-
-#[test]
-fn high2_unbacked_does_not_drain_other_deposits() {
-	new_test_ext().execute_with(|| {
-		use pallet_marketplace::{DistributionArrears, TotalUndistributedBacking};
-
-		let ranking_pot = pallet_rankings::Pallet::<Runtime>::account_id();
-		let marketplace_pot = Marketplace::account_id();
-
-		// Set up: fund bank and whitelist marketplace
-		let _ = Balances::deposit_creating(&Hippocampus::account_id(), 100 * UNIT);
-		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
-			.expect("whitelist marketplace");
-
-		// Simulate state where:
-		// - 10 UNIT backing owed to pots (TUB)
-		// - 5 UNIT unbacked alpha to be distributed
-		let bank_before = Hippocampus::balance();
-		TotalUndistributedBacking::<Runtime>::put(10 * UNIT);
-
-		// The key invariant: even if unbacked is distributed, it should not drain
-		// the bank beyond what is already reserved for other purposes.
-		let tub = TotalUndistributedBacking::<Runtime>::get();
-
-		// After distribution, the invariant must hold:
-		// bank >= TUB + all_arrears
-		let bank_after = Hippocampus::balance();
-		let total_arrears = DistributionArrears::<Runtime>::get(&ranking_pot)
-			.saturating_add(DistributionArrears::<Runtime>::get(&marketplace_pot));
-
-		// Core HIGH-2 validation: bank must always cover TUB + arrears
-		assert!(
-			bank_after >= tub.saturating_add(total_arrears),
-			"HIGH-2 invariant: bank must cover TUB + arrears. bank={}, tub={}, arrears={}",
-			bank_after, tub, total_arrears
-		);
-
-		// Verify no unexpected drains
-		assert!(bank_after >= bank_before.saturating_sub(50), "bank should not drain excessively");
-	});
-}
 
 #[test]
 fn medium3_per_requester_cap_enforced() {
@@ -988,30 +884,39 @@ fn low1_dust_byte_blocks_preserved() {
 		let (family, child) = (account(1), account(2));
 		register_miner(&family, &child, 7);
 
-		// Submit stats that will accrue byte_blocks
-		submit_stats(7, 100 * GIB);
+		// One byte is worth less than a planck over a settlement interval, so
+		// `tokens_for` floors to zero and the dust branch is taken. A HIGH price
+		// would not work here: `tokens_for` rises with price and saturates, so
+		// the branch would never be reached and this test would prove nothing.
+		submit_stats(7, 1);
 
-		// Set price very high so tokens will be 0 for small byte_blocks
-		let price = u128::MAX / 2; // Extremely high price
 		let alpha_price = UNIT / 20;
-		enable_payments(price, alpha_price, 100 * UNIT);
+		enable_payments(1, alpha_price, 100 * UNIT);
 
-		// Settle - byte_blocks should be preserved because tokens == 0
+		let expected_bb = SETTLEMENT_BLOCK as u128 - 1;
+		assert_eq!(
+			tokens_for(expected_bb, 1, alpha_price),
+			0,
+			"precondition: this really does round to zero tokens"
+		);
+
 		settle_at(SETTLEMENT_BLOCK);
 
-		// Accrual should still exist (dust preserved)
-		let accrual = pallet_arion::MinerAccruals::<Runtime>::get(7);
-		assert!(accrual.is_some(), "accrual should exist (dust preserved)");
+		// The dust is kept, not consumed: this is what fails if settlement goes
+		// back to taking byte_blocks before checking whether tokens are zero.
+		assert_eq!(Balances::free_balance(&family), 0, "nothing payable yet");
+		assert_eq!(
+			pallet_arion::MinerAccruals::<Runtime>::get(7).expect("entry").byte_blocks,
+			expected_bb,
+			"dust byte_blocks survive a zero-token settlement"
+		);
 
-		// Now set a more reasonable price and settle again
-		// The dust should now be consumable
-		Arion::set_miner_price(RuntimeOrigin::signed(admin()), 1_000_000_000_u128)
+		// Raising the price makes the preserved dust payable.
+		Arion::set_miner_price(RuntimeOrigin::signed(admin()), 10_000_000_000_u128)
 			.expect("set price");
-
 		settle_at(SETTLEMENT_BLOCK * 2);
 
-		// Now miner should be paid (dust was preserved and used)
-		assert!(Balances::free_balance(&family) > 0, "miner should be paid with preserved dust");
+		assert!(Balances::free_balance(&family) > 0, "miner is paid with preserved dust");
 	});
 }
 
@@ -1058,44 +963,3 @@ fn low3_payment_released_event_only_when_paid() {
 	});
 }
 
-#[test]
-fn bank_balance_invariant_holds() {
-	new_test_ext().execute_with(|| {
-		use pallet_marketplace::{DistributionArrears, TotalUndistributedBacking, PendingSudoRefunds};
-
-		let ranking_pot = pallet_rankings::Pallet::<Runtime>::account_id();
-		let marketplace_pot = Marketplace::account_id();
-
-		// Set up initial state
-		let _ = Balances::deposit_creating(&Hippocampus::account_id(), 100 * UNIT);
-		TotalUndistributedBacking::<Runtime>::put(40 * UNIT);
-		PendingSudoRefunds::<Runtime>::put(20 * UNIT);
-		DistributionArrears::<Runtime>::insert(&ranking_pot, 15 * UNIT);
-		DistributionArrears::<Runtime>::insert(&marketplace_pot, 10 * UNIT);
-
-		let bank = Hippocampus::balance();
-		let tub = TotalUndistributedBacking::<Runtime>::get();
-		let pending = PendingSudoRefunds::<Runtime>::get();
-		let arrears_ranking = DistributionArrears::<Runtime>::get(&ranking_pot);
-		let arrears_mp = DistributionArrears::<Runtime>::get(&marketplace_pot);
-		let total_arrears = arrears_ranking.saturating_add(arrears_mp);
-
-		// Invariant: bank >= TUB + Pending + Arrears
-		assert!(
-			bank >= tub + pending + total_arrears,
-			"Invariant broken: bank={}, tub={}, pending={}, arrears={}, total_reserved={}",
-			bank, tub, pending, total_arrears, tub + pending + total_arrears
-		);
-
-		// Verify that the compartment walls prevent miners from accessing reserved funds
-		// by checking the adapter would return a value that respects all reservations
-		let available_calc = pallet_hippocampus::Pallet::<Runtime>::available_for_payout()
-			.saturating_sub(tub)
-			.saturating_sub(pending)
-			.saturating_sub(total_arrears);
-		assert!(
-			available_calc <= bank.saturating_sub(tub + pending + total_arrears),
-			"Compartment wall calculation should respect all reservations"
-		);
-	});
-}
