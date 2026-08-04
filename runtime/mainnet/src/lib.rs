@@ -608,101 +608,14 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 		_total_issuance: Balance,
 		_era_duration_millis: u64,
 	) -> (Balance, Balance) {
-		// Fetch the balance available in the marketplace
-		let marketplace_balance = pallet_marketplace::Pallet::<Runtime>::balance();
+		// Marketplace alpha stays in bank, no distribution to stakers
 		let registration_balance = pallet_registration::Pallet::<Runtime>::balance();
-		let marketplace_account = pallet_marketplace::Pallet::<Runtime>::account_id();
 		let registration_account = pallet_registration::Pallet::<Runtime>::account_id();
-		// Marketplace revenue routing destination (intentional — not a
+		// Registration revenue routing destination (intentional — not a
 		// treasury bypass). <Account holder / purpose>.
 		let recipient_account =
 			AccountId32::from_ss58check("5GEudEYMVWJr64Y3599urXfG1tg4u7iNFWmBYZUET2YTdPkn")
 				.expect("Invalid SS58 address");
-
-		if marketplace_balance > 0 {
-			// Calculate amounts for each destination
-            let staking_amount = marketplace_balance
-                .checked_mul(2u32.into())
-                .and_then(|x| x.checked_div(3u32.into()))
-                .unwrap_or_default();
-
-            let treasury_amount = marketplace_balance
-                .checked_mul(1u32.into())
-                .and_then(|x| x.checked_div(3u32.into()))
-                .unwrap_or_default();
-
-			// Transfer to the specific account
-			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
-				&marketplace_account.clone(),
-				&recipient_account,
-				treasury_amount,
-				ExistenceRequirement::KeepAlive,
-			) {
-				log::error!(
-					target: "runtime::marketplace_payout",
-					"❌ Treasury transfer from marketplace failed: {:?}",
-					e
-				);
-			}
-
-			// // Burn the staking amount
-			// let _ = pallet_balances::Pallet::<Runtime>::burn(
-			//     frame_system::RawOrigin::Signed(marketplace_account.clone()).into(),
-			//     staking_amount,
-			//     false, // keep_alive set to false to allow burning entire balance
-			// );
-
-			// Get the list of validators from the session
-			let validators = <pallet_session::Pallet<Runtime>>::validators(); // Ensure you have the correct type here
-			let num_validators = validators.len() as u32;
-			if num_validators > 0 {
-				let amount_per_validator =
-					staking_amount.checked_div(num_validators.into()).unwrap_or_default();
-
-				for validator in validators {
-					if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
-						&marketplace_account.clone(),
-						&validator,
-						amount_per_validator,
-						ExistenceRequirement::KeepAlive,
-					) {
-						log::error!(
-							target: "runtime::marketplace_payout",
-							"❌ Validator payout transfer from marketplace failed for {:?}: {:?}",
-							validator,
-							e
-						);
-						continue;
-					}
-
-					let bond_result = if pallet_staking::Pallet::<Runtime>::ledger(
-						sp_staking::StakingAccount::Stash(validator.clone()),
-					)
-					.is_ok()
-					{
-							pallet_staking::Pallet::<Runtime>::bond_extra(
-								frame_system::RawOrigin::Signed(validator.clone()).into(),
-								amount_per_validator,
-							)
-						} else {
-							pallet_staking::Pallet::<Runtime>::bond(
-								frame_system::RawOrigin::Signed(validator.clone()).into(),
-								amount_per_validator,
-								pallet_staking::RewardDestination::Staked,
-							)
-						};
-
-					if let Err(e) = bond_result {
-						log::warn!(
-							target: "runtime::marketplace_payout",
-							"⚠️ Auto-bond failed for validator {:?}: {:?}",
-							validator,
-							e
-						);
-					}
-				}
-			}
-		}
 
 		if registration_balance > 0 {
 			// Calculate amounts for each destination

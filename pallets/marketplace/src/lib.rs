@@ -1371,13 +1371,8 @@ pub mod pallet {
                     *alpha = alpha.saturating_sub(batch.pending_alpha)
                 });
 
-                let backed = Self::take_backed_portion(batch_id, batch.pending_alpha);
-                Self::distribute_alpha(
-                    batch.pending_alpha,
-                    backed,
-                    RankingsPallet::<T>::account_id(),
-                    Self::account_id(),
-                )?;
+                // Alpha stays in bank, no distribution. Just track backed/unbacked portions.
+                Self::take_backed_portion(batch_id, batch.pending_alpha);
 
                 batch.pending_alpha = 0;
                 Batches::<T>::insert(batch_id, batch);
@@ -1486,7 +1481,6 @@ pub mod pallet {
             Self::consume_credits(
                 who.clone(),
                 charged_credits,
-                Self::account_id().clone(),
                 pallet_rankings::Pallet::<T>::account_id().clone(),
             )?;
                     
@@ -1615,7 +1609,6 @@ pub mod pallet {
             Self::consume_credits(
                 who.clone(),
                 charged_credits,
-                Self::account_id().clone(),
                 pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone(),
             )?;
                     
@@ -1776,7 +1769,6 @@ pub mod pallet {
                             storage_ok = Self::consume_credits(
                                 account_id.clone(),
                                 total_storage_charge,
-                                Self::account_id().clone(),
                                 pallet_rankings::Pallet::<T>::account_id().clone(),
                             )
                             .and_then(|_| {
@@ -1804,7 +1796,6 @@ pub mod pallet {
                             if Self::consume_credits(
                                 account_id.clone(),
                                 price,
-                                Self::account_id().clone(),
                                 pallet_rankings::Pallet::<T, pallet_rankings::Instance2>::account_id().clone(),
                             )
                             .and_then(|_| {
@@ -1983,7 +1974,6 @@ pub mod pallet {
                         let charge_result = Self::consume_credits(
                             user.clone(),
                             charge_amount,
-                            Self::account_id().clone(),
                             RankingsPallet::<T>::account_id().clone(),
                         );
 
@@ -2190,7 +2180,6 @@ pub mod pallet {
         pub fn consume_credits(
             sender: T::AccountId,
             credits: u128,
-            marketplace_account: T::AccountId,
             ranking_account: T::AccountId
         ) -> DispatchResult {
             let block_number = <frame_system::Pallet<T>>::block_number();
@@ -2256,34 +2245,22 @@ pub mod pallet {
                                         |alpha| *alpha = alpha.saturating_sub(batch.pending_alpha)
                                     );
 
-                                    let backed =
-                                        Self::take_backed_portion(batch_id, batch.pending_alpha);
-                                    Self::distribute_alpha(
-                                        batch.pending_alpha,
-                                        backed,
-                                        ranking_account.clone(),
-                                        marketplace_account.clone(),
-                                    )?;
-        
+                                    // Alpha stays in bank, no distribution. Just track backed/unbacked portions.
+                                    Self::take_backed_portion(batch_id, batch.pending_alpha);
+
                                     batch.pending_alpha = 0;
                                 }
                             }
         
-                            // Distribute current alpha
+                            // Release current alpha - stays in bank
                             if alpha_to_release_u128 > 0 {
                                 AlphaBalances::<T>::mutate(
                                     &batch.owner,
                                     |alpha| *alpha = alpha.saturating_sub(alpha_to_release_u128)
                                 );
 
-                                let backed =
-                                    Self::take_backed_portion(batch_id, alpha_to_release_u128);
-                                Self::distribute_alpha(
-                                    alpha_to_release_u128,
-                                    backed,
-                                    ranking_account.clone(),
-                                    marketplace_account.clone(),
-                                )?;
+                                // Alpha stays in bank, no distribution. Just track backed/unbacked portions.
+                                Self::take_backed_portion(batch_id, alpha_to_release_u128);
                         }
                         }
         
@@ -2325,138 +2302,6 @@ pub mod pallet {
             released.saturating_sub(consumed)
         }
 
-        fn distribute_alpha(
-            alpha_to_release: u128,
-            backed_alpha: u128,
-            ranking_account: T::AccountId,
-            marketplace_account: T::AccountId,
-        ) -> DispatchResult {
-
-            let rankings_amount = alpha_to_release
-                .checked_mul(70)
-                .and_then(|x| x.checked_div(100))
-                .unwrap_or_default();
-
-            let marketplace_amount = alpha_to_release
-                .saturating_sub(rankings_amount);
-
-            // Split backed_alpha pro-rata across both pots (70% ranking, 30% marketplace).
-            let ranking_backed = backed_alpha
-                .checked_mul(70)
-                .and_then(|x| x.checked_div(100))
-                .unwrap_or_default();
-
-            let marketplace_backed = backed_alpha.saturating_sub(ranking_backed);
-
-            // Calculate unbacked portions per destination. Unbacked alpha's backing
-            // never reached the bank, so it should not be paid from bank funds that
-            // are owed to other deposits' pot backing and other reserves.
-            let ranking_unbacked = rankings_amount.saturating_sub(ranking_backed);
-            let marketplace_unbacked = marketplace_amount.saturating_sub(marketplace_backed);
-
-            // HIGH-1 fix: only decrement TotalUndistributedBacking by the amount
-            // ACTUALLY paid, not by backed_alpha before payment. This ensures that
-            // shortfalls don't create arrears that fall outside available() calculation.
-            // Track total actually paid and decrement at the end.
-            let mut total_paid: u128 = 0;
-
-            // Backed alpha is paid out of the bank, which received the backing at
-            // deposit time — the sudo account is debited exactly once per backed
-            // alpha unit (at deposit), never here. The marketplace pallet account
-            // must be whitelisted as a bank requester. A rejection or shortfall never
-            // blocks the billing flow: the bank pays what it can and the rest is
-            // logged and retried.
-            let requester = Self::account_id();
-
-            // Process ranking pot: pay only backed portion from bank.
-            {
-                let owed = ranking_backed.saturating_add(DistributionArrears::<T>::take(&ranking_account));
-                if owed > 0 {
-                    let paid: u128 = match pallet_hippocampus::Pallet::<T>::request_payment(
-                        &requester,
-                        &ranking_account,
-                        owed.saturated_into(),
-                    ) {
-                        Ok(paid) => paid.saturated_into(),
-                        Err(e) => {
-                            log::warn!(
-                                target: "runtime::marketplace",
-                                "bank rejected revenue distribution to ranking: {:?}",
-                                e
-                            );
-                            0
-                        },
-                    };
-                    total_paid = total_paid.saturating_add(paid);
-                    if paid < owed {
-                        log::warn!(
-                            target: "runtime::marketplace",
-                            "bank shortfall distributing to ranking: owed {}, paid {}",
-                            owed,
-                            paid
-                        );
-                        DistributionArrears::<T>::insert(&ranking_account, owed.saturating_sub(paid));
-                    }
-                }
-
-                // Queue unbacked nominal portion for later retry (not paid from bank now).
-                if ranking_unbacked > 0 {
-                    DistributionArrears::<T>::mutate(&ranking_account, |a| {
-                        *a = a.saturating_add(ranking_unbacked)
-                    });
-                }
-            }
-
-            // Process marketplace pot: pay only backed portion from bank.
-            {
-                let owed = marketplace_backed.saturating_add(DistributionArrears::<T>::take(&marketplace_account));
-                if owed > 0 {
-                    let paid: u128 = match pallet_hippocampus::Pallet::<T>::request_payment(
-                        &requester,
-                        &marketplace_account,
-                        owed.saturated_into(),
-                    ) {
-                        Ok(paid) => paid.saturated_into(),
-                        Err(e) => {
-                            log::warn!(
-                                target: "runtime::marketplace",
-                                "bank rejected revenue distribution to marketplace: {:?}",
-                                e
-                            );
-                            0
-                        },
-                    };
-                    total_paid = total_paid.saturating_add(paid);
-                    if paid < owed {
-                        log::warn!(
-                            target: "runtime::marketplace",
-                            "bank shortfall distributing to marketplace: owed {}, paid {}",
-                            owed,
-                            paid
-                        );
-                        DistributionArrears::<T>::insert(&marketplace_account, owed.saturating_sub(paid));
-                    }
-                }
-
-                // Queue unbacked nominal portion for later retry (not paid from bank now).
-                if marketplace_unbacked > 0 {
-                    DistributionArrears::<T>::mutate(&marketplace_account, |a| {
-                        *a = a.saturating_add(marketplace_unbacked)
-                    });
-                }
-            }
-
-            // HIGH-1 fix: only decrement TotalUndistributedBacking by what was
-            // actually paid, not by the backed_alpha amount before payment. This
-            // prevents shortfalls from creating uncounted arrears.
-            if total_paid > 0 {
-                TotalUndistributedBacking::<T>::mutate(|t| {
-                    *t = t.saturating_sub(total_paid)
-                });
-            }
-
-            Ok(())
-        }
 
         /// Handle chargeback for a specific batch
         fn handle_chargeback(batch_id: u64) -> DispatchResult {
