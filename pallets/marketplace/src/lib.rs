@@ -2182,8 +2182,7 @@ pub mod pallet {
         #[transactional]
         pub fn consume_credits(
             sender: T::AccountId,
-            credits: u128,
-            ranking_account: T::AccountId
+            credits: u128
         ) -> DispatchResult {
             let block_number = <frame_system::Pallet<T>>::block_number();
             // NOTE: referral discounts should NOT apply here, because this function is used for

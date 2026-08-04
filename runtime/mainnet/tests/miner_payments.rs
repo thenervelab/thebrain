@@ -381,7 +381,6 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
-			ranking_pot.clone(),
 		)
 		.expect("consume credits");
 
@@ -435,7 +434,6 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
-			ranking_pot.clone(),
 		)
 		.expect("billing succeeds");
 		// No payout to pots since distribution is removed
@@ -456,7 +454,6 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		Marketplace::consume_credits(
 			user.clone(),
 			1 * UNIT,
-			ranking_pot.clone(),
 		)
 		.expect("second consume");
 		// Alpha stays in bank, no distribution to pots
@@ -511,7 +508,6 @@ fn miner_settlement_cannot_drain_pot_backing() {
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
-			ranking_pot.clone(),
 		)
 		.expect("consume");
 		assert_eq!(Balances::free_balance(&ranking_pot), 0);
@@ -630,7 +626,6 @@ fn unbacked_batch_release_does_not_reduce_backed_ledger() {
 		Marketplace::consume_credits(
 			user_b.clone(),
 			5 * UNIT,
-			ranking_pot.clone(),
 		)
 		.expect("consume unbacked batch");
 		// No distribution to pots, so no arrears tracking needed
