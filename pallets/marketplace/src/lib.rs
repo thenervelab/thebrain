@@ -533,24 +533,12 @@ pub mod pallet {
     #[pallet::getter(fn sudo_key)]
     pub type SudoKey<T: Config> = StorageValue<_, Option<T::AccountId>, ValueQuery>;
 
-    /// Revenue owed to a distribution destination (ranking/marketplace pots)
-    /// that the bank could not cover at the time — folded into the next
-    /// distribution to that destination. Pot analog of arion's FamilyArrears.
-    #[pallet::storage]
-    pub type DistributionArrears<T: Config> =
-        StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
-
-    /// Total of all outstanding DistributionArrears across all pots.
-    /// Kept in sync with DistributionArrears updates to allow O(1) reads
-    /// for compartment wall calculation in arion adapter.
-    #[pallet::storage]
-    pub type TotalDistributionArrears<T: Config> = StorageValue<_, u128, ValueQuery>;
-
-    /// Alpha backing sitting in the bank that is still owed to the pots.
-    /// Incremented when deposit backing actually reaches the bank, decremented
-    /// by the nominal backed alpha a release or chargeback takes out of
-    /// circulation — payment success is tracked separately ([`DistributionArrears`],
-    /// [`PendingSudoRefunds`]), so a bank shortfall never desyncs this ledger.
+    /// Alpha backing sitting in the bank that has not yet been earned out of it.
+    /// Incremented when deposit backing reaches the bank, decremented when the
+    /// credits it backs are consumed (the revenue is earned and becomes miner
+    /// budget) or charged back (it is refunded to sudo). Refund delivery is
+    /// tracked separately in [`PendingSudoRefunds`], so a bank shortfall never
+    /// desyncs this ledger.
     /// Ops invariant to alert on:
     /// bank balance >= TotalUndistributedBacking + PendingSudoRefunds + expected miner due.
     #[pallet::storage]
