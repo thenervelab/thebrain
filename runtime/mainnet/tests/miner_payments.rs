@@ -376,8 +376,8 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 
-		// Consume 2 of the 5 credits → releases 2×3/5 = 1.2 alpha, paid by the
-		// bank to the pots (70/30) — the sudo account is not touched again.
+		// Consume 2 of the 5 credits → releases 2×3/5 = 1.2 alpha, stays in bank
+		// (no distribution to pots anymore)
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
@@ -386,16 +386,17 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 		.expect("consume credits");
 
 		let released = 2 * UNIT * 3 / 5;
-		let ranking_share = released * 70 / 100;
-		let marketplace_share = released - ranking_share;
-		assert_eq!(Balances::free_balance(&ranking_pot), ranking_share);
-		assert_eq!(Balances::free_balance(&marketplace_pot), marketplace_share);
+		// Alpha stays in bank, pots get nothing
+		assert_eq!(Balances::free_balance(&ranking_pot), 0);
+		assert_eq!(Balances::free_balance(&marketplace_pot), 0);
 		// Sudo was debited exactly once, at deposit time.
 		assert_eq!(Balances::free_balance(&sudo), 97 * UNIT);
-		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT - released);
+		// Bank holds the full amount released
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT);
+		// No payment was made (distribution removed)
 		assert_eq!(
 			pallet_hippocampus::TotalPaidByRequester::<Runtime>::get(Marketplace::account_id()),
-			released
+			0
 		);
 	});
 }
@@ -430,25 +431,23 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
 		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 0);
 
-		// Billing still succeeds; the pots get nothing — but the shortfall is
-		// carried as arrears instead of silently discarded.
+		// Billing succeeds; alpha stays in bank, no distribution to pots
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
 			ranking_pot.clone(),
 		)
 		.expect("billing succeeds");
-		let released_1 = 2 * UNIT * 3 / 5;
-		let ranking_owed_1 = released_1 * 70 / 100;
-		let marketplace_owed_1 = released_1 - ranking_owed_1;
+		// No payout to pots since distribution is removed
 		assert_eq!(Balances::free_balance(&ranking_pot), 0);
+		// No arrears tracked since distribution removed
 		assert_eq!(
 			pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot),
-			ranking_owed_1
+			0
 		);
 		assert_eq!(
 			pallet_marketplace::DistributionArrears::<Runtime>::get(&marketplace_pot),
-			marketplace_owed_1
+			0
 		);
 
 		// Refill the bank; the next distribution pays arrears + new share.
@@ -460,14 +459,11 @@ fn failed_deposit_routing_creates_distribution_arrears_then_retries() {
 			ranking_pot.clone(),
 		)
 		.expect("second consume");
-		// After successful distribution with sufficient bank, both pots should be paid
+		// Alpha stays in bank, no distribution to pots
 		let ranking_paid = Balances::free_balance(&ranking_pot);
 		let marketplace_paid = Balances::free_balance(&marketplace_pot);
-		assert!(ranking_paid > 0, "ranking pot should be paid");
-		assert!(marketplace_paid > 0, "marketplace pot should be paid");
-		// Verify arrears retry: both pots should receive more than just their first distribution
-		assert!(ranking_paid >= ranking_owed_1, "ranking should get at least its arrears");
-		assert!(marketplace_paid >= marketplace_owed_1, "marketplace should get at least its arrears");
+		assert_eq!(ranking_paid, 0, "ranking pot should not be paid (distribution removed)");
+		assert_eq!(marketplace_paid, 0, "marketplace pot should not be paid (distribution removed)");
 	});
 }
 
@@ -511,16 +507,15 @@ fn miner_settlement_cannot_drain_pot_backing() {
 		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 3 * UNIT + 500);
 		assert!(pallet_arion::FamilyArrears::<Runtime>::get(&family) > 0);
 
-		// The pots are paid in full from the protected backing.
+		// Alpha stays in bank, pots get nothing (distribution removed).
 		Marketplace::consume_credits(
 			user.clone(),
 			2 * UNIT,
 			ranking_pot.clone(),
 		)
 		.expect("consume");
-		let released = 2 * UNIT * 3 / 5;
-		assert_eq!(Balances::free_balance(&ranking_pot), released * 70 / 100);
-		assert_eq!(Balances::free_balance(&marketplace_pot), released - released * 70 / 100);
+		assert_eq!(Balances::free_balance(&ranking_pot), 0);
+		assert_eq!(Balances::free_balance(&marketplace_pot), 0);
 	});
 }
 
@@ -638,16 +633,15 @@ fn unbacked_batch_release_does_not_reduce_backed_ledger() {
 			ranking_pot.clone(),
 		)
 		.expect("consume unbacked batch");
-		let unbacked_released = 2 * UNIT;
-		// Unbacked should be queued in arrears, not paid immediately
+		// No distribution to pots, so no arrears tracking needed
 		let total_arrears = pallet_marketplace::DistributionArrears::<Runtime>::get(&ranking_pot)
 			+ pallet_marketplace::DistributionArrears::<Runtime>::get(&marketplace_pot);
-		assert_eq!(total_arrears, unbacked_released, "unbacked should queue in arrears");
-		// Nothing paid to pots from bank (unbacked queued for later)
+		assert_eq!(total_arrears, 0, "no distribution means no arrears");
+		// Pots get nothing (distribution removed)
 		assert_eq!(
 			Balances::free_balance(&ranking_pot) + Balances::free_balance(&marketplace_pot),
 			0,
-			"unbacked should not be paid from bank immediately"
+			"pots receive nothing (distribution removed)"
 		);
 		// Backing ledger unchanged (HIGH-2 wall)
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 3 * UNIT);
