@@ -850,3 +850,175 @@ fn stats_for_unclaimed_uid_do_not_accrue() {
 		assert!(MinerAccruals::<Runtime>::contains_key(99));
 	});
 }
+
+#[test]
+fn high1_pot_shortfall_walled_from_miners() {
+	new_test_ext().execute_with(|| {
+		use pallet_marketplace::{DistributionArrears, TotalUndistributedBacking};
+
+		let (family, child) = (account(1), account(2));
+		let ranking_pot = pallet_rankings::Pallet::<Runtime>::account_id();
+		let marketplace_pot = Marketplace::account_id();
+
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		enable_payments(price, alpha_price, 10 * UNIT);
+
+		// Set up marketplace payment flow: whitelist marketplace to pull from bank.
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+
+		// Simulate a blocked deposit that marks funds as owed to pots.
+		// We'll manually set TUB to simulate backed alpha pending distribution.
+		let pot_backing = 5 * UNIT;
+		TotalUndistributedBacking::<Runtime>::put(pot_backing);
+
+		// Before settlement, available should exclude TUB.
+		let available_before = pallet_arion::PayoutSource::<Runtime>::available();
+		assert_eq!(available_before, Hippocampus::balance().saturating_sub(pot_backing));
+
+		// Simulate a distribution shortfall by setting arrears (e.g., bank rejection).
+		// This represents unpaid pot debt after a distribution attempt.
+		let arrears = 2 * UNIT;
+		DistributionArrears::<Runtime>::insert(&ranking_pot, arrears);
+
+		// Now available should exclude BOTH pot backing AND arrears.
+		let available_after_arrears = pallet_arion::PayoutSource::<Runtime>::available();
+		assert_eq!(
+			available_after_arrears,
+			Hippocampus::balance()
+				.saturating_sub(pot_backing)
+				.saturating_sub(arrears)
+		);
+
+		// Miners cannot spend the arrears-owed amount (HIGH-1 wall).
+		let bank_balance = Hippocampus::balance();
+		assert!(bank_balance >= pot_backing + arrears, "bank must hold all owed amounts");
+		assert!(available_after_arrears < bank_balance, "arrears must reduce available");
+	});
+}
+
+#[test]
+fn high2_unbacked_does_not_drain_other_deposits() {
+	new_test_ext().execute_with(|| {
+		use pallet_marketplace::{
+			AlphaBalances, Batches, DistributionArrears, TotalUndistributedBacking,
+			UnbackedBatchAlpha, Batch, AccountIdExt,
+		};
+		use frame_support::traits::Currency;
+
+		let buyer_a = account(10);
+		let buyer_b = account(11);
+		let ranking_pot = pallet_rankings::Pallet::<Runtime>::account_id();
+		let marketplace_pot = Marketplace::account_id();
+
+		// Set up: fund marketplace and whitelist it on the bank.
+		let _ = Balances::deposit_creating(&Marketplace::account_id(), 50 * UNIT);
+		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
+			.expect("whitelist marketplace");
+
+		let price_per_gb = 1_000_000_000_u128;
+
+		// Batch A: backed by marketplace revenue (10 UNIT backing).
+		let batch_a_id = 1u64;
+		AlphaBalances::<Runtime>::insert(&buyer_a, 10 * UNIT);
+		Batches::<Runtime>::insert(
+			batch_a_id,
+			Batch {
+				owner: buyer_a.clone(),
+				batch_hash: [1u8; 32].into(),
+				start_block: 1,
+				is_frozen: false,
+				release_time: 100,
+				pending_alpha: 0,
+				remaining_alpha: 10 * UNIT,
+				purchase_price_per_gb: price_per_gb,
+				remaining_credits: 10 * UNIT,
+				proof: None,
+			},
+		);
+		pallet_marketplace::UserBatches::<Runtime>::insert(
+			&buyer_a,
+			vec![batch_a_id],
+		);
+
+		// Mark batch A's alpha as backed (10 UNIT backing reached the bank).
+		TotalUndistributedBacking::<Runtime>::put(10 * UNIT);
+
+		// Batch B: unbacked (no sudo key to fund it).
+		let batch_b_id = 2u64;
+		AlphaBalances::<Runtime>::insert(&buyer_b, 5 * UNIT);
+		Batches::<Runtime>::insert(
+			batch_b_id,
+			Batch {
+				owner: buyer_b.clone(),
+				batch_hash: [2u8; 32].into(),
+				start_block: 1,
+				is_frozen: false,
+				release_time: 100,
+				pending_alpha: 0,
+				remaining_alpha: 5 * UNIT,
+				purchase_price_per_gb: price_per_gb,
+				remaining_credits: 5 * UNIT,
+				proof: None,
+			},
+		);
+		pallet_marketplace::UserBatches::<Runtime>::insert(
+			&buyer_b,
+			vec![batch_b_id],
+		);
+
+		// Mark batch B's alpha as unbacked (no backing reached the bank).
+		UnbackedBatchAlpha::<Runtime>::insert(batch_b_id, 5 * UNIT);
+
+		let bank_before = Hippocampus::balance();
+		let tub_before = TotalUndistributedBacking::<Runtime>::get();
+		let arrears_before_ranking = DistributionArrears::<Runtime>::get(&ranking_pot);
+		let arrears_before_mp = DistributionArrears::<Runtime>::get(&marketplace_pot);
+
+		// Consume batch B's 5 UNIT unbacked alpha.
+		Marketplace::consume_credits(
+			buyer_b.clone(),
+			5 * UNIT,
+			marketplace_pot.clone(),
+			ranking_pot.clone(),
+		)
+		.expect("consume unbacked batch");
+
+		let bank_after = Hippocampus::balance();
+		let tub_after = TotalUndistributedBacking::<Runtime>::get();
+		let arrears_after_ranking = DistributionArrears::<Runtime>::get(&ranking_pot);
+		let arrears_after_mp = DistributionArrears::<Runtime>::get(&marketplace_pot);
+
+		// HIGH-2 validation:
+		// 1. TUB should only decrease by backed portion (0 for unbacked batch).
+		assert_eq!(tub_after, tub_before, "unbacked should not reduce TUB");
+
+		// 2. Bank should not pay out unbacked nominal yet.
+		// (Unbacked queues as arrears, so bank is unchanged if arrears accumulate.)
+		// The key invariant: bank_after >= TUB_after + arrears_after
+		let total_arrears_after = arrears_after_ranking.saturating_add(arrears_after_mp);
+		assert!(
+			bank_after >= tub_after + total_arrears_after,
+			"bank must cover all owed amounts (TUB + arrears): bank={}, tub={}, arrears={}",
+			bank_after, tub_after, total_arrears_after
+		);
+
+		// 3. The unbacked 5 UNIT should be queued in arrears, not paid now.
+		let new_arrears_total = total_arrears_after;
+		assert!(
+			new_arrears_total > (arrears_before_ranking + arrears_before_mp),
+			"unbacked should queue in arrears"
+		);
+
+		// 4. Bank's A's backing is not drained to pay B's unbacked (HIGH-2 wall).
+		// If the code incorrectly paid unbacked from bank, bank_after would be less.
+		assert_eq!(
+			bank_after, bank_before,
+			"unbacked should not drain bank (should queue as arrears instead)"
+		);
+	});
+}

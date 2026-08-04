@@ -540,6 +540,12 @@ pub mod pallet {
     pub type DistributionArrears<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
 
+    /// Total of all outstanding DistributionArrears across all pots.
+    /// Kept in sync with DistributionArrears updates to allow O(1) reads
+    /// for compartment wall calculation in arion adapter.
+    #[pallet::storage]
+    pub type TotalDistributionArrears<T: Config> = StorageValue<_, u128, ValueQuery>;
+
     /// Alpha backing sitting in the bank that is still owed to the pots.
     /// Incremented when deposit backing actually reaches the bank, decremented
     /// by the nominal backed alpha a release or chargeback takes out of
@@ -1342,6 +1348,16 @@ pub mod pallet {
                 .unwrap_or_default();
             // Distribution amount per era
             total_amount / eras_balance
+        }
+
+        /// Sum all outstanding distribution arrears across both pots (ranking + marketplace).
+        /// Used by the arion adapter to wall off pot debt from miner settlement.
+        /// Compartmentalization: miners cannot spend funds owed to the pots.
+        pub fn sum_distribution_arrears() -> u128 {
+            let ranking_pot = pallet_rankings::Pallet::<T>::account_id();
+            let marketplace_pot = Self::account_id();
+            DistributionArrears::<T>::get(&ranking_pot)
+                .saturating_add(DistributionArrears::<T>::get(&marketplace_pot))
         }
 
         fn do_purchase_storage_plan(
@@ -2271,59 +2287,111 @@ pub mod pallet {
             let marketplace_amount = alpha_to_release
                 .saturating_sub(rankings_amount);
 
-            // The released alpha's backed portion leaves the "owed to pots"
-            // ledger now, nominally — whether the bank can actually pay is
-            // tracked separately in DistributionArrears, so a shortfall never
-            // desyncs the ledger while unbacked alpha (whose backing never
-            // reached the bank) never deducts from it.
+            // Split backed_alpha pro-rata across both pots (70% ranking, 30% marketplace).
+            let ranking_backed = backed_alpha
+                .checked_mul(70)
+                .and_then(|x| x.checked_div(100))
+                .unwrap_or_default();
+
+            let marketplace_backed = backed_alpha.saturating_sub(ranking_backed);
+
+            // Calculate unbacked portions per destination. Unbacked alpha's backing
+            // never reached the bank, so it should not be paid from bank funds that
+            // are owed to other deposits' pot backing and other reserves.
+            let ranking_unbacked = rankings_amount.saturating_sub(ranking_backed);
+            let marketplace_unbacked = marketplace_amount.saturating_sub(marketplace_backed);
+
+            // Only backed portion leaves the "owed to pots" ledger now, nominally —
+            // whether the bank can actually pay is tracked separately in
+            // DistributionArrears, so a shortfall never desyncs the ledger.
+            // Unbacked alpha (whose backing never reached the bank) never deducts from it.
             if backed_alpha > 0 {
                 TotalUndistributedBacking::<T>::mutate(|t| {
                     *t = t.saturating_sub(backed_alpha)
                 });
             }
 
-            // Released alpha is paid out of the bank, which received the
-            // backed alpha's backing at deposit time — the sudo account is
-            // debited exactly once per backed alpha unit (at deposit), never
-            // here. The marketplace pallet account must be whitelisted as a
-            // bank requester. A rejection or shortfall never blocks the
-            // billing flow: the bank pays what it can (visible in
-            // PaymentReleased events) and the rest is logged.
+            // Backed alpha is paid out of the bank, which received the backing at
+            // deposit time — the sudo account is debited exactly once per backed
+            // alpha unit (at deposit), never here. The marketplace pallet account
+            // must be whitelisted as a bank requester. A rejection or shortfall never
+            // blocks the billing flow: the bank pays what it can and the rest is
+            // logged and retried.
             let requester = Self::account_id();
-            for (dest, amount) in
-                [(ranking_account, rankings_amount), (marketplace_account, marketplace_amount)]
+
+            // Process ranking pot: pay only backed portion from bank.
             {
-                // Fold in revenue the bank could not cover previously.
-                let owed = amount.saturating_add(DistributionArrears::<T>::take(&dest));
-                if owed == 0 {
-                    continue;
-                }
-                let paid: u128 = match pallet_hippocampus::Pallet::<T>::request_payment(
-                    &requester,
-                    &dest,
-                    owed.saturated_into(),
-                ) {
-                    Ok(paid) => paid.saturated_into(),
-                    Err(e) => {
+                let owed = ranking_backed.saturating_add(DistributionArrears::<T>::take(&ranking_account));
+                if owed > 0 {
+                    let paid: u128 = match pallet_hippocampus::Pallet::<T>::request_payment(
+                        &requester,
+                        &ranking_account,
+                        owed.saturated_into(),
+                    ) {
+                        Ok(paid) => paid.saturated_into(),
+                        Err(e) => {
+                            log::warn!(
+                                target: "runtime::marketplace",
+                                "bank rejected revenue distribution to ranking: {:?}",
+                                e
+                            );
+                            0
+                        },
+                    };
+                    if paid < owed {
                         log::warn!(
                             target: "runtime::marketplace",
-                            "bank rejected revenue distribution to {:?}: {:?}",
-                            dest,
-                            e
+                            "bank shortfall distributing to ranking: owed {}, paid {}",
+                            owed,
+                            paid
                         );
-                        0
-                    },
-                };
-                if paid < owed {
-                    // Shortfall: never silent, retried at the next distribution.
-                    log::warn!(
-                        target: "runtime::marketplace",
-                        "bank shortfall distributing to {:?}: owed {}, paid {}",
-                        dest,
-                        owed,
-                        paid
-                    );
-                    DistributionArrears::<T>::insert(&dest, owed.saturating_sub(paid));
+                        DistributionArrears::<T>::insert(&ranking_account, owed.saturating_sub(paid));
+                    }
+                }
+
+                // Queue unbacked nominal portion for later retry (not paid from bank now).
+                if ranking_unbacked > 0 {
+                    DistributionArrears::<T>::mutate(&ranking_account, |a| {
+                        *a = a.saturating_add(ranking_unbacked)
+                    });
+                }
+            }
+
+            // Process marketplace pot: pay only backed portion from bank.
+            {
+                let owed = marketplace_backed.saturating_add(DistributionArrears::<T>::take(&marketplace_account));
+                if owed > 0 {
+                    let paid: u128 = match pallet_hippocampus::Pallet::<T>::request_payment(
+                        &requester,
+                        &marketplace_account,
+                        owed.saturated_into(),
+                    ) {
+                        Ok(paid) => paid.saturated_into(),
+                        Err(e) => {
+                            log::warn!(
+                                target: "runtime::marketplace",
+                                "bank rejected revenue distribution to marketplace: {:?}",
+                                e
+                            );
+                            0
+                        },
+                    };
+                    if paid < owed {
+                        log::warn!(
+                            target: "runtime::marketplace",
+                            "bank shortfall distributing to marketplace: owed {}, paid {}",
+                            owed,
+                            paid
+                        );
+                        DistributionArrears::<T>::insert(&marketplace_account, owed.saturating_sub(paid));
+                    }
+                }
+
+                // Queue unbacked nominal portion for later retry (not paid from bank now).
+                if marketplace_unbacked > 0 {
+                    DistributionArrears::<T>::mutate(&marketplace_account, |a| {
+                        *a = a.saturating_add(marketplace_unbacked)
+                    });
                 }
             }
 
