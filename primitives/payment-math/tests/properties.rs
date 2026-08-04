@@ -4,10 +4,10 @@
 //! build entirely — dev-dependencies never reach the runtime Wasm.
 
 use payment_math::{
-	available, payable, pro_rata, prorate_first_month, split, tokens_for, BasisPoints, Blocks,
-	ByteBlocks, Bytes, Credits, Tokens, Usd, UsdPerGibBlock, BPS_DENOM, E18, GIB,
+	available, payable, pro_rata, prorate_first_month, split, tokens_for, Amount, BasisPoints,
+	Blocks, ByteBlocks, Bytes, Credits, Tokens, Usd, UsdPerGibBlock, BPS_DENOM, E18, GIB,
 };
-use primitive_types::U256;
+use primitive_types::{U256, U512};
 use proptest::prelude::*;
 
 proptest! {
@@ -36,6 +36,24 @@ proptest! {
 		);
 	}
 
+	/// Exact product when it fits; saturate to MAX when checked_mul fails.
+	#[test]
+	fn accrual_matches_checked_mul_or_saturates(a in any::<u128>(), b in any::<u128>()) {
+		let got = (Bytes::new(a) * Blocks::new(b)).get();
+		match a.checked_mul(b) {
+			Some(p) => prop_assert_eq!(got, p),
+			None => prop_assert_eq!(got, u128::MAX),
+		}
+	}
+
+	#[test]
+	fn byte_blocks_saturating_add_matches_u128(a in any::<u128>(), b in any::<u128>()) {
+		prop_assert_eq!(
+			ByteBlocks::new(a).saturating_add(ByteBlocks::new(b)).get(),
+			a.saturating_add(b)
+		);
+	}
+
 	/// The floor-division bound: pricing under-pays by strictly less than
 	/// one planck, and never over-pays. (Skips saturated regions — the
 	/// bound only makes sense for exact quotients.)
@@ -52,6 +70,50 @@ proptest! {
 			tokens_for(ByteBlocks::new(bb), UsdPerGibBlock::new(price), Usd::new(tp)).get();
 		prop_assert!(U256::from(tokens) * den <= num);
 		prop_assert!(num < (U256::from(tokens) + U256::from(1u8)) * den);
+	}
+
+	/// Exact match against a `U512` oracle over the full `u128` domain —
+	/// including inputs whose numerator exceeds `U256::MAX` (where a
+	/// saturating-`U256` implementation under-pays) and inputs whose quotient
+	/// saturates at `u128::MAX`.
+	#[test]
+	fn pricing_matches_u512_oracle_over_full_domain(
+		bb in any::<u128>(),
+		price in any::<u128>(),
+		tp in 1u128..=u128::MAX,
+	) {
+		let num: U512 = U256::from(bb).full_mul(U256::from(price)) * U512::from(E18);
+		let den = U512::from(GIB) * U512::from(tp);
+		let exact = num / den;
+		let tokens =
+			tokens_for(ByteBlocks::new(bb), UsdPerGibBlock::new(price), Usd::new(tp)).get();
+		if exact > U512::from(u128::MAX) {
+			prop_assert_eq!(tokens, u128::MAX);
+		} else {
+			prop_assert_eq!(U512::from(tokens), exact);
+			// Floor characterization when the quotient fits u128.
+			prop_assert!(U512::from(tokens) * den <= num);
+			prop_assert!(num < (U512::from(tokens) + U512::from(1u8)) * den);
+		}
+	}
+
+	#[test]
+	fn pricing_monotone_in_bb_and_price_antitone_in_token_price(
+		a in any::<u128>(),
+		b in any::<u128>(),
+		fixed in any::<u128>(),
+		tp_lo in 1u128..=u128::MAX,
+		tp_hi in 1u128..=u128::MAX,
+	) {
+		let (lo, hi) = (a.min(b), a.max(b));
+		let (tp_a, tp_b) = (tp_lo.min(tp_hi), tp_lo.max(tp_hi));
+		let t = |bb: u128, price: u128, tp: u128| {
+			tokens_for(ByteBlocks::new(bb), UsdPerGibBlock::new(price), Usd::new(tp)).get()
+		};
+		prop_assert!(t(lo, fixed, tp_a) <= t(hi, fixed, tp_a));
+		prop_assert!(t(fixed, lo, tp_a) <= t(fixed, hi, tp_a));
+		// Higher token USD price ⇒ fewer or equal tokens for the same accrual.
+		prop_assert!(t(fixed, fixed, tp_a) >= t(fixed, fixed, tp_b));
 	}
 
 	/// Bank-never-overpays: for any partition of total_due, the pro-rata
@@ -78,10 +140,12 @@ proptest! {
 			let pool_t = Tokens::new(pool);
 			let mut sum = 0u128;
 			for d in &dues {
-				let share = pro_rata(Tokens::new(*d), pool_t, total_t);
+				let due = Tokens::new(*d);
+				let share = pro_rata(due, pool_t, total_t);
 				// The load-bearing per-claimant bound: share ≤ due is what
 				// keeps the caller's `due − share` arrears subtraction exact.
 				prop_assert!(share.get() <= *d);
+				prop_assert_eq!(share.saturating_add(due.saturating_sub(share)), due);
 				sum += share.get(); // each share ≤ its due, Σ dues = total < MAX
 			}
 			prop_assert!(sum <= total);
@@ -90,6 +154,50 @@ proptest! {
 			prop_assert!(sum <= pool);
 			if pool >= total {
 				prop_assert_eq!(sum, total); // full pool ⇒ everyone paid in full
+			} else {
+				// Floor-division dust left in the bank: strictly less than one
+				// planck per claimant, so it cannot accumulate into a silent
+				// extra full share under the caller contract.
+				prop_assert!(pool - sum < dues.len() as u128);
+			}
+		}
+	}
+
+	/// Sole claimant identity over the full domain: when due == total_due,
+	/// pro_rata is exactly min(due, pool).
+	#[test]
+	fn pro_rata_single_claimant_is_min_due_pool(
+		due in 1u128..=u128::MAX,
+		pool in any::<u128>(),
+	) {
+		let d = Tokens::new(due);
+		let share = pro_rata(d, Tokens::new(pool), d).get();
+		prop_assert_eq!(share, due.min(pool));
+	}
+
+	/// Floor formula for a single share, full u128 dues (not capped at 2^100).
+	/// Generate `due` as a fraction of `total` so the caller contract always
+	/// holds without mass `prop_assume` rejects.
+	#[test]
+	fn pro_rata_floor_formula_full_domain(
+		total in 1u128..=u128::MAX,
+		due_pct in 0u128..=100,
+		pool in any::<u128>(),
+	) {
+		// due = floor(total * pct / 100) ≤ total always; product fits because
+		// pct ≤ 100.
+		let due = total.saturating_mul(due_pct) / 100;
+		// Also exercise due == total explicitly via pct=100, and a raw due
+		// taken as min(pool, total) for variety near the top of the domain.
+		for due in [due, total, pool.min(total)] {
+			let share = pro_rata(Tokens::new(due), Tokens::new(pool), Tokens::new(total)).get();
+			if pool >= total {
+				prop_assert_eq!(share, due);
+			} else {
+				let exact = (U256::from(due) * U256::from(pool) / U256::from(total)).as_u128();
+				prop_assert_eq!(share, exact);
+				prop_assert!(share <= due);
+				prop_assert!(share <= pool);
 			}
 		}
 	}
@@ -113,6 +221,24 @@ proptest! {
 			U256::from(amount) * U256::from(eff)
 				< (U256::from(part.get()) + U256::from(1u8)) * U256::from(BPS_DENOM)
 		);
+	}
+
+	/// Same conservation + floor bound for Credits (marketplace path).
+	#[test]
+	fn split_credits_conserves_and_floors(
+		amount in any::<u128>(),
+		bps in 0u128..=(2 * BPS_DENOM),
+	) {
+		let (part, rest) = split(Credits::new(amount), BasisPoints::new(bps));
+		prop_assert_eq!(part.get().checked_add(rest.get()), Some(amount));
+		let eff = bps.min(BPS_DENOM);
+		let exact = (U256::from(amount) * U256::from(eff) / U256::from(BPS_DENOM)).as_u128();
+		prop_assert_eq!(part.get(), exact);
+	}
+
+	#[test]
+	fn basis_points_never_exceeds_denom(raw in any::<u128>()) {
+		prop_assert!(BasisPoints::new(raw).get() <= BPS_DENOM);
 	}
 
 	#[test]
@@ -143,14 +269,76 @@ proptest! {
 		prop_assert!(prorate_first_month(Credits::new(price), drm, dim).get() <= price);
 	}
 
+	/// When price×days does not saturate, output equals exact ceil; when it
+	/// does, output equals the saturated-ceil the implementation documents
+	/// (still ≤ price). Covers Tokens as well as Credits.
+	#[test]
+	fn prorate_matches_saturating_ceil_oracle(
+		price in any::<u128>(),
+		drm in any::<u32>(),
+		dim in 1u32..=u32::MAX,
+	) {
+		let out_c = prorate_first_month(Credits::new(price), drm, dim).get();
+		let out_t = prorate_first_month(Tokens::new(price), drm, dim).get();
+		prop_assert_eq!(out_c, out_t);
+		if dim == 0 {
+			// Constructor path is dim>=1 here; kept for clarity if generator changes.
+			prop_assert_eq!(out_c, price);
+			return Ok(());
+		}
+		let days = drm.min(dim);
+		let dim_u = u128::from(dim);
+		let num = price.saturating_mul(u128::from(days));
+		let expected = num.saturating_add(dim_u - 1) / dim_u;
+		prop_assert_eq!(out_c, expected);
+		prop_assert!(out_c <= price);
+	}
+
+	/// dim==0 always charges the full price (calendar not initialised).
+	#[test]
+	fn prorate_zero_dim_always_full_price(price in any::<u128>(), drm in any::<u32>()) {
+		prop_assert_eq!(prorate_first_month(Credits::new(price), drm, 0).get(), price);
+	}
+
 	#[test]
 	fn payable_and_available_are_caps(
 		bal in any::<u128>(), ed in any::<u128>(), req in any::<u128>(),
 	) {
 		let avail = available(Tokens::new(bal), Tokens::new(ed));
 		prop_assert!(avail.get() <= bal);
+		// Exact semantics, not just inequalities.
+		prop_assert_eq!(avail.get(), bal.saturating_sub(ed));
 		let paid = payable(Tokens::new(req), avail);
 		prop_assert!(paid.get() <= req);
 		prop_assert!(paid.get() <= avail.get());
+		prop_assert_eq!(paid.get(), req.min(avail.get()));
+	}
+
+	/// Pipeline: priced due → pro-rata shortfall → bank payable never exceeds
+	/// either the share or free-above-ED.
+	#[test]
+	fn composition_priced_share_respects_bank_caps(
+		bb in 0u128..=(10 * GIB * 14_400),
+		price in 0u128..=E18,
+		tp in 1u128..=E18,
+		pool_pct in 0u128..=100,
+		ed in 0u128..=1_000,
+	) {
+		let due = tokens_for(ByteBlocks::new(bb), UsdPerGibBlock::new(price), Usd::new(tp)).get();
+		// Two identical claimants → total = 2*due (saturate-safe: due ≤ tokens for small bb).
+		let total = due.saturating_mul(2);
+		prop_assume!(total > 0);
+		let pool = total.saturating_mul(pool_pct) / 100;
+		let share = pro_rata(Tokens::new(due), Tokens::new(pool), Tokens::new(total)).get();
+		prop_assert!(share <= due);
+		prop_assert!(share <= pool);
+		// Bank balance = pool + ed when that addition does not saturate.
+		prop_assume!(pool.checked_add(ed).is_some());
+		let bal = pool + ed;
+		let avail = available(Tokens::new(bal), Tokens::new(ed)).get();
+		prop_assert_eq!(avail, pool);
+		let paid = payable(Tokens::new(share), Tokens::new(avail)).get();
+		prop_assert_eq!(paid, share.min(avail));
+		prop_assert_eq!(share + due.saturating_sub(share), due);
 	}
 }
