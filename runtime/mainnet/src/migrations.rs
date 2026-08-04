@@ -369,6 +369,15 @@ where
 		let mut reads = 2u64;
 		let mut writes = 2u64;
 
+		// Set per-requester withdrawal caps (no hard limit, set to max for now).
+		// NOTE: This cap is per-call, not cumulative/per-era. Consider redesign
+		// if stricter enforcement is needed. Currently set high to not restrict.
+		let cap: <T as pallet_hippocampus::Config>::Balance =
+			<<T as pallet_hippocampus::Config>::Balance>::from(u128::MAX);
+		pallet_hippocampus::RequesterWithdrawalCap::<T>::insert(&arion, cap);
+		pallet_hippocampus::RequesterWithdrawalCap::<T>::insert(&marketplace, cap);
+		writes = writes.saturating_add(2);
+
 		// Batches deposited before this upgrade never routed their backing to
 		// the bank. Seed it from sudo in one transfer; if that cannot be done
 		// (no key, underfunded sudo), mark every batch unbacked instead so
