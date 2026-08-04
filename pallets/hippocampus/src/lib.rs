@@ -86,11 +86,16 @@ pub mod pallet {
 		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, OptionQuery>;
 
 	/// Lifetime total deposited, per deposit type.
+	/// NOTE: Not a solvency proof. Can desync from reality if funds are transferred
+	/// directly into the bank account without going through `deposit_from`. Only the
+	/// free balance (`balance()`) reflects actual bank state; ops dashboards must use
+	/// that for solvency checks, not this counter.
 	#[pallet::storage]
 	pub type TotalDeposited<T: Config> =
 		StorageMap<_, Blake2_128Concat, DepositType, BalanceOf<T>, ValueQuery>;
 
 	/// Lifetime total released through `request_payment`.
+	/// NOTE: Not a solvency proof; see TotalDeposited warning. Use free balance for truth.
 	#[pallet::storage]
 	pub type TotalPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
@@ -267,13 +272,13 @@ pub mod pallet {
 				T::Currency::transfer(&bank, dest, paid, ExistenceRequirement::KeepAlive)?;
 				TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
 				TotalPaidByRequester::<T>::mutate(requester, |t| *t = t.saturating_add(paid));
+				Self::deposit_event(Event::PaymentReleased {
+					requester: requester.clone(),
+					dest: dest.clone(),
+					requested: amount,
+					paid,
+				});
 			}
-			Self::deposit_event(Event::PaymentReleased {
-				requester: requester.clone(),
-				dest: dest.clone(),
-				requested: amount,
-				paid,
-			});
 			Ok(paid)
 		}
 	}

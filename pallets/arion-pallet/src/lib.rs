@@ -1553,16 +1553,23 @@ pub mod pallet {
 					continue;
 				}
 				Self::accrue_miner_bytes(uid, now);
+				// Check if tokens would be earned before consuming accrual.
+				// If sub-threshold (tokens == 0), preserve dust for next settlement.
+				let byte_blocks_snapshot = MinerAccruals::<T>::get(uid)
+					.map(|a| a.byte_blocks)
+					.unwrap_or(0);
+				if byte_blocks_snapshot == 0 {
+					continue;
+				}
+				let tokens = crate::tokens_for_byte_blocks(byte_blocks_snapshot, price, token_price);
+				if tokens == 0 {
+					// Dust: preserve byte_blocks for next settlement (consistent with price/feed-zero skip).
+					continue;
+				}
+				// Only consume byte_blocks if tokens > 0 (prevents dust loss).
 				let byte_blocks = MinerAccruals::<T>::mutate(uid, |acc| {
 					acc.as_mut().map(|a| core::mem::take(&mut a.byte_blocks)).unwrap_or(0)
 				});
-				if byte_blocks == 0 {
-					continue;
-				}
-				let tokens = crate::tokens_for_byte_blocks(byte_blocks, price, token_price);
-				if tokens == 0 {
-					continue;
-				}
 				family_due
 					.entry(reg.family.clone())
 					.and_modify(|d| *d = d.saturating_add(tokens))
@@ -1590,6 +1597,12 @@ pub mod pallet {
 			// destination's existential deposit) stays in the bank — nothing is
 			// stranded on the pallet account or burned as dust — and retries
 			// via arrears at the next settlement. (Design: G. Delkos.)
+			//
+			// NOTE: Pro-rata fairness edge case. If one family's payment fails mid-loop,
+			// other families in the same tick still receive their pro-rata share (based on
+			// the original total_due calculation), not a redistributed share of the freed
+			// pool. This is fairness-only (correctness is preserved: failed amounts retry
+			// via arrears). Future improvement: dynamic redistribution pool on failures.
 			let requester = Self::account_id();
 			let pool = T::PayoutSource::available().saturated_into::<u128>().min(total_due);
 
