@@ -32,7 +32,8 @@ pub mod pallet {
 		PalletId,
 	};
 	use frame_system::pallet_prelude::*;
-	use sp_runtime::traits::{AccountIdConversion, Saturating, Zero};
+	use payment_math::Tokens;
+	use sp_runtime::traits::{AccountIdConversion, SaturatedConversion, Saturating, Zero};
 
 	pub type BalanceOf<T> =
 		<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
@@ -171,8 +172,12 @@ pub mod pallet {
 		/// Funds `request_payment` could release right now (free balance minus
 		/// the existential deposit the bank always keeps).
 		pub fn available_for_payout() -> BalanceOf<T> {
-			T::Currency::free_balance(&Self::account_id())
-				.saturating_sub(T::Currency::minimum_balance())
+			payment_math::available(
+				Tokens::new(T::Currency::free_balance(&Self::account_id()).saturated_into()),
+				Tokens::new(T::Currency::minimum_balance().saturated_into()),
+			)
+			.get()
+			.saturated_into()
 		}
 
 		/// Transfer `amount` from `who` into the bank and record it. Shared by
@@ -219,7 +224,12 @@ pub mod pallet {
 				return Ok(Zero::zero());
 			}
 			let bank = Self::account_id();
-			let paid = amount.min(Self::available_for_payout());
+			let paid: BalanceOf<T> = payment_math::payable(
+				Tokens::new(amount.saturated_into()),
+				Tokens::new(Self::available_for_payout().saturated_into()),
+			)
+			.get()
+			.saturated_into();
 			if !paid.is_zero() {
 				T::Currency::transfer(&bank, dest, paid, ExistenceRequirement::KeepAlive)?;
 				TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));

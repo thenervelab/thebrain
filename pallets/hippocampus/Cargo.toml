@@ -22,6 +22,7 @@ sp-std = { workspace = true, default-features = false }
 sp-core = { workspace = true, default-features = false }
 sp-runtime = { workspace = true, default-features = false }
 log = { version = "0.4.22", default-features = false }
+payment-math = { workspace = true }
 
 [dev-dependencies]
 sp-io = { workspace = true, default-features = false, features = ["std"] }
@@ -39,6 +40,7 @@ std = [
     "sp-std/std",
     "sp-runtime/std",
     "sp-core/std",
+    "payment-math/std",
 ]
 runtime-benchmarks = [
     "frame-benchmarking/runtime-benchmarks",

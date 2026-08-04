@@ -14,6 +14,7 @@ members = [
     "primitives/crypto",
     "primitives/rpc/*",
     "primitives/ext",
+    "primitives/payment-math",
     "client/evm-tracing",
     "client/rpc/*",
     "client/rpc-core/*",
@@ -327,6 +328,7 @@ sc-consensus-manual-seal = { git = "https://github.com/paritytech/polkadot-sdk",
 
 # Hippius dependencies
 hippius-primitives = { path = "primitives", default-features = false }
+payment-math = { path = "primitives/payment-math", default-features = false }
 hippius-crypto-primitives = { path = "primitives/crypto", default-features = false }
 primitives-ext = { path = "primitives/ext", default-features = false }
 evm-tracing-events = { path = "primitives/rpc/evm-tracing-events", default-features = false }

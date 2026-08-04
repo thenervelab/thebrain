@@ -38,6 +38,7 @@ num-traits = { version = "0.2.17", default-features = false }
 pallet-utils = { default-features = false, workspace = true }
 pallet-arion = { workspace = true, default-features = false }
 pallet-hippocampus = { workspace = true, default-features = false }
+payment-math = { workspace = true }
 
 [dev-dependencies]
 sp-io = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable2407" }
@@ -68,6 +69,7 @@ std = [
     "sp-io/std",
     "pallet-arion/std",
     "pallet-hippocampus/std",
+    "payment-math/std",
 ]
 runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
 try-runtime = ["frame-support/try-runtime"]

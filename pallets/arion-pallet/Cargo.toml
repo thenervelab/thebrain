@@ -15,6 +15,7 @@ sp-staking    = { workspace = true, default-features = false }
 log           = { version = "0.4.22", default-features = false }
 pallet-registration = { workspace = true, default-features = false }
 pallet-proxy = { workspace = true, default-features = false }
+payment-math = { workspace = true }
 
 codec = { package = "parity-scale-codec", workspace = true, default-features = false, features = ["derive"] }
 scale-info = { workspace = true, default-features = false, features = ["derive"] }
@@ -30,6 +31,7 @@ std = [
   "sp-staking/std",
   "pallet-registration/std",
   "pallet-proxy/std",
+  "payment-math/std",
   "codec/std",
   "scale-info/std",
   "log/std",
