@@ -508,3 +508,48 @@ fn publish_two(
 	)
 	.expect("submit_crush_map");
 }
+
+/// The bulk bind must not hide behind the v0->v1 gate. Arion v1 already shipped
+/// on this branch, so a chain sitting at version 1 would skip anything added to
+/// that step and its legacy miners would stay unpayable forever.
+#[test]
+fn bulk_bind_runs_on_a_chain_already_at_storage_version_one() {
+	new_test_ext().execute_with(|| {
+		use frame_support::traits::{GetStorageVersion, StorageVersion};
+
+		let (family, child) = (account(1), account(2));
+		let node = ed25519::Pair::from_seed(&[11u8; 32]);
+		let node_id = node.public().0;
+
+		publish_crush_map(1, &family, node_id, 4_242);
+		pallet_arion::ChildRegistrations::<Runtime>::insert(
+			&child,
+			pallet_arion::ChildRegistration {
+				family: family.clone(),
+				node_id,
+				status: pallet_arion::ChildStatus::Active,
+				deposit: 0u128,
+				unbonding_end: 0u32.into(),
+			},
+		);
+		pallet_arion::NodeIdToChild::<Runtime>::insert(node_id, &child);
+		ChildMinerUid::<Runtime>::remove(&child);
+		MinerUidToChild::<Runtime>::remove(4_242);
+
+		// The chain already ran v0->v1 in an earlier deploy of this branch.
+		StorageVersion::new(1).put::<pallet_arion::Pallet<Runtime>>();
+
+		<pallet_arion::Pallet<Runtime> as Hooks<BlockNumber>>::on_runtime_upgrade();
+
+		assert_eq!(
+			ChildMinerUid::<Runtime>::get(&child),
+			Some(4_242),
+			"v1->v2 binds legacy miners even though v0->v1 was already applied"
+		);
+		assert_eq!(
+			pallet_arion::Pallet::<Runtime>::on_chain_storage_version(),
+			2,
+			"version advances so the step is not repeated"
+		);
+	});
+}

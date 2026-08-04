@@ -747,7 +747,7 @@ pub mod pallet {
 	}
 
 	/// Storage version 1: `MinerUidToChild` reverse index (uid uniqueness).
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -758,13 +758,32 @@ pub mod pallet {
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_runtime_upgrade() -> Weight {
 			let onchain = Pallet::<T>::on_chain_storage_version();
-			if onchain >= 1 {
-				return T::DbWeight::get().reads(1);
+			let mut weight = T::DbWeight::get().reads(1);
+			if onchain < 1 {
+				weight = weight.saturating_add(Self::migrate_v0_to_v1());
 			}
-			// v0 → v1: build the `MinerUidToChild` reverse index from existing
-			// registrations (bounded by MaxChildrenTotal). If two children
-			// claim the same uid, the first keeps it and the duplicate's
-			// forward mapping is dropped (it must re-register with a real uid).
+			if onchain < 2 {
+				weight = weight.saturating_add(Self::migrate_v1_to_v2());
+			}
+			if onchain < 2 {
+				StorageVersion::new(2).put::<Pallet<T>>();
+				weight = weight.saturating_add(T::DbWeight::get().writes(1));
+			}
+			weight
+		}
+
+		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
+			Self::on_initialize_inner(n)
+		}
+	}
+
+	impl<T: Config> Pallet<T> {
+		/// v0 → v1: build the `MinerUidToChild` reverse index from existing
+		/// registrations.
+		fn migrate_v0_to_v1() -> Weight {
+			// Bounded by MaxChildrenTotal. If two children claim the same uid,
+			// the first keeps it and the duplicate's forward mapping is dropped
+			// (it must re-register with a real uid).
 			let mut reads: u64 = 1;
 			let mut writes: u64 = 1;
 			let entries: Vec<(T::AccountId, u32)> = ChildMinerUid::<T>::iter().collect();
@@ -792,15 +811,27 @@ pub mod pallet {
 					},
 				}
 			}
-			// Miners registered before uids were tracked have no `ChildMinerUid`
-			// entry, so the loop above finds nothing for them. Bind them from
-			// the map that is already published on-chain.
-			//
-			// Without this they would wait for the *next* `submit_crush_map`,
-			// and publication is event-driven: the validator only bumps the
-			// epoch on cluster churn, and weight-driven bumps are off by
-			// default. A stable cluster could therefore go indefinitely without
-			// publishing, leaving every existing miner unpayable.
+			T::DbWeight::get().reads_writes(reads, writes)
+		}
+
+		/// v1 → v2: bind miners that have no uid from the map already published
+		/// on-chain.
+		///
+		/// Miners registered before uids were tracked have no `ChildMinerUid`
+		/// entry, so v1's reverse-index pass finds nothing for them. Without
+		/// this they would wait for the *next* `submit_crush_map`, and
+		/// publication is event-driven: the validator only bumps the epoch on
+		/// cluster churn, and weight-driven bumps are off by default. A stable
+		/// cluster could therefore go indefinitely without publishing, leaving
+		/// every existing miner unpayable.
+		///
+		/// This is a step of its own rather than an addition to v1 because v1
+		/// has already shipped on this branch: a chain sitting at version 1
+		/// would skip anything hidden behind that gate. Idempotent — it only
+		/// binds when both index directions are free.
+		fn migrate_v1_to_v2() -> Weight {
+			let mut reads: u64 = 1;
+			let mut writes: u64 = 0;
 			let epoch = CurrentEpoch::<T>::get();
 			reads = reads.saturating_add(1);
 			if let Some(miners) = EpochMiners::<T>::get(epoch) {
@@ -827,11 +858,10 @@ pub mod pallet {
 				}
 			}
 
-			StorageVersion::new(1).put::<Pallet<T>>();
 			T::DbWeight::get().reads_writes(reads, writes)
 		}
 
-		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
+		fn on_initialize_inner(n: BlockNumberFor<T>) -> Weight {
 			let mut weight = Weight::zero();
 
 			let prune_interval = T::MinerStatsPruneInterval::get();
@@ -1578,12 +1608,16 @@ pub mod pallet {
 
 			// Pass 3: install the map's bindings and restore carried accrual.
 			for (child, uid) in desired {
-				if ChildMinerUid::<T>::get(&child) == Some(uid) {
-					continue;
+				// The reverse entry is written unconditionally: pass 2 may have
+				// cleared it while displacing a stale holder even though the
+				// forward entry was already correct. Leaving it empty would let
+				// `register_child`, which only checks the reverse direction,
+				// hand the same uid to a second child.
+				if ChildMinerUid::<T>::get(&child) != Some(uid) {
+					ChildMinerUid::<T>::insert(&child, uid);
+					Self::deposit_event(Event::MinerUidBound { child: child.clone(), uid });
 				}
-				ChildMinerUid::<T>::insert(&child, uid);
 				MinerUidToChild::<T>::insert(uid, &child);
-				Self::deposit_event(Event::MinerUidBound { child: child.clone(), uid });
 			}
 			for (child, bb) in carried {
 				if let Some(uid) = ChildMinerUid::<T>::get(&child) {
@@ -2325,6 +2359,16 @@ pub mod pallet {
 				}
 				last_uid = Some(m.uid);
 			}
+
+			// A node must not appear twice: uid binding resolves node_id to a
+			// child, so two records for one node would bind that child to two
+			// uids and strand the first uid's reverse entry.
+			let mut node_ids: Vec<[u8; 32]> = miners.iter().map(|m| m.node_id).collect();
+			node_ids.sort_unstable();
+			ensure!(
+				node_ids.windows(2).all(|w| w[0] != w[1]),
+				Error::<T>::MinerListNotSortedOrNotUnique
+			);
 
 			// Optional hardening: ensure miners are registered (validator can enable once ready).
 			Self::ensure_miner_records_registered(&miners)?;

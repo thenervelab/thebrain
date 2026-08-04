@@ -341,8 +341,11 @@ where
 /// marketplace pallet accounts as bank requesters and seeds the bank with the
 /// alpha backing of batches deposited before the upgrade (their backing still
 /// sits on the marketplace sudo account — the old runtime had no routing).
-/// Runs only while neither account is whitelisted, so subsequent runtime
-/// upgrades are no-ops and a manually pre-activated chain is left untouched.
+/// Guarded on the hippocampus storage version, so it runs exactly once and a
+/// later requester removal cannot make a subsequent upgrade re-seed. A
+/// genesis-built chain never runs it at all — FRAME stamps the version during
+/// `on_genesis` — which is why new chains whitelist through the pallet's
+/// genesis config instead.
 pub struct ActivateMinerPaymentBank<T>(sp_std::marker::PhantomData<T>);
 
 impl<T> OnRuntimeUpgrade for ActivateMinerPaymentBank<T>

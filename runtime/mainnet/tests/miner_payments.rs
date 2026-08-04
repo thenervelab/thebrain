@@ -526,10 +526,10 @@ fn migration_builds_uid_reverse_index_and_drops_duplicates() {
 		let b_kept = ChildMinerUid::<Runtime>::get(&child_b).is_some();
 		assert!(a_kept ^ b_kept, "exactly one forward mapping survives");
 		assert_eq!(ChildMinerUid::<Runtime>::get(&winner), Some(7));
-		// Version bumped: running again is a no-op.
+		// Version advanced past both steps: running again is a no-op.
 		assert_eq!(
 			<pallet_arion::Pallet<Runtime> as GetStorageVersion>::on_chain_storage_version(),
-			StorageVersion::new(1)
+			StorageVersion::new(2)
 		);
 	});
 }
