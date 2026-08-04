@@ -1371,8 +1371,11 @@ pub mod pallet {
                     *alpha = alpha.saturating_sub(batch.pending_alpha)
                 });
 
-                // Alpha stays in bank, no distribution. Just track backed/unbacked portions.
-                Self::take_backed_portion(batch_id, batch.pending_alpha);
+                // Alpha stays in bank, no distribution. Track backed portion and release TUB.
+                let backed = Self::take_backed_portion(batch_id, batch.pending_alpha);
+                TotalUndistributedBacking::<T>::mutate(|t| {
+                    *t = t.saturating_sub(backed)
+                });
 
                 batch.pending_alpha = 0;
                 Batches::<T>::insert(batch_id, batch);
@@ -2245,8 +2248,11 @@ pub mod pallet {
                                         |alpha| *alpha = alpha.saturating_sub(batch.pending_alpha)
                                     );
 
-                                    // Alpha stays in bank, no distribution. Just track backed/unbacked portions.
-                                    Self::take_backed_portion(batch_id, batch.pending_alpha);
+                                    // Alpha stays in bank, no distribution. Track backed portion and release TUB.
+                                    let backed = Self::take_backed_portion(batch_id, batch.pending_alpha);
+                                    TotalUndistributedBacking::<T>::mutate(|t| {
+                                        *t = t.saturating_sub(backed)
+                                    });
 
                                     batch.pending_alpha = 0;
                                 }
@@ -2259,8 +2265,11 @@ pub mod pallet {
                                     |alpha| *alpha = alpha.saturating_sub(alpha_to_release_u128)
                                 );
 
-                                // Alpha stays in bank, no distribution. Just track backed/unbacked portions.
-                                Self::take_backed_portion(batch_id, alpha_to_release_u128);
+                                // Alpha stays in bank, no distribution. Track backed portion and release TUB.
+                                let backed = Self::take_backed_portion(batch_id, alpha_to_release_u128);
+                                TotalUndistributedBacking::<T>::mutate(|t| {
+                                    *t = t.saturating_sub(backed)
+                                });
                         }
                         }
         
