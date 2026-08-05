@@ -1,26 +1,32 @@
 //! End-to-end tests for the Arion miner payment flow, run against the real
 //! runtime: stats accrual → settlement → bank withdrawal → transfer → staking
 //! bond, plus the marketplace deposit → bank revenue routing.
+//!
+//! Also covers edge cases and conservation invariants for the settlement
+//! recipe (pro-rata, arrears, ED floor, whitelist, multi-child families).
 
 use frame_support::traits::{Currency, Hooks, OnRuntimeUpgrade};
 use hippius_mainnet_runtime::{
-	AccountId, Arion, Balances, Hippocampus, BlockNumber, Credits, Marketplace, Runtime, RuntimeEvent,
-	RuntimeOrigin, System,
+	AccountId, Arion, ArionPayoutSource, Balances, BlockNumber, Credits, Hippocampus, Marketplace,
+	Runtime, RuntimeEvent, RuntimeOrigin, System,
 };
 use pallet_arion::{
-	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, FamilyArrears,
-	MinerAccruals, MinerStats, MinerStatsUpdate, SettlementSkipReason,
+	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, FamilyArrears, MinerAccruals,
+	MinerStats, MinerStatsUpdate, PayoutSource, SettlementSkipReason,
 };
+use payment_math::{pro_rata, Tokens};
 use sp_core::crypto::Ss58Codec;
 use sp_runtime::{AccountId32, BuildStorage};
 
 const UNIT: u128 = 1_000_000_000_000_000_000; // 18 decimals
 const GIB: u128 = 1 << 30;
+/// Must match `ExistentialDeposit` in the runtime (`u64 = 500`).
+const ED: u128 = 500;
 /// Must match `ArionSettlementInterval` in the runtime.
 const SETTLEMENT_BLOCK: BlockNumber = 14_400;
 
 /// The hardcoded `ArionAdminMembers` account (all arion/bank admin origins).
-fn admin() -> AccountId { 
+fn admin() -> AccountId {
 	AccountId32::from_ss58check("5CVXqxb7mhFTtZVw5BJ8M2ujND9PFymSDxF8bkod6Sm4XJTW").unwrap()
 }
 
@@ -35,22 +41,37 @@ fn new_test_ext() -> sp_io::TestExternalities {
 	ext
 }
 
-/// Register an active child miner directly in storage (bypasses the
+/// Register a child miner directly in storage (bypasses the
 /// signature/proxy/deposit machinery of `register_child`, which is not what
 /// these tests exercise).
-fn register_miner(family: &AccountId, child: &AccountId, uid: u32) {
+fn register_miner_with_status(
+	family: &AccountId,
+	child: &AccountId,
+	uid: u32,
+	status: ChildStatus,
+) {
 	ChildRegistrations::<Runtime>::insert(
 		child,
 		ChildRegistration {
 			family: family.clone(),
 			node_id: [uid as u8; 32],
-			status: ChildStatus::Active,
+			status,
 			deposit: 0u128,
 			unbonding_end: 0u32.into(),
 		},
 	);
-	ChildMinerUid::<Runtime>::insert(child, uid);
-	pallet_arion::MinerUidToChild::<Runtime>::insert(uid, child.clone());
+	// Unbonding / inactive children keep no uid binding in the live flow
+	// (cleared on deregister). Tests that need a stale uid on an unbonding
+	// child can re-insert it after this call.
+	if status == ChildStatus::Active && uid != 0 {
+		ChildMinerUid::<Runtime>::insert(child, uid);
+		pallet_arion::MinerUidToChild::<Runtime>::insert(uid, child.clone());
+	}
+}
+
+/// Register an active child miner directly in storage.
+fn register_miner(family: &AccountId, child: &AccountId, uid: u32) {
+	register_miner_with_status(family, child, uid, ChildStatus::Active);
 }
 
 /// Submit miner stats for `uid` at the current block (bucket = block number).
@@ -74,9 +95,11 @@ fn enable_payments(price_usd_per_gb_block: u128, alpha_price: u128, bank_funds: 
 	Arion::set_miner_price(RuntimeOrigin::signed(admin()), price_usd_per_gb_block)
 		.expect("set price");
 	pallet_credits::AlphaPrice::<Runtime>::put(alpha_price);
-	let _ = Balances::deposit_creating(&Hippocampus::account_id(), bank_funds);
-	Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Arion::account_id())
-		.expect("whitelist arion escrow");
+	if bank_funds > 0 {
+		let _ = Balances::deposit_creating(&Hippocampus::account_id(), bank_funds);
+	}
+	// Idempotent: tests sometimes enable more than once after a partial setup.
+	let _ = Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Arion::account_id());
 }
 
 fn settle_at(n: BlockNumber) {
@@ -90,6 +113,11 @@ fn staking_ledger_active(who: &AccountId) -> u128 {
 		.active
 }
 
+fn staking_ledger_exists(who: &AccountId) -> bool {
+	pallet_staking::Pallet::<Runtime>::ledger(sp_staking::StakingAccount::Stash(who.clone()))
+		.is_ok()
+}
+
 /// Expected payout for raw byte-blocks — the same shared money math the
 /// pallet settles with (formerly `pallet_arion::tokens_for_byte_blocks`).
 fn tokens_for(byte_blocks: u128, price: u128, token_price: u128) -> u128 {
@@ -99,6 +127,40 @@ fn tokens_for(byte_blocks: u128, price: u128, token_price: u128) -> u128 {
 		payment_math::Usd::new(token_price),
 	)
 	.get()
+}
+
+/// Blocks integrated by a settlement that runs at `settle_at` when stats were
+/// first written at block 1 with no intermediate accrual reset.
+fn elapsed_from_genesis(settle_at_block: BlockNumber) -> u128 {
+	(settle_at_block as u128).saturating_sub(1)
+}
+
+/// Miner-spendable bank balance as the runtime adapter computes it.
+fn miner_pool() -> u128 {
+	<ArionPayoutSource as PayoutSource<AccountId, u128>>::available()
+}
+
+fn family_paid_tokens(family: &AccountId) -> Option<(u128, bool)> {
+	System::events().iter().find_map(|r| match &r.event {
+		RuntimeEvent::Arion(pallet_arion::Event::FamilyPaid { family: f, tokens, staked })
+			if f == family =>
+		{
+			Some((*tokens, *staked))
+		},
+		_ => None,
+	})
+}
+
+fn miner_payment_settled() -> Option<(u32, u128, u128)> {
+	System::events().iter().rev().find_map(|r| match &r.event {
+		RuntimeEvent::Arion(pallet_arion::Event::MinerPaymentSettled {
+			families,
+			tokens_due,
+			tokens_paid,
+			..
+		}) => Some((*families, *tokens_due, *tokens_paid)),
+		_ => None,
+	})
 }
 
 #[test]
@@ -960,6 +1022,730 @@ fn low3_payment_released_event_only_when_paid() {
 			.filter(|e| matches!(&e.event, RuntimeEvent::Hippocampus(pallet_hippocampus::Event::PaymentReleased { .. })))
 			.count();
 		assert_eq!(valid_count, 1, "event emitted when paid > 0");
+	});
+}
+
+// ── Missing settlement cases ─────────────────────────────────────────────────
+
+/// Two active children under one family must be summed into a single family
+/// payout — operators split intra-family off-chain.
+#[test]
+fn multi_child_same_family_aggregates_payout() {
+	new_test_ext().execute_with(|| {
+		let family = account(1);
+		let (child_a, child_b) = (account(2), account(3));
+		register_miner(&family, &child_a, 1);
+		register_miner(&family, &child_b, 2);
+		submit_stats(1, 100 * GIB);
+		submit_stats(2, 50 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		enable_payments(price, alpha_price, 100 * UNIT);
+
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		let elapsed = elapsed_from_genesis(SETTLEMENT_BLOCK);
+		let due_a = tokens_for(100 * GIB * elapsed, price, alpha_price);
+		let due_b = tokens_for(50 * GIB * elapsed, price, alpha_price);
+		let expected = due_a + due_b;
+		assert!(expected > 0);
+
+		assert_eq!(Balances::free_balance(&family), expected);
+		assert_eq!(staking_ledger_active(&family), expected);
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
+		assert_eq!(MinerAccruals::<Runtime>::get(1).expect("uid1").byte_blocks, 0);
+		assert_eq!(MinerAccruals::<Runtime>::get(2).expect("uid2").byte_blocks, 0);
+
+		let (families, tokens_due, tokens_paid) =
+			miner_payment_settled().expect("MinerPaymentSettled");
+		assert_eq!(families, 1, "one family, two children");
+		assert_eq!(tokens_due, expected);
+		assert_eq!(tokens_paid, expected);
+
+		let (tokens, staked) = family_paid_tokens(&family).expect("FamilyPaid");
+		assert_eq!(tokens, expected);
+		assert!(staked);
+	});
+}
+
+/// `MinerPaymentSettled` totals must match the sum of per-family pays and dues.
+#[test]
+fn settlement_emits_miner_payment_settled_totals() {
+	new_test_ext().execute_with(|| {
+		let (fa, ca) = (account(1), account(2));
+		let (fb, cb) = (account(3), account(4));
+		register_miner(&fa, &ca, 1);
+		register_miner(&fb, &cb, 2);
+		submit_stats(1, 200 * GIB);
+		submit_stats(2, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		let elapsed = elapsed_from_genesis(SETTLEMENT_BLOCK);
+		let due_a = tokens_for(200 * GIB * elapsed, price, alpha_price);
+		let due_b = tokens_for(100 * GIB * elapsed, price, alpha_price);
+		let total_due = due_a + due_b;
+		// Full cover so paid == due.
+		enable_payments(price, alpha_price, total_due + ED);
+
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		let (families, tokens_due, tokens_paid) =
+			miner_payment_settled().expect("MinerPaymentSettled");
+		assert_eq!(families, 2);
+		assert_eq!(tokens_due, total_due);
+		assert_eq!(tokens_paid, total_due);
+		assert_eq!(
+			family_paid_tokens(&fa).map(|(t, _)| t).unwrap_or(0) +
+				family_paid_tokens(&fb).map(|(t, _)| t).unwrap_or(0),
+			tokens_paid
+		);
+	});
+}
+
+/// Bond requires at least the existential deposit. Prefund the family so a
+/// sub-ED transfer can succeed, then assert funds stay liquid with `staked: false`.
+#[test]
+fn bond_failure_leaves_funds_liquid_staked_false() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		// Create the family account so the bank can deliver dust amounts.
+		let _ = Balances::deposit_creating(&family, ED);
+
+		// price=1, token=$1 → tokens = byte_blocks / GIB. One byte over the
+		// full interval floors to a handful of planck, far below ED=500.
+		submit_stats(7, 100_000);
+		let price = 1u128;
+		let alpha_price = UNIT;
+		let elapsed = elapsed_from_genesis(SETTLEMENT_BLOCK);
+		let expected = tokens_for(100_000 * elapsed, price, alpha_price);
+		assert!(expected > 0, "precondition: payable amount");
+		assert!(expected < ED, "precondition: below min bond / ED so bond fails");
+
+		enable_payments(price, alpha_price, UNIT);
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		assert_eq!(Balances::free_balance(&family), ED + expected);
+		assert!(
+			!staking_ledger_exists(&family),
+			"bond must have failed — no staking ledger"
+		);
+		let (tokens, staked) = family_paid_tokens(&family).expect("FamilyPaid");
+		assert_eq!(tokens, expected);
+		assert!(!staked, "staked:false when bond fails");
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0, "payment itself succeeded");
+	});
+}
+
+/// If arion is not a whitelisted bank requester, every family is unpaid and
+/// the full due is carried as arrears (adapter maps bank Err → 0).
+#[test]
+fn unwhitelisted_requester_pays_nothing_full_arrears() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		let elapsed = elapsed_from_genesis(SETTLEMENT_BLOCK);
+		let due = tokens_for(100 * GIB * elapsed, price, alpha_price);
+		assert!(due > 0);
+
+		// Fund + price, but deliberately do NOT whitelist arion.
+		Arion::set_miner_price(RuntimeOrigin::signed(admin()), price).expect("price");
+		pallet_credits::AlphaPrice::<Runtime>::put(alpha_price);
+		let _ = Balances::deposit_creating(&Hippocampus::account_id(), 100 * UNIT);
+		assert!(
+			!pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()),
+			"precondition: arion not whitelisted"
+		);
+
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		assert_eq!(Balances::free_balance(&family), 0);
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), due);
+		assert!(family_paid_tokens(&family).is_none(), "no FamilyPaid when paid=0");
+		let (families, tokens_due, tokens_paid) =
+			miner_payment_settled().expect("MinerPaymentSettled still fires");
+		assert_eq!(families, 0);
+		assert_eq!(tokens_due, due);
+		assert_eq!(tokens_paid, 0);
+		// Accrual was consumed into due/arrears — not left on the uid.
+		assert_eq!(MinerAccruals::<Runtime>::get(7).expect("entry").byte_blocks, 0);
+	});
+}
+
+/// Settlement only iterates `ChildStatus::Active`. An unbonding child with a
+/// leftover uid binding must not be paid (live deregister clears the uid; this
+/// guards against any path that leaves a stale binding).
+#[test]
+fn unbonding_child_is_not_paid() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		// Flip to Unbonding but leave the uid/accrual in place (stale state).
+		ChildRegistrations::<Runtime>::mutate(&child, |reg| {
+			if let Some(r) = reg {
+				r.status = ChildStatus::Unbonding;
+			}
+		});
+
+		enable_payments(10_000_000_000, UNIT / 20, 100 * UNIT);
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		assert_eq!(Balances::free_balance(&family), 0);
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
+		assert!(miner_payment_settled().is_none() || {
+			let (_, due, paid) = miner_payment_settled().unwrap();
+			due == 0 && paid == 0
+		} || family_paid_tokens(&family).is_none());
+		// When total_due is zero the settle path returns early without
+		// MinerPaymentSettled — either way the family is unpaid.
+		assert!(family_paid_tokens(&family).is_none());
+	});
+}
+
+/// Active sibling is paid; unbonding sibling is skipped — no leakage of the
+/// unbonding child's work into the family's due.
+///
+/// Note: settlement block 14400 is also a prune tick (`% 100 == 0`). Prune
+/// drops accruals for non-Active uids, so a stale Unbonding+uid binding loses
+/// its accrual to prune rather than to settlement — either way it is not paid.
+#[test]
+fn active_sibling_paid_unbonding_sibling_skipped() {
+	new_test_ext().execute_with(|| {
+		let family = account(1);
+		let (active, unbonding) = (account(2), account(3));
+		register_miner(&family, &active, 1);
+		register_miner(&family, &unbonding, 2);
+		submit_stats(1, 100 * GIB);
+		submit_stats(2, 500 * GIB); // would be expensive if wrongly paid
+
+		// Bank real accrual on both uids before the status flip (first submit
+		// only opens the entry with byte_blocks=0).
+		System::set_block_number(11);
+		submit_stats(1, 100 * GIB);
+		submit_stats(2, 500 * GIB);
+		let unbonding_bb_before =
+			MinerAccruals::<Runtime>::get(2).expect("uid2").byte_blocks;
+		assert_eq!(unbonding_bb_before, 500 * GIB * 10);
+
+		ChildRegistrations::<Runtime>::mutate(&unbonding, |reg| {
+			if let Some(r) = reg {
+				r.status = ChildStatus::Unbonding;
+			}
+		});
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		enable_payments(price, alpha_price, 100 * UNIT);
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		// Active: banked 100 GiB × 10 plus settle-time integrate to SETTLEMENT.
+		let active_bb = 100 * GIB * 10 + 100 * GIB * (SETTLEMENT_BLOCK as u128 - 11);
+		let expected = tokens_for(active_bb, price, alpha_price);
+		let unbonding_if_paid = tokens_for(
+			unbonding_bb_before + 500 * GIB * (SETTLEMENT_BLOCK as u128 - 11),
+			price,
+			alpha_price,
+		);
+		assert!(unbonding_if_paid > expected);
+
+		assert_eq!(
+			Balances::free_balance(&family),
+			expected,
+			"family receives only the active child's due"
+		);
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
+		assert_ne!(
+			Balances::free_balance(&family),
+			expected + unbonding_if_paid,
+			"unbonding sibling must not be included in the family payout"
+		);
+	});
+}
+
+/// Kill switch: price=0 keeps accruing via stats; enabling price later pays
+/// the full integrated interval (nothing lost while disabled).
+#[test]
+fn price_zero_then_enabled_pays_full_accrued_interval() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		// Settlement with price unset: skip, accruals from stats remain.
+		settle_at(SETTLEMENT_BLOCK);
+		assert_eq!(Balances::free_balance(&family), 0);
+		// Stats path has only written last_block; byte_blocks still 0 until
+		// the next stats tick or settle-time accrue. Force a stats tick so
+		// the disabled period is banked before we enable price.
+		System::set_block_number(SETTLEMENT_BLOCK);
+		submit_stats(7, 100 * GIB);
+		let banked = MinerAccruals::<Runtime>::get(7).expect("entry").byte_blocks;
+		assert_eq!(banked, 100 * GIB * elapsed_from_genesis(SETTLEMENT_BLOCK));
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		enable_payments(price, alpha_price, 100 * UNIT);
+
+		// Next settlement integrates the further elapsed blocks too.
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK * 2);
+
+		// From last_block=SETTLEMENT_BLOCK to 2*SETTLEMENT: another full interval
+		// of the same bytes, plus the banked amount from the disabled window.
+		let extra = 100 * GIB * (SETTLEMENT_BLOCK as u128);
+		let expected = tokens_for(banked + extra, price, alpha_price);
+		assert_eq!(Balances::free_balance(&family), expected);
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
+	});
+}
+
+/// Accrual that was carried onto a new uid (map renumber / rebind) is paid to
+/// the family that currently holds that uid.
+#[test]
+fn settlement_pays_accrual_carried_to_new_uid() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 1);
+		submit_stats(1, 100 * GIB);
+		System::set_block_number(100);
+		submit_stats(1, 100 * GIB);
+		let carried = MinerAccruals::<Runtime>::get(1).expect("entry").byte_blocks;
+		assert!(carried > 0);
+
+		// Simulate a uid renumber that carries work with the child: detach 1,
+		// bind 2, restore accrual (what bind_uids_from_crush_map does).
+		MinerAccruals::<Runtime>::remove(1);
+		pallet_arion::MinerStatsByUid::<Runtime>::remove(1);
+		ChildMinerUid::<Runtime>::remove(&child);
+		pallet_arion::MinerUidToChild::<Runtime>::remove(1);
+		ChildMinerUid::<Runtime>::insert(&child, 2u32);
+		pallet_arion::MinerUidToChild::<Runtime>::insert(2u32, child.clone());
+		MinerAccruals::<Runtime>::insert(
+			2u32,
+			pallet_arion::MinerAccrual { byte_blocks: carried, last_block: 100u32.into() },
+		);
+		// Fresh stats under the new uid so settle has a bytes baseline.
+		submit_stats(2, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		enable_payments(price, alpha_price, 100 * UNIT);
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		// carried (blocks 1→100) + 100 GiB × (SETTLEMENT_BLOCK − 100)
+		let tail = 100 * GIB * (SETTLEMENT_BLOCK as u128 - 100);
+		let expected = tokens_for(carried + tail, price, alpha_price);
+		assert_eq!(Balances::free_balance(&family), expected);
+		assert_eq!(MinerAccruals::<Runtime>::get(2).expect("uid2").byte_blocks, 0);
+		assert!(MinerAccruals::<Runtime>::get(1).is_none());
+	});
+}
+
+// ── Edge cases ───────────────────────────────────────────────────────────────
+
+/// Three families, equal work, short pool: each gets the same floor share and
+/// dust stays in the bank (not assigned to any family).
+#[test]
+fn three_families_equal_shortfall_is_fair_and_leaves_dust() {
+	new_test_ext().execute_with(|| {
+		let families: Vec<(AccountId, AccountId, u32)> = vec![
+			(account(1), account(2), 1),
+			(account(3), account(4), 2),
+			(account(5), account(6), 3),
+		];
+		for (f, c, uid) in &families {
+			register_miner(f, c, *uid);
+			submit_stats(*uid, 100 * GIB);
+		}
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		let elapsed = elapsed_from_genesis(SETTLEMENT_BLOCK);
+		let due_each = tokens_for(100 * GIB * elapsed, price, alpha_price);
+		let total_due = due_each * 3;
+		// Pool of 10 planck over a non-multiple of 3 → dust of 1.
+		// Use a larger pool so each share is non-zero: floor(due * pool / total).
+		let pool_target = due_each; // one family's due, shared three ways
+		enable_payments(price, alpha_price, pool_target + ED);
+
+		let pool_before = miner_pool();
+		assert_eq!(pool_before, pool_target);
+
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		let expected_share =
+			pro_rata(Tokens::new(due_each), Tokens::new(pool_before), Tokens::new(total_due)).get();
+		assert!(expected_share > 0);
+
+		let mut paid_sum = 0u128;
+		for (f, _, _) in &families {
+			let paid = Balances::free_balance(f);
+			assert_eq!(paid, expected_share, "equal dues → equal floor share");
+			assert_eq!(FamilyArrears::<Runtime>::get(f), due_each - expected_share);
+			paid_sum = paid_sum.saturating_add(paid);
+		}
+		assert!(paid_sum <= pool_before);
+		// Dust (pool − 3×floor) remains miner-spendable in the bank.
+		let dust = pool_before - paid_sum;
+		assert!(dust < 3, "dust strictly below claimant count");
+		assert_eq!(
+			Balances::free_balance(&Hippocampus::account_id()),
+			ED + dust,
+			"bank keeps ED + pro-rata dust"
+		);
+	});
+}
+
+/// Extreme multi-family dues must never pull the bank below ED, and equal MAX
+/// dues must split the pool fairly (wide total_due — not first AccountId wins).
+#[test]
+fn multi_family_extreme_dues_never_overdraw_bank() {
+	new_test_ext().execute_with(|| {
+		let (fa, ca) = (account(1), account(2));
+		let (fb, cb) = (account(3), account(4));
+		register_miner(&fa, &ca, 1);
+		register_miner(&fb, &cb, 2);
+		submit_stats(1, u128::MAX);
+		submit_stats(2, u128::MAX);
+
+		let bank_funds = 10 * UNIT;
+		enable_payments(u128::MAX, 1, bank_funds);
+		let pool_before = miner_pool();
+		assert_eq!(pool_before, bank_funds - ED);
+
+		settle_at(SETTLEMENT_BLOCK);
+
+		let paid_a = Balances::free_balance(&fa);
+		let paid_b = Balances::free_balance(&fb);
+		assert!(
+			paid_a.saturating_add(paid_b) <= pool_before,
+			"sum of family pays must not exceed the pre-settlement miner pool"
+		);
+		assert_eq!(
+			Balances::free_balance(&Hippocampus::account_id()),
+			bank_funds - paid_a - paid_b,
+		);
+		assert!(Balances::free_balance(&Hippocampus::account_id()) >= ED);
+		// Both families recorded some due (arrears or pay).
+		assert!(paid_a + FamilyArrears::<Runtime>::get(&fa) > 0);
+		assert!(paid_b + FamilyArrears::<Runtime>::get(&fb) > 0);
+		// Fairness under wide total: equal work → equal floor pay (diff ≤ 1).
+		let diff = paid_a.abs_diff(paid_b);
+		assert!(diff <= 1, "equal MAX dues must not prefer BTreeMap order; diff={diff}");
+		// Neither family should receive the entire pool alone.
+		assert!(paid_a < pool_before || paid_b < pool_before || pool_before <= 1);
+	});
+}
+
+/// Zero byte-blocks across all active miners: settle is a no-op (no events that
+/// claim a payment, bank untouched).
+#[test]
+fn zero_work_settlement_is_noop() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		// Bound uid but never submitted positive stats — or zero bytes.
+		submit_stats(7, 0);
+
+		enable_payments(10_000_000_000, UNIT / 20, 10 * UNIT);
+		let bank_before = Balances::free_balance(&Hippocampus::account_id());
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK);
+
+		assert_eq!(Balances::free_balance(&family), 0);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), bank_before);
+		assert!(family_paid_tokens(&family).is_none());
+		// Early return on total_due==0 does not emit MinerPaymentSettled.
+		assert!(miner_payment_settled().is_none());
+	});
+}
+
+/// A second settlement with no new work and no arrears pays nothing.
+#[test]
+fn second_settlement_without_work_pays_nothing() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		enable_payments(price, alpha_price, 100 * UNIT);
+		settle_at(SETTLEMENT_BLOCK);
+		let after_first = Balances::free_balance(&family);
+		assert!(after_first > 0);
+
+		// Zero out bytes so the next interval accrues nothing payable.
+		System::set_block_number(SETTLEMENT_BLOCK);
+		submit_stats(7, 0);
+
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK * 2);
+		assert_eq!(Balances::free_balance(&family), after_first);
+		assert!(family_paid_tokens(&family).is_none());
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
+	});
+}
+
+// ── Invariants ───────────────────────────────────────────────────────────────
+
+/// Per family: `paid + arrears == due` after every settlement (value is only
+/// deferred, never destroyed by the shortfall path).
+#[test]
+fn invariant_paid_plus_arrears_equals_due() {
+	new_test_ext().execute_with(|| {
+		let (fa, ca) = (account(1), account(2));
+		let (fb, cb) = (account(3), account(4));
+		register_miner(&fa, &ca, 1);
+		register_miner(&fb, &cb, 2);
+		submit_stats(1, 300 * GIB);
+		submit_stats(2, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		let elapsed = elapsed_from_genesis(SETTLEMENT_BLOCK);
+		let due_a = tokens_for(300 * GIB * elapsed, price, alpha_price);
+		let due_b = tokens_for(100 * GIB * elapsed, price, alpha_price);
+		let total_due = due_a + due_b;
+		let half = total_due / 2;
+		enable_payments(price, alpha_price, half + ED);
+
+		let pool = miner_pool();
+		settle_at(SETTLEMENT_BLOCK);
+
+		let paid_a = Balances::free_balance(&fa);
+		let paid_b = Balances::free_balance(&fb);
+		assert_eq!(paid_a + FamilyArrears::<Runtime>::get(&fa), due_a);
+		assert_eq!(paid_b + FamilyArrears::<Runtime>::get(&fb), due_b);
+
+		// Oracle: each pay matches payment_math::pro_rata against the snapshot pool.
+		assert_eq!(
+			paid_a,
+			pro_rata(Tokens::new(due_a), Tokens::new(pool), Tokens::new(total_due)).get()
+		);
+		assert_eq!(
+			paid_b,
+			pro_rata(Tokens::new(due_b), Tokens::new(pool), Tokens::new(total_due)).get()
+		);
+	});
+}
+
+/// Σ family pays ≤ miner pool at settlement start; bank free balance ≥ ED after.
+#[test]
+fn invariant_sum_paid_never_exceeds_pool_and_bank_keeps_ed() {
+	new_test_ext().execute_with(|| {
+		let miners: Vec<(AccountId, AccountId, u32, u128)> = vec![
+			(account(1), account(2), 1, 80 * GIB),
+			(account(3), account(4), 2, 120 * GIB),
+			(account(5), account(6), 3, 40 * GIB),
+			(account(7), account(8), 4, 200 * GIB),
+		];
+		for (f, c, uid, bytes) in &miners {
+			register_miner(f, c, *uid);
+			submit_stats(*uid, *bytes);
+		}
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		// Deliberate shortfall.
+		enable_payments(price, alpha_price, 3 * UNIT);
+		let pool = miner_pool();
+		let bank_before = Balances::free_balance(&Hippocampus::account_id());
+
+		settle_at(SETTLEMENT_BLOCK);
+
+		let paid_sum: u128 = miners.iter().map(|(f, _, _, _)| Balances::free_balance(f)).sum();
+		assert!(paid_sum <= pool);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), bank_before - paid_sum);
+		assert!(Balances::free_balance(&Hippocampus::account_id()) >= ED);
+
+		let (_, tokens_due, tokens_paid) = miner_payment_settled().expect("settled");
+		assert_eq!(tokens_paid, paid_sum);
+		assert!(tokens_paid <= tokens_due);
+	});
+}
+
+/// Accrual byte_blocks is cleared only when the converted token amount is
+/// non-zero; dust is preserved (composition with the dust unit test).
+#[test]
+fn invariant_accrual_consumed_iff_tokens_nonzero() {
+	new_test_ext().execute_with(|| {
+		// Case 1: payable → consumed.
+		let (f1, c1) = (account(1), account(2));
+		register_miner(&f1, &c1, 1);
+		submit_stats(1, 100 * GIB);
+		enable_payments(10_000_000_000, UNIT / 20, 100 * UNIT);
+		settle_at(SETTLEMENT_BLOCK);
+		assert_eq!(MinerAccruals::<Runtime>::get(1).expect("e").byte_blocks, 0);
+		assert!(Balances::free_balance(&f1) > 0);
+
+		// Case 2: dust → preserved. Seed accrual directly and zero live stats so
+		// settle-time integrate does not grow the dust under test.
+		let (f2, c2) = (account(3), account(4));
+		register_miner(&f2, &c2, 2);
+		Arion::set_miner_price(RuntimeOrigin::signed(admin()), 1).expect("price");
+		pallet_credits::AlphaPrice::<Runtime>::put(UNIT / 20);
+		let dust_bb = 28_799u128; // 1 byte × (2*SETTLEMENT − 1); floors to 0 tokens
+		assert_eq!(tokens_for(dust_bb, 1, UNIT / 20), 0);
+		pallet_arion::MinerStatsByUid::<Runtime>::insert(
+			2u32,
+			MinerStats { shard_data_bytes: 0, ..Default::default() },
+		);
+		MinerAccruals::<Runtime>::insert(
+			2u32,
+			pallet_arion::MinerAccrual {
+				byte_blocks: dust_bb,
+				last_block: (SETTLEMENT_BLOCK * 2).into(),
+			},
+		);
+		System::reset_events();
+		settle_at(SETTLEMENT_BLOCK * 2);
+		assert_eq!(
+			MinerAccruals::<Runtime>::get(2).expect("dust entry").byte_blocks,
+			dust_bb,
+			"zero-token settle must not consume dust accrual"
+		);
+		assert_eq!(Balances::free_balance(&f2), 0);
+	});
+}
+
+/// TUB / pending refunds are not miner-spendable: pool = available − TUB − pending.
+#[test]
+fn invariant_miner_pool_excludes_tub_and_pending_refunds() {
+	new_test_ext().execute_with(|| {
+		let sudo = account(11);
+		let user = account(12);
+		let authority = account(10);
+		Credits::add_authority(RuntimeOrigin::root(), authority.clone()).expect("auth");
+		pallet_marketplace::SudoKey::<Runtime>::put(Some(sudo.clone()));
+		let _ = Balances::deposit_creating(&sudo, 100 * UNIT);
+
+		Marketplace::deposit(
+			RuntimeOrigin::signed(authority),
+			user,
+			5 * UNIT,
+			3 * UNIT,
+			false,
+			None,
+		)
+		.expect("deposit");
+		// Grant 2 UNIT pure miner budget on top of 3 UNIT TUB.
+		let funder = account(30);
+		let _ = Balances::deposit_creating(&funder, 10 * UNIT);
+		Hippocampus::deposit(
+			RuntimeOrigin::signed(funder),
+			2 * UNIT,
+			pallet_hippocampus::DepositType::Grant,
+		)
+		.expect("grant");
+		// Pending refund wall.
+		pallet_marketplace::PendingSudoRefunds::<Runtime>::put(UNIT / 2);
+
+		let free = Balances::free_balance(&Hippocampus::account_id());
+		// 3 TUB + 2 grant = 5 UNIT (+ possible ED bookkeeping on bank create).
+		let tub = pallet_marketplace::TotalUndistributedBacking::<Runtime>::get();
+		let pending = pallet_marketplace::PendingSudoRefunds::<Runtime>::get();
+		assert_eq!(tub, 3 * UNIT);
+		assert_eq!(pending, UNIT / 2);
+
+		let pool = miner_pool();
+		let expected = free.saturating_sub(ED).saturating_sub(tub).saturating_sub(pending);
+		assert_eq!(pool, expected, "adapter must wall TUB and pending refunds");
+		// Grant was 2 UNIT; after ED + half-UNIT pending the miner pool is smaller.
+		assert!(pool < 2 * UNIT, "TUB and pending must reduce the miner pool");
+		assert_eq!(pool, 2 * UNIT - ED - pending);
+	});
+}
+
+/// Whitelist + full pool: hippocampus TotalPaidOut increases by exactly the
+/// settled tokens_paid, and only the arion requester is charged.
+#[test]
+fn invariant_hippocampus_accounting_matches_settlement() {
+	new_test_ext().execute_with(|| {
+		let (fa, ca) = (account(1), account(2));
+		let (fb, cb) = (account(3), account(4));
+		register_miner(&fa, &ca, 1);
+		register_miner(&fb, &cb, 2);
+		submit_stats(1, 100 * GIB);
+		submit_stats(2, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		enable_payments(price, alpha_price, 100 * UNIT);
+
+		assert_eq!(pallet_hippocampus::TotalPaidOut::<Runtime>::get(), 0);
+		settle_at(SETTLEMENT_BLOCK);
+
+		let (_, _, tokens_paid) = miner_payment_settled().expect("settled");
+		assert_eq!(pallet_hippocampus::TotalPaidOut::<Runtime>::get(), tokens_paid);
+		assert_eq!(
+			pallet_hippocampus::TotalPaidByRequester::<Runtime>::get(Arion::account_id()),
+			tokens_paid
+		);
+		assert_eq!(
+			Balances::free_balance(&fa) + Balances::free_balance(&fb),
+			tokens_paid
+		);
+	});
+}
+
+/// After a shortfall, refilling the bank and settling again clears arrears
+/// exactly (no double-pay of the already-paid share).
+#[test]
+fn invariant_arrears_clear_without_double_pay() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		let elapsed = elapsed_from_genesis(SETTLEMENT_BLOCK);
+		let due = tokens_for(100 * GIB * elapsed, price, alpha_price);
+		let half = due / 2;
+		enable_payments(price, alpha_price, half + ED);
+		settle_at(SETTLEMENT_BLOCK);
+
+		let paid_first = Balances::free_balance(&family);
+		let arrears = FamilyArrears::<Runtime>::get(&family);
+		assert_eq!(paid_first + arrears, due);
+		assert!(arrears > 0);
+
+		// Stop further accrual for a clean arrears-only second settle.
+		System::set_block_number(SETTLEMENT_BLOCK);
+		submit_stats(7, 0);
+		// One more block of the old bytes was integrated at the zeroing submit;
+		// settle at 2× will also integrate 0-byte interval from last_block.
+		// Fund exactly the remaining arrears (+ ED already in bank).
+		let _ = Balances::deposit_creating(&Hippocampus::account_id(), arrears + UNIT);
+
+		settle_at(SETTLEMENT_BLOCK * 2);
+		// May include a tiny extra from the one-block tail at zeroing; the
+		// critical invariant is arrears are gone and we never paid more than
+		// due + any post-first-settle accrual.
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
+		assert!(Balances::free_balance(&family) >= due);
+		// No double counting of the first half: total ≤ due + one-block dust tail.
+		let tail = tokens_for(100 * GIB, price, alpha_price); // one block at submit
+		// Between SETTLEMENT and 2*SETTLEMENT with 0 bytes: no further accrual
+		// after the zeroing submit at SETTLEMENT_BLOCK (last_block updated).
+		assert!(Balances::free_balance(&family) <= due + tail);
 	});
 }
 
