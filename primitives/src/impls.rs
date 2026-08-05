@@ -73,19 +73,24 @@ macro_rules! impl_hippocampus_fees {
 		where
 			R: pallet_balances::Config + pallet_hippocampus::Config + frame_system::Config,
 			<R as frame_system::Config>::RuntimeEvent: From<pallet_balances::Event<R>>,
+			<R as pallet_hippocampus::Config>::Currency: frame_support::traits::Currency<
+				<R as frame_system::Config>::AccountId,
+				Balance = <R as pallet_balances::Config>::Balance,
+			>,
 		{
 			fn on_nonzero_unbalanced(amount: NegativeImbalance<R>) {
 				use sp_runtime::traits::AccountIdConversion;
 
 				let fee_amount = amount.peek();
 				let hippocampus_account =
-					<R as pallet_hippocampus::Config>::PalletId::get().into_account_truncated();
+					<R as pallet_hippocampus::Config>::PalletId::get().into_account_truncating();
 
 				// Transfer fee to hippocampus pallet account
 				<pallet_balances::Pallet<R>>::resolve_creating(&hippocampus_account, amount);
 
 				// Update total fees collected storage
 				pallet_hippocampus::TotalFeesCollected::<R>::mutate(|collected| {
+					use sp_runtime::Saturating;
 					*collected = collected.saturating_add(fee_amount);
 				});
 			}
