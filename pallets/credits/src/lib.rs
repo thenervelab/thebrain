@@ -547,54 +547,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// gives referral rewards to owners
-		pub fn apply_referral_discount(
-			code: &Vec<u8>,
-			price: u128,
-			total_discount: &mut u128,
-		) -> DispatchResult {
-			// Defensive: referral codes may be rotated/retired. Treat missing codes as "no discount"
-			// rather than erroring and breaking downstream billing.
-			if !ReferralCodes::<T>::contains_key(code) {
-				log::warn!(
-					target: "runtime::credits",
-					"Referral code missing/retired (no discount applied): {:?}",
-					code
-				);
-				return Ok(());
-			}
-
-			// Log the referral code owner
-			match ReferralCodes::<T>::get(code) {
-				Some(ref_owner) => {
-					let ref_discount = price.saturating_mul(5) / 100 as u128;
-
-					*total_discount = total_discount.saturating_add(ref_discount);
-
-					ReferralCodeRewards::<T>::mutate(code, |r| *r = r.saturating_add(ref_discount));
-
-					ReferralCodeUsageCount::<T>::mutate(code, |c| *c = c.saturating_add(1));
-
-					// total rewards
-					TotalReferralRewards::<T>::mutate(|reward| {
-						*reward = reward.saturating_add(ref_discount);
-					});
-
-					Self::deposit_event(Event::ReferralDiscountApplied {
-						referral_code: code.clone(),
-						ref_owner: ref_owner.clone(),
-						discount_amount: ref_discount,
-					});
-					log::info!("Deposited ReferralDiscountApplied event");
-				},
-				None => {
-					log::warn!("No owner found for referral code: {:?}", code);
-				},
-			}
-
-			Ok(())
-		}
-
 		/// Helper function to insert a referral code for a user
 		pub fn insert_referral_code(owner: &T::AccountId, code: Option<Vec<u8>>) -> DispatchResult {
 			if code.is_some() {
@@ -630,7 +582,7 @@ pub mod pallet {
 			// IMPORTANT: Do not delete old codes here.
 			//
 			// Deleting `ReferralCodes` entries can orphan `ReferredUsers` rows (user -> code_used),
-			// causing `apply_referral_discount` to fail and breaking billing flows for referred users.
+			// breaking the marketplace's referral discount/commission lookups for referred users.
 			// Keeping historical codes is safe: code generation already ensures uniqueness, and any
 			// "current code" behavior should be handled at the UX layer, not by deleting on-chain state.
 
