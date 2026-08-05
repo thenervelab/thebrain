@@ -1626,7 +1626,8 @@ pub mod pallet {
 					MinerAccruals::<T>::mutate(uid, |acc| {
 						let mut a =
 							acc.take().unwrap_or(MinerAccrual { byte_blocks: 0, last_block: now });
-						a.byte_blocks = a.byte_blocks.saturating_add(bb);
+						a.byte_blocks =
+							ByteBlocks::new(a.byte_blocks).saturating_add(ByteBlocks::new(bb)).get();
 						a.last_block = now;
 						*acc = Some(a);
 					});

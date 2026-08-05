@@ -88,7 +88,7 @@ pub mod pallet {
     use sp_runtime::traits::Zero;
     use sp_core::U256;
     use sp_runtime::traits::Bounded;
-    use payment_math::{split, prorate_first_month, BasisPoints, Credits};
+    use payment_math::{gibs_ceil, prorate_first_month, split, times, BasisPoints, Bytes, Credits};
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -1220,7 +1220,7 @@ pub mod pallet {
                 months_remaining = months_remaining.saturating_add(1);
             }
 
-            sub.paid_per_month.saturating_mul(months_remaining)
+            times(Credits::new(sub.paid_per_month), months_remaining).get()
         }
 
 
@@ -1339,7 +1339,7 @@ pub mod pallet {
         fn upfront_prorated_total(monthly_price: u128, upfront_months: u128) -> u128 {
             let first = Self::prorated_monthly_price(monthly_price);
             let remaining_full_months = upfront_months.saturating_sub(1);
-            first.saturating_add(monthly_price.saturating_mul(remaining_full_months))
+            first.saturating_add(times(Credits::new(monthly_price), remaining_full_months).get())
         }
 
         #[transactional]
@@ -1833,8 +1833,8 @@ pub mod pallet {
                     }
 
                     // Apply referral commission: 5% of total charged to referrer, if referred.
-                    let total_charged = if storage_ok { total_storage_charge } else { 0 } +
-                                        compute_charged_total;
+                    let storage_part = if storage_ok { total_storage_charge } else { 0 };
+                    let total_charged = storage_part.saturating_add(compute_charged_total);
                     if total_charged > 0 {
                         if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
                             if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
@@ -1957,11 +1957,12 @@ pub mod pallet {
                     
                     let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
                         
-                    // Round up to the nearest whole number of GBs
-                    let rounded_gbs: u128 = total_file_size_in_bs
-                        .saturating_add(1_073_741_823)
-                        / 1_073_741_824;
-                    let charge_amount = price_per_gb.saturating_mul(rounded_gbs);            
+                    // Bill in whole GiB, rounding any partial GiB up.
+                    let charge_amount = times(
+                        Credits::new(price_per_gb),
+                        gibs_ceil(Bytes::new(total_file_size_in_bs)),
+                    )
+                    .get();
             
                     if user_free_credits >= charge_amount {
                         // Decrease user credits
