@@ -258,6 +258,28 @@ pub fn prorate_first_month<A: Amount>(
 	A::from_raw((num / dim).as_u128())
 }
 
+/// `amount × count` for a dimensionless count (prepaid months, billed
+/// GiB), saturating at `u128::MAX`.
+///
+/// For a bare product this equals `u128::saturating_mul` — the clamp is
+/// on the final value, so unlike the ratio helpers there is no hidden
+/// pre-division cliff. It exists so every money multiplication in the
+/// pallets routes through one typed, tested place instead of ad-hoc
+/// `saturating_mul` calls that a later refactor could compose into
+/// exactly that cliff.
+pub fn times<A: Amount>(amount: A, count: u128) -> A {
+	A::from_raw(amount.raw().saturating_mul(count))
+}
+
+/// Whole GiB spanned by `bytes`, rounded up — the unit per-GiB storage
+/// billing charges in. Zero bytes is zero GiB; any non-zero remainder
+/// bills a full extra GiB. Exact over the whole domain: the
+/// `add-(GIB−1)-then-divide` form would saturate near `u128::MAX` and
+/// round *down* instead.
+pub fn gibs_ceil(bytes: Bytes) -> u128 {
+	bytes.get().div_ceil(GIB)
+}
+
 /// Balance a payout source can spend without reaping itself: everything
 /// above the existential deposit.
 pub fn available(balance: Tokens, existential_deposit: Tokens) -> Tokens {
@@ -614,9 +636,9 @@ mod tests {
 	// ── split ────────────────────────────────────────────────────────────
 
 	#[test]
-	fn split_seventy_thirty_matches_distribute_alpha() {
-		let (rankings, marketplace) = split(Tokens::new(1_000), BasisPoints::new(7_000));
-		assert_eq!((rankings.get(), marketplace.get()), (700, 300));
+	fn split_seventy_thirty() {
+		let (part, rest) = split(Tokens::new(1_000), BasisPoints::new(7_000));
+		assert_eq!((part.get(), rest.get()), (700, 300));
 	}
 
 	#[test]
@@ -763,6 +785,49 @@ mod tests {
 			prorate_first_month(Credits::new(first_overflowing), 31, 31).get(),
 			first_overflowing
 		);
+	}
+
+	// ── times / gibs_ceil ────────────────────────────────────────────────
+
+	#[test]
+	fn times_is_exact_within_u128() {
+		assert_eq!(times(Credits::new(0), 24).get(), 0);
+		assert_eq!(times(Credits::new(100), 0).get(), 0);
+		assert_eq!(times(Credits::new(100), 1).get(), 100);
+		assert_eq!(times(Credits::new(100), 24).get(), 2_400);
+		assert_eq!(times(Tokens::new(E18), 12).get(), 12 * E18);
+		// Largest exact product: MAX is divisible by 5.
+		assert_eq!(times(Credits::new(u128::MAX / 5), 5).get(), u128::MAX);
+	}
+
+	#[test]
+	fn times_saturates_above_u128_max() {
+		assert_eq!(times(Credits::new(u128::MAX), 2).get(), u128::MAX);
+		assert_eq!(times(Credits::new(u128::MAX / 5 + 1), 5).get(), u128::MAX);
+		assert_eq!(times(Tokens::new(u128::MAX), u128::MAX).get(), u128::MAX);
+	}
+
+	#[test]
+	fn gibs_ceil_rounds_partial_gib_up() {
+		assert_eq!(gibs_ceil(Bytes::new(0)), 0);
+		assert_eq!(gibs_ceil(Bytes::new(1)), 1);
+		assert_eq!(gibs_ceil(Bytes::new(GIB - 1)), 1);
+		assert_eq!(gibs_ceil(Bytes::new(GIB)), 1);
+		assert_eq!(gibs_ceil(Bytes::new(GIB + 1)), 2);
+		assert_eq!(gibs_ceil(Bytes::new(100 * GIB)), 100);
+	}
+
+	/// The hand-rolled `(bytes + GIB − 1) / GIB` form saturates the addition
+	/// near `u128::MAX` and floors; `div_ceil` must keep the exact ceiling.
+	#[test]
+	fn gibs_ceil_exact_at_u128_max() {
+		assert_eq!(gibs_ceil(Bytes::new(u128::MAX)), u128::MAX / GIB + 1);
+		// Documents the divergence: the saturating form floors at the top.
+		let saturating_form = u128::MAX.saturating_add(GIB - 1) / GIB;
+		assert_eq!(saturating_form, u128::MAX / GIB);
+		// Exact multiple of GIB must not round up.
+		let top_multiple = (u128::MAX / GIB) * GIB;
+		assert_eq!(gibs_ceil(Bytes::new(top_multiple)), u128::MAX / GIB);
 	}
 
 	// ── available / payable ──────────────────────────────────────────────
