@@ -150,12 +150,9 @@ pub fn tokens_for(byte_blocks: ByteBlocks, price: UsdPerGibBlock, token_price: U
 	let num: U512 = U256::from(byte_blocks.0).full_mul(U256::from(price.0)) * U512::from(E18);
 	// GIB×token_price ≤ 2^30 × (2^128−1) < 2^158, always fits U256.
 	let den = U256::from(GIB) * U256::from(token_price.0);
-	let out = num / U512::from(den);
-	if out > U512::from(u128::MAX) {
-		Tokens(u128::MAX)
-	} else {
-		Tokens(out.as_u128())
-	}
+	// Cap the floor quotient at u128::MAX (min, not a >/>= branch — both
+	// comparisons are observationally identical at equality).
+	Tokens((num / U512::from(den)).min(U512::from(u128::MAX)).as_u128())
 }
 
 /// Pro-rata share of `pool` owed to one claimant with `due` out of
@@ -217,11 +214,7 @@ where
 /// Compress a wide due total into the `u128` event/storage domain (caps at
 /// `u128::MAX` when the true sum overflowed).
 pub fn total_due_for_event(total: U256) -> u128 {
-	if total > U256::from(u128::MAX) {
-		u128::MAX
-	} else {
-		total.as_u128()
-	}
+	total.min(U256::from(u128::MAX)).as_u128()
 }
 
 /// Split `amount` into `(part, rest)`: `part = amount × ratio / 10_000`
@@ -243,7 +236,10 @@ pub fn split<A: Amount>(amount: A, part_ratio: BasisPoints) -> (A, A) {
 /// tiny non-zero price never prorates to zero.
 ///
 /// `days_remaining` is clamped to `days_in_month`, so the charge can never
-/// exceed one monthly price — a part can never exceed the whole.
+/// exceed one monthly price — a part can never exceed the whole. The ceil is
+/// exact over the full `u128` domain (`U256` numerator); saturating `u128`
+/// math would under-charge near `u128::MAX` (e.g. a full month at `MAX`
+/// wrongly returned `MAX / days_in_month`).
 ///
 /// A zero `days_in_month` (calendar not initialised) charges the full month.
 pub fn prorate_first_month<A: Amount>(
@@ -255,9 +251,11 @@ pub fn prorate_first_month<A: Amount>(
 		return monthly_price;
 	}
 	let days = days_remaining.min(days_in_month);
-	let dim = u128::from(days_in_month);
-	let num = monthly_price.raw().saturating_mul(u128::from(days));
-	A::from_raw(num.saturating_add(dim - 1) / dim)
+	// days ≤ dim ⇒ ceil(price×days/dim) ≤ price ≤ u128::MAX, so the U256
+	// quotient always fits the amount's raw type without a second clamp.
+	let dim = U256::from(days_in_month);
+	let num = U256::from(monthly_price.raw()) * U256::from(days) + (dim - U256::from(1u8));
+	A::from_raw((num / dim).as_u128())
 }
 
 /// Balance a payout source can spend without reaping itself: everything
@@ -571,15 +569,46 @@ mod tests {
 		assert_ne!(pro_rata(max, pool, max).get(), a);
 	}
 
+	/// Unequal near-max partition: dust stays in the bank, larger claim takes
+	/// almost the whole pool, the 1-planck claim floors to zero.
+	#[test]
+	fn pro_rata_wide_unequal_max_and_one() {
+		let max = Tokens::new(u128::MAX);
+		let one = Tokens::new(1);
+		let total = sum_dues([max, one]);
+		assert_eq!(total, U256::from(u128::MAX) + U256::from(1u8));
+		let pool = Tokens::new(u128::MAX);
+		let s_max = pro_rata_wide(max, pool, total).get();
+		let s_one = pro_rata_wide(one, pool, total).get();
+		assert_eq!(s_one, 0); // floor(1 × MAX / (MAX+1)) = 0
+		assert_eq!(s_max, u128::MAX - 1); // floor(MAX²/(MAX+1)) = MAX−1
+		assert_eq!(s_max.saturating_add(s_one), u128::MAX - 1);
+		assert!(s_max.saturating_add(s_one) < pool.get()); // 1 planck dust
+	}
+
+	/// Five equal MAX dues against a divisible pool — equal floors, no overpay.
+	#[test]
+	fn pro_rata_wide_five_max_dues_equal_split() {
+		let max = Tokens::new(u128::MAX);
+		let dues = [max; 5];
+		let total = sum_dues(dues);
+		assert_eq!(total, U256::from(u128::MAX) * U256::from(5u8));
+		let pool = Tokens::new(1_000);
+		let shares: [u128; 5] = core::array::from_fn(|_| pro_rata_wide(max, pool, total).get());
+		assert!(shares.iter().all(|&s| s == 200));
+		assert_eq!(shares.iter().sum::<u128>(), 1_000);
+	}
+
 	#[test]
 	fn sum_dues_and_event_compress() {
 		assert_eq!(sum_dues([]), U256::zero());
 		assert_eq!(sum_dues([Tokens::new(1), Tokens::new(2)]), U256::from(3u128));
-		assert_eq!(total_due_for_event(U256::from(7u128)), 7);
 		assert_eq!(
-			total_due_for_event(U256::from(u128::MAX) + U256::from(1u128)),
-			u128::MAX
+			sum_dues([Tokens::new(u128::MAX), Tokens::new(u128::MAX)]),
+			U256::from(u128::MAX) * U256::from(2u8)
 		);
+		assert_eq!(total_due_for_event(U256::from(7u128)), 7);
+		assert_eq!(total_due_for_event(U256::from(u128::MAX) + U256::from(1u128)), u128::MAX);
 	}
 
 	// ── split ────────────────────────────────────────────────────────────
@@ -709,20 +738,31 @@ mod tests {
 		assert_eq!(prorate_first_month(Credits::new(310), 1, 31).get(), 10);
 	}
 
-	/// When `price × days` saturates u128 the implementation under-charges
-	/// (never over-charges). Pin the exact saturated-ceil result so a
-	/// future "fix" cannot silently start overcharging.
+	/// Extreme prices must still ceil exactly in wide arithmetic. The old
+	/// saturating-`u128` form charged `MAX/31` for a full 31-day month at
+	/// `MAX` — a 31× under-charge that U256 ceil eliminates.
 	#[test]
-	fn prorate_saturated_mul_undercharges_never_overcharges() {
+	fn prorate_exact_ceil_near_u128_max() {
 		let price = u128::MAX;
-		// Full month at MAX: num saturates to MAX, ceil(MAX/31) = MAX/31.
-		let out = prorate_first_month(Credits::new(price), 31, 31).get();
-		assert!(out <= price);
-		assert_eq!(out, u128::MAX / 31);
-		// Partial month saturates the same way.
+		// Full month: identity, not MAX/31.
+		assert_eq!(prorate_first_month(Credits::new(price), 31, 31).get(), price);
+		// One day of 28: only the + (dim−1) step would overflow u128; exact ceil.
+		let one_of_28 = ((U256::from(price) + U256::from(27u8)) / U256::from(28u8)).as_u128();
+		assert_eq!(prorate_first_month(Credits::new(price), 1, 28).get(), one_of_28);
+		// Partial month at MAX: ceil(MAX×30/31) ≤ MAX.
+		let thirty_of_31 = ((U256::from(price) * U256::from(30u8) + U256::from(30u8))
+			/ U256::from(31u8))
+		.as_u128();
 		let out = prorate_first_month(Credits::new(price), 30, 31).get();
+		assert_eq!(out, thirty_of_31);
 		assert!(out <= price);
-		assert_eq!(out, u128::MAX / 31); // (MAX + 30) / 31 after sat add still MAX/31
+		// First price where price×31 overflows u128 still full-months to itself.
+		let first_overflowing = u128::MAX / 31 + 1;
+		assert!(first_overflowing.checked_mul(31).is_none());
+		assert_eq!(
+			prorate_first_month(Credits::new(first_overflowing), 31, 31).get(),
+			first_overflowing
+		);
 	}
 
 	// ── available / payable ──────────────────────────────────────────────

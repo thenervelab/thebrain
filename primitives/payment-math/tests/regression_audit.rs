@@ -10,7 +10,7 @@
 //! This file only reads `payment_math`'s public API — it does not touch the
 //! pallet or the crate's own sources.
 
-use payment_math::{prorate_first_month, split, Amount, BasisPoints, Credits};
+use payment_math::{prorate_first_month, split, BasisPoints, Credits};
 
 const M: u128 = u128::MAX;
 
@@ -164,7 +164,7 @@ fn five_percent_agrees_everywhere_below_the_cliff() {
 fn ninety_five_percent_saturation_threshold() {
 	let last_safe = M / 9_500;
 	assert_eq!(last_safe, 35_819_196_517_993_522_469_828_906_045_449_285);
-	assert_eq!(last_safe.checked_mul(9_500).is_some(), true);
+	assert!(last_safe.checked_mul(9_500).is_some());
 	assert_eq!((last_safe + 1).checked_mul(9_500), None);
 	assert_eq!(new_impl::paid_per_month(last_safe), old_impl::ninety_five_percent(last_safe));
 }
@@ -258,11 +258,14 @@ fn calendar_can_never_produce_days_remaining_above_days_in_month() {
 	}
 }
 
-/// Over the whole reachable calendar domain the clamped and unclamped forms
-/// return bit-identical results, for prices spanning the plausible range.
+/// Over the whole reachable calendar domain the forms agree for every price
+/// whose `price × dim` product fits in `u128` (the hand-rolled path's safe
+/// region). At `u128::MAX` they diverge — payment_math is exact, the
+/// saturating form under-charges — pinned separately below.
 #[test]
 fn prorate_agrees_over_every_reachable_calendar_input() {
-	let prices = [0u128, 1, 7, 100, 999, 1_000_000, 10u128.pow(18), 10u128.pow(30), M];
+	// Prices whose ×31 product still fits; MAX is checked for divergence after.
+	let prices = [0u128, 1, 7, 100, 999, 1_000_000, 10u128.pow(18), 10u128.pow(30), M / 31];
 	for year in [2024i32, 2025, 2026, 2100, 2400] {
 		for month in 1u8..=12 {
 			let dim = calendar_mirror::month_length(year, month);
@@ -272,6 +275,14 @@ fn prorate_agrees_over_every_reachable_calendar_input() {
 					let new = new_impl::prorated_monthly_price(price, drm.into(), dim.into());
 					let old = old_impl::prorated_monthly_price(price, drm.into(), dim.into());
 					assert_eq!(new, old, "{year}-{month}-{day} price={price}");
+				}
+				// Extreme: hand-rolled under-charges, payment_math keeps full-month identity.
+				let new_m = new_impl::prorated_monthly_price(M, drm.into(), dim.into());
+				let old_m = old_impl::prorated_monthly_price(M, drm.into(), dim.into());
+				assert!(new_m <= old_m, "{year}-{month}-{day}");
+				if drm == dim {
+					assert_eq!(old_m, M, "full month at MAX must charge MAX");
+					assert_eq!(new_m, M / u128::from(dim));
 				}
 			}
 		}
@@ -301,10 +312,11 @@ fn prorate_diverges_only_when_days_remaining_exceeds_the_month() {
 	}
 }
 
-/// `dim == 0` (timestamp outside the representable range) and the saturating
-/// round-up both behave identically in the two implementations.
+/// `dim == 0` (timestamp outside the representable range) agrees; extreme
+/// prices expose the hand-rolled form's saturating under-charge that
+/// `payment_math` no longer shares (exact U256 ceil).
 #[test]
-fn prorate_zero_month_and_saturation_are_unchanged() {
+fn prorate_zero_month_agrees_saturation_diverges() {
 	// Calendar failure charges a full month in both.
 	assert_eq!(new_impl::prorated_monthly_price(100, 0, 0), 100);
 	assert_eq!(old_impl::prorated_monthly_price(100, 0, 0), 100);
@@ -317,11 +329,14 @@ fn prorate_zero_month_and_saturation_are_unchanged() {
 	assert_eq!(new_impl::prorated_monthly_price(100, 10, 30), 34);
 	assert_eq!(old_impl::prorated_monthly_price(100, 10, 30), 34);
 
-	// Saturating numerator: both undercharge to MAX/31, neither overcharges.
+	// Hand-rolled saturating mul under-charges a full month at MAX by 31×;
+	// payment_math keeps the full-month identity.
 	assert_eq!(new_impl::prorated_monthly_price(M, 31, 31), M / 31);
-	assert_eq!(old_impl::prorated_monthly_price(M, 31, 31), M / 31);
-	assert_eq!(new_impl::prorated_monthly_price(M, 30, 31), M / 31);
-	assert_eq!(old_impl::prorated_monthly_price(M, 30, 31), M / 31);
+	assert_eq!(old_impl::prorated_monthly_price(M, 31, 31), M);
+	let new_partial = new_impl::prorated_monthly_price(M, 30, 31);
+	let old_partial = old_impl::prorated_monthly_price(M, 30, 31);
+	assert!(new_partial < old_partial);
+	assert!(old_partial < M); // partial month is strictly less than full price
 }
 
 // ── property sweep over the whole domain ─────────────────────────────────────
@@ -348,18 +363,30 @@ proptest::proptest! {
 		}
 	}
 
-	/// Proration agrees for every `drm <= dim`, which is every input the
-	/// calendar can produce.
+	/// Proration agrees whenever the hand-rolled ceil numerator fits in
+	/// `u128`. Above that cliff the saturating form understates and
+	/// payment_math stays on the exact ceil (never higher than the price).
 	#[test]
-	fn prorate_agrees_whenever_days_remaining_fits_the_month(
+	fn prorate_agrees_below_product_cliff_and_exact_is_ge_above(
 		price: u128,
 		dim in 1u32..=31,
 		offset in 0u32..=31,
 	) {
 		let drm = offset.min(dim);
-		proptest::prop_assert_eq!(
-			new_impl::prorated_monthly_price(price, drm.into(), dim.into()),
-			old_impl::prorated_monthly_price(price, drm, dim),
-		);
+		let new = new_impl::prorated_monthly_price(price, drm.into(), dim.into());
+		let old = old_impl::prorated_monthly_price(price, drm, dim);
+		let days = u128::from(drm);
+		let dim_u = u128::from(dim);
+		// Hand-rolled path is exact iff both saturating steps are non-saturating.
+		let hand_rolled_exact = price
+			.checked_mul(days)
+			.and_then(|n| n.checked_add(dim_u - 1))
+			.is_some();
+		if hand_rolled_exact {
+			proptest::prop_assert_eq!(new, old);
+		} else {
+			proptest::prop_assert!(new <= old);
+			proptest::prop_assert!(old <= price);
+		}
 	}
 }

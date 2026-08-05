@@ -4,8 +4,9 @@
 //! build entirely — dev-dependencies never reach the runtime Wasm.
 
 use payment_math::{
-	available, payable, pro_rata, prorate_first_month, split, tokens_for, Amount, BasisPoints,
-	Blocks, ByteBlocks, Bytes, Credits, Tokens, Usd, UsdPerGibBlock, BPS_DENOM, E18, GIB,
+	available, payable, pro_rata, pro_rata_wide, prorate_first_month, split, sum_dues, tokens_for,
+	Amount, BasisPoints, Blocks, ByteBlocks, Bytes, Credits, Tokens, Usd, UsdPerGibBlock,
+	BPS_DENOM, E18, GIB,
 };
 use primitive_types::{U256, U512};
 use proptest::prelude::*;
@@ -243,11 +244,11 @@ proptest! {
 
 	#[test]
 	fn prorate_bounded_by_full_month_and_rounds_up(
-		price in 0u128..=(u128::MAX / 31),
+		price in any::<u128>(),
 		drm in 0u32..=31,
 		dim in 1u32..=31,
 	) {
-		// post-clamp semantics: bounded for ALL drm, ceil bound vs clamped drm
+		// post-clamp semantics: bounded for ALL drm, exact ceil vs clamped drm
 		let out = prorate_first_month(Credits::new(price), drm, dim).get();
 		prop_assert!(out <= price);
 		let eff = drm.min(dim);
@@ -257,11 +258,9 @@ proptest! {
 	}
 
 	/// The part-never-exceeds-whole clamp must hold over the FULL u128 price
-	/// range — including where the internal `price × days` and `+ (dim − 1)`
-	/// steps saturate, a region the ceil-characterization test above excludes
-	/// by capping price at `u128::MAX / 31`.
+	/// range and arbitrary calendar inputs (including drm > dim).
 	#[test]
-	fn prorate_never_exceeds_full_price_even_when_saturating(
+	fn prorate_never_exceeds_full_price(
 		price in any::<u128>(),
 		drm in any::<u32>(),
 		dim in 1u32..=u32::MAX,
@@ -269,11 +268,11 @@ proptest! {
 		prop_assert!(prorate_first_month(Credits::new(price), drm, dim).get() <= price);
 	}
 
-	/// When price×days does not saturate, output equals exact ceil; when it
-	/// does, output equals the saturated-ceil the implementation documents
-	/// (still ≤ price). Covers Tokens as well as Credits.
+	/// Exact U256 ceil over the full domain — including prices where
+	/// `price × days` or `+ (dim − 1)` would overflow `u128`. Covers Tokens
+	/// as well as Credits.
 	#[test]
-	fn prorate_matches_saturating_ceil_oracle(
+	fn prorate_matches_exact_u256_ceil_oracle(
 		price in any::<u128>(),
 		drm in any::<u32>(),
 		dim in 1u32..=u32::MAX,
@@ -281,16 +280,10 @@ proptest! {
 		let out_c = prorate_first_month(Credits::new(price), drm, dim).get();
 		let out_t = prorate_first_month(Tokens::new(price), drm, dim).get();
 		prop_assert_eq!(out_c, out_t);
-		if dim == 0 {
-			// Constructor path is dim>=1 here; kept for clarity if generator changes.
-			prop_assert_eq!(out_c, price);
-			return Ok(());
-		}
 		let days = drm.min(dim);
-		let dim_u = u128::from(dim);
-		let num = price.saturating_mul(u128::from(days));
-		let expected = num.saturating_add(dim_u - 1) / dim_u;
-		prop_assert_eq!(out_c, expected);
+		let dim_u = U256::from(dim);
+		let expected = (U256::from(price) * U256::from(days) + (dim_u - U256::from(1u8))) / dim_u;
+		prop_assert_eq!(U256::from(out_c), expected);
 		prop_assert!(out_c <= price);
 	}
 
@@ -340,5 +333,77 @@ proptest! {
 		let paid = payable(Tokens::new(share), Tokens::new(avail)).get();
 		prop_assert_eq!(paid, share.min(avail));
 		prop_assert_eq!(share + due.saturating_sub(share), due);
+	}
+
+	/// Wide multi-claimant shortfall: dues may individually be near `u128::MAX`
+	/// so their true sum exceeds `u128::MAX`. Shares still never exceed the
+	/// pool, each due, or the floor formula against the U256 total.
+	#[test]
+	fn pro_rata_wide_multi_claimant_respects_pool(
+		n in 2usize..8,
+		pool in any::<u128>(),
+		// High dues so sum regularly overflows u128.
+		seed_dues in prop::collection::vec(any::<u128>(), 2..8),
+	) {
+		let dues: Vec<u128> = seed_dues.into_iter().take(n).collect();
+		prop_assume!(!dues.is_empty());
+		let total = sum_dues(dues.iter().copied().map(Tokens::new));
+		prop_assume!(!total.is_zero());
+		let pool_t = Tokens::new(pool);
+		let mut sum = U256::zero();
+		for &d in &dues {
+			let share = pro_rata_wide(Tokens::new(d), pool_t, total);
+			prop_assert!(share.get() <= d);
+			prop_assert!(U256::from(share.get()) <= U256::from(pool));
+			let exact = U256::from(d) * U256::from(pool) / total;
+			// Full-cover branch only when pool ≥ total (impossible once total > MAX).
+			if U256::from(pool) >= total {
+				prop_assert_eq!(share.get(), d);
+			} else {
+				prop_assert_eq!(U256::from(share.get()), exact.min(U256::from(d)));
+			}
+			sum = sum.saturating_add(U256::from(share.get()));
+		}
+		prop_assert!(sum <= U256::from(pool));
+		prop_assert!(sum <= total);
+	}
+
+	/// Narrow `pro_rata` is exactly `pro_rata_wide` with a `u128` total.
+	#[test]
+	fn pro_rata_matches_wide_for_u128_totals(
+		due in any::<u128>(),
+		pool in any::<u128>(),
+		total in 1u128..=u128::MAX,
+	) {
+		// Keep the caller contract so both paths stay in documented territory.
+		let due = due.min(total);
+		let narrow = pro_rata(Tokens::new(due), Tokens::new(pool), Tokens::new(total)).get();
+		let wide =
+			pro_rata_wide(Tokens::new(due), Tokens::new(pool), U256::from(total)).get();
+		prop_assert_eq!(narrow, wide);
+	}
+
+	/// Monotonicity: more due (≤ total) never yields a smaller share; larger
+	/// pool never yields a smaller share; larger total never yields a larger share.
+	#[test]
+	fn pro_rata_monotone_in_due_pool_antitone_in_total(
+		a in any::<u128>(),
+		b in any::<u128>(),
+		pool_a in any::<u128>(),
+		pool_b in any::<u128>(),
+		total in 1u128..=u128::MAX,
+	) {
+		let (due_lo, due_hi) = (a.min(b).min(total), a.max(b).min(total));
+		let (pool_lo, pool_hi) = (pool_a.min(pool_b), pool_a.max(pool_b));
+		let t = |due: u128, pool: u128, total: u128| {
+			pro_rata(Tokens::new(due), Tokens::new(pool), Tokens::new(total)).get()
+		};
+		prop_assert!(t(due_lo, pool_lo, total) <= t(due_hi, pool_lo, total));
+		prop_assert!(t(due_lo, pool_lo, total) <= t(due_lo, pool_hi, total));
+		// Larger total (still ≥ due) ⇒ smaller or equal share in the shortfall path.
+		let total_hi = total;
+		let total_lo = due_hi.max(1); // ≥ due so contract holds
+		prop_assume!(total_lo <= total_hi);
+		prop_assert!(t(due_hi, pool_lo, total_hi) <= t(due_hi, pool_lo, total_lo));
 	}
 }
