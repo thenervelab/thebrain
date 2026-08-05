@@ -82,9 +82,9 @@ parameter_types! {
 	pub PrecompilesValue: HipiusPrecompiles<Runtime> = HipiusPrecompiles::<_>::new();
 }
 
-/// Standard EVM fee handling with no account-specific exemptions.
+/// EVM fee handling — routes all gas fees to the hippocampus bank pallet.
 pub type CustomEVMCurrencyAdapter =
-	pallet_evm::EVMCurrencyAdapter<Balances, impls::DealWithFees<Runtime>>;
+	pallet_evm::EVMCurrencyAdapter<Balances, impls::HippocampusFees<Runtime>>;
 
 pub struct PrecompileGasWeightMapping<T>(PhantomData<T>);
 

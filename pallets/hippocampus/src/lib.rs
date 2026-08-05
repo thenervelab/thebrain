@@ -78,6 +78,8 @@ pub mod pallet {
 		Emission,
 		/// One-off grant / treasury top-up.
 		Grant,
+		/// Transaction fees collected from the network.
+		Fees,
 		/// Anything else.
 		Other,
 	}
@@ -100,10 +102,6 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type TotalPaidByRequester<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
-
-	/// Lifetime total transaction fees collected.
-	#[pallet::storage]
-	pub type TotalFeesCollected<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
 	/// Accounts allowed to draw from the bank at genesis.
 	///
@@ -246,6 +244,19 @@ pub mod pallet {
 		/// The bank sovereign account.
 		pub fn account_id() -> T::AccountId {
 			T::PalletId::get().into_account_truncating()
+		}
+
+		/// Record a fee deposit in the bank's ledger and emit the Deposited event.
+		/// Used by the transaction fee handler to track all tx fees.
+		pub fn record_fee_deposit(amount: BalanceOf<T>) {
+			TotalDeposited::<T>::mutate(DepositType::Fees, |total| {
+				*total = total.saturating_add(amount);
+			});
+			Self::deposit_event(Event::Deposited {
+				who: Self::account_id(),
+				amount,
+				deposit_type: DepositType::Fees,
+			});
 		}
 
 		/// Funds `request_payment` could release right now (free balance minus
