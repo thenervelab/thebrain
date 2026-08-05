@@ -171,22 +171,57 @@ pub fn tokens_for(byte_blocks: ByteBlocks, price: UsdPerGibBlock, token_price: U
 /// (so `due ≤ total_due`); the conservation claims above assume it. A
 /// violation is a caller accounting bug — asserted in debug builds, not
 /// masked by capping the result in release.
+///
+/// Prefer [`pro_rata_wide`] when the true sum of dues may exceed `u128::MAX`:
+/// folding with `u128::saturating_add` and then calling this function makes
+/// `pool >= total_due` spuriously true and pays every claimant their full
+/// `due` (first BTreeMap key wins the bank).
 pub fn pro_rata(due: Tokens, pool: Tokens, total_due: Tokens) -> Tokens {
-	if total_due.0 == 0 {
+	pro_rata_wide(due, pool, U256::from(total_due.0))
+}
+
+/// Like [`pro_rata`], but `total_due` is a wide sum so multi-claimant totals
+/// that overflow `u128` still scale fairly. A `u128` pool can never fully cover
+/// a total above `u128::MAX`, so that path always uses floor division rather
+/// than returning each claimant's full `due`.
+pub fn pro_rata_wide(due: Tokens, pool: Tokens, total_due: U256) -> Tokens {
+	if total_due.is_zero() {
 		return Tokens(0);
 	}
 	debug_assert!(
-		due.0 <= total_due.0,
-		"pro_rata caller contract violated: due {} > total_due {}",
-		due.0,
-		total_due.0,
+		U256::from(due.0) <= total_due,
+		"pro_rata_wide caller contract violated: due > total_due",
 	);
-	if pool.0 >= total_due.0 {
+	if U256::from(pool.0) >= total_due {
 		return due;
 	}
-	// pool < total_due ⇒ due × pool / total_due < due ≤ u128::MAX, so the
-	// U256 quotient always fits back into u128.
-	Tokens((U256::from(due.0) * U256::from(pool.0) / U256::from(total_due.0)).as_u128())
+	// pool < total ⇒ due × pool / total < due ≤ u128::MAX (when due ≤ total).
+	let q = U256::from(due.0) * U256::from(pool.0) / total_due;
+	Tokens(q.min(U256::from(due.0)).as_u128())
+}
+
+/// Wide sum of token dues for settlement totals. Saturates only at `U256::MAX`,
+/// so ordinary multi-family extremes that overflow `u128` still produce a
+/// faithful denominator for [`pro_rata_wide`].
+pub fn sum_dues<I>(dues: I) -> U256
+where
+	I: IntoIterator<Item = Tokens>,
+{
+	let mut total = U256::zero();
+	for d in dues {
+		total = total.saturating_add(U256::from(d.get()));
+	}
+	total
+}
+
+/// Compress a wide due total into the `u128` event/storage domain (caps at
+/// `u128::MAX` when the true sum overflowed).
+pub fn total_due_for_event(total: U256) -> u128 {
+	if total > U256::from(u128::MAX) {
+		u128::MAX
+	} else {
+		total.as_u128()
+	}
 }
 
 /// Split `amount` into `(part, rest)`: `part = amount × ratio / 10_000`
@@ -518,6 +553,35 @@ mod tests {
 		assert!(dust < 3, "dust {dust} must stay below the claimant count");
 	}
 
+	/// Regression: two `u128::MAX` dues must not be collapsed to total=MAX and
+	/// then take the full-cover branch (which would grant each claimant MAX).
+	#[test]
+	fn pro_rata_wide_two_max_dues_scales_against_true_sum() {
+		let max = Tokens::new(u128::MAX);
+		let total = sum_dues([max, max]);
+		assert!(total > U256::from(u128::MAX));
+		let pool = Tokens::new(1_000);
+		let a = pro_rata_wide(max, pool, total).get();
+		let b = pro_rata_wide(max, pool, total).get();
+		// Equal dues → equal floor shares; sum ≤ pool.
+		assert_eq!(a, b);
+		assert_eq!(a, 500);
+		assert!(a.saturating_add(b) <= pool.get());
+		// Narrow pro_rata with a saturated total would wrongly return MAX each.
+		assert_ne!(pro_rata(max, pool, max).get(), a);
+	}
+
+	#[test]
+	fn sum_dues_and_event_compress() {
+		assert_eq!(sum_dues([]), U256::zero());
+		assert_eq!(sum_dues([Tokens::new(1), Tokens::new(2)]), U256::from(3u128));
+		assert_eq!(total_due_for_event(U256::from(7u128)), 7);
+		assert_eq!(
+			total_due_for_event(U256::from(u128::MAX) + U256::from(1u128)),
+			u128::MAX
+		);
+	}
+
 	// ── split ────────────────────────────────────────────────────────────
 
 	#[test]
@@ -763,7 +827,7 @@ mod tests {
 
 	#[cfg(debug_assertions)]
 	#[test]
-	#[should_panic(expected = "pro_rata caller contract")]
+	#[should_panic(expected = "pro_rata_wide caller contract")]
 	fn pro_rata_debug_asserts_due_within_total() {
 		let _ = pro_rata(Tokens::new(31), Tokens::new(10), Tokens::new(30));
 	}

@@ -23,7 +23,9 @@ use frame_support::{
 	BoundedVec, PalletId,
 };
 use frame_system::pallet_prelude::*;
-use payment_math::{Amount, Blocks, ByteBlocks, Bytes, Tokens, Usd, UsdPerGibBlock};
+use payment_math::{
+	sum_dues, total_due_for_event, Amount, Blocks, ByteBlocks, Bytes, Tokens, Usd, UsdPerGibBlock,
+};
 use scale_info::TypeInfo;
 use sp_core::{ed25519, H256};
 use sp_runtime::{
@@ -1800,9 +1802,11 @@ pub mod pallet {
 				}
 			}
 
-			// Every family's due is a summand of `total_due`, satisfying
-			// `pro_rata`'s `due ≤ total_due` contract below.
-			let total_due = family_due.values().fold(Tokens::new(0), |a, v| a.saturating_add(*v));
+			// Wide sum: folding with u128::saturating_add would collapse two
+			// near-MAX dues into MAX and make `pro_rata` treat the pool as a
+			// full cover, paying each family its full due (first AccountId
+			// drains the bank). U256 keeps the true denominator.
+			let total_due = sum_dues(family_due.values().copied());
 			if total_due.is_zero() {
 				LastSettlementBlock::<T>::put(now);
 				return;
@@ -1820,7 +1824,7 @@ pub mod pallet {
 			let mut tokens_paid_sum = Tokens::new(0);
 			for (family, due) in family_due.iter() {
 				// Pro-rata split when the bank cannot cover everything.
-				let pay = payment_math::pro_rata(*due, pool, total_due);
+				let pay = payment_math::pro_rata_wide(*due, pool, total_due);
 				let paid = if pay.is_zero() {
 					Tokens::new(0)
 				} else {
@@ -1872,7 +1876,7 @@ pub mod pallet {
 			Self::deposit_event(Event::MinerPaymentSettled {
 				block: now,
 				families,
-				tokens_due: total_due.get(),
+				tokens_due: total_due_for_event(total_due),
 				tokens_paid: tokens_paid_sum.get(),
 			});
 		}
