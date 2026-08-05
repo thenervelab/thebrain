@@ -101,6 +101,10 @@ pub mod pallet {
 	pub type TotalPaidByRequester<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
 
+	/// Lifetime total transaction fees collected.
+	#[pallet::storage]
+	pub type TotalFeesCollected<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
 	/// Accounts allowed to draw from the bank at genesis.
 	///
 	/// A genesis-built chain never runs `ActivateMinerPaymentBank` — FRAME's

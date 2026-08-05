@@ -515,7 +515,7 @@ parameter_types! {
 impl pallet_transaction_payment::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	#[allow(deprecated)]
-	type OnChargeTransaction = CurrencyAdapter<Balances, impls::DealWithFees<Runtime>>;
+	type OnChargeTransaction = CurrencyAdapter<Balances, impls::HippocampusFees<Runtime>>;
 	type OperationalFeeMultiplier = OperationalFeeMultiplier;
 	type WeightToFee = IdentityFee<Balance>;
 	type LengthToFee = IdentityFee<Balance>;

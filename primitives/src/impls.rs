@@ -63,3 +63,32 @@ macro_rules! impl_deal_with_fees {
 		}
 	};
 }
+
+#[macro_export]
+macro_rules! impl_hippocampus_fees {
+	() => {
+		/// Routes all transaction fees to the hippocampus (bank) pallet account.
+		pub struct HippocampusFees<R>(sp_std::marker::PhantomData<R>);
+		impl<R> OnUnbalanced<NegativeImbalance<R>> for HippocampusFees<R>
+		where
+			R: pallet_balances::Config + pallet_hippocampus::Config + frame_system::Config,
+			<R as frame_system::Config>::RuntimeEvent: From<pallet_balances::Event<R>>,
+		{
+			fn on_nonzero_unbalanced(amount: NegativeImbalance<R>) {
+				use sp_runtime::traits::AccountIdConversion;
+
+				let fee_amount = amount.peek();
+				let hippocampus_account =
+					<R as pallet_hippocampus::Config>::PalletId::get().into_account_truncated();
+
+				// Transfer fee to hippocampus pallet account
+				<pallet_balances::Pallet<R>>::resolve_creating(&hippocampus_account, amount);
+
+				// Update total fees collected storage
+				pallet_hippocampus::TotalFeesCollected::<R>::mutate(|collected| {
+					*collected = collected.saturating_add(fee_amount);
+				});
+			}
+		}
+	};
+}
