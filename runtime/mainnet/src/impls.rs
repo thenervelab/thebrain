@@ -19,7 +19,6 @@ use crate::NegativeImbalance;
 use frame_support::traits::{Currency, Imbalance, OnUnbalanced};
 use hippius_primitives::{impl_deal_with_fees, impl_hippocampus_fees, impl_to_author};
 use sp_core::Get;
-use sp_runtime::Saturating;
 
 impl_to_author!();
 impl_deal_with_fees!();
