@@ -106,6 +106,36 @@ pub mod pallet {
 		AdminEmergency,
 	}
 
+	/// Status of a staking reward transfer (multi-sig required)
+	#[derive(
+		Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default,
+	)]
+	pub enum StakingRewardTransferStatus {
+		#[default]
+		Pending, // Collecting guardian votes
+		Completed, // Rewards minted to the staking pot
+		Cancelled, // Admin cancelled before threshold reached
+	}
+
+	/// Record of a pending staking reward transfer (guardian-approved, multi-sig)
+	/// Guardians vote to authorize staking reward transfers for distribution to stakers
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
+	#[scale_info(skip_type_params(T))]
+	pub struct StakingRewardTransfer<T: Config> {
+		/// Unique ID for this staking reward transfer request
+		pub request_id: H256,
+		/// Amount of hAlpha to mint (in halphaRao)
+		pub amount: u128,
+		/// Guardian votes for approval
+		pub votes: BTreeSet<T::AccountId>,
+		/// Current status
+		pub status: StakingRewardTransferStatus,
+		/// Block when first guardian attested
+		pub created_at_block: BlockNumberFor<T>,
+		/// Block when staking reward transfer was finalized
+		pub finalized_at_block: Option<BlockNumberFor<T>>,
+	}
+
 	/// Record of a deposit (guardian-created, destination side)
 	/// Guardians create this when they observe a deposit_request on Bittensor
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo)]
@@ -159,6 +189,14 @@ pub mod pallet {
 		#[pallet::constant]
 		type PalletId: Get<PalletId>;
 
+		/// The staking pallet's account ID (where bridged rewards are sent for distribution)
+		#[pallet::constant]
+		type RewardDestination: Get<Self::AccountId>;
+
+		/// The active staking era index. The per-era mint limit counter resets
+		/// whenever this advances past the era of the last reward transfer.
+		type ActiveEraIndex: Get<u32>;
+
 		/// The balance type used for this pallet.
 		type Balance: Parameter
 			+ Member
@@ -187,7 +225,7 @@ pub mod pallet {
 	#[pallet::getter(fn approve_threshold)]
 	pub type ApproveThreshold<T: Config> = StorageValue<_, u16, ValueQuery>;
 
-	/// Maximum allowed minted hAlpha (set via governance/sudo)
+	/// Maximum allowed minted hAlpha across all bridge flows (set via governance/sudo)
 	#[pallet::storage]
 	#[pallet::getter(fn global_mint_cap)]
 	pub type GlobalMintCap<T: Config> = StorageValue<_, u128, ValueQuery>;
@@ -210,6 +248,49 @@ pub mod pallet {
 	#[pallet::getter(fn deposits)]
 	pub type Deposits<T: Config> =
 		StorageMap<_, Blake2_128Concat, DepositId, Deposit<T>, OptionQuery>;
+
+	// ============ Staking Reward Transfer Storage (Multi-sig) ============
+
+	/// Pending staking reward transfers requiring guardian approval (multi-sig with 2+ votes)
+	/// Key: StakingRewardTransferId
+	#[pallet::storage]
+	#[pallet::getter(fn staking_reward_transfers)]
+	pub type StakingRewardTransfers<T: Config> =
+		StorageMap<_, Blake2_128Concat, H256, StakingRewardTransfer<T>, OptionQuery>;
+
+	/// Nonce for generating unique staking reward transfer request IDs
+	#[pallet::storage]
+	#[pallet::getter(fn next_staking_reward_transfer_nonce)]
+	pub type NextStakingRewardTransferNonce<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+	/// Default max mint per era (prevents unlimited minting in a time window)
+	#[pallet::type_value]
+	pub fn DefaultMaxMintPerEra() -> u128 {
+		1_000_000_000_000_000 // 1 million hAlpha per era
+	}
+
+	/// Maximum hAlpha that can be minted per era (time window)
+	/// Prevents sudden large mints that could destabilize rewards
+	#[pallet::storage]
+	#[pallet::getter(fn max_mint_per_era)]
+	pub type MaxMintPerEra<T: Config> = StorageValue<_, u128, ValueQuery, DefaultMaxMintPerEra>;
+
+	/// Amount minted in the current era (resets when the staking era changes)
+	/// Tracks cumulative mints to enforce the per-era limit
+	#[pallet::storage]
+	#[pallet::getter(fn era_minted_amount)]
+	pub type EraMintedAmount<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// Last era when rewards were transferred (used to detect era changes)
+	#[pallet::storage]
+	#[pallet::getter(fn last_transfer_era)]
+	pub type LastTransferEra<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+	/// Whitelisted addresses that can bridge rewards (membership set using Option)
+	#[pallet::storage]
+	#[pallet::getter(fn is_whitelisted)]
+	pub type RewardBridgeWhitelist<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, (), OptionQuery>;
 
 	// ============ Withdrawal Request Storage (Source Side) ============
 
@@ -310,6 +391,30 @@ pub mod pallet {
 
 		/// Cleanup TTL updated
 		CleanupTTLUpdated { old_ttl: BlockNumberFor<T>, new_ttl: BlockNumberFor<T> },
+
+		// ============ Staking Reward Transfer Events ============
+		/// Guardian attested a staking reward transfer request
+		StakingRewardTransferAttested { id: H256, guardian: T::AccountId },
+
+		/// Staking reward transfer completed - hAlpha minted to the staking pot
+		StakingRewardTransferCompleted { id: H256, amount: u128 },
+
+		/// Staking reward transfer cancelled by admin
+		StakingRewardTransferCancelled { id: H256 },
+
+		/// Staking reward transfer record cleaned up after TTL
+		StakingRewardTransferCleanedUp { id: H256 },
+
+		// ============ Whitelist Events ============
+		/// Address added to reward bridge whitelist
+		RewardBridgeWhitelistAdded { account: T::AccountId },
+
+		/// Address removed from reward bridge whitelist
+		RewardBridgeWhitelistRemoved { account: T::AccountId },
+
+		// ============ Per-Era Limit Events ============
+		/// Maximum mint per era limit updated
+		MaxMintPerEraUpdated { new_limit: u128 },
 	}
 
 	// ============ Errors ============
@@ -362,6 +467,16 @@ pub mod pallet {
 		InvalidRequestId,
 		/// Withdrawal amount must be divisible by the conversion factor (no dust)
 		AmountNotBridgeable,
+		/// Staking reward transfer request not found
+		StakingRewardTransferNotFound,
+		/// Guardian has already voted on this staking reward transfer
+		StakingRewardTransferAlreadyVoted,
+		/// Staking reward transfer already completed
+		StakingRewardTransferAlreadyCompleted,
+		/// Caller is not whitelisted to bridge rewards
+		NotWhitelisted,
+		/// Minting would exceed the per-era limit
+		EraLimitExceeded,
 	}
 
 	// ============ Extrinsics ============
@@ -570,17 +685,17 @@ pub mod pallet {
 		) -> DispatchResult {
 			let caller = ensure_signed(origin)?;
 			Self::ensure_guardian(&caller)?;
-			
+
 			let request = WithdrawalRequests::<T>::get(request_id)
 				.ok_or(Error::<T>::WithdrawalRequestNotFound)?;
-			
+
 			// Must be finalized before guardian can clean up — protects user's burned hAlpha
 			// during the admin recovery window.
 			ensure!(
 				matches!(request.status, WithdrawalRequestStatus::Failed),
 				Error::<T>::InvalidStatus,
 			);
-			
+
 			// TTL must have passed since creation
 			let current_block = frame_system::Pallet::<T>::block_number();
 			let ttl = CleanupTTLBlocks::<T>::get();
@@ -589,6 +704,202 @@ pub mod pallet {
 			WithdrawalRequests::<T>::remove(request_id);
 
 			Self::deposit_event(Event::WithdrawalRequestCleanedUp { id: request_id });
+
+			Ok(())
+		}
+
+		// ============ Staking Reward Transfer Actions ============
+
+		/// Guardian proposes a staking reward transfer to be distributed to stakers
+		/// Requires 2+ guardian approvals before rewards are minted to the staking pot
+		/// Caller must be guardian and whitelisted to propose staking reward transfers
+		///
+		/// # Arguments
+		/// * `origin` - Must be signed by a guardian and whitelisted
+		/// * `amount` - Amount of hAlpha to mint to the staking pot (in halphaRao)
+		#[pallet::call_index(13)]
+		// TODO: benchmark; attest_deposit underestimates this call (adds hashing + finalize)
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_deposit())]
+		pub fn propose_staking_reward_transfer(
+			origin: OriginFor<T>,
+			amount: u128,
+		) -> DispatchResult {
+			let guardian = ensure_signed(origin)?;
+			Self::ensure_guardian(&guardian)?;
+			Self::ensure_whitelisted(&guardian)?;
+			Self::ensure_not_paused()?;
+			ensure!(amount > 0, Error::<T>::AmountTooSmall);
+
+			let nonce = NextStakingRewardTransferNonce::<T>::get();
+			NextStakingRewardTransferNonce::<T>::put(nonce.saturating_add(1));
+
+			let mut data = Vec::new();
+			data.extend_from_slice(b"STAKING_REWARD_TRANSFER-V1");
+			data.extend_from_slice(&amount.to_le_bytes());
+			data.extend_from_slice(&nonce.to_le_bytes());
+			let request_id = H256::from(sp_core::hashing::blake2_256(&data));
+
+			let mut votes = BTreeSet::new();
+			votes.insert(guardian.clone());
+
+			let staking_reward_transfer = StakingRewardTransfer {
+				request_id,
+				amount,
+				votes,
+				status: StakingRewardTransferStatus::Pending,
+				created_at_block: frame_system::Pallet::<T>::block_number(),
+				finalized_at_block: None,
+			};
+
+			Self::deposit_event(Event::StakingRewardTransferAttested { id: request_id, guardian });
+
+			if staking_reward_transfer.votes.len() >= ApproveThreshold::<T>::get() as usize {
+				Self::finalize_staking_reward_transfer(request_id, staking_reward_transfer)?;
+			} else {
+				StakingRewardTransfers::<T>::insert(request_id, staking_reward_transfer);
+			}
+
+			Ok(())
+		}
+
+		/// Guardian votes to approve a pending staking reward transfer
+		/// Once threshold is reached, rewards are automatically minted to the staking pot
+		/// Caller must be guardian and whitelisted to attest staking reward transfers
+		///
+		/// Note: If finalization fails (e.g., global cap exceeded), the entire extrinsic rolls back
+		/// including the vote. The last attester must retry after conditions are met.
+		///
+		/// # Arguments
+		/// * `origin` - Must be signed by a guardian and whitelisted
+		/// * `staking_reward_transfer_id` - The staking reward transfer request ID to approve
+		#[pallet::call_index(14)]
+		// TODO: benchmark; reusing attest_deposit weight (same shape: vote + maybe finalize)
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::attest_deposit())]
+		pub fn attest_staking_reward_transfer(
+			origin: OriginFor<T>,
+			staking_reward_transfer_id: H256,
+		) -> DispatchResult {
+			let guardian = ensure_signed(origin)?;
+			Self::ensure_guardian(&guardian)?;
+			Self::ensure_whitelisted(&guardian)?;
+			Self::ensure_not_paused()?;
+
+			let mut staking_reward_transfer =
+				StakingRewardTransfers::<T>::get(staking_reward_transfer_id)
+					.ok_or(Error::<T>::StakingRewardTransferNotFound)?;
+
+			ensure!(
+				staking_reward_transfer.status == StakingRewardTransferStatus::Pending,
+				Error::<T>::StakingRewardTransferAlreadyCompleted
+			);
+			ensure!(
+				!staking_reward_transfer.votes.contains(&guardian),
+				Error::<T>::StakingRewardTransferAlreadyVoted
+			);
+
+			staking_reward_transfer.votes.insert(guardian.clone());
+
+			Self::deposit_event(Event::StakingRewardTransferAttested {
+				id: staking_reward_transfer_id,
+				guardian,
+			});
+
+			if staking_reward_transfer.votes.len() >= ApproveThreshold::<T>::get() as usize {
+				Self::finalize_staking_reward_transfer(
+					staking_reward_transfer_id,
+					staking_reward_transfer,
+				)?;
+			} else {
+				StakingRewardTransfers::<T>::insert(
+					staking_reward_transfer_id,
+					staking_reward_transfer,
+				);
+			}
+
+			Ok(())
+		}
+
+		/// Admin cancels a staking reward transfer that is stuck (Pending but not reaching threshold)
+		///
+		/// # Pause Behavior
+		/// Intentionally does NOT check pause state. Admin emergency functions must remain
+		/// operational when the bridge is paused.
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `staking_reward_transfer_id` - The staking reward transfer ID to cancel
+		#[pallet::call_index(15)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::admin_cancel_deposit())]
+		pub fn admin_cancel_staking_reward_transfer(
+			origin: OriginFor<T>,
+			staking_reward_transfer_id: H256,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+
+			StakingRewardTransfers::<T>::try_mutate(
+				staking_reward_transfer_id,
+				|maybe_staking_reward_transfer| -> DispatchResult {
+					let staking_reward_transfer = maybe_staking_reward_transfer
+						.as_mut()
+						.ok_or(Error::<T>::StakingRewardTransferNotFound)?;
+					ensure!(
+						staking_reward_transfer.status == StakingRewardTransferStatus::Pending,
+						Error::<T>::StakingRewardTransferAlreadyCompleted
+					);
+
+					staking_reward_transfer.finalized_at_block =
+						Some(frame_system::Pallet::<T>::block_number());
+					staking_reward_transfer.status = StakingRewardTransferStatus::Cancelled;
+
+					Self::deposit_event(Event::StakingRewardTransferCancelled {
+						id: staking_reward_transfer_id,
+					});
+
+					Ok(())
+				},
+			)
+		}
+
+		/// Guardian can cleanup a finalized staking reward transfer after TTL
+		///
+		/// # Arguments
+		/// * `origin` - Must be signed by a guardian
+		/// * `staking_reward_transfer_id` - The staking reward transfer ID to cleanup
+		#[pallet::call_index(16)]
+		// TODO: benchmark; reusing cleanup_deposit weight (same shape: one read, one delete)
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::cleanup_deposit())]
+		pub fn cleanup_staking_reward_transfer(
+			origin: OriginFor<T>,
+			staking_reward_transfer_id: H256,
+		) -> DispatchResult {
+			let caller = ensure_signed(origin)?;
+			Self::ensure_guardian(&caller)?;
+
+			let staking_reward_transfer =
+				StakingRewardTransfers::<T>::get(staking_reward_transfer_id)
+					.ok_or(Error::<T>::StakingRewardTransferNotFound)?;
+
+			// Must be finalized (Completed or Cancelled)
+			ensure!(
+				staking_reward_transfer.status == StakingRewardTransferStatus::Completed
+					|| staking_reward_transfer.status == StakingRewardTransferStatus::Cancelled,
+				Error::<T>::RecordNotFinalized
+			);
+
+			let finalized_at = staking_reward_transfer
+				.finalized_at_block
+				.ok_or(Error::<T>::RecordNotFinalized)?;
+
+			// TTL must have passed since finalization
+			let current_block = frame_system::Pallet::<T>::block_number();
+			let ttl = CleanupTTLBlocks::<T>::get();
+			ensure!(current_block >= finalized_at + ttl, Error::<T>::TTLNotExpired);
+
+			StakingRewardTransfers::<T>::remove(staking_reward_transfer_id);
+
+			Self::deposit_event(Event::StakingRewardTransferCleanedUp {
+				id: staking_reward_transfer_id,
+			});
 
 			Ok(())
 		}
@@ -615,7 +926,30 @@ pub mod pallet {
 			ensure!(approve_threshold <= guardian_count, Error::<T>::ThresholdTooHigh);
 			Guardians::<T>::put(guardians.clone());
 			ApproveThreshold::<T>::put(approve_threshold);
-			Self::deposit_event(Event::GuardiansUpdated { guardians, approve_threshold });
+			Self::deposit_event(Event::GuardiansUpdated {
+				guardians: guardians.clone(),
+				approve_threshold,
+			});
+
+			// A lowered threshold can leave deposits Pending even though their existing
+			// votes now suffice; without re-evaluation they would need one redundant
+			// attestation (impossible if every remaining guardian already voted).
+			// Unbounded iteration is acceptable here: root-only, rare, and deposits are
+			// TTL-pruned. Only votes from the NEW guardian set count.
+			let pending: Vec<_> = Deposits::<T>::iter()
+				.filter(|(_, deposit)| deposit.status == DepositStatus::Pending)
+				.collect();
+			for (deposit_id, deposit) in pending {
+				let current_votes =
+					deposit.votes.iter().filter(|voter| guardians.contains(voter)).count();
+				if current_votes >= approve_threshold as usize {
+					// A deposit that cannot finalize (e.g. no mint-cap headroom) must not
+					// block rotation: roll back just that deposit and leave it Pending
+					let _ = frame_support::storage::with_storage_layer(|| {
+						Self::finalize_deposit(deposit_id, deposit)
+					});
+				}
+			}
 			Ok(())
 		}
 
@@ -696,6 +1030,61 @@ pub mod pallet {
 				old_amount: old,
 				new_amount: amount,
 			});
+			Ok(())
+		}
+
+		/// Admin adds an address to reward bridge whitelist
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `account` - Account to whitelist for bridging rewards
+		#[pallet::call_index(17)]
+		// TODO: benchmark; reusing set_min_withdrawal_amount weight (same shape: one write)
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_min_withdrawal_amount())]
+		pub fn add_reward_bridge_whitelist(
+			origin: OriginFor<T>,
+			account: T::AccountId,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			RewardBridgeWhitelist::<T>::insert(&account, ());
+			Self::deposit_event(Event::RewardBridgeWhitelistAdded { account });
+			Ok(())
+		}
+
+		/// Admin removes an address from reward bridge whitelist
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `account` - Account to remove from whitelist
+		#[pallet::call_index(18)]
+		// TODO: benchmark; reusing set_min_withdrawal_amount weight (same shape: one write)
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_min_withdrawal_amount())]
+		pub fn remove_reward_bridge_whitelist(
+			origin: OriginFor<T>,
+			account: T::AccountId,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			RewardBridgeWhitelist::<T>::remove(&account);
+			Self::deposit_event(Event::RewardBridgeWhitelistRemoved { account });
+			Ok(())
+		}
+
+		/// Set the maximum hAlpha that can be minted per era
+		///
+		/// This is a security limit to prevent sudden large mints that could
+		/// destabilize staking rewards. Works alongside the global mint cap.
+		///
+		/// # Arguments
+		/// * `origin` - Must be root
+		/// * `max_amount` - Maximum amount to mint per era (in halphaRao)
+		#[pallet::call_index(19)]
+		// TODO: benchmark; reusing set_min_withdrawal_amount weight (same shape: one write)
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::set_min_withdrawal_amount())]
+		pub fn set_max_mint_per_era(origin: OriginFor<T>, max_amount: u128) -> DispatchResult {
+			ensure_root(origin)?;
+			ensure!(max_amount > 0, Error::<T>::AmountTooSmall);
+			MaxMintPerEra::<T>::put(max_amount);
+			Self::deposit_event(Event::MaxMintPerEraUpdated { new_limit: max_amount });
 			Ok(())
 		}
 
@@ -854,6 +1243,12 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// Ensure the account is whitelisted for reward bridging
+		pub fn ensure_whitelisted(account: &T::AccountId) -> DispatchResult {
+			ensure!(RewardBridgeWhitelist::<T>::get(account).is_some(), Error::<T>::NotWhitelisted);
+			Ok(())
+		}
+
 		/// Convert a raw amount into the runtime's balance type
 		pub fn amount_to_balance(amount: u128) -> Result<BalanceOf<T>, DispatchError> {
 			amount.try_into().map_err(|_| Error::<T>::AmountConversionFailed.into())
@@ -909,7 +1304,62 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Mint hAlpha to a recipient
+		/// Finalize a staking reward transfer by minting hAlpha to the reward destination
+		fn finalize_staking_reward_transfer(
+			staking_reward_transfer_id: H256,
+			mut staking_reward_transfer: StakingRewardTransfer<T>,
+		) -> DispatchResult {
+			let amount = staking_reward_transfer.amount;
+			let destination = T::RewardDestination::get();
+
+			// Check and update global mint cap
+			TotalMintedByBridge::<T>::try_mutate(|total| -> DispatchResult {
+				let mint_cap = GlobalMintCap::<T>::get();
+				let new_total = total.checked_add(amount).ok_or(Error::<T>::ArithmeticOverflow)?;
+				ensure!(new_total <= mint_cap, Error::<T>::CapExceeded);
+				*total = new_total;
+				Ok(())
+			})?;
+
+			// The per-era counter carries over from the last transfer's era, so it must
+			// be reset before the limit check when the staking era has since advanced
+			let current_era = T::ActiveEraIndex::get();
+			if LastTransferEra::<T>::get() != current_era {
+				LastTransferEra::<T>::put(current_era);
+				EraMintedAmount::<T>::put(0);
+			}
+
+			// Check and update per-era mint limit
+			EraMintedAmount::<T>::try_mutate(|era_total| -> DispatchResult {
+				let max_per_era = MaxMintPerEra::<T>::get();
+				let new_era_total =
+					era_total.checked_add(amount).ok_or(Error::<T>::ArithmeticOverflow)?;
+				ensure!(new_era_total <= max_per_era, Error::<T>::EraLimitExceeded);
+				*era_total = new_era_total;
+				Ok(())
+			})?;
+
+			// Mint hAlpha to reward destination (staking pallet)
+			Self::mint_to_recipient(&destination, amount)?;
+
+			// Update staking reward transfer status
+			staking_reward_transfer.finalized_at_block =
+				Some(frame_system::Pallet::<T>::block_number());
+			staking_reward_transfer.status = StakingRewardTransferStatus::Completed;
+			StakingRewardTransfers::<T>::insert(
+				staking_reward_transfer_id,
+				staking_reward_transfer,
+			);
+
+			Self::deposit_event(Event::StakingRewardTransferCompleted {
+				id: staking_reward_transfer_id,
+				amount,
+			});
+
+			Ok(())
+		}
+
+		/// Mint hAlpha to a recipient (increases total issuance)
 		fn mint_to_recipient(recipient: &T::AccountId, amount: u128) -> DispatchResult {
 			let balance_amount = Self::amount_to_balance(amount)?;
 			pallet_balances::Pallet::<T>::mint_into(recipient, balance_amount)

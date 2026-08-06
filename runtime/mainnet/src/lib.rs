@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 use sp_api::impl_runtime_apis;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata, H160, H256, U256};
 use sp_genesis_builder::PresetId;
-use sp_runtime::traits::ConstU64;
+use sp_runtime::traits::{ConstU64, AccountIdConversion};
 use sp_runtime::SaturatedConversion;
 use sp_runtime::{
 	create_runtime_str,
@@ -1333,10 +1333,27 @@ parameter_types! {
 	pub const AlphaPalletId: PalletId = PalletId(*b"Alpha123");
 }
 
+pub struct GetStakingPotAccount;
+impl frame_support::traits::Get<AccountId> for GetStakingPotAccount {
+	fn get() -> AccountId {
+		StakingPotId::get().into_account_truncating()
+	}
+}
+
+pub struct StakingActiveEraIndex;
+impl frame_support::traits::Get<u32> for StakingActiveEraIndex {
+	fn get() -> u32 {
+		// No active era only before the first era starts, when no rewards can exist yet
+		pallet_staking::ActiveEra::<Runtime>::get().map(|era| era.index).unwrap_or(0)
+	}
+}
+
 impl pallet_alpha_bridge::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Balance = Balance;
 	type PalletId = AlphaPalletId;
+	type RewardDestination = GetStakingPotAccount;
+	type ActiveEraIndex = StakingActiveEraIndex;
 	type Currency = Balances;
 	type WeightInfo = pallet_alpha_bridge::weights::SubstrateWeight<Runtime>;
 }
