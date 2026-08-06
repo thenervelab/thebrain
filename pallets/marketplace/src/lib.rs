@@ -1205,7 +1205,20 @@ pub mod pallet {
                 return;
             }
 
-            let requested: pallet_hippocampus::BalanceOf<T> = commission_credits.saturated_into();
+            // Compartmentalization wall — same rule the runtime's
+            // ArionPayoutSource applies to miner settlement: alpha backing
+            // still owed to the ranking/marketplace pots and chargeback
+            // refunds still owed to the sudo account are not spendable as
+            // commissions. A runaway commission can at worst drain the
+            // unreserved bank headroom, never funds owed to someone else.
+            let reserved = TotalUndistributedBacking::<T>::get()
+                .saturating_add(PendingSudoRefunds::<T>::get());
+            let headroom = pallet_hippocampus::Pallet::<T>::available_for_payout()
+                .saturated_into::<u128>()
+                .saturating_sub(reserved);
+            let payable = commission_credits.min(headroom);
+
+            let requested: pallet_hippocampus::BalanceOf<T> = payable.saturated_into();
             match pallet_hippocampus::Pallet::<T>::request_payment(
                 &Self::account_id(),
                 referrer,

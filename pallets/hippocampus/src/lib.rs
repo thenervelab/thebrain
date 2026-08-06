@@ -2,7 +2,8 @@
 
 //! # Hippocampus Pallet (the bank)
 //!
-//! Holds the funds used to pay Arion storage miners.
+//! Holds the funds used to pay Arion storage miners and marketplace
+//! referral commissions.
 //!
 //! - `deposit(amount, deposit_type)`: anyone can fund the bank sovereign account,
 //!   tagging the deposit with its source (`DepositType`).

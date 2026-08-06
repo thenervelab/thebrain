@@ -481,6 +481,26 @@ fn underfunded_bank_pays_partial_and_shortfall_is_dropped() {
 }
 
 #[test]
+fn commission_cannot_spend_reserved_bank_funds() {
+	new_test_ext().execute_with(|| {
+		// Wall off all of the bank's payable balance except 20: alpha backing
+		// owed to depositors and refunds owed to the sudo account are not
+		// spendable as commissions (same rule as ArionPayoutSource).
+		let payable = BANK_FUND - ED;
+		pallet_marketplace::TotalUndistributedBacking::<Runtime>::put(payable - 60);
+		pallet_marketplace::PendingSudoRefunds::<Runtime>::put(40);
+
+		let (referrer, buyer) = referred_storage_setup(CHARGED);
+
+		// headroom = payable − reserved = 60 − 40 = 20.
+		assert_eq!(Balances::free_balance(&referrer), ED + 20);
+		// Reserved funds and the bank's own ED stay untouched.
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), BANK_FUND - 20);
+		assert!(storage_subscription(&buyer).active, "billing unaffected");
+	});
+}
+
+#[test]
 fn unwhitelisted_marketplace_skips_commission_and_billing_succeeds() {
 	new_test_ext().execute_with(|| {
 		// Simulate the missed post-upgrade setup step.
