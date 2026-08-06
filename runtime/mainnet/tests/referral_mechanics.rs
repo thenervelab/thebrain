@@ -552,12 +552,11 @@ fn purchase_beyond_subscription_limit_rolls_back_atomically() {
 
 		// MaxActiveSubscriptions is 5: fill the limit with five compute plans
 		// in a single purchase_plan call (also the MaxRequestsPerBlock cap).
-		let plan_ids: Vec<_> = [
-			&b"compute-a"[..], b"compute-b", b"compute-c", b"compute-d", b"compute-e",
-		]
-		.iter()
-		.map(|name| add_plan(name, false))
-		.collect();
+		let plan_ids: Vec<_> =
+			[&b"compute-a"[..], b"compute-b", b"compute-c", b"compute-d", b"compute-e"]
+				.iter()
+				.map(|name| add_plan(name, false))
+				.collect();
 		let sixth = add_plan(b"compute-f", false);
 
 		deposit_credits(&buyer, 6 * CHARGED, Some(code));
