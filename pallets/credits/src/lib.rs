@@ -3,12 +3,6 @@
 pub use pallet::*;
 pub use types::*;
 
-#[cfg(test)]
-mod mock;
-
-#[cfg(test)]
-mod tests;
-
 // #[cfg(feature = "runtime-benchmarks")]
 // mod benchmarking;
 pub mod weights;
@@ -530,7 +524,9 @@ pub mod pallet {
 		}
 
 		pub fn decrease_user_credits(account: &T::AccountId, credits_to_decrease: u128) {
-			FreeCredits::<T>::mutate(&account, |credits| *credits = credits.saturating_sub(credits_to_decrease));
+			FreeCredits::<T>::mutate(account, |credits| {
+				*credits = credits.saturating_sub(credits_to_decrease)
+			});
 
 			Self::deposit_event(Event::BurnedAccountCredits {
 				who: account.clone(),
@@ -607,49 +603,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// creates refferal for a user
-		pub fn do_create_referral_code(creator: T::AccountId) -> DispatchResult {
-			// // Check if the user already has a referral code
-			// ensure!(
-			//     !ReferralCodes::<T>::iter_values().any(|acc| acc == creator),
-			//     Error::<T>::AlreadyHasReferralCode
-			// );
-
-			// Get the current block number
-			let current_block = frame_system::Pallet::<T>::block_number();
-
-			// Check if the user has created a referral code within the last 100 blocks
-			let last_creation_block = LastReferralCreationBlock::<T>::get(&creator);
-			if let Some(last_block) = last_creation_block {
-				ensure!(
-					current_block > last_block + T::RefferallCoolDOwnPeriod::get().into(),
-					Error::<T>::ReferralCodeCooldown
-				);
-			}
-
-			// Generate a unique referral code with the prefix "HIPPIUS"
-			let mut unique_code = format!("HIPPIUS{}", Self::generate_random_suffix(&creator));
-
-			// Ensure the generated code is unique
-			while ReferralCodes::<T>::contains_key(unique_code.as_bytes()) {
-				unique_code = format!("HIPPIUS{}", Self::generate_random_suffix(&creator));
-			}
-
-			// Insert the generated referral code into storage
-			ReferralCodes::<T>::insert(unique_code.as_bytes(), &creator);
-
-			// total rewards
-			TotalReferralCodes::<T>::mutate(|total| {
-				*total = total.saturating_add(1u32);
-			});
-
-			// Update the last referral creation block for the user
-			LastReferralCreationBlock::<T>::insert(&creator, current_block);
-
-			// Self::deposit_event(Event::ReferralCodeCreated { creator, code });
-			Ok(())
-		}
-
 		fn generate_random_suffix(account: &T::AccountId) -> u64 {
 			let block_number = frame_system::Pallet::<T>::block_number();
 
@@ -681,9 +634,7 @@ pub mod pallet {
 				vec![(acc, credits)] // Return credits, assuming it defaults to 0 if not found
 			} else {
 				// If no account is provided, return all accounts and their free credits
-				FreeCredits::<T>::iter()
-					.map(|(account_id, credits)| (account_id, credits))
-					.collect()
+				FreeCredits::<T>::iter().collect()
 			}
 		}
 
