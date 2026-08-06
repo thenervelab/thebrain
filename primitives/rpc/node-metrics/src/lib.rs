@@ -43,9 +43,7 @@ decl_runtime_apis! {
 		fn get_batch_by_id(batch_id: u64) -> Option<Batch<AccountId32, u32>>;
 		fn get_free_credits_rpc(account: Option<AccountId32>) -> Vec<(AccountId32, u128)>;
 		fn get_referred_users(account_id: AccountId32) -> Vec<AccountId32>;
-		fn get_referral_rewards(account_id: AccountId32) -> u128;
 		fn total_referral_codes() -> u32;
-		fn total_referral_rewards() -> u128;
 		fn get_referral_codes(account_id: AccountId32) -> Vec<Vec<u8>>;
 		fn total_file_size_fulfilled(account_id: AccountId32) -> u128;
 	}

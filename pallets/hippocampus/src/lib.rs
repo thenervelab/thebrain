@@ -2,7 +2,8 @@
 
 //! # Hippocampus Pallet (the bank)
 //!
-//! Holds the funds used to pay Arion storage miners.
+//! Holds the funds used to pay Arion storage miners and marketplace
+//! referral commissions.
 //!
 //! - `deposit(amount, deposit_type)`: anyone can fund the bank sovereign account,
 //!   tagging the deposit with its source (`DepositType`).
@@ -137,8 +138,9 @@ pub mod pallet {
 	/// repeatedly still withdraws without limit, and arion calls once per
 	/// family per settlement. Treat it as a blast-radius limiter on one bad
 	/// request, not as compartmentalization — the wall that keeps money owed
-	/// to others out of the miner budget lives in the runtime's `PayoutSource`
-	/// adapter.
+	/// to others out of a consumer's budget lives with each consumer: the
+	/// runtime's `PayoutSource` adapter for arion, and the marketplace's
+	/// referral-commission payout for the marketplace.
 	#[pallet::storage]
 	pub type RequesterWithdrawalCap<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, OptionQuery>;
