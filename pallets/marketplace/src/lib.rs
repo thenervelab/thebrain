@@ -1491,13 +1491,22 @@ pub mod pallet {
                 Error::<T>::PlanOperationDisabled
             );
 
-            // Enforce: only one active storage subscription at a time.
-            let existing_subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+            // Enforce: only one active storage subscription at a time, and
+            // validate the overall subscription cap before any state changes.
+            // The dispatch storage layer would roll a late failure back
+            // anyway, but failing fast wastes no work and keeps the flow
+            // safe for any future non-dispatch caller.
+            let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
             ensure!(
-                !existing_subscriptions
+                !subscriptions
                     .iter()
                     .any(|s| s.active && s.package.is_storage_plan),
                 Error::<T>::AlreadyHasActiveSubscription
+            );
+            let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
+            ensure!(
+                active_count < T::MaxActiveSubscriptions::get(),
+                Error::<T>::TooManyActiveSubscriptions
             );
 
             // Check if plan exists
@@ -1583,16 +1592,8 @@ pub mod pallet {
                 paid_per_month,
                 _phantom: PhantomData,
             };
-        
-            // Get existing subscriptions or create a new vector if none exist
-            let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
-            let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
-            ensure!(
-                active_count < T::MaxActiveSubscriptions::get(),
-                Error::<T>::TooManyActiveSubscriptions
-            );
 
-            // Add the new subscription
+            // Add the new subscription (cap validated before any charging).
             subscriptions.push(subscription);
 
             // Save the updated subscriptions list
@@ -1618,6 +1619,17 @@ pub mod pallet {
             ensure!(
                 !RegistrationPallet::<T>::is_node_type_disabled(NodeType::ComputeMiner),
                 Error::<T>::NodeTypeDisabled
+            );
+
+            // Validate the subscription cap before any state changes. The
+            // dispatch storage layer would roll a late failure back anyway,
+            // but failing fast wastes no work and keeps the flow safe for
+            // any future non-dispatch caller.
+            let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+            let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
+            ensure!(
+                active_count < T::MaxActiveSubscriptions::get(),
+                Error::<T>::TooManyActiveSubscriptions
             );
 
             // Check if plan exists
@@ -1713,16 +1725,8 @@ pub mod pallet {
                 paid_per_month,
                 _phantom: PhantomData,
             };
-        
-            // Get existing subscriptions or create a new vector if none exist
-            let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
-            let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
-            ensure!(
-                active_count < T::MaxActiveSubscriptions::get(),
-                Error::<T>::TooManyActiveSubscriptions
-            );
 
-            // Add the new subscription
+            // Add the new subscription (cap validated before any charging).
             subscriptions.push(subscription);
 
             // Save the updated subscriptions list

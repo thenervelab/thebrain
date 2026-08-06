@@ -538,6 +538,72 @@ fn below_ed_first_commission_is_skipped() {
 }
 
 #[test]
+fn purchase_beyond_subscription_limit_rolls_back_atomically() {
+	// Regression test for an external security-review claim: a purchase that
+	// fails the late MaxActiveSubscriptions check supposedly leaves credits
+	// consumed and the referral commission paid. FRAME wraps every
+	// dispatchable in a storage layer, so the whole extrinsic must revert —
+	// buyer credits, referrer tokens, bank balance, and events included.
+	new_test_ext().execute_with(|| {
+		let referrer = account(10);
+		let buyer = account(11);
+		let code = new_referral_code(&referrer);
+		fund_ed(&referrer);
+
+		// MaxActiveSubscriptions is 5: fill the limit with five compute plans
+		// in a single purchase_plan call (also the MaxRequestsPerBlock cap).
+		let plan_ids: Vec<_> = [
+			&b"compute-a"[..], b"compute-b", b"compute-c", b"compute-d", b"compute-e",
+		]
+		.iter()
+		.map(|name| add_plan(name, false))
+		.collect();
+		let sixth = add_plan(b"compute-f", false);
+
+		deposit_credits(&buyer, 6 * CHARGED, Some(code));
+		assert_ok!(Marketplace::purchase_plan(
+			RuntimeOrigin::signed(backend()),
+			buyer.clone(),
+			plan_ids,
+			None,
+			None,
+			None,
+			None,
+		));
+
+		let credits_before = Credits::get_free_credits(&buyer);
+		let referrer_before = Balances::free_balance(&referrer);
+		let bank_before = Balances::free_balance(&Hippocampus::account_id());
+		assert_eq!(credits_before, CHARGED, "five purchases charged");
+		assert_eq!(referrer_before, ED + 5 * PURCHASE_COMMISSION);
+
+		// New block so the per-block request counter clears (every 15 blocks).
+		System::set_block_number(15);
+		Marketplace::on_initialize(15);
+
+		// The sixth purchase must fail the subscription limit AND leave no
+		// trace: assert_noop checks the storage root is untouched.
+		assert_noop!(
+			RuntimeCall::Marketplace(pallet_marketplace::Call::purchase_plan {
+				owner: buyer.clone(),
+				plan_ids: vec![sixth],
+				location_ids: None,
+				selected_image_names: None,
+				cloud_init_cids: None,
+				pay_upfront: None,
+			})
+			.dispatch(RuntimeOrigin::signed(backend())),
+			pallet_marketplace::Error::<Runtime>::TooManyActiveSubscriptions,
+		);
+
+		assert_eq!(Credits::get_free_credits(&buyer), credits_before, "no credits lost");
+		assert_eq!(Balances::free_balance(&referrer), referrer_before, "no unearned commission");
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), bank_before);
+		assert_eq!(Marketplace::user_all_subscription_plans(&buyer).len(), 5);
+	});
+}
+
+#[test]
 fn total_paid_by_requester_tracks_marketplace_outflow() {
 	new_test_ext().execute_with(|| {
 		let (_referrer, _buyer) = referred_storage_setup(CHARGED + PLAN_PRICE);
