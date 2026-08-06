@@ -481,6 +481,38 @@ fn underfunded_bank_pays_partial_and_shortfall_is_dropped() {
 }
 
 #[test]
+fn bank_floor_caps_commission_and_is_never_breached() {
+	new_test_ext().execute_with(|| {
+		// Leave only 100 tokens of headroom above the root-set floor: the
+		// commission (475) must be clipped to 100 and the floor untouched.
+		let floor = BANK_FUND - ED - 100;
+		assert_ok!(Marketplace::sudo_set_referral_bank_floor(RuntimeOrigin::root(), floor));
+
+		let (referrer, buyer) = referred_storage_setup(CHARGED);
+
+		assert_eq!(Balances::free_balance(&referrer), ED + 100);
+		assert!(Balances::free_balance(&Hippocampus::account_id()) >= floor + ED);
+		assert!(storage_subscription(&buyer).active, "billing unaffected");
+	});
+}
+
+#[test]
+fn bank_at_floor_pays_no_commission_but_billing_succeeds() {
+	new_test_ext().execute_with(|| {
+		// Floor above the whole bank balance: commissions stop entirely,
+		// the bank keeps every token, and billing still works.
+		assert_ok!(Marketplace::sudo_set_referral_bank_floor(RuntimeOrigin::root(), BANK_FUND));
+
+		let (referrer, buyer) = referred_storage_setup(CHARGED);
+
+		assert_eq!(Balances::free_balance(&referrer), ED, "no commission paid");
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), BANK_FUND);
+		assert_eq!(Credits::get_free_credits(&buyer), 0, "buyer still charged");
+		assert!(storage_subscription(&buyer).active);
+	});
+}
+
+#[test]
 fn commission_cannot_spend_reserved_bank_funds() {
 	new_test_ext().execute_with(|| {
 		// Wall off all of the bank's payable balance except 20: alpha backing

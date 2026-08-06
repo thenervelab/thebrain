@@ -300,6 +300,17 @@ pub mod pallet {
     pub type ReferralCommissionRateBps<T: Config> =
         StorageValue<_, u32, ValueQuery, DefaultReferralCommissionRateBps>;
 
+    /// Bank balance (tokens) the referral payout must leave untouched, on top
+    /// of the backing/refund reserves. Root-settable brake so commission
+    /// volume can never run the shared bank dry: referral is a bonus, and
+    /// credit-only deposits add nothing to the bank while purchases made with
+    /// them still draw commissions from it — without a floor, sustained
+    /// referred usage drains the pot miner payments also depend on. The floor
+    /// binds only referral commissions, never miner settlement.
+    #[pallet::storage]
+    #[pallet::getter(fn referral_bank_floor)]
+    pub type ReferralBankFloor<T: Config> = StorageValue<_, u128, ValueQuery>;
+
     /// Tracks the last block a user cancelled any subscription, to enforce resubscribe cooldowns.
     #[pallet::storage]
     #[pallet::getter(fn last_subscription_cancelled_at)]
@@ -471,6 +482,8 @@ pub mod pallet {
         ReferralCommissionSkipped { referrer: T::AccountId, requested_credits: u128 },
         /// Root changed the referral commission rate.
         ReferralCommissionRateUpdated { rate_bps: u32 },
+        /// Root changed the bank floor referral commissions must not breach.
+        ReferralBankFloorUpdated { floor: u128 },
 		/// User Drive + S3 usage metrics were updated by a validator.
 		UserBackendFilesUpdated {
 			user: T::AccountId,
@@ -1184,6 +1197,19 @@ pub mod pallet {
             Self::deposit_event(Event::ReferralCommissionRateUpdated { rate_bps });
             Ok(())
         }
+
+        /// Root sets the bank balance referral commissions must leave
+        /// untouched (on top of backing/refund reserves). Commissions that
+        /// would breach the floor are reduced or skipped; billing and miner
+        /// payments are unaffected.
+        #[pallet::call_index(28)]
+        #[pallet::weight((10_000, Pays::No))]
+        pub fn sudo_set_referral_bank_floor(origin: OriginFor<T>, floor: u128) -> DispatchResult {
+            ensure_root(origin)?;
+            ReferralBankFloor::<T>::put(floor);
+            Self::deposit_event(Event::ReferralBankFloorUpdated { floor });
+            Ok(())
+        }
 	}
 
     impl<T: Config> Pallet<T> {
@@ -1209,10 +1235,13 @@ pub mod pallet {
             // ArionPayoutSource applies to miner settlement: alpha backing
             // still owed to the ranking/marketplace pots and chargeback
             // refunds still owed to the sudo account are not spendable as
-            // commissions. A runaway commission can at worst drain the
-            // unreserved bank headroom, never funds owed to someone else.
+            // commissions, and the root-set ReferralBankFloor stays
+            // untouched on top of that. Commission volume can at worst
+            // drain the headroom above the floor, never funds owed to
+            // someone else and never the last of the bank.
             let reserved = TotalUndistributedBacking::<T>::get()
-                .saturating_add(PendingSudoRefunds::<T>::get());
+                .saturating_add(PendingSudoRefunds::<T>::get())
+                .saturating_add(ReferralBankFloor::<T>::get());
             let headroom = pallet_hippocampus::Pallet::<T>::available_for_payout()
                 .saturated_into::<u128>()
                 .saturating_sub(reserved);
