@@ -3407,16 +3407,8 @@ impl_runtime_apis! {
 			<pallet_credits::Pallet<Runtime>>::get_referred_users(account_id)
 		}
 
-		fn get_referral_rewards(account_id: AccountId32) -> u128{
-			<pallet_credits::Pallet<Runtime>>::get_referral_rewards(account_id)
-		}
-
 		fn total_referral_codes() -> u32{
 			<pallet_credits::Pallet<Runtime>>::total_referral_codes()
-		}
-
-		fn total_referral_rewards() -> u128{
-			<pallet_credits::Pallet<Runtime>>::total_referral_rewards()
 		}
 
 		fn get_referral_codes(account_id: AccountId32) -> Vec<Vec<u8>>{

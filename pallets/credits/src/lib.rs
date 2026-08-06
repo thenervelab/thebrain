@@ -92,16 +92,6 @@ pub mod pallet {
 	#[pallet::getter(fn authorities)]
 	pub(super) type Authorities<T: Config> = StorageValue<_, Vec<T::AccountId>, ValueQuery>;
 
-	// Mapping to track the lifetime rewards earned by each referral code
-	#[pallet::storage]
-	pub(super) type ReferralCodeRewards<T: Config> =
-		StorageMap<_, Blake2_128Concat, Vec<u8>, u128, ValueQuery>;
-
-	// Mapping to track the number of times a referral code has been used
-	#[pallet::storage]
-	pub(super) type ReferralCodeUsageCount<T: Config> =
-		StorageMap<_, Blake2_128Concat, Vec<u8>, u32, ValueQuery>;
-
 	// Mapping to track the total number of referral codes created
 	#[pallet::storage]
 	pub(super) type TotalReferralCodes<T: Config> = StorageValue<_, u32, ValueQuery>;
@@ -121,10 +111,6 @@ pub mod pallet {
 	#[pallet::getter(fn referral_code_nonce)]
 	pub type ReferralCodeNonce<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u64, ValueQuery>;
-
-	// Mapping to track the total referral rewards earned
-	#[pallet::storage]
-	pub(super) type TotalReferralRewards<T: Config> = StorageValue<_, u128, ValueQuery>;
 
 	// get refferal code for an account (ReferralCode -> AccountId)
 	#[pallet::storage]
@@ -216,12 +202,6 @@ pub mod pallet {
 		MinLockAmountSet {
 			amount: u128,
 			who: T::AccountId,
-		},
-		/// Event emitted when a referral discount is applied
-		ReferralDiscountApplied {
-			referral_code: Vec<u8>,
-			ref_owner: T::AccountId,
-			discount_amount: u128,
 		},
 		ConvertedToAlpha {
 			who: T::AccountId,
@@ -659,25 +639,8 @@ pub mod pallet {
 				.collect()
 		}
 
-		// Get total referral rewards earned by a given account
-		pub fn get_referral_rewards(account_id: T::AccountId) -> u128 {
-			let codes = ReferredUsers::<T>::get(&account_id).unwrap_or_default();
-
-			// If there are no referral codes, return 0
-			if codes.is_empty() {
-				return 0;
-			}
-
-			// Get the rewards for this specific referral code
-			ReferralCodeRewards::<T>::get(&codes)
-		}
-
 		pub fn total_referral_codes() -> u32 {
 			TotalReferralCodes::<T>::get()
-		}
-
-		pub fn total_referral_rewards() -> u128 {
-			TotalReferralRewards::<T>::get()
 		}
 
 		// Get all referral codes owned by a given account
