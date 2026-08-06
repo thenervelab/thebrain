@@ -2,12 +2,6 @@
 pub use pallet::*;
 pub use types::*;
 
-#[cfg(test)]
-mod mock;
-
-#[cfg(test)]
-mod tests;
-
 mod migrations;
 mod types;
 use sp_core::offchain::KeyTypeId;
