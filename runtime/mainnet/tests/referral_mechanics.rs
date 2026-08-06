@@ -492,7 +492,8 @@ fn commission_cannot_spend_reserved_bank_funds() {
 
 		let (referrer, buyer) = referred_storage_setup(CHARGED);
 
-		// headroom = payable − reserved = 60 − 40 = 20.
+		// Of the bank's payable balance, only 60 is left outside the backing
+		// reserve, and 40 of that is owed as sudo refunds — 20 remains.
 		assert_eq!(Balances::free_balance(&referrer), ED + 20);
 		// Reserved funds and the bank's own ED stay untouched.
 		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), BANK_FUND - 20);
