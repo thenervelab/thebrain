@@ -725,7 +725,6 @@ pub mod pallet {
 			amount: u128,
 		) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
-			Self::ensure_guardian(&guardian)?;
 			Self::ensure_whitelisted(&guardian)?;
 			Self::ensure_not_paused()?;
 			ensure!(amount > 0, Error::<T>::AmountTooSmall);
@@ -780,7 +779,6 @@ pub mod pallet {
 			staking_reward_transfer_id: H256,
 		) -> DispatchResult {
 			let guardian = ensure_signed(origin)?;
-			Self::ensure_guardian(&guardian)?;
 			Self::ensure_whitelisted(&guardian)?;
 			Self::ensure_not_paused()?;
 
