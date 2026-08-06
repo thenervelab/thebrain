@@ -286,6 +286,20 @@ pub mod pallet {
     #[pallet::getter(fn is_purchase_plan_enabled)]
     pub type IsPurchasePlanEnabled<T: Config> = StorageValue<_, bool, ValueQuery, GetDefault>;
 
+    #[pallet::type_value]
+    pub fn DefaultReferralCommissionRateBps() -> u32 {
+        500
+    }
+
+    /// Referrer commission rate in basis points, applied to the credits
+    /// actually charged at subscription purchase and on recurring monthly
+    /// charges. Paid in native tokens from the bank. Independent of the
+    /// buyer-side purchase discount, which stays a fixed 5% in credits.
+    #[pallet::storage]
+    #[pallet::getter(fn referral_commission_rate_bps)]
+    pub type ReferralCommissionRateBps<T: Config> =
+        StorageValue<_, u32, ValueQuery, DefaultReferralCommissionRateBps>;
+
     /// Tracks the last block a user cancelled any subscription, to enforce resubscribe cooldowns.
     #[pallet::storage]
     #[pallet::getter(fn last_subscription_cancelled_at)]
@@ -443,8 +457,20 @@ pub mod pallet {
         StoragePricePerMinerUpdated { price: u128 },
         /// Per-GB storage charging failed after passing the FreeCredits guard.
         PerGbChargeFailed { who: T::AccountId, charge_amount: u128, available_credits: u128 },
-        /// Referral reward (credits) could not be minted to the referrer.
-        ReferralRewardMintFailed { referrer: T::AccountId, reward_credits: u128 },
+        /// Referral commission released from the bank in native tokens.
+        /// `paid_tokens < requested_credits` means the bank could only cover
+        /// part of the commission; the shortfall is dropped, not owed.
+        ReferralCommissionPaid {
+            referrer: T::AccountId,
+            requested_credits: u128,
+            paid_tokens: u128,
+        },
+        /// Referral commission could not be paid (e.g. bank requester not
+        /// whitelisted, or the referrer cannot receive the transfer). Billing
+        /// itself is unaffected; the commission is dropped.
+        ReferralCommissionSkipped { referrer: T::AccountId, requested_credits: u128 },
+        /// Root changed the referral commission rate.
+        ReferralCommissionRateUpdated { rate_bps: u32 },
 		/// User Drive + S3 usage metrics were updated by a validator.
 		UserBackendFilesUpdated {
 			user: T::AccountId,
@@ -1141,29 +1167,72 @@ pub mod pallet {
             Self::deposit_event(Event::StoragePricePerMinerUpdated { price });
             Ok(())
         }
+
+        /// Root sets the referral commission rate in basis points (≤ 10_000).
+        ///
+        /// Applies to future purchase and recurring-charge commissions only;
+        /// the buyer-side purchase discount is not affected.
+        #[pallet::call_index(27)]
+        #[pallet::weight((10_000, Pays::No))]
+        pub fn sudo_set_referral_commission_rate(
+            origin: OriginFor<T>,
+            rate_bps: u32,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            ensure!(rate_bps <= 10_000, Error::<T>::InvalidInput);
+            ReferralCommissionRateBps::<T>::put(rate_bps);
+            Self::deposit_event(Event::ReferralCommissionRateUpdated { rate_bps });
+            Ok(())
+        }
 	}
 
     impl<T: Config> Pallet<T> {
-        fn try_mint_referral_reward_credits(
-            referrer: &T::AccountId,
-            reward_credits: u128,
-        ) {
-            if reward_credits == 0 {
+        /// Commission on `charged_credits` at the current rate, in credits.
+        /// Exact U256 split — no overflow cliff, part ≤ whole.
+        fn referral_commission_credits(charged_credits: u128) -> u128 {
+            let rate = BasisPoints::new(u128::from(ReferralCommissionRateBps::<T>::get()));
+            split(Credits::new(charged_credits), rate).0.get()
+        }
+
+        /// Pay a referral commission in native tokens from the bank.
+        ///
+        /// Credits → planck is 1:1 numerically (same convention as
+        /// pallet-registration). The bank never overdraws: it pays what it can
+        /// and the shortfall is dropped — a referral commission is a bonus,
+        /// never a debt, and must never fail the billing flow that earned it.
+        fn try_pay_referral_commission_tokens(referrer: &T::AccountId, commission_credits: u128) {
+            if commission_credits == 0 {
                 return;
             }
 
-            // Credits must be spendable; mint them into a new batch (alpha reward intentionally 0).
-            if let Err(e) = Self::do_deposit(referrer.clone(), reward_credits, 0, false, None) {
-                log::warn!(
-                    target: "runtime::marketplace",
-                    "referral reward mint failed for {:?}: {:?}",
-                    referrer,
-                    e
-                );
-                Self::deposit_event(Event::<T>::ReferralRewardMintFailed {
-                    referrer: referrer.clone(),
-                    reward_credits,
-                });
+            let requested: pallet_hippocampus::BalanceOf<T> = commission_credits.saturated_into();
+            match pallet_hippocampus::Pallet::<T>::request_payment(
+                &Self::account_id(),
+                referrer,
+                requested,
+            ) {
+                Ok(paid) => {
+                    Self::deposit_event(Event::<T>::ReferralCommissionPaid {
+                        referrer: referrer.clone(),
+                        requested_credits: commission_credits,
+                        paid_tokens: paid.saturated_into(),
+                    });
+                },
+                Err(e) => {
+                    // Not-whitelisted (post-upgrade setup missed) or the
+                    // transfer failed (e.g. payout below the referrer's
+                    // existential deposit). Diagnosable, never fatal.
+                    log::warn!(
+                        target: "runtime::marketplace",
+                        "referral commission payment failed for {:?}: {:?}",
+                        referrer,
+                        e
+                    );
+                    Self::deposit_event(Event::<T>::ReferralCommissionSkipped {
+                        referrer: referrer.clone(),
+                        requested_credits: commission_credits,
+                    });
+                },
             }
         }
 
@@ -1474,9 +1543,11 @@ pub mod pallet {
                 charged_credits.into(),
             )?;
 
-            // Mint referral reward credits to the referral owner (no alpha rewards).
+            // Pay the referral commission in native tokens from the bank,
+            // computed on the credits actually collected (post-discount).
             if let Some(owner) = ref_owner {
-                Self::try_mint_referral_reward_credits(&owner, referral_discount);
+                let commission = Self::referral_commission_credits(charged_credits);
+                Self::try_pay_referral_commission_tokens(&owner, commission);
             }
 
             // Create subscription (simplified due to removed plan_type)
@@ -1603,9 +1674,11 @@ pub mod pallet {
                 charged_credits.into(),
             )?;
 
-            // Mint referral reward credits to the referral owner (no alpha rewards).
+            // Pay the referral commission in native tokens from the bank,
+            // computed on the credits actually collected (post-discount).
             if let Some(owner) = ref_owner {
-                Self::try_mint_referral_reward_credits(&owner, referral_discount);
+                let commission = Self::referral_commission_credits(charged_credits);
+                Self::try_pay_referral_commission_tokens(&owner, commission);
             }
 
             // Create subscription (simplified due to removed plan_type)
@@ -1826,19 +1899,16 @@ pub mod pallet {
                         }
                     }
 
-                    // Apply referral commission: 5% of total charged to referrer, if referred.
+                    // Referral commission on the credits actually collected
+                    // this cycle, paid in native tokens from the bank.
                     let storage_part = if storage_ok { total_storage_charge } else { 0 };
                     let total_charged = storage_part.saturating_add(compute_charged_total);
                     if total_charged > 0 {
                         if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
                             if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
-                                let commission = split(
-                                    Credits::new(total_charged),
-                                    BasisPoints::new(500),
-                                )
-                                .0
-                                .get();
-                                Self::try_mint_referral_reward_credits(&referrer, commission);
+                                let commission =
+                                    Self::referral_commission_credits(total_charged);
+                                Self::try_pay_referral_commission_tokens(&referrer, commission);
                             }
                         }
                     }
