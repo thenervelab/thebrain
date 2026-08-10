@@ -15,6 +15,7 @@ struct PoolContext {
 	available_pool: f64,
 	miners_pool: f64,
 	uid_238_pool: f64,
+	burn_percentage: f64,
 }
 
 impl NodeMetricsData {
@@ -53,14 +54,16 @@ impl NodeMetricsData {
 		info!("price_per_gb_token: {}", price_per_gb_token);
 		info!("alpha_price_token: {}", alpha_price_token);
 
-		// ---- 3) Calculate pool distribution (fixed 1% miners, 99% uid 238) ----
+		// ---- 3) Calculate pool distribution (99% to uid_238, 1% to miners) ----
 		let max_score = Self::MAX_SCORE as f64;
-		let miners_pool = max_score * 0.01; // 1% to miners
-		let uid_238_pool = max_score - miners_pool; // 99% to uid 238
+		let burn_percentage = 0.99;
+		let uid_238_pool = max_score * burn_percentage;
+		let miners_pool = max_score - uid_238_pool;
+		info!("burn_percentage: {}", burn_percentage);
 		info!("uid_238_pool: {}", uid_238_pool);
 		info!("miners_pool: {}", miners_pool);
 
-		Some(PoolContext { available_pool: max_score, miners_pool, uid_238_pool })
+		Some(PoolContext { available_pool: max_score, miners_pool, uid_238_pool, burn_percentage })
 	}
 
 	pub fn calculate_weight<
