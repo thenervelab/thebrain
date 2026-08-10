@@ -236,6 +236,11 @@ pub mod pallet {
 			miners_paid: u32,
 			miners_skipped: u32,
 		},
+		/// Individual storage miner payment detail for indexing.
+		MinerPaymentPaid {
+			miner: T::AccountId,
+			amount: BalanceOf<T>,
+		},
 	}
 
 	#[pallet::error]
@@ -438,6 +443,8 @@ pub mod pallet {
 					Ok(()) => {
 						paid = paid.saturating_add(share);
 						miners_paid = miners_paid.saturating_add(1);
+						// Emit event for individual miner payment (for indexing)
+						Self::deposit_event(Event::MinerPaymentPaid { miner: owner.clone(), amount: share });
 					},
 					Err(_) => miners_skipped = miners_skipped.saturating_add(1),
 				}
