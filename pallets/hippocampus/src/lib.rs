@@ -12,6 +12,8 @@
 //!   can pull funds. Pays out at most the available balance and returns the amount
 //!   actually paid; the caller is responsible for handling shortfalls. Fails with
 //!   `DistributionDisabled` while the global switch is off.
+//! - `pay_storage_miners(amount)`: admin-gated; distributes `amount` from the
+//!   emission compartment to ranked storage miners pro-rata by ranking weight.
 //! - `add_requester` / `remove_requester`: admin-gated whitelist management.
 //! - `set_distribution_enabled`: admin-gated global switch. While off, every
 //!   `request_payment` is rejected and no funds leave the bank; deposits are
@@ -307,6 +309,72 @@ pub mod pallet {
 			T::AdminOrigin::ensure_origin(origin)?;
 			DistributionEnabled::<T>::put(enabled);
 			Self::deposit_event(Event::DistributionEnabledChanged { enabled });
+			Ok(())
+		}
+
+		/// Distribute `amount` from the bank's emission compartment to storage
+		/// miners, pro-rata to their current ranking weight.
+		///
+		/// The whole amount is distributed by ranking alone — no accrual math.
+		/// Floor-division dust and skipped shares stay in the compartment.
+		#[pallet::call_index(6)]
+		#[pallet::weight(<T as Config>::WeightInfo::pay_storage_miners(T::MaxMinersPerPayout::get()))]
+		pub fn pay_storage_miners(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
+			T::AdminOrigin::ensure_origin(origin)?;
+			ensure!(DistributionEnabled::<T>::get(), Error::<T>::DistributionDisabled);
+			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
+
+			// Compartment wall: only bridged emission funds this payout — never
+			// marketplace backing, fees, or grants. Rejecting (not clamping)
+			// keeps "pay_storage_miners(X) pays exactly X" honest.
+			ensure!(amount <= Self::emission_available(), Error::<T>::InsufficientEmissionFunds);
+			// The compartment ledger can exceed what is physically free (another
+			// consumer overdrew, or the ED cushion); never overdraw the account.
+			ensure!(amount <= Self::available_for_payout(), Error::<T>::InsufficientBankBalance);
+
+			let miners = T::MinerRanking::active_storage_miners();
+			ensure!(
+				u32::try_from(miners.len()).unwrap_or(u32::MAX) <= T::MaxMinersPerPayout::get(),
+				Error::<T>::TooManyMiners
+			);
+			let total_weight: u128 = miners.iter().map(|(_, w)| u128::from(*w)).sum();
+			ensure!(total_weight > 0, Error::<T>::NoEligibleMiners);
+
+			let bank = Self::account_id();
+			let pool = payment_math::Tokens::new(amount.saturated_into());
+			let mut paid: BalanceOf<T> = Zero::zero();
+			let mut miners_paid: u32 = 0;
+			let mut miners_skipped: u32 = 0;
+
+			for (owner, weight) in miners {
+				let share: BalanceOf<T> =
+					payment_math::weight_share(pool, u128::from(weight), total_weight)
+						.get()
+						.saturated_into();
+				// Zero shares (weight rounds below one planck) and failed
+				// transfers (e.g. a reaped owner account below its ED) are
+				// skipped, not fatal: their share stays in the compartment.
+				if share.is_zero() {
+					miners_skipped = miners_skipped.saturating_add(1);
+					continue;
+				}
+				match T::Currency::transfer(&bank, &owner, share, ExistenceRequirement::KeepAlive) {
+					Ok(()) => {
+						paid = paid.saturating_add(share);
+						miners_paid = miners_paid.saturating_add(1);
+					},
+					Err(_) => miners_skipped = miners_skipped.saturating_add(1),
+				}
+			}
+
+			EmissionPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
+			TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
+			Self::deposit_event(Event::StorageMinersPaid {
+				requested: amount,
+				paid,
+				miners_paid,
+				miners_skipped,
+			});
 			Ok(())
 		}
 	}

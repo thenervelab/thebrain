@@ -1,5 +1,6 @@
 use crate::{
-	mock::*, DepositType, Error, Event, TotalDeposited, TotalPaidByRequester, TotalPaidOut,
+	mock::*, DepositType, EmissionPaidOut, Error, Event, TotalDeposited, TotalPaidByRequester,
+	TotalPaidOut,
 };
 use frame_support::{assert_noop, assert_ok};
 
@@ -228,6 +229,37 @@ fn disabled_check_precedes_whitelist_check() {
 		assert_noop!(
 			Hippocampus::request_payment(&charlie(), &bob(), 100),
 			Error::<Test>::DistributionDisabled
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_distributes_pro_rata() {
+	new_test_ext().execute_with(|| {
+		// The Grant covers the bank's ED so the full emission amount is payable.
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		set_ranked_miners(vec![(charlie(), 1), (dave(), 3)]);
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 1_000));
+
+		assert_eq!(Balances::free_balance(charlie()), 250);
+		assert_eq!(Balances::free_balance(dave()), 750);
+		assert_eq!(EmissionPaidOut::<Test>::get(), 1_000);
+		assert_eq!(Hippocampus::emission_available(), 0);
+		assert_eq!(TotalPaidOut::<Test>::get(), 1_000);
+		System::assert_last_event(
+			Event::StorageMinersPaid {
+				requested: 1_000,
+				paid: 1_000,
+				miners_paid: 2,
+				miners_skipped: 0,
+			}
+			.into(),
 		);
 	});
 }
