@@ -238,6 +238,10 @@ pub mod pallet {
 		},
 		/// Individual storage miner payment detail for indexing.
 		MinerPaymentPaid { miner: T::AccountId, amount: BalanceOf<T> },
+		/// An account was added to the miner payment whitelist.
+		MinerPaymentCallerAdded { who: T::AccountId },
+		/// An account was removed from the miner payment whitelist.
+		MinerPaymentCallerRemoved { who: T::AccountId },
 	}
 
 	#[pallet::error]
@@ -350,7 +354,7 @@ pub mod pallet {
 				Error::<T>::AlreadyWhitelisted
 			);
 			MinerPaymentWhitelist::<T>::insert(&who, ());
-			Self::deposit_event(Event::RequesterAdded { who });
+			Self::deposit_event(Event::MinerPaymentCallerAdded { who });
 			Ok(())
 		}
 
@@ -364,7 +368,7 @@ pub mod pallet {
 			T::AdminOrigin::ensure_origin(origin)?;
 			ensure!(MinerPaymentWhitelist::<T>::contains_key(&who), Error::<T>::NotWhitelisted);
 			MinerPaymentWhitelist::<T>::remove(&who);
-			Self::deposit_event(Event::RequesterRemoved { who });
+			Self::deposit_event(Event::MinerPaymentCallerRemoved { who });
 			Ok(())
 		}
 
