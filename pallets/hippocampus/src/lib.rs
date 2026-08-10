@@ -237,10 +237,7 @@ pub mod pallet {
 			miners_skipped: u32,
 		},
 		/// Individual storage miner payment detail for indexing.
-		MinerPaymentPaid {
-			miner: T::AccountId,
-			amount: BalanceOf<T>,
-		},
+		MinerPaymentPaid { miner: T::AccountId, amount: BalanceOf<T> },
 	}
 
 	#[pallet::error]
@@ -360,12 +357,12 @@ pub mod pallet {
 		/// Remove an account from the miner payment whitelist.
 		#[pallet::call_index(7)]
 		#[pallet::weight(T::DbWeight::get().writes(1))]
-		pub fn remove_miner_payment_caller(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
+		pub fn remove_miner_payment_caller(
+			origin: OriginFor<T>,
+			who: T::AccountId,
+		) -> DispatchResult {
 			T::AdminOrigin::ensure_origin(origin)?;
-			ensure!(
-				MinerPaymentWhitelist::<T>::contains_key(&who),
-				Error::<T>::NotWhitelisted
-			);
+			ensure!(MinerPaymentWhitelist::<T>::contains_key(&who), Error::<T>::NotWhitelisted);
 			MinerPaymentWhitelist::<T>::remove(&who);
 			Self::deposit_event(Event::RequesterRemoved { who });
 			Ok(())
@@ -403,7 +400,10 @@ pub mod pallet {
 			let current_period_amount = MinerPayoutPeriodAmount::<T>::get();
 			let max_per_24h = T::Max24HourMinerPayout::get();
 			let new_period_amount = current_period_amount.saturating_add(amount);
-			ensure!(new_period_amount <= max_per_24h, Error::<T>::ExceedsDaily24HourMinerPayoutLimit);
+			ensure!(
+				new_period_amount <= max_per_24h,
+				Error::<T>::ExceedsDaily24HourMinerPayoutLimit
+			);
 
 			// Compartment wall: only bridged emission funds this payout — never
 			// marketplace backing, fees, or grants. Rejecting (not clamping)
@@ -444,7 +444,10 @@ pub mod pallet {
 						paid = paid.saturating_add(share);
 						miners_paid = miners_paid.saturating_add(1);
 						// Emit event for individual miner payment (for indexing)
-						Self::deposit_event(Event::MinerPaymentPaid { miner: owner.clone(), amount: share });
+						Self::deposit_event(Event::MinerPaymentPaid {
+							miner: owner.clone(),
+							amount: share,
+						});
 					},
 					Err(_) => miners_skipped = miners_skipped.saturating_add(1),
 				}

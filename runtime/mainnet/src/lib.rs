@@ -33,7 +33,7 @@ use sp_runtime::AccountId32;
 
 use frame_election_provider_support::{
 	bounds::{ElectionBounds, ElectionBoundsBuilder},
-	onchain, BalancingConfig, ElectionDataProvider, SequentialPhragmen, VoteWeight,
+	ok, onchain, BalancingConfig, ElectionDataProvider, SequentialPhragmen, VoteWeight,
 };
 use frame_support::derive_impl;
 use frame_support::genesis_builder_helper::build_state;
@@ -157,8 +157,8 @@ pub struct StorageMinerRankingSource;
 impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingSource {
 	fn active_storage_miners() -> Vec<(AccountId, u16)> {
 		// Get uid 238's account if it exists
-		let uid_238_account = pallet_metagraph::Pallet::<Runtime>::get_uid_item(238)
-			.map(|uid| uid.substrate_address);
+		let uid_238_account =
+			pallet_metagraph::Pallet::<Runtime>::get_uid_item(238).map(|uid| uid.substrate_address);
 
 		pallet_rankings::Pallet::<Runtime>::get_ranked_list()
 			.into_iter()
@@ -170,21 +170,13 @@ impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingS
 					.ok()
 					.map(|info| (info.owner, node.weight))
 			})
-			// Filter out validators and uid 238's account
+			// Filter out uid 238's account (already filtered to StorageMiner type by ranking)
 			.filter(|(owner, _)| {
-				// Check if owner is a validator
-				if let Some((node_type, _)) = pallet_registration::Pallet::<Runtime>::get_miner_info(owner.clone()) {
-					if node_type == pallet_registration::NodeType::Validator {
-						return false;
-					}
-				}
-				// Filter out uid 238's account
 				if let Some(uid_238_acc) = &uid_238_account {
-					if owner == uid_238_acc {
-						return false;
-					}
+					owner != uid_238_acc
+				} else {
+					true
 				}
-				true
 			})
 			.collect()
 	}
@@ -262,7 +254,7 @@ parameter_types! {
 	/// Miner payment settlement interval (~24h at 6s/block). `0` = disabled.
 	pub const ArionSettlementInterval: BlockNumber = 14_400;
 	pub const BlocksPer24Hours: BlockNumber = 14_400; // ~24 hours at 6-second blocks
-	pub const Max24HourMinerPayout: Balance = 1_500_000_000_000_000_000; // 1500 alpha (18 decimals)
+	pub const Max24HourMinerPayout: Balance = 1_500_000_000_000_000_000_000; // 1500 alpha (18 decimals)
 }
 
 impl pallet_hippocampus::Config for Runtime {
