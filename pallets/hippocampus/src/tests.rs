@@ -380,3 +380,86 @@ fn pay_storage_miners_bounds_the_miner_list() {
 		);
 	});
 }
+
+#[test]
+fn pay_storage_miners_dust_stays_in_compartment() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		set_ranked_miners(vec![(charlie(), 3), (dave(), 7)]);
+
+		// 101 * 3/10 = 30, 101 * 7/10 = 70 — one planck of dust remains.
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 101));
+
+		assert_eq!(Balances::free_balance(charlie()), 30);
+		assert_eq!(Balances::free_balance(dave()), 70);
+		assert_eq!(EmissionPaidOut::<Test>::get(), 100);
+		assert_eq!(Hippocampus::emission_available(), 900);
+		System::assert_last_event(
+			Event::StorageMinersPaid {
+				requested: 101,
+				paid: 100,
+				miners_paid: 2,
+				miners_skipped: 0,
+			}
+			.into(),
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_skips_zero_shares() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			100_000,
+			DepositType::Emission
+		));
+		// 10_000 * 1/65_536 floors to zero: charlie is skipped, not fatal.
+		set_ranked_miners(vec![(charlie(), 1), (dave(), 65_535)]);
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 10_000));
+
+		assert_eq!(Balances::free_balance(charlie()), 0);
+		assert_eq!(Balances::free_balance(dave()), 9_999);
+		System::assert_last_event(
+			Event::StorageMinersPaid {
+				requested: 10_000,
+				paid: 9_999,
+				miners_paid: 1,
+				miners_skipped: 1,
+			}
+			.into(),
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_compartment_is_cumulative() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 600));
+		assert_eq!(Hippocampus::emission_available(), 400);
+
+		// The second call may spend only what the compartment still holds.
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 401),
+			Error::<Test>::InsufficientEmissionFunds
+		);
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 400));
+		assert_eq!(Hippocampus::emission_available(), 0);
+		assert_eq!(Balances::free_balance(charlie()), 1_000);
+	});
+}
