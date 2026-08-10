@@ -5,8 +5,8 @@
 
 use payment_math::{
 	available, payable, pro_rata, pro_rata_wide, prorate_first_month, split, sum_dues, tokens_for,
-	Amount, BasisPoints, Blocks, ByteBlocks, Bytes, Credits, Tokens, Usd, UsdPerGibBlock,
-	BPS_DENOM, E18, GIB,
+	weight_share, Amount, BasisPoints, Blocks, ByteBlocks, Bytes, Credits, Tokens, Usd,
+	UsdPerGibBlock, BPS_DENOM, E18, GIB,
 };
 use primitive_types::{U256, U512};
 use proptest::prelude::*;
@@ -405,5 +405,41 @@ proptest! {
 		let total_lo = due_hi.max(1); // ≥ due so contract holds
 		prop_assume!(total_lo <= total_hi);
 		prop_assert!(t(due_hi, pool_lo, total_hi) <= t(due_hi, pool_lo, total_lo));
+	}
+
+	/// `weight_share` conservation: for any weight vector, the floor shares
+	/// sum to at most the pool, and the dust lost to floor division is
+	/// strictly less than one planck per claimant.
+	#[test]
+	fn weight_share_conserves_pool(
+		pool in any::<u128>(),
+		weights in proptest::collection::vec(0u128..=u16::MAX as u128, 1..64),
+	) {
+		let total: u128 = weights.iter().sum();
+		prop_assume!(total > 0);
+		let paid: u128 = weights
+			.iter()
+			.map(|w| weight_share(Tokens::new(pool), *w, total).get())
+			.sum();
+		prop_assert!(paid <= pool);
+		prop_assert!(pool - paid < weights.len() as u128);
+	}
+
+	/// `weight_share` is bounded by the pool, monotone in the weight, and
+	/// exact at full weight.
+	#[test]
+	fn weight_share_bounded_monotone_exact(
+		pool in any::<u128>(),
+		a in 0u128..=u16::MAX as u128,
+		b in 0u128..=u16::MAX as u128,
+		headroom in 1u128..1_000_000,
+	) {
+		let total = a.max(b) + headroom; // both weights ≤ total, total > 0
+		let (lo, hi) = (a.min(b), a.max(b));
+		let s_lo = weight_share(Tokens::new(pool), lo, total).get();
+		let s_hi = weight_share(Tokens::new(pool), hi, total).get();
+		prop_assert!(s_lo <= s_hi);
+		prop_assert!(s_hi <= pool);
+		prop_assert_eq!(weight_share(Tokens::new(pool), total, total).get(), pool);
 	}
 }

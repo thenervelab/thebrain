@@ -262,7 +262,109 @@ fn pay_storage_miners_distributes_pro_rata() {
 			}
 			.into(),
 		);
+
+		// Each successful transfer also emits its per-miner indexing event.
+		let events = System::events();
+		for expected in [
+			Event::MinerPaymentPaid { miner: charlie(), amount: 250 },
+			Event::MinerPaymentPaid { miner: dave(), amount: 750 },
+		] {
+			let expected = expected.into();
+			assert!(
+				events.iter().any(|record| record.event == expected),
+				"missing per-miner event: {expected:?}"
+			);
+		}
 	});
+}
+
+#[test]
+fn pay_storage_miners_skips_failed_transfers() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		// charlie's share (101 * 1/20 = 5) is below the ED of 10 and charlie
+		// holds no account, so the transfer itself fails and is skipped;
+		// dave's share (95) clears the ED and pays out.
+		set_ranked_miners(vec![(charlie(), 1), (dave(), 19)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 101));
+
+		assert_eq!(Balances::free_balance(charlie()), 0);
+		assert_eq!(Balances::free_balance(dave()), 95);
+		// Only what actually moved is booked; the failed share stays in the
+		// compartment.
+		assert_eq!(EmissionPaidOut::<Test>::get(), 95);
+		assert_eq!(Hippocampus::emission_available(), 905);
+		System::assert_last_event(
+			Event::StorageMinersPaid {
+				requested: 101,
+				paid: 95,
+				miners_paid: 1,
+				miners_skipped: 1,
+			}
+			.into(),
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_conserves_every_planck() {
+	// Invariant sweep: whatever the weight vector, exactly `paid` leaves the
+	// bank, all of it lands with miners, both ledgers book the same figure,
+	// and floor-division dust is bounded by one planck per miner.
+	let cases: &[(&[u16], u128)] = &[
+		(&[1, 3], 1_000),
+		(&[7, 7, 7], 1_000),
+		(&[1, 65_535], 9_999),
+		(&[13, 29, 58], 101),
+		(&[5], 10),
+		(&[1, 2, 3, 4, 5, 6, 7], 9_973),
+	];
+	for (weights, amount) in cases {
+		new_test_ext().execute_with(|| {
+			assert_ok!(Hippocampus::deposit(
+				RuntimeOrigin::signed(alice()),
+				10,
+				DepositType::Grant
+			));
+			assert_ok!(Hippocampus::deposit(
+				RuntimeOrigin::signed(alice()),
+				10_000,
+				DepositType::Emission
+			));
+			let miners: Vec<(AccountId, u16)> = weights
+				.iter()
+				.enumerate()
+				.map(|(i, w)| {
+					let index = u8::try_from(i).expect("small test vector");
+					(sp_runtime::AccountId32::new([100 + index; 32]), *w)
+				})
+				.collect();
+			set_ranked_miners(miners.clone());
+			whitelist_miner_payment_caller(alice());
+
+			let bank_before = Balances::free_balance(hippocampus_account());
+			assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), *amount));
+
+			let received: u128 =
+				miners.iter().map(|(miner, _)| Balances::free_balance(miner)).sum();
+			let bank_delta = bank_before - Balances::free_balance(hippocampus_account());
+			assert_eq!(received, bank_delta, "weights {weights:?}");
+			assert_eq!(EmissionPaidOut::<Test>::get(), received, "weights {weights:?}");
+			assert_eq!(TotalPaidOut::<Test>::get(), received, "weights {weights:?}");
+			assert!(received <= *amount);
+			assert!(
+				*amount - received < weights.len() as u128,
+				"dust exceeded bound for weights {weights:?}: paid {received} of {amount}"
+			);
+		});
+	}
 }
 
 #[test]
@@ -544,7 +646,13 @@ fn remove_miner_payment_caller_works() {
 		assert_ok!(Hippocampus::remove_miner_payment_caller(RuntimeOrigin::root(), caller.clone()));
 		assert!(!MinerPaymentWhitelist::<Test>::contains_key(&caller));
 
-		System::assert_last_event(Event::MinerPaymentCallerRemoved { who: caller }.into());
+		System::assert_last_event(Event::MinerPaymentCallerRemoved { who: caller.clone() }.into());
+
+		// A removed caller can no longer trigger payouts.
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(caller), 100),
+			Error::<Test>::PaymentCallerNotWhitelisted
+		);
 	});
 }
 

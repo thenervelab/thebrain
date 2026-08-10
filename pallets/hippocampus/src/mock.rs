@@ -12,7 +12,9 @@ pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::Account
 pub type Balance = u128;
 
 pub const INITIAL_BALANCE: Balance = 10_000_000_000_000;
-pub const EXISTENTIAL_DEPOSIT: Balance = 1;
+// Large enough that a payout share can land strictly between zero and the
+// ED, so the failed-transfer skip path in `pay_storage_miners` is testable.
+pub const EXISTENTIAL_DEPOSIT: Balance = 10;
 
 frame_support::construct_runtime!(
 	pub enum Test
