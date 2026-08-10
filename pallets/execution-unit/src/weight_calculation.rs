@@ -14,7 +14,7 @@ use sp_std::vec::Vec;
 struct PoolContext {
 	available_pool: f64,
 	miners_pool: f64,
-	uid_zero_pool: f64,
+	uid_238_pool: f64,
 	burn_percentage: f64,
 }
 
@@ -69,12 +69,12 @@ impl NodeMetricsData {
 
 		// ---- 5) Calculate pool distribution ----
 		let max_score = Self::MAX_SCORE as f64;
-		let uid_zero_pool = max_score * burn_percentage;
-		let miners_pool = max_score - uid_zero_pool;
-		info!("uid_zero_pool: {}", uid_zero_pool);
+		let uid_238_pool = max_score * burn_percentage;
+		let miners_pool = max_score - uid_238_pool;
+		info!("uid_238_pool: {}", uid_238_pool);
 		info!("miners_pool: {}", miners_pool);
 
-		Some(PoolContext { available_pool: max_score, miners_pool, uid_zero_pool, burn_percentage })
+		Some(PoolContext { available_pool: max_score, miners_pool, uid_238_pool, burn_percentage })
 	}
 
 	pub fn calculate_weight<
@@ -142,7 +142,7 @@ impl NodeMetricsData {
 		final_weight
 	}
 
-	pub fn uid_zero_weight<
+	pub fn uid_238_weight<
 		T: pallet_marketplace::Config + pallet_credits::Config + pallet_arion::Config,
 	>() -> u16 {
 		let price_per_gb = pallet_marketplace::Pallet::<T>::get_storage_price_per_miner();
@@ -159,7 +159,7 @@ impl NodeMetricsData {
 			return 0;
 		};
 
-		let uid_inner = context.uid_zero_pool;
+		let uid_inner = context.uid_238_pool;
 		info!("raw UID zero weight: {}", uid_inner);
 
 		let capped_f64 = uid_inner.min(Self::MAX_SCORE as f64);
