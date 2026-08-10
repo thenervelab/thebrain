@@ -1235,13 +1235,18 @@ pub mod pallet {
             // ArionPayoutSource applies to miner settlement: alpha backing
             // still owed to the ranking/marketplace pots and chargeback
             // refunds still owed to the sudo account are not spendable as
-            // commissions, and the root-set ReferralBankFloor stays
+            // commissions, the root-set ReferralBankFloor, and the emission
+            // compartment reserved for ranking-based `pay_storage_miners` stay
             // untouched on top of that. Commission volume can at worst
             // drain the headroom above the floor, never funds owed to
             // someone else and never the last of the bank.
             let reserved = TotalUndistributedBacking::<T>::get()
                 .saturating_add(PendingSudoRefunds::<T>::get())
-                .saturating_add(ReferralBankFloor::<T>::get());
+                .saturating_add(ReferralBankFloor::<T>::get())
+                .saturating_add(
+                    pallet_hippocampus::Pallet::<T>::emission_available()
+                        .saturated_into::<u128>(),
+                );
             let headroom = pallet_hippocampus::Pallet::<T>::available_for_payout()
                 .saturated_into::<u128>()
                 .saturating_sub(reserved);

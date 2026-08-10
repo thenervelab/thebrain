@@ -140,12 +140,33 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	fn available() -> Balance {
 		// Compartmentalization: the alpha backing still owed to the ranking /
 		// marketplace pots — and chargeback refunds still owed back to the
-		// sudo account — is not spendable by the miner settlement: a runaway
+		// sudo account — and the emission compartment reserved for ranking-based
+		// `pay_storage_miners` — is not spendable by the miner settlement: a runaway
 		// miner due (bad stats, bad price, compromised authority key) can at
 		// worst drain the miner budget, never funds owed to someone else.
 		pallet_hippocampus::Pallet::<Runtime>::available_for_payout()
 			.saturating_sub(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get())
 			.saturating_sub(pallet_marketplace::PendingSudoRefunds::<Runtime>::get())
+			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::emission_available())
+	}
+}
+
+/// Adapter: `pay_storage_miners` reads the storage-miner ranking
+/// (`RankingStorage`, instance 1) and pays each node's registered owner.
+pub struct StorageMinerRankingSource;
+impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingSource {
+	fn active_storage_miners() -> Vec<(AccountId, u16)> {
+		pallet_rankings::Pallet::<Runtime>::get_ranked_list()
+			.into_iter()
+			.filter(|node| {
+				node.is_active && node.node_type == pallet_registration::NodeType::StorageMiner
+			})
+			.filter_map(|node| {
+				pallet_registration::Pallet::<Runtime>::get_registered_node(node.node_id.clone())
+					.ok()
+					.map(|info| (info.owner, node.weight))
+			})
+			.collect()
 	}
 }
 
@@ -227,6 +248,8 @@ impl pallet_hippocampus::Config for Runtime {
 	type Currency = Balances;
 	type PalletId = HippocampusPalletId;
 	type AdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type MinerRanking = StorageMinerRankingSource;
+	type MaxMinersPerPayout = ConstU32<512>;
 	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
 }
 #[cfg(feature = "std")]
