@@ -69,7 +69,7 @@ impl pallet_hippocampus::StorageMinerRanking<AccountId> for MockRanking {
 
 parameter_types! {
 	pub const BlocksPer24Hours: u64 = 14_400; // ~24 hours at 6-second blocks
-	pub const Max24HourMinerPayout: Balance = 2_952_000_000_000_000_000; // 2952 alpha (18 decimals)
+	pub const Max24HourMinerPayout: Balance = 3_000_000_000_000_000_000; // 3000 alpha (18 decimals)
 }
 
 impl pallet_hippocampus::Config for Test {
