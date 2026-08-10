@@ -10,14 +10,14 @@
 
 use frame_support::traits::{Currency, Hooks};
 use hippius_mainnet_runtime::{
-	AccountId, Arion, Balances, BlockNumber, Hippocampus, ProxyType, Runtime,
-	RuntimeEvent, RuntimeOrigin, System,
+	AccountId, Arion, Balances, BlockNumber, Hippocampus, ProxyType, Runtime, RuntimeEvent,
+	RuntimeOrigin, System,
 };
 use pallet_arion::{
 	ChildMinerUid, CrushParams, MinerRecord, MinerStats, MinerStatsUpdate, MinerUidToChild,
 };
 use parity_scale_codec::Encode;
-use sp_core::{Pair, crypto::Ss58Codec, ed25519};
+use sp_core::{crypto::Ss58Codec, ed25519, Pair};
 use sp_runtime::{AccountId32, BuildStorage};
 
 const UNIT: u128 = 1_000_000_000_000_000_000;
@@ -92,9 +92,12 @@ fn submit_stats(uid: u32, bytes: u128) {
 	Arion::submit_miner_stats(
 		RuntimeOrigin::signed(admin()),
 		bucket,
-		vec![MinerStatsUpdate { uid, stats: MinerStats { shard_data_bytes: bytes, ..Default::default() } }]
-			.try_into()
-			.expect("bounded"),
+		vec![MinerStatsUpdate {
+			uid,
+			stats: MinerStats { shard_data_bytes: bytes, ..Default::default() },
+		}]
+		.try_into()
+		.expect("bounded"),
 		None,
 	)
 	.expect("stats");
@@ -281,7 +284,6 @@ fn deregistered_child_is_not_rebound_by_a_stale_crush_map() {
 	});
 }
 
-
 /// POSITIVE CONTROL: if the node somehow IS already in the crush map when it
 /// registers, the binding works and the miner is paid. This is what the fix was
 /// written for — it just is not the order the stack produces.
@@ -440,7 +442,8 @@ fn crush_map_uid_swap_converges_and_carries_accrual() {
 		assert!(
 			pallet_arion::MinerAccruals::<Runtime>::get(2)
 				.map(|a| a.byte_blocks)
-				.unwrap_or(0) > 0,
+				.unwrap_or(0)
+				> 0,
 			"accrual carries across the renumber"
 		);
 	});

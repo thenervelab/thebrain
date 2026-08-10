@@ -974,10 +974,8 @@ mod tests {
 		for pool in [0u128, 1, 7, 100, 101, 65_535, 1_000_000_000_000_000_000] {
 			for weights in [[1u128, 3], [7, 7], [1, 65_535], [0, 5]] {
 				let total: u128 = weights.iter().sum();
-				let paid: u128 = weights
-					.iter()
-					.map(|w| weight_share(Tokens::new(pool), *w, total).get())
-					.sum();
+				let paid: u128 =
+					weights.iter().map(|w| weight_share(Tokens::new(pool), *w, total).get()).sum();
 				assert!(paid <= pool, "pool {pool} weights {weights:?} paid {paid}");
 			}
 		}

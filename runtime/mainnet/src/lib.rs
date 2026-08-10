@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 use sp_api::impl_runtime_apis;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata, H160, H256, U256};
 use sp_genesis_builder::PresetId;
-use sp_runtime::traits::{ConstU64, AccountIdConversion};
+use sp_runtime::traits::{AccountIdConversion, ConstU64};
 use sp_runtime::SaturatedConversion;
 use sp_runtime::{
 	create_runtime_str,
@@ -332,7 +332,6 @@ pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
 		allowed_slots: sp_consensus_babe::AllowedSlots::PrimaryAndSecondaryPlainSlots,
 	};
 
-
 /// This runtime version.
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
@@ -347,7 +346,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	transaction_version: 2,
 	state_version: 0,
 };
- 
+
 impl pallet_registration::ProxyTypeCompat for ProxyType {
 	fn is_non_transfer(&self) -> bool {
 		matches!(self, ProxyType::NonTransfer)
@@ -697,17 +696,17 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 					)
 					.is_ok()
 					{
-							pallet_staking::Pallet::<Runtime>::bond_extra(
-								frame_system::RawOrigin::Signed(validator.clone()).into(),
-								amount_per_validator,
-							)
-						} else {
-							pallet_staking::Pallet::<Runtime>::bond(
-								frame_system::RawOrigin::Signed(validator.clone()).into(),
-								amount_per_validator,
-								pallet_staking::RewardDestination::Staked,
-							)
-						};
+						pallet_staking::Pallet::<Runtime>::bond_extra(
+							frame_system::RawOrigin::Signed(validator.clone()).into(),
+							amount_per_validator,
+						)
+					} else {
+						pallet_staking::Pallet::<Runtime>::bond(
+							frame_system::RawOrigin::Signed(validator.clone()).into(),
+							amount_per_validator,
+							pallet_staking::RewardDestination::Staked,
+						)
+					};
 
 					if let Err(e) = bond_result {
 						log::warn!(
@@ -724,7 +723,8 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 		// Handle explicit staking pot dedicated for rewards
 		use sp_runtime::traits::AccountIdConversion;
 		let staking_pot_account: AccountId = StakingPotId::get().into_account_truncating();
-		let staking_pot_balance = pallet_balances::Pallet::<Runtime>::free_balance(&staking_pot_account);
+		let staking_pot_balance =
+			pallet_balances::Pallet::<Runtime>::free_balance(&staking_pot_account);
 		let mut payout = 0u32.into();
 
 		if staking_pot_balance > 0 {
@@ -745,8 +745,8 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 				ExistenceRequirement::AllowDeath,
 			) {
 				payout = staking_pot_balance;
-			}else {
-				log::warn!( 
+			} else {
+				log::warn!(
 					target: "runtime::staking_payout",
 					"⚠️ Silent failure on withdraw for staking pot account: {:?}",
 					staking_pot_account,
@@ -1980,7 +1980,7 @@ construct_runtime!(
 		// RankingGpu: pallet_rankings::<Instance4> = 71,
 		// RankingS3: pallet_rankings::<Instance5> = 77,
 		Credits: pallet_credits = 65,
-		// ContainerRegistry: pallet_container_registry = 69, 
+		// ContainerRegistry: pallet_container_registry = 69,
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
 		// IpfsPallet: ipfs_pallet = 75,
@@ -2000,7 +2000,6 @@ impl fp_rpc::ConvertTransaction<UncheckedExtrinsic> for TransactionConverter {
 		)
 	}
 }
-
 
 impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConverter {
 	fn convert_transaction(

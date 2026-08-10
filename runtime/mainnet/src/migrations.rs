@@ -1,6 +1,6 @@
 use super::*;
-use frame_support::StorageHasher;
 use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+use frame_support::StorageHasher;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use sp_runtime::{BoundToRuntimeAppPublic, RuntimeAppPublic, RuntimeDebug};
 
@@ -91,8 +91,7 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for RemoveIpAndContainerRegistryP
 		// Clears: AvailableHypervisorIps, AvailableClientIps, AvailableStorageMinerIps,
 		//         VmAvailableIps, AssignedVmIps, AssignedClientIps,
 		//         IpToRole (map), RoleToIp (map), IpReleaseRequests
-		let removed_ip =
-			frame_support::storage::unhashed::clear_prefix(b"PalletIp", None, None);
+		let removed_ip = frame_support::storage::unhashed::clear_prefix(b"PalletIp", None, None);
 		log::info!(
 			target: "runtime::migration",
 			"RemoveIpAndContainerRegistryPallets: cleared {} keys from PalletIp",
@@ -118,7 +117,8 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for RemoveIpAndContainerRegistryP
 			"RemoveIpAndContainerRegistryPallets: cleared {} keys from Notifications",
 			removed_notifications.backend,
 		);
-		weight = weight.saturating_add(T::DbWeight::get().writes(removed_notifications.backend as u64));
+		weight =
+			weight.saturating_add(T::DbWeight::get().writes(removed_notifications.backend as u64));
 
 		let removed_ipfs =
 			frame_support::storage::unhashed::clear_prefix(b"IpfsPallet", None, None);
@@ -186,7 +186,10 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for RemoveIpAndContainerRegistryP
 		let ipfs_still = sp_io::storage::next_key(b"IpfsPallet")
 			.map(|k| k.starts_with(b"IpfsPallet"))
 			.unwrap_or(false);
-		frame_support::ensure!(!has_sub_account_still, "post_upgrade: SubAccount storage was NOT fully cleared!");
+		frame_support::ensure!(
+			!has_sub_account_still,
+			"post_upgrade: SubAccount storage was NOT fully cleared!"
+		);
 		frame_support::ensure!(
 			!cr_still,
 			"post_upgrade: ContainerRegistry storage was NOT fully cleared!"
@@ -223,7 +226,10 @@ where
 					registered_at: info.registered_at,
 					owner,
 				};
-				pallet_registration::ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(lite));
+				pallet_registration::ColdkeyNodeRegistrationV2::<T>::insert(
+					node_id.clone(),
+					Some(lite),
+				);
 				pallet_registration::OwnerToNode::<T>::mutate(&info.owner, |nodes_opt| {
 					let nodes = nodes_opt.get_or_insert_with(Vec::new);
 					if !nodes.iter().any(|n| n == &node_id) {
@@ -241,8 +247,7 @@ where
 			p.extend_from_slice(&frame_support::Twox128::hash(b"ColdkeyNodeRegistration"));
 			p
 		};
-		let removed =
-			frame_support::storage::unhashed::clear_prefix(&legacy_prefix, None, None);
+		let removed = frame_support::storage::unhashed::clear_prefix(&legacy_prefix, None, None);
 		writes = writes.saturating_add(removed.backend as u64);
 
 		// Clear legacy NodeRegistration storage prefix too.
@@ -267,7 +272,9 @@ where
 /// match the FRAME-generated metadata names (`UserTotalDriveFilesSize`, etc.).
 pub struct MigrateArionUserBackendFileUsageToMarketplace<T>(sp_std::marker::PhantomData<T>);
 
-impl<T: frame_system::Config> OnRuntimeUpgrade for MigrateArionUserBackendFileUsageToMarketplace<T> {
+impl<T: frame_system::Config> OnRuntimeUpgrade
+	for MigrateArionUserBackendFileUsageToMarketplace<T>
+{
 	fn on_runtime_upgrade() -> Weight {
 		use frame_support::storage::migration::move_storage_from_pallet;
 
@@ -288,8 +295,7 @@ impl<T: frame_system::Config> OnRuntimeUpgrade for MigrateArionUserBackendFileUs
 		for hcfs in [b"UserTotalHCFSFilesSize".as_ref(), b"UserTotalHCFSFilesCount"] {
 			let mut prefix = frame_support::Twox128::hash(OLD_PALLET).to_vec();
 			prefix.extend_from_slice(&frame_support::Twox128::hash(hcfs));
-			let removed =
-				frame_support::storage::unhashed::clear_prefix(&prefix, None, None);
+			let removed = frame_support::storage::unhashed::clear_prefix(&prefix, None, None);
 			log::info!(
 				target: "runtime::migration",
 				"MigrateArionUserBackendFileUsageToMarketplace: cleared {} keys from Arion::{}",

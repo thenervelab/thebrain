@@ -11,8 +11,8 @@ use hippius_mainnet_runtime::{
 	Runtime, RuntimeEvent, RuntimeOrigin, System,
 };
 use pallet_arion::{
-	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, FamilyArrears, MinerAccruals,
-	MinerStats, MinerStatsUpdate, PayoutSource, SettlementSkipReason,
+	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, FamilyArrears,
+	MinerAccruals, MinerStats, MinerStatsUpdate, PayoutSource, SettlementSkipReason,
 };
 use payment_math::{pro_rata, Tokens};
 use sp_core::crypto::Ss58Codec;
@@ -440,11 +440,7 @@ fn consumption_distributes_revenue_from_bank_single_sudo_debit() {
 
 		// Consume 2 of the 5 credits → releases 2×3/5 = 1.2 alpha, stays in bank
 		// (no distribution to pots anymore)
-		Marketplace::consume_credits(
-			user.clone(),
-			2 * UNIT,
-		)
-		.expect("consume credits");
+		Marketplace::consume_credits(user.clone(), 2 * UNIT).expect("consume credits");
 
 		// Alpha stays in bank, pots get nothing
 		assert_eq!(Balances::free_balance(&ranking_pot), 0);
@@ -544,8 +540,12 @@ fn miner_settlement_cannot_drain_pot_backing() {
 			None,
 		)
 		.expect("deposit");
-		Hippocampus::deposit(RuntimeOrigin::signed(funder), 2 * UNIT, pallet_hippocampus::DepositType::Grant)
-			.expect("miner budget");
+		Hippocampus::deposit(
+			RuntimeOrigin::signed(funder),
+			2 * UNIT,
+			pallet_hippocampus::DepositType::Grant,
+		)
+		.expect("miner budget");
 		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), Marketplace::account_id())
 			.expect("whitelist marketplace");
 
@@ -558,11 +558,7 @@ fn miner_settlement_cannot_drain_pot_backing() {
 		assert!(pallet_arion::FamilyArrears::<Runtime>::get(&family) > 0);
 
 		// Alpha stays in bank, pots get nothing (distribution removed).
-		Marketplace::consume_credits(
-			user.clone(),
-			2 * UNIT,
-		)
-		.expect("consume");
+		Marketplace::consume_credits(user.clone(), 2 * UNIT).expect("consume");
 		assert_eq!(Balances::free_balance(&ranking_pot), 0);
 		assert_eq!(Balances::free_balance(&marketplace_pot), 0);
 	});
@@ -822,7 +818,9 @@ fn activation_migration_whitelists_and_seeds_backing() {
 		hippius_mainnet_runtime::migrations::ActivateMinerPaymentBank::<Runtime>::on_runtime_upgrade();
 
 		// Both pallet accounts are whitelisted as bank requesters.
-		assert!(pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()));
+		assert!(pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(
+			Arion::account_id()
+		));
 		assert!(pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(
 			Marketplace::account_id()
 		));
@@ -874,7 +872,9 @@ fn activation_migration_marks_batches_unbacked_when_sudo_cannot_seed() {
 		// Whitelisting still happens; the un-seedable backing is not counted
 		// as owed (nothing reached the bank) — instead every batch is marked
 		// unbacked so later releases keep the ledger conservative.
-		assert!(pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(Arion::account_id()));
+		assert!(pallet_hippocampus::WhitelistedRequesters::<Runtime>::contains_key(
+			Arion::account_id()
+		));
 		assert_eq!(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get(), 0);
 		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), 0);
 		assert_eq!(pallet_marketplace::UnbackedBatchAlpha::<Runtime>::get(batch_1), 3 * UNIT);
@@ -899,7 +899,6 @@ fn stats_for_unclaimed_uid_do_not_accrue() {
 	});
 }
 
-
 #[test]
 fn medium3_per_requester_cap_enforced() {
 	new_test_ext().execute_with(|| {
@@ -915,8 +914,12 @@ fn medium3_per_requester_cap_enforced() {
 			.expect("whitelist B");
 
 		// Set cap for requester A at 30 UNIT
-		Hippocampus::set_requester_cap(RuntimeOrigin::signed(admin()), requester_a.clone(), 30 * UNIT)
-			.expect("set cap for A");
+		Hippocampus::set_requester_cap(
+			RuntimeOrigin::signed(admin()),
+			requester_a.clone(),
+			30 * UNIT,
+		)
+		.expect("set cap for A");
 
 		// Request 50 UNIT for A (should be capped at 30)
 		let paid_a = Hippocampus::request_payment(&requester_a, &recipient, 50 * UNIT)
@@ -996,8 +999,14 @@ fn low3_payment_released_event_only_when_paid() {
 		System::reset_events();
 		let _ = Hippocampus::request_payment(&requester, &recipient, 0);
 		let events = System::events();
-		let zero_paid_count = events.iter()
-			.filter(|e| matches!(&e.event, RuntimeEvent::Hippocampus(pallet_hippocampus::Event::PaymentReleased { .. })))
+		let zero_paid_count = events
+			.iter()
+			.filter(|e| {
+				matches!(
+					&e.event,
+					RuntimeEvent::Hippocampus(pallet_hippocampus::Event::PaymentReleased { .. })
+				)
+			})
 			.count();
 		assert_eq!(zero_paid_count, 0, "no event when amount is zero");
 
@@ -1007,8 +1016,14 @@ fn low3_payment_released_event_only_when_paid() {
 		System::reset_events();
 		let _ = Hippocampus::request_payment(&requester, &recipient, 5 * UNIT);
 		let events = System::events();
-		let cap_zero_count = events.iter()
-			.filter(|e| matches!(&e.event, RuntimeEvent::Hippocampus(pallet_hippocampus::Event::PaymentReleased { .. })))
+		let cap_zero_count = events
+			.iter()
+			.filter(|e| {
+				matches!(
+					&e.event,
+					RuntimeEvent::Hippocampus(pallet_hippocampus::Event::PaymentReleased { .. })
+				)
+			})
 			.count();
 		assert_eq!(cap_zero_count, 0, "no event when cap is zero");
 
@@ -1018,8 +1033,14 @@ fn low3_payment_released_event_only_when_paid() {
 		System::reset_events();
 		let _ = Hippocampus::request_payment(&requester, &recipient, 5 * UNIT);
 		let events = System::events();
-		let valid_count = events.iter()
-			.filter(|e| matches!(&e.event, RuntimeEvent::Hippocampus(pallet_hippocampus::Event::PaymentReleased { .. })))
+		let valid_count = events
+			.iter()
+			.filter(|e| {
+				matches!(
+					&e.event,
+					RuntimeEvent::Hippocampus(pallet_hippocampus::Event::PaymentReleased { .. })
+				)
+			})
 			.count();
 		assert_eq!(valid_count, 1, "event emitted when paid > 0");
 	});
@@ -1099,8 +1120,8 @@ fn settlement_emits_miner_payment_settled_totals() {
 		assert_eq!(tokens_due, total_due);
 		assert_eq!(tokens_paid, total_due);
 		assert_eq!(
-			family_paid_tokens(&fa).map(|(t, _)| t).unwrap_or(0) +
-				family_paid_tokens(&fb).map(|(t, _)| t).unwrap_or(0),
+			family_paid_tokens(&fa).map(|(t, _)| t).unwrap_or(0)
+				+ family_paid_tokens(&fb).map(|(t, _)| t).unwrap_or(0),
 			tokens_paid
 		);
 	});
@@ -1131,10 +1152,7 @@ fn bond_failure_leaves_funds_liquid_staked_false() {
 		settle_at(SETTLEMENT_BLOCK);
 
 		assert_eq!(Balances::free_balance(&family), ED + expected);
-		assert!(
-			!staking_ledger_exists(&family),
-			"bond must have failed — no staking ledger"
-		);
+		assert!(!staking_ledger_exists(&family), "bond must have failed — no staking ledger");
 		let (tokens, staked) = family_paid_tokens(&family).expect("FamilyPaid");
 		assert_eq!(tokens, expected);
 		assert!(!staked, "staked:false when bond fails");
@@ -1205,10 +1223,13 @@ fn unbonding_child_is_not_paid() {
 
 		assert_eq!(Balances::free_balance(&family), 0);
 		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
-		assert!(miner_payment_settled().is_none() || {
-			let (_, due, paid) = miner_payment_settled().unwrap();
-			due == 0 && paid == 0
-		} || family_paid_tokens(&family).is_none());
+		assert!(
+			miner_payment_settled().is_none()
+				|| {
+					let (_, due, paid) = miner_payment_settled().unwrap();
+					due == 0 && paid == 0
+				} || family_paid_tokens(&family).is_none()
+		);
 		// When total_due is zero the settle path returns early without
 		// MinerPaymentSettled — either way the family is unpaid.
 		assert!(family_paid_tokens(&family).is_none());
@@ -1236,8 +1257,7 @@ fn active_sibling_paid_unbonding_sibling_skipped() {
 		System::set_block_number(11);
 		submit_stats(1, 100 * GIB);
 		submit_stats(2, 500 * GIB);
-		let unbonding_bb_before =
-			MinerAccruals::<Runtime>::get(2).expect("uid2").byte_blocks;
+		let unbonding_bb_before = MinerAccruals::<Runtime>::get(2).expect("uid2").byte_blocks;
 		assert_eq!(unbonding_bb_before, 500 * GIB * 10);
 
 		ChildRegistrations::<Runtime>::mutate(&unbonding, |reg| {
@@ -1698,10 +1718,7 @@ fn invariant_hippocampus_accounting_matches_settlement() {
 			pallet_hippocampus::TotalPaidByRequester::<Runtime>::get(Arion::account_id()),
 			tokens_paid
 		);
-		assert_eq!(
-			Balances::free_balance(&fa) + Balances::free_balance(&fb),
-			tokens_paid
-		);
+		assert_eq!(Balances::free_balance(&fa) + Balances::free_balance(&fb), tokens_paid);
 	});
 }
 
@@ -1743,9 +1760,8 @@ fn invariant_arrears_clear_without_double_pay() {
 		assert!(Balances::free_balance(&family) >= due);
 		// No double counting of the first half: total ≤ due + one-block dust tail.
 		let tail = tokens_for(100 * GIB, price, alpha_price); // one block at submit
-		// Between SETTLEMENT and 2*SETTLEMENT with 0 bytes: no further accrual
-		// after the zeroing submit at SETTLEMENT_BLOCK (last_block updated).
+														// Between SETTLEMENT and 2*SETTLEMENT with 0 bytes: no further accrual
+														// after the zeroing submit at SETTLEMENT_BLOCK (last_block updated).
 		assert!(Balances::free_balance(&family) <= due + tail);
 	});
 }
-

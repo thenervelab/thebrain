@@ -387,7 +387,9 @@ pub mod pallet {
 			})?;
 
 			// Increment the total successful credits transfers
-			TotalSucessfullCreditsTransfers::<T>::mutate(|total| *total = total.saturating_add(amount_fulfilled));
+			TotalSucessfullCreditsTransfers::<T>::mutate(|total| {
+				*total = total.saturating_add(amount_fulfilled)
+			});
 
 			// Deposit an event for the fulfillment
 			Self::deposit_event(Event::CreditFulfilled {
@@ -629,13 +631,15 @@ pub mod pallet {
 			}
 
 			ReferredUsers::<T>::iter()
-				.filter_map(|(user, code_used)| {
-					if owned_codes.contains(&code_used) {
-						Some(user)
-					} else {
-						None
-					}
-				})
+				.filter_map(
+					|(user, code_used)| {
+						if owned_codes.contains(&code_used) {
+							Some(user)
+						} else {
+							None
+						}
+					},
+				)
 				.collect()
 		}
 

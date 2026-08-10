@@ -66,7 +66,13 @@ fn month_length(year: i32, month: Month) -> u8 {
 	match month {
 		January | March | May | July | August | October | December => 31,
 		April | June | September | November => 30,
-		February => if is_leap_year(year) { 29 } else { 28 },
+		February => {
+			if is_leap_year(year) {
+				29
+			} else {
+				28
+			}
+		},
 	}
 }
 

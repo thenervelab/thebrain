@@ -13,10 +13,12 @@
 //! - compromised `ArionAdminOrigin` can set any miner price
 //! Those are operator/key-compromise risks, not miner self-service theft.
 
-use frame_support::{assert_err, assert_noop, traits::{Currency, Hooks}};
+use frame_support::{
+	assert_err, assert_noop,
+	traits::{Currency, Hooks},
+};
 use hippius_mainnet_runtime::{
-	AccountId, Arion, Balances, BlockNumber, Hippocampus, ProxyType, Runtime, RuntimeOrigin,
-	System,
+	AccountId, Arion, Balances, BlockNumber, Hippocampus, ProxyType, Runtime, RuntimeOrigin, System,
 };
 use pallet_arion::{
 	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, CrushParams, FamilyArrears,
@@ -344,10 +346,7 @@ fn late_binder_cannot_claim_unbound_historical_stats() {
 		submit_stats(7, 1_000 * GIB);
 		System::set_block_number(5_000);
 		submit_stats(7, 1_000 * GIB);
-		assert!(
-			!MinerAccruals::<Runtime>::contains_key(7),
-			"unbound uid must not accrue"
-		);
+		assert!(!MinerAccruals::<Runtime>::contains_key(7), "unbound uid must not accrue");
 
 		// Attacker binds after the fact.
 		register_miner_storage(&family, &child, 7);
@@ -409,11 +408,7 @@ fn displaced_family_cannot_collect_after_uid_reassign() {
 		let before_b = Balances::free_balance(&fam_b);
 		settle_at(SETTLEMENT_BLOCK);
 
-		assert_eq!(
-			Balances::free_balance(&fam_a),
-			before_a,
-			"displaced family must not be paid"
-		);
+		assert_eq!(Balances::free_balance(&fam_a), before_a, "displaced family must not be paid");
 		assert_eq!(FamilyArrears::<Runtime>::get(&fam_a), 0);
 
 		let price = 10_000_000_000_u128;
@@ -638,8 +633,7 @@ fn unregister_cooldown_blocks_immediate_reregister() {
 		register(&family, &child, &node);
 		Arion::deregister_child(RuntimeOrigin::signed(family.clone()), child.clone())
 			.expect("deregister");
-		Arion::claim_unbonded(RuntimeOrigin::signed(family.clone()), child.clone())
-			.expect("claim");
+		Arion::claim_unbonded(RuntimeOrigin::signed(family.clone()), child.clone()).expect("claim");
 
 		// Same block / before UnregisterCooldownBlocks (7200): child still cooling down.
 		assert_noop!(
@@ -750,8 +744,7 @@ fn reregister_after_forfeit_starts_clean() {
 		Arion::deregister_child(RuntimeOrigin::signed(family.clone()), child.clone())
 			.expect("deregister");
 		// claim to fully remove registration record
-		Arion::claim_unbonded(RuntimeOrigin::signed(family.clone()), child.clone())
-			.expect("claim");
+		Arion::claim_unbonded(RuntimeOrigin::signed(family.clone()), child.clone()).expect("claim");
 		assert!(ChildRegistrations::<Runtime>::get(&child).is_none());
 		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
 

@@ -79,8 +79,8 @@ pub mod pallet {
 	use pallet_utils::Pallet as UtilsPallet;
 	use scale_info::prelude::string::String;
 	use serde_json::Value;
-	use sp_runtime::{format, offchain::http};
 	use sp_runtime::Saturating;
+	use sp_runtime::{format, offchain::http};
 	use sp_runtime::{
 		offchain::Duration,
 		traits::{AccountIdConversion, Get, Zero},
@@ -151,11 +151,7 @@ pub mod pallet {
 		SomethingStored { something: u32, who: T::AccountId },
 		RankingsUpdated { count: u32 },
 		RewardDistributed { account: T::AccountId, amount: BalanceOf<T> },
-		RewardLocked {
-			account: T::AccountId,
-			amount: BalanceOf<T>,
-			unlock_at: BlockNumberFor<T>,
-		},
+		RewardLocked { account: T::AccountId, amount: BalanceOf<T>, unlock_at: BlockNumberFor<T> },
 		RewardClaimed { account: T::AccountId, amount: BalanceOf<T> },
 		RankDistributionLimitUpdated { new_limit: u16 },
 	}
@@ -190,14 +186,13 @@ pub mod pallet {
 	/// Rewards reserved for a miner until `unlock_at`, claimable via `claim_rewards`.
 	#[pallet::storage]
 	#[pallet::getter(fn pending_reward_locks)]
-	pub type PendingRewardLocks<T: Config<I>, I: 'static = ()> =
-		StorageMap<
-			_,
-			Blake2_128Concat,
-			T::AccountId,
-			BoundedVec<RewardLock<BalanceOf<T>, BlockNumberFor<T>>, T::MaxRewardLocksPerAccount>,
-			ValueQuery,
-		>;
+	pub type PendingRewardLocks<T: Config<I>, I: 'static = ()> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		BoundedVec<RewardLock<BalanceOf<T>, BlockNumberFor<T>>, T::MaxRewardLocksPerAccount>,
+		ValueQuery,
+	>;
 
 	#[pallet::storage]
 	pub type RankedList<T: Config<I>, I: 'static = ()> =
@@ -316,36 +311,39 @@ pub mod pallet {
 		) -> DispatchResult {
 			let now = <frame_system::Pallet<T>>::block_number();
 
-			PendingRewardLocks::<T, I>::try_mutate(account, |locks| -> Result<(), DispatchError> {
-				if locks.try_push(lock.clone()).is_ok() {
-					return Ok(());
-				}
-
-				// Auto-claim exactly one matured lock (oldest unlock) and retry.
-				if let Some((idx, matured)) = locks
-					.iter()
-					.enumerate()
-					.filter(|(_, l)| now >= l.unlock_at)
-					.min_by_key(|(_, l)| l.unlock_at)
-				{
-					let leftover =
-						pallet_balances::Pallet::<T>::unreserve(account, matured.amount);
-					let actually = matured.amount.saturating_sub(leftover);
-					if !actually.is_zero() {
-						Self::deposit_event(Event::RewardClaimed {
-							account: account.clone(),
-							amount: actually,
-						});
+			PendingRewardLocks::<T, I>::try_mutate(
+				account,
+				|locks| -> Result<(), DispatchError> {
+					if locks.try_push(lock.clone()).is_ok() {
+						return Ok(());
 					}
-					locks.swap_remove(idx);
-				}
 
-				ensure!(
-					locks.try_push(lock).is_ok(),
-					Error::<T, I>::RewardLockCapacityExhausted
-				);
-				Ok(())
-			})?;
+					// Auto-claim exactly one matured lock (oldest unlock) and retry.
+					if let Some((idx, matured)) = locks
+						.iter()
+						.enumerate()
+						.filter(|(_, l)| now >= l.unlock_at)
+						.min_by_key(|(_, l)| l.unlock_at)
+					{
+						let leftover =
+							pallet_balances::Pallet::<T>::unreserve(account, matured.amount);
+						let actually = matured.amount.saturating_sub(leftover);
+						if !actually.is_zero() {
+							Self::deposit_event(Event::RewardClaimed {
+								account: account.clone(),
+								amount: actually,
+							});
+						}
+						locks.swap_remove(idx);
+					}
+
+					ensure!(
+						locks.try_push(lock).is_ok(),
+						Error::<T, I>::RewardLockCapacityExhausted
+					);
+					Ok(())
+				},
+			)?;
 
 			Ok(())
 		}
@@ -507,7 +505,12 @@ pub mod pallet {
 			node_types: Vec<NodeType>,
 		) -> DispatchResult {
 			// Ensure vectors have same length
-			ensure!(node_ids.len() == weights.len() && all_nodes_ss58.len() == weights.len() && node_types.len() == weights.len(), Error::<T, I>::InvalidInput);
+			ensure!(
+				node_ids.len() == weights.len()
+					&& all_nodes_ss58.len() == weights.len()
+					&& node_types.len() == weights.len(),
+				Error::<T, I>::InvalidInput
+			);
 			let current_block = frame_system::Pallet::<T>::block_number();
 			let timestamp: u64 =
 				current_block.try_into().map_err(|_| Error::<T, I>::ConversionError)?;
@@ -827,7 +830,7 @@ pub mod pallet {
 			let mut weight_used = Weight::zero();
 
 			if n % T::BlocksPerEra::get().into() == Zero::zero() {
-					let mut distribution_count: u16 = 0;
+				let mut distribution_count: u16 = 0;
 
 				// Get the sorted list of rankings
 				let ranked_list = RankedList::<T, I>::get();
@@ -838,15 +841,15 @@ pub mod pallet {
 
 				// Only proceed if we have balance to distribute
 				if !total_balance.is_zero() {
-						// Apply RankDistributionLimit per node type (per pallet instance),
-						// without changing the existing storage item.
-						let target_node_type = match T::InstanceID::get() {
-							1 => Some(NodeType::StorageMiner),
-							2 => Some(NodeType::ComputeMiner),
-							4 => Some(NodeType::GpuMiner),
-							5 => Some(NodeType::StorageS3),
-							_ => None,
-						};
+					// Apply RankDistributionLimit per node type (per pallet instance),
+					// without changing the existing storage item.
+					let target_node_type = match T::InstanceID::get() {
+						1 => Some(NodeType::StorageMiner),
+						2 => Some(NodeType::ComputeMiner),
+						4 => Some(NodeType::GpuMiner),
+						5 => Some(NodeType::StorageS3),
+						_ => None,
+					};
 
 					// Separate nodes by type and take only up to the limit
 					let mut compute_miner_node: Vec<(T::AccountId, u16, Vec<u8>)> = Vec::new();
@@ -859,16 +862,16 @@ pub mod pallet {
 						if let Ok(node_info) = pallet_registration::Pallet::<T>::get_registered_node(
 							ranking.node_id.clone(),
 						) {
-								if let Some(target) = target_node_type.as_ref() {
-									if &node_info.node_type != target {
-										continue;
-									}
+							if let Some(target) = target_node_type.as_ref() {
+								if &node_info.node_type != target {
+									continue;
 								}
+							}
 
-								if distribution_count >= Self::rank_distribution_limit() {
-									break;
-								}
-								distribution_count += 1;
+							if distribution_count >= Self::rank_distribution_limit() {
+								break;
+							}
+							distribution_count += 1;
 
 							match node_info.node_type {
 								NodeType::ComputeMiner => compute_miner_node.push((
@@ -920,21 +923,28 @@ pub mod pallet {
 								if !reward.is_zero() {
 									let reward_balance: BalanceOf<T> = reward.saturated_into();
 									let reward_u128: u128 = reward.saturated_into();
-										let unlock_at = n.saturating_add(T::RewardLockBlocks::get());
+									let unlock_at = n.saturating_add(T::RewardLockBlocks::get());
 
-									let outcome = with_transaction(|| -> TransactionOutcome<DispatchResult> {
-										if let Err(e) = <pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
-											&pallet_account,
-											&account,
-											reward_balance,
-											ExistenceRequirement::KeepAlive,
-										) {
-											return TransactionOutcome::Rollback(Err(e.into()));
-										}
+									let outcome = with_transaction(
+										|| -> TransactionOutcome<DispatchResult> {
+											if let Err(e) =
+												<pallet_balances::Pallet<T> as Currency<
+													T::AccountId,
+												>>::transfer(
+													&pallet_account,
+													&account,
+													reward_balance,
+													ExistenceRequirement::KeepAlive,
+												) {
+												return TransactionOutcome::Rollback(Err(e.into()));
+											}
 
-										if let Err(e) = pallet_balances::Pallet::<T>::reserve(&account, reward_balance) {
-											return TransactionOutcome::Rollback(Err(e.into()));
-										}
+											if let Err(e) = pallet_balances::Pallet::<T>::reserve(
+												&account,
+												reward_balance,
+											) {
+												return TransactionOutcome::Rollback(Err(e.into()));
+											}
 
 											if let Err(e) = Self::try_push_reward_lock_strict(
 												&account,
@@ -944,7 +954,8 @@ pub mod pallet {
 											}
 
 											TransactionOutcome::Commit(Ok(()))
-									});
+										},
+									);
 
 									if outcome.is_ok() {
 										Self::deposit_event(Event::RewardDistributed {
@@ -957,7 +968,8 @@ pub mod pallet {
 											unlock_at,
 										});
 
-										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+										let mut records =
+											RewardsRecord::<T, I>::get(node_id.clone());
 										records.push(RewardsRecordDetails {
 											node_types: NodeType::ComputeMiner,
 											weight,
@@ -1003,29 +1015,37 @@ pub mod pallet {
 									let reward_u128: u128 = reward.saturated_into();
 									let unlock_at = n.saturating_add(T::RewardLockBlocks::get());
 
-									let outcome = with_transaction(|| -> TransactionOutcome<DispatchResult> {
-										if let Err(e) = <pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
-											&pallet_account,
-											&account,
-											reward_balance,
-											ExistenceRequirement::KeepAlive,
-										) {
-											return TransactionOutcome::Rollback(Err(e.into()));
-										}
+									let outcome = with_transaction(
+										|| -> TransactionOutcome<DispatchResult> {
+											if let Err(e) =
+												<pallet_balances::Pallet<T> as Currency<
+													T::AccountId,
+												>>::transfer(
+													&pallet_account,
+													&account,
+													reward_balance,
+													ExistenceRequirement::KeepAlive,
+												) {
+												return TransactionOutcome::Rollback(Err(e.into()));
+											}
 
-										if let Err(e) = pallet_balances::Pallet::<T>::reserve(&account, reward_balance) {
-											return TransactionOutcome::Rollback(Err(e.into()));
-										}
+											if let Err(e) = pallet_balances::Pallet::<T>::reserve(
+												&account,
+												reward_balance,
+											) {
+												return TransactionOutcome::Rollback(Err(e.into()));
+											}
 
-										if let Err(e) = Self::try_push_reward_lock_strict(
-											&account,
-											RewardLock { amount: reward_balance, unlock_at },
-										) {
-											return TransactionOutcome::Rollback(Err(e));
-										}
+											if let Err(e) = Self::try_push_reward_lock_strict(
+												&account,
+												RewardLock { amount: reward_balance, unlock_at },
+											) {
+												return TransactionOutcome::Rollback(Err(e));
+											}
 
-										TransactionOutcome::Commit(Ok(()))
-									});
+											TransactionOutcome::Commit(Ok(()))
+										},
+									);
 
 									if outcome.is_ok() {
 										Self::deposit_event(Event::RewardDistributed {
@@ -1038,7 +1058,8 @@ pub mod pallet {
 											unlock_at,
 										});
 
-										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+										let mut records =
+											RewardsRecord::<T, I>::get(node_id.clone());
 										records.push(RewardsRecordDetails {
 											node_types: NodeType::GpuMiner,
 											weight,
@@ -1084,29 +1105,37 @@ pub mod pallet {
 									let reward_u128: u128 = reward.saturated_into();
 									let unlock_at = n.saturating_add(T::RewardLockBlocks::get());
 
-									let outcome = with_transaction(|| -> TransactionOutcome<DispatchResult> {
-										if let Err(e) = <pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
-											&pallet_account,
-											&account,
-											reward_balance,
-											ExistenceRequirement::KeepAlive,
-										) {
-											return TransactionOutcome::Rollback(Err(e.into()));
-										}
+									let outcome = with_transaction(
+										|| -> TransactionOutcome<DispatchResult> {
+											if let Err(e) =
+												<pallet_balances::Pallet<T> as Currency<
+													T::AccountId,
+												>>::transfer(
+													&pallet_account,
+													&account,
+													reward_balance,
+													ExistenceRequirement::KeepAlive,
+												) {
+												return TransactionOutcome::Rollback(Err(e.into()));
+											}
 
-										if let Err(e) = pallet_balances::Pallet::<T>::reserve(&account, reward_balance) {
-											return TransactionOutcome::Rollback(Err(e.into()));
-										}
+											if let Err(e) = pallet_balances::Pallet::<T>::reserve(
+												&account,
+												reward_balance,
+											) {
+												return TransactionOutcome::Rollback(Err(e.into()));
+											}
 
-										if let Err(e) = Self::try_push_reward_lock_strict(
-											&account,
-											RewardLock { amount: reward_balance, unlock_at },
-										) {
-											return TransactionOutcome::Rollback(Err(e));
-										}
+											if let Err(e) = Self::try_push_reward_lock_strict(
+												&account,
+												RewardLock { amount: reward_balance, unlock_at },
+											) {
+												return TransactionOutcome::Rollback(Err(e));
+											}
 
-										TransactionOutcome::Commit(Ok(()))
-									});
+											TransactionOutcome::Commit(Ok(()))
+										},
+									);
 
 									if outcome.is_ok() {
 										Self::deposit_event(Event::RewardDistributed {
@@ -1119,7 +1148,8 @@ pub mod pallet {
 											unlock_at,
 										});
 
-										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+										let mut records =
+											RewardsRecord::<T, I>::get(node_id.clone());
 										records.push(RewardsRecordDetails {
 											node_types: NodeType::StorageS3,
 											weight,
@@ -1164,29 +1194,37 @@ pub mod pallet {
 									let reward_u128: u128 = reward.saturated_into();
 									let unlock_at = n.saturating_add(T::RewardLockBlocks::get());
 
-									let outcome = with_transaction(|| -> TransactionOutcome<DispatchResult> {
-										if let Err(e) = <pallet_balances::Pallet<T> as Currency<T::AccountId>>::transfer(
-											&pallet_account,
-											&account,
-											reward_balance,
-											ExistenceRequirement::KeepAlive,
-										) {
-											return TransactionOutcome::Rollback(Err(e.into()));
-										}
+									let outcome = with_transaction(
+										|| -> TransactionOutcome<DispatchResult> {
+											if let Err(e) =
+												<pallet_balances::Pallet<T> as Currency<
+													T::AccountId,
+												>>::transfer(
+													&pallet_account,
+													&account,
+													reward_balance,
+													ExistenceRequirement::KeepAlive,
+												) {
+												return TransactionOutcome::Rollback(Err(e.into()));
+											}
 
-										if let Err(e) = pallet_balances::Pallet::<T>::reserve(&account, reward_balance) {
-											return TransactionOutcome::Rollback(Err(e.into()));
-										}
+											if let Err(e) = pallet_balances::Pallet::<T>::reserve(
+												&account,
+												reward_balance,
+											) {
+												return TransactionOutcome::Rollback(Err(e.into()));
+											}
 
-										if let Err(e) = Self::try_push_reward_lock_strict(
-											&account,
-											RewardLock { amount: reward_balance, unlock_at },
-										) {
-											return TransactionOutcome::Rollback(Err(e));
-										}
+											if let Err(e) = Self::try_push_reward_lock_strict(
+												&account,
+												RewardLock { amount: reward_balance, unlock_at },
+											) {
+												return TransactionOutcome::Rollback(Err(e));
+											}
 
-										TransactionOutcome::Commit(Ok(()))
-									});
+											TransactionOutcome::Commit(Ok(()))
+										},
+									);
 
 									if outcome.is_ok() {
 										Self::deposit_event(Event::RewardDistributed {
@@ -1199,7 +1237,8 @@ pub mod pallet {
 											unlock_at,
 										});
 
-										let mut records = RewardsRecord::<T, I>::get(node_id.clone());
+										let mut records =
+											RewardsRecord::<T, I>::get(node_id.clone());
 										records.push(RewardsRecordDetails {
 											node_types: NodeType::StorageMiner,
 											weight,

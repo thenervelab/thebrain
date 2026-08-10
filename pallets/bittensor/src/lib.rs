@@ -24,6 +24,7 @@ pub mod pallet {
 	use pallet_rankings::Pallet as RankingsPallet;
 	use pallet_registration::{NodeInfo, NodeType, Pallet as RegistrationPallet};
 	use pallet_utils::Pallet as UtilsPallet;
+	use scale_info::prelude::collections::BTreeMap;
 	use scale_info::prelude::string::String;
 	use serde_json::Value;
 	use sp_core::crypto::Ss58Codec;
@@ -35,7 +36,6 @@ pub mod pallet {
 		traits::Zero,
 		AccountId32,
 	};
-	use scale_info::prelude::collections::BTreeMap;
 	use sp_std::prelude::*;
 
 	#[pallet::config]
@@ -142,7 +142,8 @@ pub mod pallet {
 
 			let uid_zero_weight = WeightCalculation::uid_zero_weight::<T>();
 			// Update Bittensor UIDs
-			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> =
+				uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for uid in uids.iter() {
 				if uid.id == uid_zero {
 					let miner_ss58 = AccountId32::new(
@@ -261,7 +262,8 @@ pub mod pallet {
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> =
+				uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::StorageS3 {
 					continue;
@@ -310,8 +312,8 @@ pub mod pallet {
 				// Update Bittensor UIDs
 				if let Some(uid) = uid_map.get(&miner_ss58) {
 					all_uids_on_bittensor.push(uid.id);
-					all_weights_on_bittensor
-						.push(*storage_s3_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
+					all_weights_on_bittensor.push(*storage_s3_weights.last().unwrap_or(&0) as u16);
+					// Use the last calculated weight
 				}
 			}
 
@@ -339,7 +341,8 @@ pub mod pallet {
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> =
+				uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::Validator {
 					continue;
@@ -388,8 +391,8 @@ pub mod pallet {
 				// Update Bittensor UIDs
 				if let Some(uid) = uid_map.get(&miner_ss58) {
 					all_uids_on_bittensor.push(uid.id);
-					all_weights_on_bittensor
-						.push(*validator_weights.last().unwrap_or(&0) as u16); // Use the last calculated weight
+					all_weights_on_bittensor.push(*validator_weights.last().unwrap_or(&0) as u16);
+					// Use the last calculated weight
 				}
 			}
 
@@ -417,7 +420,8 @@ pub mod pallet {
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> =
+				uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::GpuMiner {
 					continue;
@@ -494,7 +498,8 @@ pub mod pallet {
 
 			// let geo_distribution: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
-			let uid_map: BTreeMap<String, &UID> = uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
+			let uid_map: BTreeMap<String, &UID> =
+				uids.iter().map(|uid| (uid.substrate_address.to_ss58check(), uid)).collect();
 			for miner in all_miners {
 				if miner.node_type != NodeType::ComputeMiner {
 					continue;
@@ -593,7 +598,7 @@ pub mod pallet {
 				storage_miners_node_types,
 				storage_uids,
 				storage_weights_on_bittensor,
-			) = Self::calculate_storage_miner_weights(&all_nodes,&uids);
+			) = Self::calculate_storage_miner_weights(&all_nodes, &uids);
 
 			let (
 				compute_weights,

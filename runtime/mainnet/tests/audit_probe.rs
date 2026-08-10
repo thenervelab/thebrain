@@ -6,7 +6,10 @@ use hippius_mainnet_runtime::{
 	AccountId, Arion, Balances, BlockNumber, Credits, Hippocampus, Marketplace, Runtime,
 	RuntimeOrigin, System,
 };
-use pallet_arion::{ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, MinerAccruals, MinerStats, MinerStatsUpdate};
+use pallet_arion::{
+	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, MinerAccruals, MinerStats,
+	MinerStatsUpdate,
+};
 use sp_core::crypto::Ss58Codec;
 use sp_runtime::{AccountId32, BuildStorage};
 
@@ -129,8 +132,12 @@ fn probe_requester_cap_is_per_call_not_lifetime() {
 		let _ = Balances::deposit_creating(&Hippocampus::account_id(), 100 * UNIT);
 		Hippocampus::add_requester(RuntimeOrigin::signed(admin()), requester.clone())
 			.expect("whitelist");
-		Hippocampus::set_requester_cap(RuntimeOrigin::signed(admin()), requester.clone(), 30 * UNIT)
-			.expect("cap at 30");
+		Hippocampus::set_requester_cap(
+			RuntimeOrigin::signed(admin()),
+			requester.clone(),
+			30 * UNIT,
+		)
+		.expect("cap at 30");
 
 		for _ in 0..3 {
 			Hippocampus::request_payment(&requester, &recipient, 50 * UNIT).expect("pay");

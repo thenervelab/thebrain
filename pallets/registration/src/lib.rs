@@ -22,11 +22,7 @@ pub mod pallet {
 	use frame_support::traits::Currency;
 	use frame_support::traits::ExistenceRequirement;
 	use frame_support::PalletId;
-	use frame_support::{
-		dispatch::DispatchResultWithPostInfo,
-		pallet_prelude::*,
-		traits::Get,
-	};
+	use frame_support::{dispatch::DispatchResultWithPostInfo, pallet_prelude::*, traits::Get};
 	use frame_system::{offchain::SendTransactionTypes, pallet_prelude::*};
 	use pallet_credits::Pallet as CreditsPallet;
 	use pallet_proxy::Pallet as ProxyPallet;
@@ -390,7 +386,7 @@ pub mod pallet {
 			}
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			let first_epoch_block = 38u32.into(); // hardcoded or derived
-			
+
 			// Use saturating_sub to prevent underflow
 			if _n >= first_epoch_block {
 				if (_n - first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
@@ -534,7 +530,7 @@ pub mod pallet {
 			);
 			ensure!(ch.genesis_hash == Self::genesis_hash_bytes(), Error::<T>::GenesisMismatch);
 			ensure!(ch.node_id_hash == Self::blake256(&node_id_hex), Error::<T>::ChallengeMismatch);
-	
+
 			let ch_hash = Self::blake256(&challenge_bytes);
 			ensure!(!UsedChallenges::<T>::contains_key(ch_hash), Error::<T>::ChallengeReused);
 
@@ -692,26 +688,29 @@ pub mod pallet {
 			ensure_root(origin)?;
 
 			// Try to mutate the node information if it exists
-			ColdkeyNodeRegistrationV2::<T>::try_mutate(&node_id, |node_info_opt| -> DispatchResult {
-				// Check if the node exists in the storage map
-				let node_info = node_info_opt.as_mut().ok_or(Error::<T>::NodeNotFound)?;
+			ColdkeyNodeRegistrationV2::<T>::try_mutate(
+				&node_id,
+				|node_info_opt| -> DispatchResult {
+					// Check if the node exists in the storage map
+					let node_info = node_info_opt.as_mut().ok_or(Error::<T>::NodeNotFound)?;
 
-				// Ensure the node is of type `miner`
-				if node_info.node_type != NodeType::StorageMiner {
-					return Err(Error::<T>::NotAminer.into());
-				}
+					// Ensure the node is of type `miner`
+					if node_info.node_type != NodeType::StorageMiner {
+						return Err(Error::<T>::NotAminer.into());
+					}
 
-				// Update the status to Degraded
-				node_info.status = Status::Degraded;
+					// Update the status to Degraded
+					node_info.status = Status::Degraded;
 
-				// Emit an event for the status update
-				Self::deposit_event(Event::NodeStatusUpdated {
-					node_id: node_id.clone(),
-					status: Status::Degraded,
-				});
+					// Emit an event for the status update
+					Self::deposit_event(Event::NodeStatusUpdated {
+						node_id: node_id.clone(),
+						status: Status::Degraded,
+					});
 
-				Ok(())
-			})
+					Ok(())
+				},
+			)
 		}
 
 		/// Sudo function to enable or disable fee charging
@@ -798,8 +797,8 @@ pub mod pallet {
 			);
 
 			// Retrieve the node info to check ownership
-			let node_info = Self::get_coldkey_node_info_v2(&node_id)
-				.ok_or(Error::<T>::NodeNotRegistered)?;
+			let node_info =
+				Self::get_coldkey_node_info_v2(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
 
 			// Ensure the caller is the owner of the node
 			ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
@@ -820,8 +819,8 @@ pub mod pallet {
 			let who = ensure_signed(origin)?;
 
 			// Retrieve the node information
-			let mut node_info =
-				ColdkeyNodeRegistrationV2::<T>::get(&node_id).ok_or(Error::<T>::NodeNotRegistered)?;
+			let mut node_info = ColdkeyNodeRegistrationV2::<T>::get(&node_id)
+				.ok_or(Error::<T>::NodeNotRegistered)?;
 
 			// Ensure the caller is the current owner
 			ensure!(node_info.owner == who.clone(), Error::<T>::NotNodeOwner);
@@ -830,8 +829,10 @@ pub mod pallet {
 			ensure!(!Self::is_account_banned(&new_owner), Error::<T>::AccountBanned);
 
 			// Ensure the new owner is not already registered with another node
-			ensure!(!Self::is_owner_node_registered(&new_owner), Error::<T>::OwnerAlreadyRegistered);
-
+			ensure!(
+				!Self::is_owner_node_registered(&new_owner),
+				Error::<T>::OwnerAlreadyRegistered
+			);
 
 			let old_owner = node_info.owner.clone();
 
@@ -872,7 +873,10 @@ pub mod pallet {
 			ensure!(user_requests_count <= max_requests_per_block, Error::<T>::TooManyRequests);
 
 			// Update user's storage requests count
-			ReportSubmissionCount::<T>::insert(node_info.node_id.clone(), user_requests_count.saturating_add(1));
+			ReportSubmissionCount::<T>::insert(
+				node_info.node_id.clone(),
+				user_requests_count.saturating_add(1),
+			);
 
 			let current_block = <frame_system::Pallet<T>>::block_number();
 			let mut existing_reports = TemporaryDeregistrationReports::<T>::get(&main_account);
@@ -970,8 +974,7 @@ pub mod pallet {
 		fn get_coldkey_node_info_v2(
 			node_id: &Vec<u8>,
 		) -> Option<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
-			ColdkeyNodeRegistrationV2::<T>::get(node_id)
-				.map(Self::coldkey_lite_to_node_info)
+			ColdkeyNodeRegistrationV2::<T>::get(node_id).map(Self::coldkey_lite_to_node_info)
 		}
 
 		fn register_coldkey_node(
@@ -1133,7 +1136,8 @@ pub mod pallet {
 							// Check for uniqueness
 							if !seen_node_ids.contains(&node_id) {
 								seen_node_ids.push(node_id.clone());
-								active_storage_miners.push(Self::coldkey_lite_to_node_info(node_info));
+								active_storage_miners
+									.push(Self::coldkey_lite_to_node_info(node_info));
 							}
 						}
 					}
@@ -1233,7 +1237,7 @@ pub mod pallet {
 		) -> Vec<NodeInfo<BlockNumberFor<T>, T::AccountId>> {
 			// Vector to store filtered node info
 			let mut active_nodes = Vec::new();
-			let mut seen_node_ids = Vec::new(); 
+			let mut seen_node_ids = Vec::new();
 
 			// Iterate over all registered nodes in the ColdkeyNodeRegistrationV2 storage map
 			for (node_id, node_info_opt) in ColdkeyNodeRegistrationV2::<T>::iter() {
@@ -1329,7 +1333,7 @@ pub mod pallet {
 				if coldkey_info.status != Status::Degraded {
 					return Some(coldkey_info);
 				}
-			} 
+			}
 			None
 		}
 
@@ -1408,20 +1412,19 @@ pub mod pallet {
 				if reports.is_empty() {
 					continue;
 				}
-			
+
 				// One vote per validator owner (normalize proxy keys for legacy rows too).
 				let unique_validators: sp_std::collections::btree_set::BTreeSet<T::AccountId> =
 					reports
 						.iter()
 						.map(|(validator_id, _)| {
-							Self::resolve_deregistration_reporter(validator_id).unwrap_or_else(
-								|_| validator_id.clone(),
-							)
+							Self::resolve_deregistration_reporter(validator_id)
+								.unwrap_or_else(|_| validator_id.clone())
 						})
 						.collect();
-			
+
 				let agreeing_validators = unique_validators.len() as u32;
-			
+
 				log::info!(
 					"Node: {:?}, Total Reports: {}, Agreeing Validators: {}, Threshold: {}",
 					node_id,
@@ -1429,7 +1432,7 @@ pub mod pallet {
 					agreeing_validators,
 					threshold
 				);
-			
+
 				if agreeing_validators >= threshold {
 					// Consensus reached, unregister the node
 					Self::do_unregister_main_node(node_id.clone());
@@ -1546,7 +1549,10 @@ pub mod pallet {
 			// T::IpfsInfo::remove_miner_profile_info(node_id.clone());
 
 			// Store the deregistration time
-			NodeLastDeregisteredAt::<T>::insert(&node_id, <frame_system::Pallet<T>>::block_number());
+			NodeLastDeregisteredAt::<T>::insert(
+				&node_id,
+				<frame_system::Pallet<T>>::block_number(),
+			);
 
 			Self::deposit_event(Event::NodeUnregistered { node_id });
 		}

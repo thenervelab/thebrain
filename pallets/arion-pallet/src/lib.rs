@@ -1626,8 +1626,9 @@ pub mod pallet {
 					MinerAccruals::<T>::mutate(uid, |acc| {
 						let mut a =
 							acc.take().unwrap_or(MinerAccrual { byte_blocks: 0, last_block: now });
-						a.byte_blocks =
-							ByteBlocks::new(a.byte_blocks).saturating_add(ByteBlocks::new(bb)).get();
+						a.byte_blocks = ByteBlocks::new(a.byte_blocks)
+							.saturating_add(ByteBlocks::new(bb))
+							.get();
 						a.last_block = now;
 						*acc = Some(a);
 					});
@@ -1651,7 +1652,6 @@ pub mod pallet {
 			ChildMinerUid::<T>::remove(child);
 			accrued
 		}
-
 
 		/// Uids that still correspond to **active** children (registration + optional CRUSH map).
 		fn collect_protected_miner_uids() -> Vec<u32> {
@@ -1767,14 +1767,16 @@ pub mod pallet {
 					continue;
 				}
 				Self::accrue_miner_bytes(uid, now);
-				let byte_blocks_snapshot = MinerAccruals::<T>::get(uid)
-					.map(|a| a.byte_blocks)
-					.unwrap_or(0);
+				let byte_blocks_snapshot =
+					MinerAccruals::<T>::get(uid).map(|a| a.byte_blocks).unwrap_or(0);
 				if byte_blocks_snapshot == 0 {
 					continue;
 				}
-				let tokens =
-					payment_math::tokens_for(ByteBlocks::new(byte_blocks_snapshot), price, token_price);
+				let tokens = payment_math::tokens_for(
+					ByteBlocks::new(byte_blocks_snapshot),
+					price,
+					token_price,
+				);
 				if tokens.is_zero() {
 					// Dust: preserve byte_blocks for next settlement
 					continue;
@@ -2574,8 +2576,7 @@ pub mod pallet {
 			// not run. A node that is not yet mapped — the normal case, since
 			// the validator will not admit an unregistered node — is bound by
 			// `submit_crush_map` when the map that lists it is published.
-			if let Some(uid) =
-				Self::find_uid_for_node_in_epoch(CurrentEpoch::<T>::get(), &node_id)
+			if let Some(uid) = Self::find_uid_for_node_in_epoch(CurrentEpoch::<T>::get(), &node_id)
 			{
 				// Only bind a uid nobody holds. If a stale child still holds it,
 				// leave the conflict for `submit_crush_map` to resolve against

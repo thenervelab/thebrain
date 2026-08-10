@@ -78,8 +78,7 @@ fn pay_storage_miners_with_empty_ranking() {
 		.is_ok());
 
 		// With no ranked miners, the call should fail.
-		assert!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000)
-			.is_err());
+		assert!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000).is_err());
 		// Emission is untouched.
 		assert_eq!(Hippocampus::emission_available(), 100_000);
 	});
