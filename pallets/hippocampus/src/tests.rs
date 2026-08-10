@@ -263,3 +263,120 @@ fn pay_storage_miners_distributes_pro_rata() {
 		);
 	});
 }
+
+#[test]
+fn pay_storage_miners_requires_admin_origin() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
+			sp_runtime::DispatchError::BadOrigin
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_rejects_zero_amount() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 0),
+			Error::<Test>::ZeroAmount
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_respects_distribution_switch() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), false));
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Error::<Test>::DistributionDisabled
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_cannot_spend_other_compartments() {
+	new_test_ext().execute_with(|| {
+		// A fat bank funded by everything except emission pays nothing.
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 1_000, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::MarketplaceRevenue
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Error::<Test>::InsufficientEmissionFunds
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_cannot_overdraw_the_bank() {
+	new_test_ext().execute_with(|| {
+		// Compartment says 1_000 but another consumer already drained the
+		// account below that — reject rather than pay partially.
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), bob()));
+		assert_ok!(Hippocampus::request_payment(&bob(), &charlie(), 600));
+		set_ranked_miners(vec![(dave(), 1)]);
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 1_000),
+			Error::<Test>::InsufficientBankBalance
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_rejects_empty_or_zero_weight_ranking() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Error::<Test>::NoEligibleMiners
+		);
+		set_ranked_miners(vec![(charlie(), 0), (dave(), 0)]);
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Error::<Test>::NoEligibleMiners
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_bounds_the_miner_list() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		// MaxMinersPerPayout is 16 in the mock; 17 entries must reject.
+		let miners: Vec<_> = (1u8..=17)
+			.map(|i| (sp_runtime::AccountId32::new([i; 32]).into(), 1u16))
+			.collect();
+		set_ranked_miners(miners);
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Error::<Test>::TooManyMiners
+		);
+	});
+}
