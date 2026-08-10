@@ -10,8 +10,12 @@
 //! - `request_payment(requester, dest, amount)`: internal API (not an extrinsic) —
 //!   only whitelisted requester accounts (e.g. the Arion pallet sovereign account)
 //!   can pull funds. Pays out at most the available balance and returns the amount
-//!   actually paid; the caller is responsible for handling shortfalls.
+//!   actually paid; the caller is responsible for handling shortfalls. Fails with
+//!   `DistributionDisabled` while the global switch is off.
 //! - `add_requester` / `remove_requester`: admin-gated whitelist management.
+//! - `set_distribution_enabled`: admin-gated global switch. While off, every
+//!   `request_payment` is rejected and no funds leave the bank; deposits are
+//!   unaffected.
 
 #[cfg(test)]
 mod mock;
@@ -85,17 +89,13 @@ pub mod pallet {
 		Other,
 	}
 
-	/// Whether distributions from the bank are enabled (defaults to true).
+	/// Global payout switch (defaults to enabled). While `false`,
+	/// `request_payment` rejects every caller with
+	/// [`Error::DistributionDisabled`]; deposits are unaffected.
 	#[pallet::storage]
 	#[pallet::getter(fn distribution_enabled)]
-	pub type DistributionEnabled<T: Config> = StorageValue<_, bool, ValueQuery, DistributionEnabledDefault>;
-
-	pub struct DistributionEnabledDefault;
-	impl frame_support::pallet_prelude::Get<bool> for DistributionEnabledDefault {
-		fn get() -> bool {
-			true
-		}
-	}
+	pub type DistributionEnabled<T: Config> =
+		StorageValue<_, bool, ValueQuery, frame_support::traits::ConstBool<true>>;
 
 	/// Accounts allowed to call `request_payment`.
 	#[pallet::storage]
@@ -257,6 +257,10 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// Globally enable or disable bank payouts. While disabled,
+		/// `request_payment` rejects every caller with
+		/// [`Error::DistributionDisabled`]; each caller decides how to handle
+		/// the rejection (retry, arrears, skip). Deposits are unaffected.
 		#[pallet::call_index(5)]
 		#[pallet::weight(T::DbWeight::get().writes(1))]
 		pub fn set_distribution_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
@@ -328,15 +332,17 @@ pub mod pallet {
 		/// whitelisted `requester` (typically another pallet's sovereign
 		/// account). Never overdraws: pays `min(amount, free - ED)` and returns
 		/// the amount actually paid so the caller can account for the shortfall.
+		///
+		/// Fails with [`Error::DistributionDisabled`] while the global
+		/// [`DistributionEnabled`] switch is off — checked before the whitelist,
+		/// so no funds move and no ledger entry is written regardless of the
+		/// requester's standing.
 		pub fn request_payment(
 			requester: &T::AccountId,
 			dest: &T::AccountId,
 			amount: BalanceOf<T>,
 		) -> Result<BalanceOf<T>, DispatchError> {
-			ensure!(
-				DistributionEnabled::<T>::get(),
-				Error::<T>::DistributionDisabled
-			);
+			ensure!(DistributionEnabled::<T>::get(), Error::<T>::DistributionDisabled);
 			ensure!(
 				WhitelistedRequesters::<T>::contains_key(requester),
 				Error::<T>::RequesterNotWhitelisted
