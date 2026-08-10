@@ -1,6 +1,6 @@
 use crate::{
-	mock::*, DepositType, EmissionPaidOut, Error, Event, TotalDeposited, TotalPaidByRequester,
-	TotalPaidOut,
+	mock::*, DepositType, EmissionPaidOut, Error, Event, MinerPaymentWhitelist, TotalDeposited,
+	TotalPaidByRequester, TotalPaidOut,
 };
 use frame_support::assert_noop;
 use frame_support::assert_ok;
@@ -268,7 +268,7 @@ fn pay_storage_miners_distributes_pro_rata() {
 }
 
 #[test]
-fn pay_storage_miners_requires_admin_origin() {
+fn pay_storage_miners_requires_whitelisted_caller() {
 	new_test_ext().execute_with(|| {
 		// Non-whitelisted caller should fail
 		assert_noop!(
@@ -502,6 +502,47 @@ fn pay_storage_miners_respects_24hour_cap() {
 			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1),
 			Error::<Test>::InsufficientEmissionFunds
 		);
+	});
+}
+
+#[test]
+fn add_miner_payment_caller_works() {
+	new_test_ext().execute_with(|| {
+		let caller = alice();
+		assert!(!MinerPaymentWhitelist::<Test>::contains_key(&caller));
+
+		assert_ok!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::root(), caller.clone()));
+		assert!(MinerPaymentWhitelist::<Test>::contains_key(&caller));
+
+		System::assert_last_event(Event::MinerPaymentCallerAdded { who: caller }.into());
+	});
+}
+
+#[test]
+fn add_miner_payment_caller_requires_admin() {
+	new_test_ext().execute_with(|| {
+		let caller = alice();
+		assert_noop!(
+			Hippocampus::add_miner_payment_caller(RuntimeOrigin::signed(caller.clone()), caller),
+			sp_runtime::DispatchError::BadOrigin
+		);
+	});
+}
+
+#[test]
+fn remove_miner_payment_caller_works() {
+	new_test_ext().execute_with(|| {
+		let caller = alice();
+		assert_ok!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::root(), caller.clone()));
+		assert!(MinerPaymentWhitelist::<Test>::contains_key(&caller));
+
+		assert_ok!(Hippocampus::remove_miner_payment_caller(
+			RuntimeOrigin::root(),
+			caller.clone()
+		));
+		assert!(!MinerPaymentWhitelist::<Test>::contains_key(&caller));
+
+		System::assert_last_event(Event::MinerPaymentCallerRemoved { who: caller }.into());
 	});
 }
 
