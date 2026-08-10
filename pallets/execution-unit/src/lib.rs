@@ -412,18 +412,17 @@ pub mod pallet {
 			let max_requests_per_block =
 				<T as pallet::Config>::MaxOffchainHardwareSubmitRequestsPerPeriod::get();
 			let user_requests_count = HardwareRequestsCount::<T>::get(&node_id);
-			ensure!(user_requests_count.saturating_add(1) <= max_requests_per_block, Error::<T>::TooManyRequests);
-
-			// Update user's storage requests count
-			let new_count = user_requests_count
-				.checked_add(1)
-				.ok_or(Error::<T>::ArithmeticOverflow)?;
-			
 			ensure!(
-				new_count <= max_requests_per_block.into(),
+				user_requests_count.saturating_add(1) <= max_requests_per_block,
 				Error::<T>::TooManyRequests
 			);
-			
+
+			// Update user's storage requests count
+			let new_count =
+				user_requests_count.checked_add(1).ok_or(Error::<T>::ArithmeticOverflow)?;
+
+			ensure!(new_count <= max_requests_per_block.into(), Error::<T>::TooManyRequests);
+
 			HardwareRequestsCount::<T>::insert(&node_id, new_count);
 
 			// Update last request block
@@ -563,7 +562,10 @@ pub mod pallet {
 			// Rate limit: maximum storage requests per block per user
 			let max_requests_per_block = <T as pallet::Config>::MaxOffchainRequestsPerPeriod::get();
 			let user_requests_count = RequestsCount::<T>::get(&node_id);
-			ensure!(user_requests_count.saturating_add(1) <= max_requests_per_block, Error::<T>::TooManyRequests);
+			ensure!(
+				user_requests_count.saturating_add(1) <= max_requests_per_block,
+				Error::<T>::TooManyRequests
+			);
 
 			// Update user's storage requests count
 			RequestsCount::<T>::insert(&node_id, user_requests_count.saturating_add(1));
@@ -581,12 +583,15 @@ pub mod pallet {
 
 			metrics.latency_ms = latency_ms;
 			metrics.total_latency_ms = metrics.total_latency_ms.saturating_add(latency_ms);
-			metrics.total_times_latency_checked = metrics.total_times_latency_checked.saturating_add(1);
+			metrics.total_times_latency_checked =
+				metrics.total_times_latency_checked.saturating_add(1);
 			metrics.avg_response_time_ms =
 				metrics.total_latency_ms / metrics.total_times_latency_checked;
 			metrics.peer_count = peer_count;
-			metrics.failed_challenges_count = metrics.failed_challenges_count.saturating_add(failed_challenges_count);
-			metrics.successful_challenges = metrics.successful_challenges.saturating_add(successful_challenges);
+			metrics.failed_challenges_count =
+				metrics.failed_challenges_count.saturating_add(failed_challenges_count);
+			metrics.successful_challenges =
+				metrics.successful_challenges.saturating_add(successful_challenges);
 			metrics.total_challenges = metrics.total_challenges.saturating_add(total_challenges);
 			if uptime_minutes != 0 && uptime_minutes != u32::MAX {
 				metrics.uptime_minutes = uptime_minutes;
@@ -857,7 +862,7 @@ pub mod pallet {
 				.and_then(|v| v.checked_mul(1024))
 				.ok_or(Error::<T>::ArithmeticOverflow.into())
 		}
-		
+
 		pub fn call_update_metrics_data(
 			node_id: Vec<u8>,
 			storage_proof_time_ms: u32,
@@ -1136,7 +1141,9 @@ pub mod pallet {
 				// update storage request and remove files
 				if !is_registered {
 					// Unregister family first; if this fails, don't proceed (prevents orphaned family state).
-					if let Err(e) = pallet_arion::Pallet::<T>::deregister_family(miner.owner.clone()) {
+					if let Err(e) =
+						pallet_arion::Pallet::<T>::deregister_family(miner.owner.clone())
+					{
 						log::error!(
 							target: "runtime::execution_unit",
 							"❌ Failed to deregister family for owner {:?}: {:?}",

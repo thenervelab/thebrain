@@ -81,6 +81,7 @@ pallet-im-online = { workspace = true }
 
 pallet-execution-unit = { workspace = true }
 pallet-babe = { default-features = false, workspace = true }
+pallet-arion = { workspace = true, default-features = false }
 pallet-marketplace = { workspace = true, default-features = false }
 pallet-session = { workspace = true }
 pallet-timestamp = { default-features = false, workspace = true }

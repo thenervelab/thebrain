@@ -1,0 +1,19 @@
+[package]
+name = "payment-math"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+description = "Typed, tested money math for the Hippius runtime"
+
+[dependencies]
+primitive-types = { workspace = true }
+
+[features]
+default = ["std"]
+std = ["primitive-types/std"]
+
+[dev-dependencies]
+proptest = "1.11.0"

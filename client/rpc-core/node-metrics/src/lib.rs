@@ -92,14 +92,8 @@ pub trait NodeMetricsApi {
 	#[method(name = "get_referred_users")]
 	fn get_referred_users(&self, account_id: AccountId32) -> RpcResult<Vec<AccountId32>>;
 
-	#[method(name = "get_referral_rewards")]
-	fn get_referral_rewards(&self, account_id: AccountId32) -> RpcResult<u128>;
-
 	#[method(name = "total_referral_codes")]
 	fn total_referral_codes(&self) -> RpcResult<u32>;
-
-	#[method(name = "total_referral_rewards")]
-	fn total_referral_rewards(&self) -> RpcResult<u128>;
 
 	#[method(name = "get_referral_codes")]
 	fn get_referral_codes(&self, account_id: AccountId32) -> RpcResult<Vec<Vec<u8>>>;

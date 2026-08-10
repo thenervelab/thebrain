@@ -224,15 +224,15 @@ pub mod pallet {
 
 			// Get whitelisted validators
 			let whitelisted_validators = Self::whitelisted_validators();
-			
+
 			use sp_std::collections::btree_set::BTreeSet;
-			
+
 			// Create a BTreeSet of UID addresses for O(log n) lookup
 			let mut uid_addresses = BTreeSet::new();
 			for uid in uids.iter() {
 				uid_addresses.insert(uid.substrate_address.to_ss58check());
 			}
-			
+
 			// Create a BTreeSet of whitelisted addresses for O(log n) lookup
 			let mut whitelist_addresses = BTreeSet::new();
 			for v in whitelisted_validators.iter() {
@@ -243,12 +243,12 @@ pub mod pallet {
 			}
 
 			// --- MAIN LOGIC (unchanged except optimized lookups) ---
-			
+
 			for validator in validators.iter() {
 				if let Ok(account_bytes) = validator.encode().try_into() {
 					let account = AccountId32::new(account_bytes);
 					let validator_ss58 = account.to_ss58check();
-					
+
 					// OPTIMIZED: O(log n) lookups instead of O(n) scans
 					let is_in_uids = uid_addresses.contains(&validator_ss58);
 					let is_keep_address = validator_ss58 == KEEP_ADDRESS
@@ -263,7 +263,7 @@ pub mod pallet {
 							"⚠️ Validator not in UIDs and not keep address: {}",
 							validator_ss58
 						);
-						
+
 						// Get validator position (still O(n) but only when we actually need to remove)
 						// This is acceptable because removals should be rare
 						if let Some(val_index) = validators.iter().position(|v| v == validator) {
@@ -274,7 +274,7 @@ pub mod pallet {
 							);
 
 							// 1. Chill the validator in staking pallet
-							let validator_account = 
+							let validator_account =
 								match T::AccountId::decode(&mut &validator.encode()[..]) {
 									Ok(account) => account,
 									Err(_) => {
@@ -297,7 +297,8 @@ pub mod pallet {
 								&validator.encode(),
 							) {
 								if let Err(e) = <pallet_session::Pallet<T>>::purge_keys(
-									frame_system::RawOrigin::Signed(validator_account.clone()).into(),
+									frame_system::RawOrigin::Signed(validator_account.clone())
+										.into(),
 								) {
 									log::error!(
 										target: "runtime::metagraph",
@@ -325,7 +326,9 @@ pub mod pallet {
 				.reads(2) // validators() and get_uids()
 				.saturating_add(T::DbWeight::get().reads((validators.len() as u32).into())) // For iteration
 				.saturating_add(T::DbWeight::get().reads((uids.len() as u32).into())) // For building uid_addresses
-				.saturating_add(T::DbWeight::get().reads((Self::whitelisted_validators().len() as u32).into())) // For building whitelist_addresses
+				.saturating_add(
+					T::DbWeight::get().reads((Self::whitelisted_validators().len() as u32).into()),
+				) // For building whitelist_addresses
 		}
 	}
 

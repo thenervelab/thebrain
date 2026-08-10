@@ -39,7 +39,7 @@ Validator observes miner nodes
 +-------------------------------------+
 | Layer 3: Pool Economics             |  pallets/execution-unit
 | Burn % splits 65,535 budget into    |
-| miners_pool + uid_zero_pool         |
+| miners_pool + uid_238_pool         |
 +-------------------------------------+
          |
          v
@@ -217,26 +217,20 @@ Even if a family's raw weight jumps from 0 to 50,000, the on-chain `FamilyWeight
 
 [`pool_context()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L32)
 
-The total weight budget is `MAX_SCORE = 65,535`. This budget is split between miners and the validator (UID 0) based on a dynamically computed **burn percentage**.
+The total weight budget is `MAX_SCORE = 65,535`. This budget is split between miners and the validator (UID 238) with a **fixed distribution**:
 
-### Burn Percentage Formula
-
-```
-storage_gb      = total_network_storage / 1,073,741,824
-cost            = storage_gb * price_per_gb              (in tokens)
-emissions       = alpha_price * 50                       (EMISSION_PERIOD)
-burn_number     = max(0, emissions - cost)
-burn_percentage = burn_number / emissions                (defaults to 0.2 if emissions = 0)
-```
-
-### Pool Split
+### Pool Split (Fixed)
 
 ```
-uid_zero_pool = 65,535 * burn_percentage      (goes to validator / UID 0)
-miners_pool   = 65,535 - uid_zero_pool         (distributed among miners)
+miners_pool   = 65,535 * 0.01           (1% distributed among miners)
+uid_238_pool  = 65,535 * 0.99           (99% goes to validator / UID 238)
 ```
 
-**What this means for miners**: When the network stores more data (higher cost relative to emissions), the burn percentage decreases, giving miners a larger share of the weight pool. When emissions far exceed storage cost, more weight goes to the validator.
+Or in absolute terms:
+- `miners_pool = ~655` weight units
+- `uid_238_pool = ~64,880` weight units
+
+**What this means for miners**: The validator (UID 238) receives 99% of the total weight budget, while miner payouts are allocated 1% of the budget proportionally by their Arion family weight.
 
 ### Constants
 
@@ -292,14 +286,14 @@ If a miner's last heartbeat block is older than the offline buffer, the weight i
 
 For S3, GPU, compute, and validator types: if registered for fewer than 1,000 blocks, the weight is reduced by 80% (multiplied by 0.2, minimum weight of 1). This grace period is currently disabled for storage miners.
 
-### UID 0 (Validator) Weight
+### UID 238 (Validator) Weight
 
-[`uid_zero_weight()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L147)
+[`uid_238_weight()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L147)
 
-The validator receives the `uid_zero_pool` weight from Layer 3. This is capped so the total of all weights (miners + validator) does not exceed 65,535:
+The validator receives the `uid_238_pool` weight from Layer 3. This is capped so the total of all weights (miners + validator) does not exceed 65,535:
 
 ```
-final_uid_zero = min(uid_zero_weight, 65535 - sum_of_all_miner_weights)
+final_238_zero = min(uid_238_weight, 65535 - sum_of_all_miner_weights)
 ```
 
 [Capping logic](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/bittensor/src/lib.rs#L246)
@@ -438,7 +432,7 @@ The optimal strategy is a few high-quality nodes rather than many low-quality on
 | **Permille** | Parts per thousand (1000 = 100%) |
 | **EMA** | Exponential Moving Average -- smoothing technique that blends previous and current values |
 | **CRUSH** | Controlled Replication Under Scalable Hashing -- the placement algorithm for data shards |
-| **UID 0** | The validator account in the Bittensor subnet; receives the burn-percentage portion of weights |
+| **UID 238** | The validator account in the Bittensor subnet; receives the burn-percentage portion of weights |
 | **MAX_SCORE** | 65,535 (u16 max) -- the total weight budget per cycle |
 | **Era** | Reward distribution period (every 3,600 blocks = 6 hours) |
 
@@ -450,7 +444,7 @@ The optimal strategy is a few high-quality nodes rather than many low-quality on
 |-----------|------|---------------|
 | Node quality scoring | [`pallets/arion-pallet/src/lib.rs`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/arion-pallet/src/lib.rs) | [`compute_node_weight_from_quality()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/arion-pallet/src/lib.rs#L1582), [`log2_fixed_u128()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/arion-pallet/src/lib.rs#L1558) |
 | Family aggregation | [`pallets/arion-pallet/src/lib.rs`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/arion-pallet/src/lib.rs) | [`compute_family_weight_from_nodes()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/arion-pallet/src/lib.rs#L1489), [`ema_permille_u16()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/arion-pallet/src/lib.rs#L1479), [`apply_node_weights_and_recompute()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/arion-pallet/src/lib.rs#L1618) |
-| Pool economics | [`pallets/execution-unit/src/weight_calculation.rs`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs) | [`pool_context()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L32), [`calculate_weight()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L82), [`uid_zero_weight()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L147) |
+| Pool economics | [`pallets/execution-unit/src/weight_calculation.rs`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs) | [`pool_context()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L32), [`calculate_weight()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L82), [`uid_238_weight()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L147) |
 | Weight orchestration | [`pallets/bittensor/src/lib.rs`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/bittensor/src/lib.rs) | [`calculate_weights_for_nodes()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/bittensor/src/lib.rs#L631), [`calculate_storage_miner_weights()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/bittensor/src/lib.rs#L125) |
 | Rankings & rewards | [`pallets/ranking/src/lib.rs`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/ranking/src/lib.rs) | [`do_update_rankings()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/ranking/src/lib.rs#L396), [`on_initialize()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/ranking/src/lib.rs#L719) |
 | Runtime config | [`runtime/mainnet/src/lib.rs`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/runtime/mainnet/src/lib.rs#L294) | Parameter declarations (lines 294--320, 723) |

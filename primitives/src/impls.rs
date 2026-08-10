@@ -63,3 +63,35 @@ macro_rules! impl_deal_with_fees {
 		}
 	};
 }
+
+#[macro_export]
+macro_rules! impl_hippocampus_fees {
+	() => {
+		/// Routes all transaction fees to the hippocampus (bank) pallet account
+		/// and records them as DepositType::Fees in the bank's ledger.
+		pub struct HippocampusFees<R>(sp_std::marker::PhantomData<R>);
+		impl<R> OnUnbalanced<NegativeImbalance<R>> for HippocampusFees<R>
+		where
+			R: pallet_balances::Config + pallet_hippocampus::Config + frame_system::Config,
+			<R as frame_system::Config>::RuntimeEvent: From<pallet_balances::Event<R>>,
+			<R as pallet_hippocampus::Config>::Currency: frame_support::traits::Currency<
+				<R as frame_system::Config>::AccountId,
+				Balance = <R as pallet_balances::Config>::Balance,
+			>,
+		{
+			fn on_nonzero_unbalanced(amount: NegativeImbalance<R>) {
+				use sp_runtime::traits::AccountIdConversion;
+
+				let fee_amount = amount.peek();
+				let hippocampus_account =
+					<R as pallet_hippocampus::Config>::PalletId::get().into_account_truncating();
+
+				// Resolve the imbalance to the bank account
+				<pallet_balances::Pallet<R>>::resolve_creating(&hippocampus_account, amount);
+
+				// Record fees in the bank's deposit ledger with event
+				pallet_hippocampus::Pallet::<R>::record_fee_deposit(fee_amount);
+			}
+		}
+	};
+}

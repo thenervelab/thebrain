@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 use sp_api::impl_runtime_apis;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata, H160, H256, U256};
 use sp_genesis_builder::PresetId;
-use sp_runtime::traits::{ConstU64, AccountIdConversion};
+use sp_runtime::traits::{AccountIdConversion, ConstU64};
 use sp_runtime::SaturatedConversion;
 use sp_runtime::{
 	create_runtime_str,
@@ -113,6 +113,81 @@ impl frame_support::traits::SortedMembers<AccountId> for ArionAdminMembers {
 			AccountId32::from_ss58check("5CVXqxb7mhFTtZVw5BJ8M2ujND9PFymSDxF8bkod6Sm4XJTW")
 				.expect("Invalid SS58 address");
 		vec![account]
+	}
+}
+
+/// Adapter: arion pulls miner-payment funds from the bank pallet.
+/// The arion pallet account must be whitelisted via `bank.add_requester`.
+pub struct ArionPayoutSource;
+impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
+	fn request_payment(requester: &AccountId, dest: &AccountId, amount: Balance) -> Balance {
+		match pallet_hippocampus::Pallet::<Runtime>::request_payment(requester, dest, amount) {
+			Ok(paid) => paid,
+			Err(e) => {
+				// A rejection here (e.g. requester not whitelisted — a manual
+				// post-upgrade setup step) must be diagnosable, not silent.
+				log::warn!(
+					target: "runtime::arion",
+					"bank rejected miner payment request from {:?}: {:?}",
+					requester,
+					e
+				);
+				0
+			},
+		}
+	}
+
+	fn available() -> Balance {
+		// Compartmentalization: the alpha backing still owed to the ranking /
+		// marketplace pots — and chargeback refunds still owed back to the
+		// sudo account — and the emission compartment reserved for ranking-based
+		// `pay_storage_miners` — is not spendable by the miner settlement: a runaway
+		// miner due (bad stats, bad price, compromised authority key) can at
+		// worst drain the miner budget, never funds owed to someone else.
+		pallet_hippocampus::Pallet::<Runtime>::available_for_payout()
+			.saturating_sub(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get())
+			.saturating_sub(pallet_marketplace::PendingSudoRefunds::<Runtime>::get())
+			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::emission_available())
+	}
+}
+
+/// Adapter: `pay_storage_miners` reads the storage-miner ranking
+/// (`RankingStorage`, instance 1) and pays each node's registered owner.
+pub struct StorageMinerRankingSource;
+impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingSource {
+	fn active_storage_miners() -> Vec<(AccountId, u16)> {
+		// Get uid 238's account if it exists
+		let uid_238_account =
+			pallet_metagraph::Pallet::<Runtime>::get_uid_item(238).map(|uid| uid.substrate_address);
+
+		pallet_rankings::Pallet::<Runtime>::get_ranked_list()
+			.into_iter()
+			.filter(|node| {
+				node.is_active && node.node_type == pallet_registration::NodeType::StorageMiner
+			})
+			.filter_map(|node| {
+				pallet_registration::Pallet::<Runtime>::get_registered_node(node.node_id.clone())
+					.ok()
+					.map(|info| (info.owner, node.weight))
+			})
+			// Filter out uid 238's account (already filtered to StorageMiner type by ranking)
+			.filter(|(owner, _)| {
+				if let Some(uid_238_acc) = &uid_238_account {
+					owner != uid_238_acc
+				} else {
+					true
+				}
+			})
+			.collect()
+	}
+}
+
+/// Adapter: token price in USD (fixed-point 18 decimals) from the credits
+/// pallet alpha price feed.
+pub struct AlphaTokenPriceUsd;
+impl frame_support::traits::Get<u128> for AlphaTokenPriceUsd {
+	fn get() -> u128 {
+		pallet_credits::Pallet::<Runtime>::alpha_price()
 	}
 }
 
@@ -167,6 +242,31 @@ impl pallet_arion::Config for Runtime {
 	type IntegrityFailPenalty = IntegrityFailPenalty;
 	type MinerStatsPruneInterval = ArionMinerStatsPruneInterval;
 	type MinerStatsPruneMaxScanPerBlock = ArionMinerStatsPruneMaxScanPerBlock;
+	type PalletId = ArionPalletId;
+	type PayoutSource = ArionPayoutSource;
+	type Staking = Staking;
+	type TokenPriceUsd = AlphaTokenPriceUsd;
+	type SettlementInterval = ArionSettlementInterval;
+}
+
+parameter_types! {
+	pub const HippocampusPalletId: PalletId = PalletId(*b"hipocamp");
+	/// Miner payment settlement interval (~24h at 6s/block). `0` = disabled.
+	pub const ArionSettlementInterval: BlockNumber = 14_400;
+	pub const BlocksPer24Hours: BlockNumber = 14_400; // ~24 hours at 6-second blocks
+	pub const Max24HourMinerPayout: Balance = 1_500_000_000_000_000_000_000; // 1500 alpha (18 decimals)
+}
+
+impl pallet_hippocampus::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type Currency = Balances;
+	type PalletId = HippocampusPalletId;
+	type AdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
+	type MinerRanking = StorageMinerRankingSource;
+	type MaxMinersPerPayout = ConstU32<512>;
+	type BlocksPer24Hours = BlocksPer24Hours;
+	type Max24HourMinerPayout = Max24HourMinerPayout;
+	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
 }
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -248,20 +348,21 @@ pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
 		allowed_slots: sp_consensus_babe::AllowedSlots::PrimaryAndSecondaryPlainSlots,
 	};
 
-
 /// This runtime version.
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9195,
+	spec_version: 9198,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
-	transaction_version: 1,
+	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
+	// argument, so previously-encoded calls no longer decode.
+	transaction_version: 2,
 	state_version: 0,
 };
- 
+
 impl pallet_registration::ProxyTypeCompat for ProxyType {
 	fn is_non_transfer(&self) -> bool {
 		matches!(self, ProxyType::NonTransfer)
@@ -452,7 +553,7 @@ parameter_types! {
 impl pallet_transaction_payment::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	#[allow(deprecated)]
-	type OnChargeTransaction = CurrencyAdapter<Balances, impls::DealWithFees<Runtime>>;
+	type OnChargeTransaction = CurrencyAdapter<Balances, impls::HippocampusFees<Runtime>>;
 	type OperationalFeeMultiplier = OperationalFeeMultiplier;
 	type WeightToFee = IdentityFee<Balance>;
 	type LengthToFee = IdentityFee<Balance>;
@@ -547,101 +648,14 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 		_total_issuance: Balance,
 		_era_duration_millis: u64,
 	) -> (Balance, Balance) {
-		// Fetch the balance available in the marketplace
-		let marketplace_balance = pallet_marketplace::Pallet::<Runtime>::balance();
+		// Marketplace alpha stays in bank, no distribution to stakers
 		let registration_balance = pallet_registration::Pallet::<Runtime>::balance();
-		let marketplace_account = pallet_marketplace::Pallet::<Runtime>::account_id();
 		let registration_account = pallet_registration::Pallet::<Runtime>::account_id();
-		// Marketplace revenue routing destination (intentional — not a
+		// Registration revenue routing destination (intentional — not a
 		// treasury bypass). <Account holder / purpose>.
 		let recipient_account =
 			AccountId32::from_ss58check("5GEudEYMVWJr64Y3599urXfG1tg4u7iNFWmBYZUET2YTdPkn")
 				.expect("Invalid SS58 address");
-
-		if marketplace_balance > 0 {
-			// Calculate amounts for each destination
-            let staking_amount = marketplace_balance
-                .checked_mul(2u32.into())
-                .and_then(|x| x.checked_div(3u32.into()))
-                .unwrap_or_default();
-
-            let treasury_amount = marketplace_balance
-                .checked_mul(1u32.into())
-                .and_then(|x| x.checked_div(3u32.into()))
-                .unwrap_or_default();
-
-			// Transfer to the specific account
-			if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
-				&marketplace_account.clone(),
-				&recipient_account,
-				treasury_amount,
-				ExistenceRequirement::KeepAlive,
-			) {
-				log::error!(
-					target: "runtime::marketplace_payout",
-					"❌ Treasury transfer from marketplace failed: {:?}",
-					e
-				);
-			}
-
-			// // Burn the staking amount
-			// let _ = pallet_balances::Pallet::<Runtime>::burn(
-			//     frame_system::RawOrigin::Signed(marketplace_account.clone()).into(),
-			//     staking_amount,
-			//     false, // keep_alive set to false to allow burning entire balance
-			// );
-
-			// Get the list of validators from the session
-			let validators = <pallet_session::Pallet<Runtime>>::validators(); // Ensure you have the correct type here
-			let num_validators = validators.len() as u32;
-			if num_validators > 0 {
-				let amount_per_validator =
-					staking_amount.checked_div(num_validators.into()).unwrap_or_default();
-
-				for validator in validators {
-					if let Err(e) = pallet_balances::Pallet::<Runtime>::transfer(
-						&marketplace_account.clone(),
-						&validator,
-						amount_per_validator,
-						ExistenceRequirement::KeepAlive,
-					) {
-						log::error!(
-							target: "runtime::marketplace_payout",
-							"❌ Validator payout transfer from marketplace failed for {:?}: {:?}",
-							validator,
-							e
-						);
-						continue;
-					}
-
-					let bond_result = if pallet_staking::Pallet::<Runtime>::ledger(
-						sp_staking::StakingAccount::Stash(validator.clone()),
-					)
-					.is_ok()
-					{
-							pallet_staking::Pallet::<Runtime>::bond_extra(
-								frame_system::RawOrigin::Signed(validator.clone()).into(),
-								amount_per_validator,
-							)
-						} else {
-							pallet_staking::Pallet::<Runtime>::bond(
-								frame_system::RawOrigin::Signed(validator.clone()).into(),
-								amount_per_validator,
-								pallet_staking::RewardDestination::Staked,
-							)
-						};
-
-					if let Err(e) = bond_result {
-						log::warn!(
-							target: "runtime::marketplace_payout",
-							"⚠️ Auto-bond failed for validator {:?}: {:?}",
-							validator,
-							e
-						);
-					}
-				}
-			}
-		}
 
 		if registration_balance > 0 {
 			// Calculate amounts for each destination
@@ -698,17 +712,17 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 					)
 					.is_ok()
 					{
-							pallet_staking::Pallet::<Runtime>::bond_extra(
-								frame_system::RawOrigin::Signed(validator.clone()).into(),
-								amount_per_validator,
-							)
-						} else {
-							pallet_staking::Pallet::<Runtime>::bond(
-								frame_system::RawOrigin::Signed(validator.clone()).into(),
-								amount_per_validator,
-								pallet_staking::RewardDestination::Staked,
-							)
-						};
+						pallet_staking::Pallet::<Runtime>::bond_extra(
+							frame_system::RawOrigin::Signed(validator.clone()).into(),
+							amount_per_validator,
+						)
+					} else {
+						pallet_staking::Pallet::<Runtime>::bond(
+							frame_system::RawOrigin::Signed(validator.clone()).into(),
+							amount_per_validator,
+							pallet_staking::RewardDestination::Staked,
+						)
+					};
 
 					if let Err(e) = bond_result {
 						log::warn!(
@@ -725,7 +739,8 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 		// Handle explicit staking pot dedicated for rewards
 		use sp_runtime::traits::AccountIdConversion;
 		let staking_pot_account: AccountId = StakingPotId::get().into_account_truncating();
-		let staking_pot_balance = pallet_balances::Pallet::<Runtime>::free_balance(&staking_pot_account);
+		let staking_pot_balance =
+			pallet_balances::Pallet::<Runtime>::free_balance(&staking_pot_account);
 		let mut payout = 0u32.into();
 
 		if staking_pot_balance > 0 {
@@ -746,8 +761,8 @@ impl pallet_staking::EraPayout<Balance> for MarketplaceRewardPayout {
 				ExistenceRequirement::AllowDeath,
 			) {
 				payout = staking_pot_balance;
-			}else {
-				log::warn!( 
+			} else {
+				log::warn!(
 					target: "runtime::staking_payout",
 					"⚠️ Silent failure on withdraw for staking pot account: {:?}",
 					staking_pot_account,
@@ -1981,12 +1996,13 @@ construct_runtime!(
 		// RankingGpu: pallet_rankings::<Instance4> = 71,
 		// RankingS3: pallet_rankings::<Instance5> = 77,
 		Credits: pallet_credits = 65,
-		// ContainerRegistry: pallet_container_registry = 69, 
+		// ContainerRegistry: pallet_container_registry = 69,
 		AlphaBridge: pallet_alpha_bridge = 73,
 		PalletIp: pallet_ip = 74,
 		// IpfsPallet: ipfs_pallet = 75,
 		Arion: pallet_arion = 76,
 		PalletCalendar: pallet_calendar = 78,
+		Hippocampus: pallet_hippocampus = 80,
 	}
 );
 
@@ -2000,7 +2016,6 @@ impl fp_rpc::ConvertTransaction<UncheckedExtrinsic> for TransactionConverter {
 		)
 	}
 }
-
 
 impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConverter {
 	fn convert_transaction(
@@ -2016,7 +2031,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
-type Migrations = ();
+type Migrations = (migrations::ActivateMinerPaymentBank<Runtime>,);
 
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;
@@ -3447,16 +3462,8 @@ impl_runtime_apis! {
 			<pallet_credits::Pallet<Runtime>>::get_referred_users(account_id)
 		}
 
-		fn get_referral_rewards(account_id: AccountId32) -> u128{
-			<pallet_credits::Pallet<Runtime>>::get_referral_rewards(account_id)
-		}
-
 		fn total_referral_codes() -> u32{
 			<pallet_credits::Pallet<Runtime>>::total_referral_codes()
-		}
-
-		fn total_referral_rewards() -> u128{
-			<pallet_credits::Pallet<Runtime>>::total_referral_rewards()
 		}
 
 		fn get_referral_codes(account_id: AccountId32) -> Vec<Vec<u8>>{

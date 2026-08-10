@@ -262,29 +262,11 @@ where
 		})
 	}
 
-	fn get_referral_rewards(&self, account_id: AccountId32) -> RpcResult<u128> {
-		let api = self.client.runtime_api();
-		let best_hash = self.client.info().best_hash;
-
-		api.get_referral_rewards(best_hash, account_id).map_err(|err| {
-			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
-		})
-	}
-
 	fn total_referral_codes(&self) -> RpcResult<u32> {
 		let api = self.client.runtime_api();
 		let best_hash = self.client.info().best_hash;
 
 		api.total_referral_codes(best_hash).map_err(|err| {
-			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
-		})
-	}
-
-	fn total_referral_rewards(&self) -> RpcResult<u128> {
-		let api = self.client.runtime_api();
-		let best_hash = self.client.info().best_hash;
-
-		api.total_referral_rewards(best_hash).map_err(|err| {
 			internal_err(format!("fetch runtime extrinsic filter failed: {:?}", err))
 		})
 	}

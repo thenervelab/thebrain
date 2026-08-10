@@ -20,23 +20,26 @@ use frame_support::{
 	dispatch::DispatchResult,
 	pallet_prelude::*,
 	traits::{Currency, EnsureOrigin, Get, ReservableCurrency},
-	BoundedVec,
+	BoundedVec, PalletId,
 };
 use frame_system::pallet_prelude::*;
+use payment_math::{
+	sum_dues, total_due_for_event, Amount, Blocks, ByteBlocks, Bytes, Tokens, Usd, UsdPerGibBlock,
+};
 use scale_info::TypeInfo;
 use sp_core::{ed25519, H256};
 use sp_runtime::{
-	traits::{Hash, Saturating, Verify, Zero},
-	RuntimeDebug,
+	traits::{AccountIdConversion, Hash, Saturating, Verify, Zero},
+	RuntimeDebug, SaturatedConversion,
 };
-use sp_std::prelude::*;
+use sp_staking::StakingInterface;
+use sp_std::{collections::btree_map::BTreeMap, prelude::*};
 
 pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use pallet_registration::{NodeType, Pallet as RegistrationPallet};
 
 	/// Domain separator for attestation signing.
 	///
@@ -91,6 +94,29 @@ pub mod pallet {
 		}
 	}
 
+	/// Source of funds for miner payments. Implemented by the bank pallet through
+	/// a runtime-side adapter (no crate coupling), `()` disables payments.
+	pub trait PayoutSource<AccountId, Balance> {
+		/// Ask the source to transfer up to `amount` to `dest` on behalf of
+		/// `requester`. Returns the amount actually transferred (`0` on refusal
+		/// or shortfall — the caller accounts for the difference).
+		fn request_payment(requester: &AccountId, dest: &AccountId, amount: Balance) -> Balance;
+
+		/// Funds the source could release right now. Read once before paying so
+		/// the caller can compute a pro-rata split over the whole pool.
+		fn available() -> Balance;
+	}
+
+	impl<AccountId, Balance: Zero> PayoutSource<AccountId, Balance> for () {
+		fn request_payment(_: &AccountId, _: &AccountId, _: Balance) -> Balance {
+			Zero::zero()
+		}
+
+		fn available() -> Balance {
+			Zero::zero()
+		}
+	}
+
 	/// CRUSH map parameters that affect deterministic placement.
 	#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 	pub struct CrushParams {
@@ -98,6 +124,16 @@ pub mod pallet {
 		pub ec_k: u16,
 		pub ec_m: u16,
 	}
+
+	/// The miner list carried by one CRUSH map epoch.
+	pub type EpochMinerList<T> = BoundedVec<
+		MinerRecord<
+			<T as frame_system::Config>::AccountId,
+			<T as Config>::MaxEndpointLen,
+			<T as Config>::MaxHttpAddrLen,
+		>,
+		<T as Config>::MaxMiners,
+	>;
 
 	/// A miner entry in the on-chain CRUSH map.
 	///
@@ -432,7 +468,9 @@ pub mod pallet {
 	}
 
 	/// Aggregate user storage usage metrics reported by validators.
-	#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default)]
+	#[derive(
+		Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default,
+	)]
 	pub struct UserStorageUsageUpdate<AccountId> {
 		pub account_id: AccountId,
 		pub file_size: u128,
@@ -685,27 +723,170 @@ pub mod pallet {
 		/// Max `MinerStatsByUid` keys examined per pruning tick (removals are a subset).
 		#[pallet::constant]
 		type MinerStatsPruneMaxScanPerBlock: Get<u32>;
+
+		// --- Miner payments ---
+
+		/// Pallet id from which the arion escrow account (miner payment flow) is derived.
+		#[pallet::constant]
+		type PalletId: Get<PalletId>;
+
+		/// Funding source for miner payments (the bank pallet in the runtime).
+		type PayoutSource: PayoutSource<Self::AccountId, BalanceOf<Self>>;
+
+		/// Staking interface used to lock family payouts as bonded stake.
+		type Staking: sp_staking::StakingInterface<
+			Balance = BalanceOf<Self>,
+			AccountId = Self::AccountId,
+		>;
+
+		/// Current token price in USD, fixed-point 18 decimals
+		/// (`0` = unknown → settlement is skipped, accruals keep accumulating).
+		type TokenPriceUsd: Get<u128>;
+
+		/// Run miner payment settlement every N blocks (`0` = disabled).
+		#[pallet::constant]
+		type SettlementInterval: Get<BlockNumberFor<Self>>;
 	}
+
+	/// Storage version 1: `MinerUidToChild` reverse index (uid uniqueness).
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
+	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_runtime_upgrade() -> Weight {
+			let onchain = Pallet::<T>::on_chain_storage_version();
+			let mut weight = T::DbWeight::get().reads(1);
+			if onchain < 1 {
+				weight = weight.saturating_add(Self::migrate_v0_to_v1());
+			}
+			if onchain < 2 {
+				weight = weight.saturating_add(Self::migrate_v1_to_v2());
+			}
+			if onchain < 2 {
+				StorageVersion::new(2).put::<Pallet<T>>();
+				weight = weight.saturating_add(T::DbWeight::get().writes(1));
+			}
+			weight
+		}
+
 		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
-			let interval = T::MinerStatsPruneInterval::get();
-			if interval.is_zero() {
-				return Weight::zero();
+			Self::on_initialize_inner(n)
+		}
+	}
+
+	impl<T: Config> Pallet<T> {
+		/// v0 → v1: build the `MinerUidToChild` reverse index from existing
+		/// registrations.
+		fn migrate_v0_to_v1() -> Weight {
+			// Bounded by MaxChildrenTotal. If two children claim the same uid,
+			// the first keeps it and the duplicate's forward mapping is dropped
+			// (it must re-register with a real uid).
+			let mut reads: u64 = 1;
+			let mut writes: u64 = 1;
+			let entries: Vec<(T::AccountId, u32)> = ChildMinerUid::<T>::iter().collect();
+			for (child, uid) in entries {
+				reads = reads.saturating_add(2);
+				if uid == 0 {
+					continue;
+				}
+				match MinerUidToChild::<T>::get(uid) {
+					Some(existing) if existing != child => {
+						log::warn!(
+							target: "runtime::arion",
+							"migration v1: duplicate miner uid {} — kept {:?}, dropped mapping of {:?}",
+							uid,
+							existing,
+							child
+						);
+						ChildMinerUid::<T>::remove(&child);
+						writes = writes.saturating_add(1);
+					},
+					Some(_) => {},
+					None => {
+						MinerUidToChild::<T>::insert(uid, &child);
+						writes = writes.saturating_add(1);
+					},
+				}
 			}
-			if n % interval != Zero::zero() {
-				return Weight::zero();
+			T::DbWeight::get().reads_writes(reads, writes)
+		}
+
+		/// v1 → v2: bind miners that have no uid from the map already published
+		/// on-chain.
+		///
+		/// Miners registered before uids were tracked have no `ChildMinerUid`
+		/// entry, so v1's reverse-index pass finds nothing for them. Without
+		/// this they would wait for the *next* `submit_crush_map`, and
+		/// publication is event-driven: the validator only bumps the epoch on
+		/// cluster churn, and weight-driven bumps are off by default. A stable
+		/// cluster could therefore go indefinitely without publishing, leaving
+		/// every existing miner unpayable.
+		///
+		/// This is a step of its own rather than an addition to v1 because v1
+		/// has already shipped on this branch: a chain sitting at version 1
+		/// would skip anything hidden behind that gate. Idempotent — it only
+		/// binds when both index directions are free.
+		fn migrate_v1_to_v2() -> Weight {
+			let mut reads: u64 = 1;
+			let mut writes: u64 = 0;
+			let epoch = CurrentEpoch::<T>::get();
+			reads = reads.saturating_add(1);
+			if let Some(miners) = EpochMiners::<T>::get(epoch) {
+				reads = reads.saturating_add(1);
+				for m in miners.iter() {
+					reads = reads.saturating_add(3);
+					if let Some(child) = NodeIdToChild::<T>::get(m.node_id) {
+						if ChildMinerUid::<T>::get(&child).is_none()
+							&& MinerUidToChild::<T>::get(m.uid).is_none()
+							&& m.uid != 0
+						{
+							ChildMinerUid::<T>::insert(&child, m.uid);
+							MinerUidToChild::<T>::insert(m.uid, &child);
+							// Same signal as a live binding: this bulk bind is
+							// exactly the legacy population, so ops needs to see
+							// it rather than infer it.
+							Self::deposit_event(Event::MinerUidBound {
+								child: child.clone(),
+								uid: m.uid,
+							});
+							writes = writes.saturating_add(2);
+						}
+					}
+				}
 			}
-			Self::prune_stale_miner_stats();
-			<T as Config>::WeightInfo::miner_stats_prune_hook(
-				T::MinerStatsPruneMaxScanPerBlock::get(),
-				T::MaxChildrenTotal::get(),
-			)
+
+			T::DbWeight::get().reads_writes(reads, writes)
+		}
+
+		fn on_initialize_inner(n: BlockNumberFor<T>) -> Weight {
+			let mut weight = Weight::zero();
+
+			let prune_interval = T::MinerStatsPruneInterval::get();
+			if !prune_interval.is_zero() && n % prune_interval == Zero::zero() {
+				Self::prune_stale_miner_stats();
+				weight = weight.saturating_add(<T as Config>::WeightInfo::miner_stats_prune_hook(
+					T::MinerStatsPruneMaxScanPerBlock::get(),
+					T::MaxChildrenTotal::get(),
+				));
+			}
+
+			let settle_interval = T::SettlementInterval::get();
+			if !settle_interval.is_zero() && n % settle_interval == Zero::zero() {
+				Self::settle_miner_payments(n);
+				weight = weight.saturating_add(
+					<T as Config>::WeightInfo::miner_payment_settlement_hook(
+						T::MaxChildrenTotal::get(),
+						T::MaxFamilies::get(),
+					),
+				);
+			}
+
+			weight
 		}
 	}
 
@@ -748,9 +929,57 @@ pub mod pallet {
 	pub type ChildMinerUid<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u32, OptionQuery>;
 
+	/// Reverse index of [`ChildMinerUid`]. Enforces that a miner uid is claimed
+	/// by at most one child: without this, a registered family could claim
+	/// another miner's uid and capture its payment accrual at settlement.
+	#[pallet::storage]
+	pub type MinerUidToChild<T: Config> =
+		StorageMap<_, Blake2_128Concat, u32, T::AccountId, OptionQuery>;
+
 	/// Last `MinerStatsByUid` key processed by batched pruning (`None` = next pass from the start).
 	#[pallet::storage]
 	pub type MinerStatsPruneCursor<T> = StorageValue<_, u32, OptionQuery>;
+
+	// -------------------------
+	// Miner payment state
+	// -------------------------
+
+	/// Payment accrual for one miner uid: raw shard bytes integrated over blocks.
+	#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	pub struct MinerAccrual<BlockNumber> {
+		/// Σ `shard_data_bytes × elapsed_blocks` since the last settlement.
+		pub byte_blocks: u128,
+		/// Block up to which `byte_blocks` has been accumulated.
+		pub last_block: BlockNumber,
+	}
+
+	/// Why a payment settlement tick did not run.
+	#[derive(Clone, Copy, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	pub enum SettlementSkipReason {
+		/// [`MinerPriceUsdPerGbBlock`] is zero (payments disabled).
+		PriceUnset,
+		/// The token price feed returned zero.
+		TokenPriceUnavailable,
+	}
+
+	/// Price paid to miners, in USD per GiB of raw shard data per block
+	/// (fixed-point, 18 decimals). `0` disables payment settlement entirely.
+	#[pallet::storage]
+	pub type MinerPriceUsdPerGbBlock<T> = StorageValue<_, u128, ValueQuery>;
+
+	/// Payment accrual per miner uid (byte-blocks since the last settlement).
+	#[pallet::storage]
+	pub type MinerAccruals<T: Config> =
+		StorageMap<_, Blake2_128Concat, u32, MinerAccrual<BlockNumberFor<T>>, OptionQuery>;
+
+	/// Tokens owed to a family but not yet paid (carry-over from bank shortfalls).
+	#[pallet::storage]
+	pub type FamilyArrears<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// Last block a payment settlement ran at.
+	#[pallet::storage]
+	pub type LastSettlementBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, OptionQuery>;
 
 	// -------------------------
 	// Attestation state
@@ -1077,6 +1306,51 @@ pub mod pallet {
 			s3_file_size: u128,
 			s3_file_count: u128,
 		},
+		/// Miner payment price was set by admin (USD per GiB per block, 18 decimals).
+		MinerPriceSet {
+			price_usd_per_gb_block: u128,
+		},
+		/// A miner payment settlement completed.
+		MinerPaymentSettled {
+			block: BlockNumberFor<T>,
+			families: u32,
+			tokens_due: u128,
+			tokens_paid: u128,
+		},
+		/// A family received a payout. `staked` is false when bonding failed and
+		/// the amount was left as free balance on the family account.
+		FamilyPaid {
+			family: T::AccountId,
+			tokens: u128,
+			staked: bool,
+		},
+		/// A settlement tick was skipped. Accruals keep accumulating.
+		MinerPaymentSkipped {
+			reason: SettlementSkipReason,
+		},
+		/// A deregistered child's accrued-but-unpaid byte-blocks were forfeited
+		/// (deregistration = loss, by design).
+		MinerAccrualForfeited {
+			family: T::AccountId,
+			uid: u32,
+			byte_blocks: u128,
+		},
+		/// A registered child was bound to the uid the CRUSH map assigns its
+		/// node. Until this fires the child accrues nothing, so its absence is
+		/// the signal that a miner is onboarded but unpayable.
+		MinerUidBound {
+			child: T::AccountId,
+			uid: u32,
+		},
+		/// The map moved `uid` from `from` to `to`. Accrual follows the uid, so
+		/// the map has to win here: leaving `from` bound would pay it for `to`'s
+		/// bytes. Any unpaid accrual `from` had under `uid` is forfeited and
+		/// reported separately as [`Event::MinerAccrualForfeited`].
+		MinerUidReassigned {
+			uid: u32,
+			from: T::AccountId,
+			to: T::AccountId,
+		},
 	}
 
 	#[pallet::error]
@@ -1226,21 +1500,157 @@ pub mod pallet {
 			UserTotalFilesCount::<T>::remove(&account_id);
 		}
 
-		/// Remove [`MinerStatsByUid`] and [`ChildMinerUid`] for a deregistered child account.
+		/// Remove [`MinerStatsByUid`], [`MinerAccruals`] and [`ChildMinerUid`] for a
+		/// deregistered child. Accrued-but-unpaid byte-blocks are **forfeited by
+		/// design** (deregistration = loss) — made explicit and auditable via
+		/// [`Event::MinerAccrualForfeited`] instead of relying on pruning order.
 		pub fn clear_miner_uid_and_stats_for_child(child: &T::AccountId) {
 			if let Some(uid) = ChildMinerUid::<T>::get(child) {
+				if uid != 0 {
+					// Integrate up to now first so the forfeited amount is exact.
+					Self::accrue_miner_bytes(uid, Self::now());
+					if let Some(acc) = MinerAccruals::<T>::take(uid) {
+						if acc.byte_blocks > 0 {
+							if let Some(reg) = ChildRegistrations::<T>::get(child) {
+								Self::deposit_event(Event::MinerAccrualForfeited {
+									family: reg.family,
+									uid,
+									byte_blocks: acc.byte_blocks,
+								});
+							}
+						}
+					}
+				}
 				MinerStatsByUid::<T>::remove(uid);
 				ChildMinerUid::<T>::remove(child);
+				MinerUidToChild::<T>::remove(uid);
 			}
 		}
 
 		fn find_uid_for_node_in_epoch(epoch: u64, node_id: &[u8; 32]) -> Option<u32> {
-			EpochMiners::<T>::get(epoch).and_then(|miners| {
-				miners
-					.iter()
-					.find(|m| m.node_id == *node_id)
-					.map(|m| m.uid)
-			})
+			EpochMiners::<T>::get(epoch)
+				.and_then(|miners| miners.iter().find(|m| m.node_id == *node_id).map(|m| m.uid))
+		}
+
+		/// Bind each mapped node's authority-assigned uid to the child that
+		/// registered it.
+		///
+		/// This is the only binding that fires in the steady state. A node
+		/// cannot be in the CRUSH map before it is registered on-chain — the
+		/// validator refuses to admit unregistered nodes to the cluster — so
+		/// `register_child` always runs *before* the node has a uid, and the
+		/// lookup there finds nothing. Binding here, when the authority-signed
+		/// map arrives, is what makes a registered miner payable at all.
+		///
+		/// The uid is never taken from the registrant, so a family cannot claim
+		/// a uid belonging to a node it does not run.
+		/// Make the on-chain uid bindings match the authority-signed map.
+		///
+		/// The map is authoritative because **accrual follows the uid, not the
+		/// binding**: `submit_miner_stats` writes `MinerStatsByUid[uid]` from the
+		/// authority's view of who holds that uid. So if a binding disagrees
+		/// with the map, the stale holder is paid for the new node's bytes.
+		/// Refusing to move a uid would not avoid that — it would cause it.
+		///
+		/// Two passes: retire every binding the map contradicts, then install
+		/// the map's. One pass cannot work, because the uid a node is losing may
+		/// be the uid another node in the same map is gaining.
+		fn bind_uids_from_crush_map(miners: &EpochMinerList<T>) {
+			let now = Self::now();
+			let mut desired: Vec<(T::AccountId, u32)> = Vec::new();
+			for m in miners.iter() {
+				if m.uid == 0 {
+					continue;
+				}
+				if let Some(child) = NodeIdToChild::<T>::get(m.node_id) {
+					desired.push((child, m.uid));
+				}
+			}
+
+			// Pass 1: detach every mapped child from a uid the map disagrees
+			// with, holding its accrued byte-blocks aside. Doing all of these
+			// before any insert is what lets two nodes exchange uids: the uid
+			// one is losing is free by the time the other claims it.
+			let mut carried: Vec<(T::AccountId, u128)> = Vec::new();
+			for (child, uid) in desired.iter() {
+				if let Some(old_uid) = ChildMinerUid::<T>::get(child) {
+					if old_uid != *uid {
+						let bb = Self::detach_uid(child, old_uid, now);
+						if bb > 0 {
+							carried.push((child.clone(), bb));
+						}
+					}
+				}
+			}
+
+			// Pass 2: a uid still held here belongs to a child the map has
+			// dropped. It loses the uid, and its unpaid accrual is forfeited
+			// explicitly rather than stranded for a later prune to delete.
+			for (child, uid) in desired.iter() {
+				if let Some(holder) = MinerUidToChild::<T>::get(uid) {
+					if holder != *child {
+						let bb = Self::detach_uid(&holder, *uid, now);
+						if bb > 0 {
+							if let Some(reg) = ChildRegistrations::<T>::get(&holder) {
+								Self::deposit_event(Event::MinerAccrualForfeited {
+									family: reg.family,
+									uid: *uid,
+									byte_blocks: bb,
+								});
+							}
+						}
+						Self::deposit_event(Event::MinerUidReassigned {
+							uid: *uid,
+							from: holder,
+							to: child.clone(),
+						});
+					}
+				}
+			}
+
+			// Pass 3: install the map's bindings and restore carried accrual.
+			for (child, uid) in desired {
+				// The reverse entry is written unconditionally: pass 2 may have
+				// cleared it while displacing a stale holder even though the
+				// forward entry was already correct. Leaving it empty would let
+				// `register_child`, which only checks the reverse direction,
+				// hand the same uid to a second child.
+				if ChildMinerUid::<T>::get(&child) != Some(uid) {
+					ChildMinerUid::<T>::insert(&child, uid);
+					Self::deposit_event(Event::MinerUidBound { child: child.clone(), uid });
+				}
+				MinerUidToChild::<T>::insert(uid, &child);
+			}
+			for (child, bb) in carried {
+				if let Some(uid) = ChildMinerUid::<T>::get(&child) {
+					MinerAccruals::<T>::mutate(uid, |acc| {
+						let mut a =
+							acc.take().unwrap_or(MinerAccrual { byte_blocks: 0, last_block: now });
+						a.byte_blocks = ByteBlocks::new(a.byte_blocks)
+							.saturating_add(ByteBlocks::new(bb))
+							.get();
+						a.last_block = now;
+						*acc = Some(a);
+					});
+				}
+			}
+		}
+
+		/// Detach `old_uid` from `child` and return the byte-blocks it had
+		/// accrued but not been paid for.
+		///
+		/// Integrates up to `now` first, so the amount returned is exact rather
+		/// than whatever happened to be banked at the last settlement. The
+		/// caller decides whether that work follows the child to a new uid or is
+		/// forfeited — leaving it attached to the old uid would strand it, since
+		/// settlement only ever reads the uid a child currently holds.
+		fn detach_uid(child: &T::AccountId, old_uid: u32, now: BlockNumberFor<T>) -> u128 {
+			Self::accrue_miner_bytes(old_uid, now);
+			let accrued = MinerAccruals::<T>::take(old_uid).map(|a| a.byte_blocks).unwrap_or(0);
+			MinerStatsByUid::<T>::remove(old_uid);
+			MinerUidToChild::<T>::remove(old_uid);
+			ChildMinerUid::<T>::remove(child);
+			accrued
 		}
 
 		/// Uids that still correspond to **active** children (registration + optional CRUSH map).
@@ -1289,6 +1699,7 @@ pub mod pallet {
 				let keep = protected.iter().any(|&p| p == *uid);
 				if !keep {
 					MinerStatsByUid::<T>::remove(uid);
+					MinerAccruals::<T>::remove(uid);
 				}
 			}
 
@@ -1298,6 +1709,179 @@ pub mod pallet {
 			} else {
 				MinerStatsPruneCursor::<T>::put(last);
 			}
+		}
+
+		/// The pallet account, used as the whitelisted requester identity
+		/// towards the payout source. Funds are paid to families directly and
+		/// never transit this account.
+		pub fn account_id() -> T::AccountId {
+			<T as Config>::PalletId::get().into_account_truncating()
+		}
+
+		/// Integrate the currently stored `shard_data_bytes` of `uid` over the
+		/// blocks elapsed since the last accrual, up to `now`.
+		fn accrue_miner_bytes(uid: u32, now: BlockNumberFor<T>) {
+			let prev_bytes =
+				Bytes::new(MinerStatsByUid::<T>::get(uid).map(|s| s.shard_data_bytes).unwrap_or(0));
+			MinerAccruals::<T>::mutate(uid, |acc| {
+				let mut a = acc.take().unwrap_or(MinerAccrual { byte_blocks: 0, last_block: now });
+				let elapsed =
+					Blocks::new(now.saturating_sub(a.last_block).saturated_into::<u128>());
+				a.byte_blocks =
+					ByteBlocks::new(a.byte_blocks).saturating_add(prev_bytes * elapsed).get();
+				a.last_block = now;
+				*acc = Some(a);
+			});
+		}
+
+		/// Miner payment settlement: accrue all active children up to `now`,
+		/// aggregate per family, pull funds from the payout source, distribute
+		/// pro-rata on shortfall (delta → [`FamilyArrears`]) and bond each
+		/// payout as stake on the family account.
+		fn settle_miner_payments(now: BlockNumberFor<T>) {
+			let price = UsdPerGibBlock::new(MinerPriceUsdPerGbBlock::<T>::get());
+			if price.get() == 0 {
+				Self::deposit_event(Event::MinerPaymentSkipped {
+					reason: SettlementSkipReason::PriceUnset,
+				});
+				return;
+			}
+			let token_price = Usd::new(T::TokenPriceUsd::get());
+			if token_price.get() == 0 {
+				Self::deposit_event(Event::MinerPaymentSkipped {
+					reason: SettlementSkipReason::TokenPriceUnavailable,
+				});
+				return;
+			}
+
+			// Accrue every active child up to `now`, convert and aggregate per family.
+			let mut family_due: BTreeMap<T::AccountId, Tokens> = BTreeMap::new();
+			for (child, reg) in ChildRegistrations::<T>::iter() {
+				if reg.status != ChildStatus::Active {
+					continue;
+				}
+				let Some(uid) = ChildMinerUid::<T>::get(&child) else {
+					continue;
+				};
+				if uid == 0 {
+					continue;
+				}
+				Self::accrue_miner_bytes(uid, now);
+				let byte_blocks_snapshot =
+					MinerAccruals::<T>::get(uid).map(|a| a.byte_blocks).unwrap_or(0);
+				if byte_blocks_snapshot == 0 {
+					continue;
+				}
+				let tokens = payment_math::tokens_for(
+					ByteBlocks::new(byte_blocks_snapshot),
+					price,
+					token_price,
+				);
+				if tokens.is_zero() {
+					// Dust: preserve byte_blocks for next settlement
+					continue;
+				}
+				// Consume the accrual only now that it converts to a payable
+				// amount; a zero-token settlement above leaves it for next time.
+				MinerAccruals::<T>::mutate(uid, |acc| {
+					if let Some(a) = acc.as_mut() {
+						a.byte_blocks = 0;
+					}
+				});
+				family_due
+					.entry(reg.family.clone())
+					.and_modify(|d| *d = d.saturating_add(tokens))
+					.or_insert(tokens);
+			}
+
+			// Include arrears carried over from previous shortfalls.
+			for (family, owed) in FamilyArrears::<T>::iter() {
+				if owed > 0 {
+					let owed = Tokens::new(owed);
+					family_due
+						.entry(family)
+						.and_modify(|d| *d = d.saturating_add(owed))
+						.or_insert(owed);
+				}
+			}
+
+			// Wide sum: folding with u128::saturating_add would collapse two
+			// near-MAX dues into MAX and make `pro_rata` treat the pool as a
+			// full cover, paying each family its full due (first AccountId
+			// drains the bank). U256 keeps the true denominator.
+			let total_due = sum_dues(family_due.values().copied());
+			if total_due.is_zero() {
+				LastSettlementBlock::<T>::put(now);
+				return;
+			}
+
+			// The bank pays each family directly. Funds never transit an
+			// intermediate account, so an undeliverable payout (e.g. below the
+			// destination's existential deposit) stays in the bank — nothing is
+			// stranded on the pallet account or burned as dust — and retries
+			// via arrears at the next settlement. (Design: G. Delkos.)
+			let requester = Self::account_id();
+			let pool = Tokens::new(T::PayoutSource::available().saturated_into::<u128>());
+
+			let mut families = 0u32;
+			let mut tokens_paid_sum = Tokens::new(0);
+			for (family, due) in family_due.iter() {
+				// Pro-rata split when the bank cannot cover everything.
+				let pay = payment_math::pro_rata_wide(*due, pool, total_due);
+				let paid = if pay.is_zero() {
+					Tokens::new(0)
+				} else {
+					Tokens::new(
+						T::PayoutSource::request_payment(
+							&requester,
+							family,
+							pay.get().saturated_into(),
+						)
+						.saturated_into(),
+					)
+				};
+				let arrears = due.saturating_sub(paid);
+				if arrears.is_zero() {
+					FamilyArrears::<T>::remove(family);
+				} else {
+					FamilyArrears::<T>::insert(family, arrears.get());
+				}
+				if paid.is_zero() {
+					continue;
+				}
+				let amount: BalanceOf<T> = paid.get().saturated_into();
+				// Lock the payout as stake. On failure the tokens remain as free
+				// balance on the family account — never roll back the payment.
+				let bond_result = if T::Staking::stake(family).is_ok() {
+					T::Staking::bond_extra(family, amount)
+				} else {
+					T::Staking::bond(family, amount, family)
+				};
+				if let Err(e) = &bond_result {
+					log::warn!(
+						target: "runtime::arion",
+						"settlement: bonding payout for family {:?} failed (funds stay liquid): {:?}",
+						family,
+						e
+					);
+				}
+				let staked = bond_result.is_ok();
+				families = families.saturating_add(1);
+				tokens_paid_sum = tokens_paid_sum.saturating_add(paid);
+				Self::deposit_event(Event::FamilyPaid {
+					family: family.clone(),
+					tokens: paid.get(),
+					staked,
+				});
+			}
+
+			LastSettlementBlock::<T>::put(now);
+			Self::deposit_event(Event::MinerPaymentSettled {
+				block: now,
+				families,
+				tokens_due: total_due_for_event(total_due),
+				tokens_paid: tokens_paid_sum.get(),
+			});
 		}
 
 		/// Remove per-child weight / quality tracking (avoids stale keys after deregistration).
@@ -1783,6 +2367,16 @@ pub mod pallet {
 				last_uid = Some(m.uid);
 			}
 
+			// A node must not appear twice: uid binding resolves node_id to a
+			// child, so two records for one node would bind that child to two
+			// uids and strand the first uid's reverse entry.
+			let mut node_ids: Vec<[u8; 32]> = miners.iter().map(|m| m.node_id).collect();
+			node_ids.sort_unstable();
+			ensure!(
+				node_ids.windows(2).all(|w| w[0] != w[1]),
+				Error::<T>::MinerListNotSortedOrNotUnique
+			);
+
 			// Optional hardening: ensure miners are registered (validator can enable once ready).
 			Self::ensure_miner_records_registered(&miners)?;
 
@@ -1796,6 +2390,10 @@ pub mod pallet {
 			EpochMiners::<T>::insert(epoch, miners.clone());
 			EpochRoot::<T>::insert(epoch, root_h256);
 			CurrentEpoch::<T>::put(epoch);
+
+			// Registration happens before a node can enter the map, so this is
+			// where a registered miner actually becomes payable.
+			Self::bind_uids_from_crush_map(&miners);
 
 			let retention = T::EpochCrushMapRetention::get();
 			if retention > 0 && epoch > retention {
@@ -1827,7 +2425,17 @@ pub mod pallet {
 			let cur = CurrentStatsBucket::<T>::get();
 			ensure!(bucket >= cur, Error::<T>::StatsBucketRegression);
 
+			let now = Self::now();
 			for u in updates.iter() {
+				// Integrate the *previous* stored bytes over the elapsed blocks
+				// before overwriting them — payment accrual (byte-blocks). Only
+				// uids claimed by a registered child accrue: an unclaimed uid
+				// would accumulate byte-blocks that no settlement can pay and
+				// no deregistration can forfeit, protected from pruning by
+				// epoch membership.
+				if MinerUidToChild::<T>::contains_key(u.uid) {
+					Self::accrue_miner_bytes(u.uid, now);
+				}
 				MinerStatsByUid::<T>::insert(u.uid, u.stats.clone());
 			}
 			CurrentStatsBucket::<T>::put(bucket);
@@ -1836,6 +2444,20 @@ pub mod pallet {
 			}
 
 			Self::deposit_event(Event::MinerStatsUpdated { bucket, updates: updates.len() as u32 });
+			Ok(())
+		}
+
+		/// Set the price paid to miners, in USD per GiB of raw shard data per
+		/// block (fixed-point, 18 decimals). `0` disables payment settlement.
+		#[pallet::call_index(4)]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::set_miner_price(), Pays::No))]
+		pub fn set_miner_price(
+			origin: OriginFor<T>,
+			price_usd_per_gb_block: u128,
+		) -> DispatchResult {
+			T::ArionAdminOrigin::ensure_origin(origin)?;
+			MinerPriceUsdPerGbBlock::<T>::put(price_usd_per_gb_block);
+			Self::deposit_event(Event::MinerPriceSet { price_usd_per_gb_block });
 			Ok(())
 		}
 
@@ -1851,9 +2473,11 @@ pub mod pallet {
 		/// Signature payload (domain-separated, SCALE-encoded):
 		/// - ("ARION_NODE_REG_V1", family, child, node_id, nonce)
 		///
-		/// `miner_uid`: CRUSH / stats uid for this node (`0` = not tracked; prefer the uid used in
-		/// `submit_miner_stats` and the epoch map so deregistration and periodic pruning can clear
-		/// [`MinerStatsByUid`]).
+		/// The CRUSH / stats uid is **not** supplied by the caller: it is taken
+		/// from the authority-published epoch map, either here if the node is
+		/// already listed or by [`Pallet::submit_crush_map`] when the map that
+		/// lists it is published. Until a uid is bound the child accrues
+		/// nothing; [`Event::MinerUidBound`] marks the transition.
 		#[pallet::call_index(10)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::register_child(), Pays::No))]
 		pub fn register_child(
@@ -1862,7 +2486,6 @@ pub mod pallet {
 			child: T::AccountId,
 			node_id: [u8; 32],
 			node_sig: [u8; 64],
-			miner_uid: u32,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(who == family, DispatchError::BadOrigin);
@@ -1947,8 +2570,23 @@ pub mod pallet {
 			NodeIdToChild::<T>::insert(node_id, &child);
 			NodeIdNonce::<T>::insert(node_id, nonce.saturating_add(1));
 
-			if miner_uid != 0 {
-				ChildMinerUid::<T>::insert(&child, miner_uid);
+			// If the node is already in the published map, bind its uid now
+			// rather than waiting for the next map. The uid is never supplied
+			// by the caller, so a family cannot claim a uid for a node it does
+			// not run. A node that is not yet mapped — the normal case, since
+			// the validator will not admit an unregistered node — is bound by
+			// `submit_crush_map` when the map that lists it is published.
+			if let Some(uid) = Self::find_uid_for_node_in_epoch(CurrentEpoch::<T>::get(), &node_id)
+			{
+				// Only bind a uid nobody holds. If a stale child still holds it,
+				// leave the conflict for `submit_crush_map` to resolve against
+				// the whole map, where the displaced child's accrual can be
+				// settled correctly — a single registration lacks that context.
+				if MinerUidToChild::<T>::get(uid).is_none() {
+					ChildMinerUid::<T>::insert(&child, uid);
+					MinerUidToChild::<T>::insert(uid, &child);
+					Self::deposit_event(Event::MinerUidBound { child: child.clone(), uid });
+				}
 			}
 
 			// Update counts
@@ -2161,9 +2799,14 @@ pub mod pallet {
 			// no stale weight keys if a registration path ever skipped cleanup.
 			Self::remove_child_node_weight_entries(&child);
 
+			// Clear both uid directions, not just the forward one: a reverse
+			// entry left pointing at a removed child would block that uid for
+			// every future node, since the map binding refuses to move a uid
+			// away from whoever the chain says holds it.
+			Self::clear_miner_uid_and_stats_for_child(&child);
+
 			// Remove record; cooldown tombstones remain in separate storage.
 			ChildRegistrations::<T>::remove(&child);
-			ChildMinerUid::<T>::remove(&child);
 
 			Self::deposit_event(Event::ChildUnbonded {
 				family: reg.family,
@@ -2668,11 +3311,7 @@ pub mod pallet {
 				e = e.saturating_add(1);
 			}
 
-			Self::deposit_event(Event::CrushEpochsPruned {
-				start_epoch,
-				pruned,
-				next_epoch: e,
-			});
+			Self::deposit_event(Event::CrushEpochsPruned { start_epoch, pruned, next_epoch: e });
 			Ok(())
 		}
 	}

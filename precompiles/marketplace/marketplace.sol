@@ -61,20 +61,6 @@ interface IMarketplace {
     /// @dev Gets the total number of referral codes created
     /// @return The total number of referral codes
     function get_total_referral_codes() external view returns (uint32);
-    
-    /// @dev Gets the total rewards earned through referrals
-    /// @return The total amount of rewards
-    function get_total_referral_rewards() external view returns (uint128);
-    
-    /// @dev Gets the rewards earned by a specific referral code
-    /// @param referralCode The referral code to check
-    /// @return The amount of rewards earned by this code
-    function get_referral_code_rewards(bytes memory referralCode) external view returns (uint128);
-    
-    /// @dev Gets the number of times a referral code has been used
-    /// @param referralCode The referral code to check
-    /// @return The usage count of the referral code
-    function get_referral_code_usage_count(bytes memory referralCode) external view returns (uint32);
 
     /// @dev Gets the current balance of the marketplace pallet
     /// @return The balance of the marketplace pot in native currency

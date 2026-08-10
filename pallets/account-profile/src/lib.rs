@@ -513,22 +513,22 @@ pub mod pallet {
 		fn hex_to_bytes(hex: &[u8]) -> Result<Vec<u8>, Error<T>> {
 			let hex_str = core::str::from_utf8(hex).map_err(|_| Error::<T>::InvalidHexString)?;
 			let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-			
+
 			// Check if empty
 			if hex_str.is_empty() {
 				return Err(Error::<T>::InvalidHexString);
 			}
-			
+
 			// Check if valid hex characters
 			if !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
 				return Err(Error::<T>::InvalidHexString);
 			}
-			
+
 			// Check for even length (required for hex to bytes conversion)
 			if hex_str.len() % 2 != 0 {
 				return Err(Error::<T>::InvalidHexString);
 			}
-			
+
 			// Convert hex to bytes
 			let bytes = (0..hex_str.len())
 				.step_by(2)
@@ -537,7 +537,7 @@ pub mod pallet {
 						.map_err(|_| Error::<T>::InvalidHexString)
 				})
 				.collect::<Result<Vec<u8>, Error<T>>>()?;
-			
+
 			Ok(bytes)
 		}
 
@@ -549,12 +549,12 @@ pub mod pallet {
 			out.copy_from_slice(h.as_ref());
 			out
 		}
-		
+
 		fn verify_ed25519(msg: &[u8], sig: &[u8], pk: &[u8]) -> DispatchResult {
 			if sig.len() != 64 || pk.len() != 32 {
 				return Err(Error::<T>::InvalidSignature.into());
 			}
-		
+
 			ensure!(
 				sp_io::crypto::ed25519_verify(
 					&sp_core::ed25519::Signature::from_raw(
@@ -567,7 +567,7 @@ pub mod pallet {
 				),
 				Error::<T>::InvalidSignature
 			);
-		
+
 			Ok(())
 		}
 	}

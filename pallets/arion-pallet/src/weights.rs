@@ -50,6 +50,9 @@ pub trait WeightInfo {
     fn update_user_file_size() -> Weight;
     /// `on_initialize` miner stats prune: bounded scan + protected-uid pass over registrations.
     fn miner_stats_prune_hook(max_scan: u32, max_children_total: u32) -> Weight;
+    fn set_miner_price() -> Weight;
+    /// `on_initialize` payment settlement: accrue + aggregate per family + transfer + bond.
+    fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight;
 }
 
 /// Weights for pallet_arion using the Substrate node and recommended hardware.
@@ -63,26 +66,33 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// The weight includes `n` miners being processed.
     fn submit_crush_map(n: u32) -> Weight {
         // Base: read epoch + write 4 storage items; up to 4 extra writes when pruning an old epoch
-        // Per miner: bounded vec encoding overhead
+        // Per miner: bounded vec encoding overhead, plus uid binding. Worst case
+        // is a full reassignment: reads NodeIdToChild + ChildMinerUid +
+        // MinerUidToChild + the accrual, and writes a detach (stats, both index
+        // directions, accrual) followed by an install (both directions, accrual).
         Weight::from_parts(25_000_000, 0)
             .saturating_add(Weight::from_parts(500_000, 0).saturating_mul(n.into()))
             .saturating_add(T::DbWeight::get().reads(1))
             .saturating_add(T::DbWeight::get().writes(4))
             .saturating_add(T::DbWeight::get().writes(4))
+            .saturating_add(T::DbWeight::get().reads(4u64.saturating_mul(n.into())))
+            .saturating_add(T::DbWeight::get().writes(7u64.saturating_mul(n.into())))
     }
 
     /// Storage: Arion LastStatsBucket (r:1 w:1)
-    /// Storage: Arion MinerStats (r:0 w:n)
+    /// Storage: Arion MinerStats (r:n w:n) — read for payment accrual, then overwritten
+    /// Storage: Arion MinerAccruals (r:n w:n)
     /// Storage: Arion TotalShards (r:1 w:1)
     /// Storage: Arion TotalBandwidthBytes (r:1 w:1)
     fn submit_miner_stats(n: u32) -> Weight {
         // Base: read/write aggregate state
-        // Per miner: write stats entry
+        // Per miner: accrue byte-blocks + write stats entry
         Weight::from_parts(15_000_000, 0)
             .saturating_add(Weight::from_parts(2_000_000, 0).saturating_mul(n.into()))
             .saturating_add(T::DbWeight::get().reads(3))
             .saturating_add(T::DbWeight::get().writes(3))
-            .saturating_add(T::DbWeight::get().writes(n.into()))
+            .saturating_add(T::DbWeight::get().reads((n as u64).saturating_mul(2)))
+            .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(2)))
     }
 
     /// Storage: Arion CurrentWeightBucket (r:1 w:1)
@@ -240,6 +250,27 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().reads(scan.saturating_add(reg_reads)))
             .saturating_add(T::DbWeight::get().writes(scan))
     }
+
+    /// Storage: Arion MinerPriceUsdPerGbBlock (r:0 w:1)
+    fn set_miner_price() -> Weight {
+        Weight::from_parts(10_000_000, 0).saturating_add(T::DbWeight::get().writes(1))
+    }
+
+    /// TODO: benchmark — hand-written estimate on a fund-moving on_initialize
+    /// hook that gates block production; needs real frame-benchmarking weights
+    /// before serious mainnet traffic (PR #36 review).
+    /// Per child: ChildRegistrations + ChildMinerUid + MinerStatsByUid reads, MinerAccruals r/w.
+    /// Per family: arrears r/w, bank request_payment (transfer + accounting), staking ledger read + bond write.
+    fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
+        let children = max_children_total as u64;
+        let families = max_families as u64;
+        Weight::from_parts(25_000_000, 0)
+            .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(families))
+            .saturating_add(T::DbWeight::get().reads(children.saturating_mul(4).saturating_add(2)))
+            .saturating_add(T::DbWeight::get().writes(children))
+            .saturating_add(T::DbWeight::get().reads(families.saturating_mul(4)))
+            .saturating_add(T::DbWeight::get().writes(families.saturating_mul(6)))
+    }
 }
 
 /// For backwards compatibility and testnets
@@ -256,7 +287,8 @@ impl WeightInfo for () {
             .saturating_add(Weight::from_parts(2_000_000, 0).saturating_mul(n.into()))
             .saturating_add(RocksDbWeight::get().reads(3))
             .saturating_add(RocksDbWeight::get().writes(3))
-            .saturating_add(RocksDbWeight::get().writes(n.into()))
+            .saturating_add(RocksDbWeight::get().reads((n as u64).saturating_mul(2)))
+            .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(2)))
     }
 
     fn submit_node_quality(n: u32) -> Weight {
@@ -359,5 +391,20 @@ impl WeightInfo for () {
         Weight::from_parts(20_000_000, 0)
             .saturating_add(RocksDbWeight::get().reads(scan.saturating_add(reg_reads)))
             .saturating_add(RocksDbWeight::get().writes(scan))
+    }
+
+    fn set_miner_price() -> Weight {
+        Weight::from_parts(10_000_000, 0).saturating_add(RocksDbWeight::get().writes(1))
+    }
+
+    fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
+        let children = max_children_total as u64;
+        let families = max_families as u64;
+        Weight::from_parts(25_000_000, 0)
+            .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(families))
+            .saturating_add(RocksDbWeight::get().reads(children.saturating_mul(4).saturating_add(2)))
+            .saturating_add(RocksDbWeight::get().writes(children))
+            .saturating_add(RocksDbWeight::get().reads(families.saturating_mul(4)))
+            .saturating_add(RocksDbWeight::get().writes(families.saturating_mul(6)))
     }
 }

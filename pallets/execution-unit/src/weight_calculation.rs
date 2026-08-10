@@ -14,8 +14,7 @@ use sp_std::vec::Vec;
 struct PoolContext {
 	available_pool: f64,
 	miners_pool: f64,
-	uid_zero_pool: f64,
-	burn_percentage: f64,
+	uid_238_pool: f64,
 }
 
 impl NodeMetricsData {
@@ -54,27 +53,14 @@ impl NodeMetricsData {
 		info!("price_per_gb_token: {}", price_per_gb_token);
 		info!("alpha_price_token: {}", alpha_price_token);
 
-		// ---- 3) Calculate COST and EMISSIONS ----
-		let cost = total_resource_gb * price_per_gb_token;
-		info!("cost: {}", cost);
-		let emissions = alpha_price_token * (Self::EMISSION_PERIOD as f64);
-		info!("emissions: {}", emissions);
-
-		// ---- 4) Calculate burn amount and percentage ----
-		let burn_number = if emissions > cost { emissions - cost } else { 0.0 };
-		info!("burn_number: {}", burn_number);
-
-		let burn_percentage = if emissions != 0.0 { burn_number / emissions } else { 0.2 };
-		info!("burn_percentage: {}", burn_percentage);
-
-		// ---- 5) Calculate pool distribution ----
+		// ---- 3) Calculate pool distribution (fixed 1% miners, 99% uid 238) ----
 		let max_score = Self::MAX_SCORE as f64;
-		let uid_zero_pool = max_score * burn_percentage;
-		let miners_pool = max_score - uid_zero_pool;
-		info!("uid_zero_pool: {}", uid_zero_pool);
+		let miners_pool = max_score * 0.01; // 1% to miners
+		let uid_238_pool = max_score - miners_pool; // 99% to uid 238
+		info!("uid_238_pool: {}", uid_238_pool);
 		info!("miners_pool: {}", miners_pool);
 
-		Some(PoolContext { available_pool: max_score, miners_pool, uid_zero_pool, burn_percentage })
+		Some(PoolContext { available_pool: max_score, miners_pool, uid_238_pool })
 	}
 
 	pub fn calculate_weight<
@@ -142,7 +128,7 @@ impl NodeMetricsData {
 		final_weight
 	}
 
-	pub fn uid_zero_weight<
+	pub fn uid_238_weight<
 		T: pallet_marketplace::Config + pallet_credits::Config + pallet_arion::Config,
 	>() -> u16 {
 		let price_per_gb = pallet_marketplace::Pallet::<T>::get_storage_price_per_miner();
@@ -159,7 +145,7 @@ impl NodeMetricsData {
 			return 0;
 		};
 
-		let uid_inner = context.uid_zero_pool;
+		let uid_inner = context.uid_238_pool;
 		info!("raw UID zero weight: {}", uid_inner);
 
 		let capped_f64 = uid_inner.min(Self::MAX_SCORE as f64);
