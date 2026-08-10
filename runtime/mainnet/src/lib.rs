@@ -254,7 +254,7 @@ parameter_types! {
 	/// Miner payment settlement interval (~24h at 6s/block). `0` = disabled.
 	pub const ArionSettlementInterval: BlockNumber = 14_400;
 	pub const BlocksPer24Hours: BlockNumber = 14_400; // ~24 hours at 6-second blocks
-	pub const Max24HourMinerPayout: Balance = 1_500_000_000_000_000_000_000; // 1500 alpha (18 decimals)
+	pub const Max24HourMinerPayout: Balance = 3_500_000_000_000_000_000_000; // 3500 alpha (18 decimals): miner-share inflow (2952/day) + self-healing headroom
 }
 
 impl pallet_hippocampus::Config for Runtime {
@@ -354,7 +354,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 9198,
+	spec_version: 9199,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
