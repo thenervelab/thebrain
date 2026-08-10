@@ -85,6 +85,16 @@ pub mod pallet {
 		Other,
 	}
 
+	/// Whether distributions from the bank are enabled.
+	#[pallet::storage]
+	pub type DistributionEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	impl<T: Config> Default for DistributionEnabled<T> {
+		fn default() -> bool {
+			true
+		}
+	}
+
 	/// Accounts allowed to call `request_payment`.
 	#[pallet::storage]
 	pub type WhitelistedRequesters<T: Config> =
@@ -166,6 +176,8 @@ pub mod pallet {
 		RequesterCapSet { who: T::AccountId, cap: BalanceOf<T> },
 		/// Per-requester withdrawal cap was removed.
 		RequesterCapRemoved { who: T::AccountId },
+		/// Distribution enabled/disabled status changed.
+		DistributionEnabledChanged { enabled: bool },
 	}
 
 	#[pallet::error]
@@ -178,6 +190,8 @@ pub mod pallet {
 		AlreadyWhitelisted,
 		/// Account is not in the whitelist.
 		NotWhitelisted,
+		/// Distributions are currently disabled.
+		DistributionDisabled,
 	}
 
 	#[pallet::call]
@@ -238,6 +252,15 @@ pub mod pallet {
 			T::AdminOrigin::ensure_origin(origin)?;
 			RequesterWithdrawalCap::<T>::remove(&who);
 			Self::deposit_event(Event::RequesterCapRemoved { who });
+			Ok(())
+		}
+
+		#[pallet::call_index(5)]
+		#[pallet::weight(T::DbWeight::get().writes(1))]
+		pub fn set_distribution_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
+			T::AdminOrigin::ensure_origin(origin)?;
+			DistributionEnabled::<T>::put(enabled);
+			Self::deposit_event(Event::DistributionEnabledChanged { enabled });
 			Ok(())
 		}
 	}
@@ -308,6 +331,10 @@ pub mod pallet {
 			dest: &T::AccountId,
 			amount: BalanceOf<T>,
 		) -> Result<BalanceOf<T>, DispatchError> {
+			ensure!(
+				DistributionEnabled::<T>::get(),
+				Error::<T>::DistributionDisabled
+			);
 			ensure!(
 				WhitelistedRequesters::<T>::contains_key(requester),
 				Error::<T>::RequesterNotWhitelisted
