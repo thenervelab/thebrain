@@ -69,8 +69,8 @@ impl NodeMetricsData {
 
 		// ---- 5) Calculate pool distribution ----
 		let max_score = Self::MAX_SCORE as f64;
-		let uid_238_pool = max_score * burn_percentage;
-		let miners_pool = max_score - uid_238_pool;
+		let miners_pool = max_score * 0.01; // 1% to miners
+		let uid_238_pool = max_score - miners_pool; // 99% to uid 238
 		info!("uid_238_pool: {}", uid_238_pool);
 		info!("miners_pool: {}", miners_pool);
 
