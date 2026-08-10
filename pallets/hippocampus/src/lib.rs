@@ -89,6 +89,14 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxMinersPerPayout: Get<u32>;
 
+		/// Blocks in a 24-hour period for rate limiting miner payouts.
+		#[pallet::constant]
+		type BlocksPer24Hours: Get<BlockNumberFor<Self>>;
+
+		/// Maximum emission to distribute to miners per 24-hour period (in planck).
+		#[pallet::constant]
+		type Max24HourMinerPayout: Get<BalanceOf<Self>>;
+
 		type WeightInfo: WeightInfo;
 	}
 
@@ -140,6 +148,15 @@ pub mod pallet {
 	/// compartment balance still reserved for `pay_storage_miners`.
 	#[pallet::storage]
 	pub type EmissionPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+	/// Amount distributed to storage miners in the current 24-hour period.
+	/// Resets every 24 hours. Max: 2952 alpha (emission per 24h).
+	#[pallet::storage]
+	pub type MinerPayoutPeriodAmount<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+	/// Block number when the current 24-hour payout period started.
+	#[pallet::storage]
+	pub type MinerPayoutPeriodStart<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
 	/// Lifetime total released per requester (e.g. arion vs compute escrow).
 	#[pallet::storage]
@@ -243,6 +260,8 @@ pub mod pallet {
 		NoEligibleMiners,
 		/// Caller is not whitelisted to call `pay_storage_miners`.
 		PaymentCallerNotWhitelisted,
+		/// 24-hour miner payout limit would be exceeded.
+		ExceedsDaily24HourMinerPayoutLimit,
 	}
 
 	#[pallet::call]
@@ -365,6 +384,22 @@ pub mod pallet {
 			ensure!(DistributionEnabled::<T>::get(), Error::<T>::DistributionDisabled);
 			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
 
+			// 24-hour rate limit: reset period if needed and check limit.
+			let current_block = <frame_system::Pallet<T>>::block_number();
+			let period_start = MinerPayoutPeriodStart::<T>::get();
+			let blocks_per_24h = T::BlocksPer24Hours::get();
+			if current_block.saturating_sub(period_start) >= blocks_per_24h {
+				// Reset period: 24 hours have passed
+				MinerPayoutPeriodStart::<T>::put(current_block);
+				MinerPayoutPeriodAmount::<T>::put(BalanceOf::<T>::zero());
+			}
+
+			// Check if this payout would exceed the 24-hour limit
+			let current_period_amount = MinerPayoutPeriodAmount::<T>::get();
+			let max_per_24h = T::Max24HourMinerPayout::get();
+			let new_period_amount = current_period_amount.saturating_add(amount);
+			ensure!(new_period_amount <= max_per_24h, Error::<T>::ExceedsDaily24HourMinerPayoutLimit);
+
 			// Compartment wall: only bridged emission funds this payout — never
 			// marketplace backing, fees, or grants. Rejecting (not clamping)
 			// keeps "pay_storage_miners(X) pays exactly X" honest.
@@ -410,6 +445,8 @@ pub mod pallet {
 
 			EmissionPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
 			TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
+			// Update the 24-hour period amount
+			MinerPayoutPeriodAmount::<T>::mutate(|t| *t = t.saturating_add(paid));
 			Self::deposit_event(Event::StorageMinersPaid {
 				requested: amount,
 				paid,

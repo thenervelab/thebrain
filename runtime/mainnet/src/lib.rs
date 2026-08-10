@@ -261,6 +261,8 @@ parameter_types! {
 	pub const HippocampusPalletId: PalletId = PalletId(*b"hipocamp");
 	/// Miner payment settlement interval (~24h at 6s/block). `0` = disabled.
 	pub const ArionSettlementInterval: BlockNumber = 14_400;
+	pub const BlocksPer24Hours: BlockNumber = 14_400; // ~24 hours at 6-second blocks
+	pub const Max24HourMinerPayout: Balance = 2_952_000_000_000_000_000; // 2952 alpha (18 decimals)
 }
 
 impl pallet_hippocampus::Config for Runtime {
@@ -270,6 +272,8 @@ impl pallet_hippocampus::Config for Runtime {
 	type AdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
 	type MinerRanking = StorageMinerRankingSource;
 	type MaxMinersPerPayout = ConstU32<512>;
+	type BlocksPer24Hours = BlocksPer24Hours;
+	type Max24HourMinerPayout = Max24HourMinerPayout;
 	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
 }
 #[cfg(feature = "std")]
