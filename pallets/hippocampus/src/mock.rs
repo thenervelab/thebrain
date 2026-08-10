@@ -55,6 +55,11 @@ pub fn set_ranked_miners(miners: Vec<(AccountId, u16)>) {
 	RANKED_MINERS.with(|m| *m.borrow_mut() = miners);
 }
 
+/// Whitelist an account to call `pay_storage_miners`.
+pub fn whitelist_miner_payment_caller(who: AccountId) {
+	pallet_hippocampus::MinerPaymentWhitelist::<Test>::insert(who, ());
+}
+
 pub struct MockRanking;
 impl pallet_hippocampus::StorageMinerRanking<AccountId> for MockRanking {
 	fn active_storage_miners() -> Vec<(AccountId, u16)> {

@@ -121,6 +121,11 @@ pub mod pallet {
 	pub type WhitelistedRequesters<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, (), OptionQuery>;
 
+	/// Accounts allowed to call `pay_storage_miners`.
+	#[pallet::storage]
+	pub type MinerPaymentWhitelist<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, (), OptionQuery>;
+
 	/// Lifetime total deposited, per deposit type.
 	#[pallet::storage]
 	pub type TotalDeposited<T: Config> =
@@ -236,6 +241,8 @@ pub mod pallet {
 		TooManyMiners,
 		/// No ranked storage miner carries a non-zero weight.
 		NoEligibleMiners,
+		/// Caller is not whitelisted to call `pay_storage_miners`.
+		PaymentCallerNotWhitelisted,
 	}
 
 	#[pallet::call]
@@ -312,15 +319,49 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// Add an account to the miner payment whitelist (callers of `pay_storage_miners`).
+		#[pallet::call_index(6)]
+		#[pallet::weight(T::DbWeight::get().writes(1))]
+		pub fn add_miner_payment_caller(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
+			T::AdminOrigin::ensure_origin(origin)?;
+			ensure!(
+				!MinerPaymentWhitelist::<T>::contains_key(&who),
+				Error::<T>::AlreadyWhitelisted
+			);
+			MinerPaymentWhitelist::<T>::insert(&who, ());
+			Self::deposit_event(Event::RequesterAdded { who });
+			Ok(())
+		}
+
+		/// Remove an account from the miner payment whitelist.
+		#[pallet::call_index(7)]
+		#[pallet::weight(T::DbWeight::get().writes(1))]
+		pub fn remove_miner_payment_caller(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
+			T::AdminOrigin::ensure_origin(origin)?;
+			ensure!(
+				MinerPaymentWhitelist::<T>::contains_key(&who),
+				Error::<T>::NotWhitelisted
+			);
+			MinerPaymentWhitelist::<T>::remove(&who);
+			Self::deposit_event(Event::RequesterRemoved { who });
+			Ok(())
+		}
+
 		/// Distribute `amount` from the bank's emission compartment to storage
 		/// miners, pro-rata to their current ranking weight.
 		///
-		/// The whole amount is distributed by ranking alone — no accrual math.
-		/// Floor-division dust and skipped shares stay in the compartment.
-		#[pallet::call_index(6)]
+		/// Callable only by whitelisted callers. The runtime's `MinerRanking`
+		/// trait implementation must filter out validators and uid 238 from
+		/// the returned miner list. Floor-division dust and skipped shares
+		/// stay in the compartment.
+		#[pallet::call_index(8)]
 		#[pallet::weight(<T as Config>::WeightInfo::pay_storage_miners(T::MaxMinersPerPayout::get()))]
 		pub fn pay_storage_miners(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
-			T::AdminOrigin::ensure_origin(origin)?;
+			let who = ensure_signed(origin)?;
+			ensure!(
+				MinerPaymentWhitelist::<T>::contains_key(&who),
+				Error::<T>::PaymentCallerNotWhitelisted
+			);
 			ensure!(DistributionEnabled::<T>::get(), Error::<T>::DistributionDisabled);
 			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
 

@@ -244,8 +244,9 @@ fn pay_storage_miners_distributes_pro_rata() {
 			DepositType::Emission
 		));
 		set_ranked_miners(vec![(charlie(), 1), (dave(), 3)]);
+		whitelist_miner_payment_caller(alice());
 
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 1_000));
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1_000));
 
 		assert_eq!(Balances::free_balance(charlie()), 250);
 		assert_eq!(Balances::free_balance(dave()), 750);
@@ -267,9 +268,10 @@ fn pay_storage_miners_distributes_pro_rata() {
 #[test]
 fn pay_storage_miners_requires_admin_origin() {
 	new_test_ext().execute_with(|| {
+		// Non-whitelisted caller should fail
 		assert_noop!(
 			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
-			sp_runtime::DispatchError::BadOrigin
+			Error::<Test>::PaymentCallerNotWhitelisted
 		);
 	});
 }
@@ -277,8 +279,9 @@ fn pay_storage_miners_requires_admin_origin() {
 #[test]
 fn pay_storage_miners_rejects_zero_amount() {
 	new_test_ext().execute_with(|| {
+		whitelist_miner_payment_caller(alice());
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 0),
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 0),
 			Error::<Test>::ZeroAmount
 		);
 	});
@@ -293,9 +296,10 @@ fn pay_storage_miners_respects_distribution_switch() {
 			DepositType::Emission
 		));
 		set_ranked_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
 		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), false));
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
 			Error::<Test>::DistributionDisabled
 		);
 	});
@@ -312,8 +316,9 @@ fn pay_storage_miners_cannot_spend_other_compartments() {
 			DepositType::MarketplaceRevenue
 		));
 		set_ranked_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
 			Error::<Test>::InsufficientEmissionFunds
 		);
 	});
@@ -332,8 +337,9 @@ fn pay_storage_miners_cannot_overdraw_the_bank() {
 		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), bob()));
 		assert_ok!(Hippocampus::request_payment(&bob(), &charlie(), 600));
 		set_ranked_miners(vec![(dave(), 1)]);
+		whitelist_miner_payment_caller(alice());
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 1_000),
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1_000),
 			Error::<Test>::InsufficientBankBalance
 		);
 	});
@@ -348,13 +354,15 @@ fn pay_storage_miners_rejects_empty_or_zero_weight_ranking() {
 			1_000,
 			DepositType::Emission
 		));
+		whitelist_miner_payment_caller(alice());
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
 			Error::<Test>::NoEligibleMiners
 		);
 		set_ranked_miners(vec![(charlie(), 0), (dave(), 0)]);
+		whitelist_miner_payment_caller(alice());
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
 			Error::<Test>::NoEligibleMiners
 		);
 	});
@@ -374,8 +382,9 @@ fn pay_storage_miners_bounds_the_miner_list() {
 			.map(|i| (sp_runtime::AccountId32::new([i; 32]).into(), 1u16))
 			.collect();
 		set_ranked_miners(miners);
+		whitelist_miner_payment_caller(alice());
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 100),
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
 			Error::<Test>::TooManyMiners
 		);
 	});
@@ -391,9 +400,10 @@ fn pay_storage_miners_dust_stays_in_compartment() {
 			DepositType::Emission
 		));
 		set_ranked_miners(vec![(charlie(), 3), (dave(), 7)]);
+		whitelist_miner_payment_caller(alice());
 
 		// 101 * 3/10 = 30, 101 * 7/10 = 70 — one planck of dust remains.
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 101));
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 101));
 
 		assert_eq!(Balances::free_balance(charlie()), 30);
 		assert_eq!(Balances::free_balance(dave()), 70);
@@ -422,8 +432,9 @@ fn pay_storage_miners_skips_zero_shares() {
 		));
 		// 10_000 * 1/65_536 floors to zero: charlie is skipped, not fatal.
 		set_ranked_miners(vec![(charlie(), 1), (dave(), 65_535)]);
+		whitelist_miner_payment_caller(alice());
 
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 10_000));
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 10_000));
 
 		assert_eq!(Balances::free_balance(charlie()), 0);
 		assert_eq!(Balances::free_balance(dave()), 9_999);
@@ -449,16 +460,17 @@ fn pay_storage_miners_compartment_is_cumulative() {
 			DepositType::Emission
 		));
 		set_ranked_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
 
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 600));
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 600));
 		assert_eq!(Hippocampus::emission_available(), 400);
 
 		// The second call may spend only what the compartment still holds.
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 401),
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 401),
 			Error::<Test>::InsufficientEmissionFunds
 		);
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::root(), 400));
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 400));
 		assert_eq!(Hippocampus::emission_available(), 0);
 		assert_eq!(Balances::free_balance(charlie()), 1_000);
 	});

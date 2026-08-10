@@ -156,6 +156,10 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 pub struct StorageMinerRankingSource;
 impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingSource {
 	fn active_storage_miners() -> Vec<(AccountId, u16)> {
+		// Get uid 238's account if it exists
+		let uid_238_account = pallet_metagraph::Pallet::<Runtime>::get_uid_item(238)
+			.map(|uid| uid.substrate_address);
+
 		pallet_rankings::Pallet::<Runtime>::get_ranked_list()
 			.into_iter()
 			.filter(|node| {
@@ -165,6 +169,22 @@ impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingS
 				pallet_registration::Pallet::<Runtime>::get_registered_node(node.node_id.clone())
 					.ok()
 					.map(|info| (info.owner, node.weight))
+			})
+			// Filter out validators and uid 238's account
+			.filter(|(owner, _)| {
+				// Check if owner is a validator
+				if let Some((node_type, _)) = pallet_registration::Pallet::<Runtime>::get_miner_info(owner.clone()) {
+					if node_type == pallet_registration::NodeType::Validator {
+						return false;
+					}
+				}
+				// Filter out uid 238's account
+				if let Some(uid_238_acc) = &uid_238_account {
+					if owner == uid_238_acc {
+						return false;
+					}
+				}
+				true
 			})
 			.collect()
 	}
