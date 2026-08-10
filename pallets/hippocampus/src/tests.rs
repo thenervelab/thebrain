@@ -149,3 +149,49 @@ fn request_payment_zero_is_noop() {
 		assert_eq!(TotalPaidOut::<Test>::get(), 0);
 	});
 }
+
+#[test]
+fn invariant_no_money_flows_when_distribution_disabled() {
+	new_test_ext().execute_with(|| {
+		// Fund the bank with plenty of money
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::MarketplaceRevenue
+		));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), charlie()));
+
+		// Verify that payment works when distribution is enabled (default)
+		let bob_before = Balances::free_balance(bob());
+		let paid = Hippocampus::request_payment(&charlie(), &bob(), 1_000).unwrap();
+		assert_eq!(paid, 1_000);
+		assert_eq!(Balances::free_balance(bob()), bob_before + 1_000);
+
+		// Disable distribution
+		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), false));
+
+		// Verify the switch is off
+		assert_eq!(Hippocampus::distribution_enabled(), false);
+
+		// Attempt to request payment when switch is OFF should fail
+		let bob_before_disabled = Balances::free_balance(bob());
+		assert_noop!(
+			Hippocampus::request_payment(&charlie(), &bob(), 500),
+			Error::<Test>::DistributionDisabled
+		);
+		// Verify no money was transferred
+		assert_eq!(Balances::free_balance(bob()), bob_before_disabled);
+		// Verify total paid out remains unchanged
+		assert_eq!(TotalPaidOut::<Test>::get(), 1_000);
+
+		// Re-enable distribution
+		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), true));
+		assert_eq!(Hippocampus::distribution_enabled(), true);
+
+		// Verify payment works again after re-enabling
+		let bob_before_reenabled = Balances::free_balance(bob());
+		let paid = Hippocampus::request_payment(&charlie(), &bob(), 500).unwrap();
+		assert_eq!(paid, 500);
+		assert_eq!(Balances::free_balance(bob()), bob_before_reenabled + 500);
+	});
+}
