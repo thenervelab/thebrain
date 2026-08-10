@@ -171,7 +171,7 @@ fn invariant_no_money_flows_when_distribution_disabled() {
 		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), false));
 
 		// Verify the switch is off
-		assert_eq!(Hippocampus::distribution_enabled(), false);
+		assert!(!Hippocampus::distribution_enabled());
 
 		// Attempt to request payment when switch is OFF should fail
 		let bob_before_disabled = Balances::free_balance(bob());
@@ -186,12 +186,48 @@ fn invariant_no_money_flows_when_distribution_disabled() {
 
 		// Re-enable distribution
 		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), true));
-		assert_eq!(Hippocampus::distribution_enabled(), true);
+		assert!(Hippocampus::distribution_enabled());
 
 		// Verify payment works again after re-enabling
 		let bob_before_reenabled = Balances::free_balance(bob());
 		let paid = Hippocampus::request_payment(&charlie(), &bob(), 500).unwrap();
 		assert_eq!(paid, 500);
 		assert_eq!(Balances::free_balance(bob()), bob_before_reenabled + 500);
+	});
+}
+
+#[test]
+fn set_distribution_enabled_requires_admin_origin() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			Hippocampus::set_distribution_enabled(RuntimeOrigin::signed(alice()), false),
+			sp_runtime::DispatchError::BadOrigin
+		);
+		// A rejected call must leave the switch untouched.
+		assert!(Hippocampus::distribution_enabled());
+	});
+}
+
+#[test]
+fn set_distribution_enabled_emits_event() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), false));
+		System::assert_last_event(Event::DistributionEnabledChanged { enabled: false }.into());
+
+		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), true));
+		System::assert_last_event(Event::DistributionEnabledChanged { enabled: true }.into());
+	});
+}
+
+#[test]
+fn disabled_check_precedes_whitelist_check() {
+	new_test_ext().execute_with(|| {
+		// A non-whitelisted requester while disabled must see DistributionDisabled,
+		// not RequesterNotWhitelisted: the kill switch outranks per-requester state.
+		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), false));
+		assert_noop!(
+			Hippocampus::request_payment(&charlie(), &bob(), 100),
+			Error::<Test>::DistributionDisabled
+		);
 	});
 }
