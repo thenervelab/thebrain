@@ -1261,9 +1261,10 @@ pub mod pallet {
                     });
                 },
                 Err(e) => {
-                    // Not-whitelisted (post-upgrade setup missed) or the
-                    // transfer failed (e.g. payout below the referrer's
-                    // existential deposit). Diagnosable, never fatal.
+                    // Not-whitelisted (post-upgrade setup missed), payouts
+                    // globally disabled via the bank switch, or the transfer
+                    // failed (e.g. payout below the referrer's existential
+                    // deposit). Diagnosable, never fatal.
                     log::warn!(
                         target: "runtime::marketplace",
                         "referral commission payment failed for {:?}: {:?}",
