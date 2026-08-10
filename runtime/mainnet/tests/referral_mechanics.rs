@@ -534,6 +534,31 @@ fn commission_cannot_spend_reserved_bank_funds() {
 }
 
 #[test]
+fn commission_cannot_spend_emission_compartment() {
+	new_test_ext().execute_with(|| {
+		// Wall off all of the bank's payable balance except 20 as bridged
+		// emission owed to storage miners: commissions must not touch the
+		// compartment `pay_storage_miners` spends from.
+		let payable = BANK_FUND - ED;
+		pallet_hippocampus::TotalDeposited::<Runtime>::insert(
+			pallet_hippocampus::DepositType::Emission,
+			payable - 20,
+		);
+
+		let (referrer, buyer) = referred_storage_setup(CHARGED);
+
+		assert_eq!(Balances::free_balance(&referrer), ED + 20);
+		// The compartment is untouched and still fully backed by the bank.
+		assert_eq!(Hippocampus::emission_available(), payable - 20);
+		assert!(
+			Balances::free_balance(&Hippocampus::account_id()) >= payable - 20 + ED,
+			"bank still backs the emission compartment"
+		);
+		assert!(storage_subscription(&buyer).active, "billing unaffected");
+	});
+}
+
+#[test]
 fn unwhitelisted_marketplace_skips_commission_and_billing_succeeds() {
 	new_test_ext().execute_with(|| {
 		// Simulate the missed post-upgrade setup step.

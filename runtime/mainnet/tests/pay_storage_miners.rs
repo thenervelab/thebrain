@@ -3,7 +3,7 @@
 //! source resolves owners and applies the uid-238/activity filters, and the
 //! emission compartment is invisible to the arion settlement headroom.
 
-use frame_support::traits::Currency;
+use frame_support::traits::{Currency, Get};
 use frame_support::{assert_noop, assert_ok};
 use hippius_mainnet_runtime::{
 	AccountId, ArionPayoutSource, Balances, Hippocampus, Runtime, RuntimeOrigin, System,
@@ -162,4 +162,56 @@ fn pay_storage_miners_excludes_uid_238_account() {
 		assert_eq!(Balances::free_balance(&miner_a), 100_000);
 		assert_eq!(Hippocampus::emission_available(), 0);
 	});
+}
+
+#[test]
+fn unregistered_or_degraded_ranked_nodes_are_excluded() {
+	new_test_ext().execute_with(|| {
+		let (miner_a, ghost, degraded) = (account(2), account(6), account(7));
+		fund_bank_and_whitelist_admin(100_000);
+
+		seed_ranked_storage_miner(10, &miner_a, 100, true);
+
+		// Ranked but never registered: the owner cannot be resolved.
+		let mut list = pallet_rankings::RankedList::<Runtime>::get();
+		list.push(pallet_rankings::NodeRankings {
+			rank: 14,
+			node_id: vec![14u8; 32],
+			node_ss58_address: ghost.to_ss58check().into_bytes(),
+			node_type: NodeType::StorageMiner,
+			weight: 300,
+			last_updated: 0u32.into(),
+			is_active: true,
+		});
+		pallet_rankings::RankedList::<Runtime>::put(list);
+
+		// Registered but degraded: registration refuses to resolve it.
+		seed_ranked_storage_miner(15, &degraded, 300, true);
+		pallet_registration::ColdkeyNodeRegistrationV2::<Runtime>::insert(
+			vec![15u8; 32],
+			Some(ColdkeyNodeInfoLite {
+				node_id: vec![15u8; 32],
+				node_type: NodeType::StorageMiner,
+				status: Status::Degraded,
+				registered_at: 0u32.into(),
+				owner: degraded.clone(),
+			}),
+		);
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
+
+		// Excluded nodes neither receive nor dilute the split.
+		assert_eq!(Balances::free_balance(&ghost), 0);
+		assert_eq!(Balances::free_balance(&degraded), 0);
+		assert_eq!(Balances::free_balance(&miner_a), 100_000);
+	});
+}
+
+#[test]
+fn daily_miner_payout_cap_is_1500_alpha() {
+	// Guards the 18-decimals scaling of the cap: the constant originally
+	// shipped 1000x too small (3 alpha instead of 3000). If the intended
+	// daily cap changes, change this test together with the runtime value.
+	const UNIT: u128 = 1_000_000_000_000_000_000;
+	assert_eq!(<Runtime as pallet_hippocampus::Config>::Max24HourMinerPayout::get(), 1_500 * UNIT);
 }
