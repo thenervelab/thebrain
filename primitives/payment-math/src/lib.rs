@@ -197,6 +197,22 @@ pub fn pro_rata_wide(due: Tokens, pool: Tokens, total_due: U256) -> Tokens {
 	Tokens(q.min(U256::from(due.0)).as_u128())
 }
 
+/// Weight-proportional share of `pool`: `pool * weight / total_weight`,
+/// floor division; zero when `total_weight` is zero. Caller contract:
+/// `weight <= total_weight`. The wide intermediate keeps `u128::MAX`-sized
+/// pools safe, and the quotient is bounded by `pool` under the contract.
+pub fn weight_share(pool: Tokens, weight: u128, total_weight: u128) -> Tokens {
+	if total_weight == 0 {
+		return Tokens(0);
+	}
+	debug_assert!(
+		weight <= total_weight,
+		"weight_share caller contract violated: weight > total_weight",
+	);
+	let q = U256::from(pool.0) * U256::from(weight) / U256::from(total_weight);
+	Tokens(q.min(U256::from(pool.0)).as_u128())
+}
+
 /// Wide sum of token dues for settlement totals. Saturates only at `U256::MAX`,
 /// so ordinary multi-family extremes that overflow `u128` still produce a
 /// faithful denominator for [`pro_rata_wide`].
@@ -935,5 +951,35 @@ mod tests {
 	#[should_panic(expected = "pro_rata_wide caller contract")]
 	fn pro_rata_debug_asserts_due_within_total() {
 		let _ = pro_rata(Tokens::new(31), Tokens::new(10), Tokens::new(30));
+	}
+
+	// ── weight_share ────────────────────────────────────────────────────
+
+	#[test]
+	fn weight_share_is_floor_proportional() {
+		assert_eq!(weight_share(Tokens::new(1_000), 1, 4), Tokens::new(250));
+		assert_eq!(weight_share(Tokens::new(101), 3, 10), Tokens::new(30));
+		assert_eq!(weight_share(Tokens::new(1_000), 0, 4), Tokens::new(0));
+		assert_eq!(weight_share(Tokens::new(1_000), 4, 4), Tokens::new(1_000));
+		assert_eq!(weight_share(Tokens::new(0), 3, 10), Tokens::new(0));
+		assert_eq!(weight_share(Tokens::new(1_000), 3, 0), Tokens::new(0));
+		// Wide intermediate: max pool with a max u16 weight must not overflow.
+		assert_eq!(weight_share(Tokens::new(u128::MAX), 65_535, 65_535), Tokens::new(u128::MAX));
+	}
+
+	#[test]
+	fn weight_share_sum_never_exceeds_pool() {
+		// Exhaustive small-domain conservation check: for any weight split,
+		// the floor shares sum to at most the pool.
+		for pool in [0u128, 1, 7, 100, 101, 65_535, 1_000_000_000_000_000_000] {
+			for weights in [[1u128, 3], [7, 7], [1, 65_535], [0, 5]] {
+				let total: u128 = weights.iter().sum();
+				let paid: u128 = weights
+					.iter()
+					.map(|w| weight_share(Tokens::new(pool), *w, total).get())
+					.sum();
+				assert!(paid <= pool, "pool {pool} weights {weights:?} paid {paid}");
+			}
+		}
 	}
 }
