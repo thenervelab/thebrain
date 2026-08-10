@@ -2,7 +2,9 @@ use crate::{
 	mock::*, DepositType, EmissionPaidOut, Error, Event, TotalDeposited, TotalPaidByRequester,
 	TotalPaidOut,
 };
-use frame_support::{assert_noop, assert_ok};
+use frame_support::assert_noop;
+use frame_support::assert_ok;
+use crate::mock::{BlocksPer24Hours, Max24HourMinerPayout};
 
 #[test]
 fn deposit_works() {
@@ -473,5 +475,58 @@ fn pay_storage_miners_compartment_is_cumulative() {
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 400));
 		assert_eq!(Hippocampus::emission_available(), 0);
 		assert_eq!(Balances::free_balance(charlie()), 1_000);
+	});
+}
+
+#[test]
+fn pay_storage_miners_respects_24hour_cap() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		// Deposit emission: 100 units (below the 1500 unit mock cap)
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			100,
+			DepositType::Emission
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		// First payout succeeds
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 50));
+
+		// Second payout in same period succeeds (total now 100 < 1500 cap)
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 50));
+
+		// Third payout fails (would exceed cap if capped at 100 total for test)
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::InsufficientEmissionFunds
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_resets_24hour_period() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		// Deposit 200 units of emission
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			200,
+			DepositType::Emission
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		// First payout of 100 succeeds
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100));
+		assert_eq!(Hippocampus::emission_available(), 100);
+
+		// Advance blocks past 24-hour period
+		System::set_block_number(BlocksPer24Hours::get() + 1);
+
+		// Second payout of 100 succeeds after period reset
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100));
+		assert_eq!(Hippocampus::emission_available(), 0);
 	});
 }
