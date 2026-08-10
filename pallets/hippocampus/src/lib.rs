@@ -85,12 +85,14 @@ pub mod pallet {
 		Other,
 	}
 
-	/// Whether distributions from the bank are enabled.
+	/// Whether distributions from the bank are enabled (defaults to true).
 	#[pallet::storage]
-	pub type DistributionEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+	#[pallet::getter(fn distribution_enabled)]
+	pub type DistributionEnabled<T: Config> = StorageValue<_, bool, ValueQuery, DistributionEnabledDefault>;
 
-	impl<T: Config> Default for DistributionEnabled<T> {
-		fn default() -> bool {
+	pub struct DistributionEnabledDefault;
+	impl frame_support::pallet_prelude::Get<bool> for DistributionEnabledDefault {
+		fn get() -> bool {
 			true
 		}
 	}
