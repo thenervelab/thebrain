@@ -217,26 +217,20 @@ Even if a family's raw weight jumps from 0 to 50,000, the on-chain `FamilyWeight
 
 [`pool_context()`](https://github.com/thenervelab/thebrain/blob/dd671787e9db7ce62cebe3f1ceb8744a38ef7c22/pallets/execution-unit/src/weight_calculation.rs#L32)
 
-The total weight budget is `MAX_SCORE = 65,535`. This budget is split between miners and the validator (UID 238) based on a dynamically computed **burn percentage**.
+The total weight budget is `MAX_SCORE = 65,535`. This budget is split between miners and the validator (UID 238) with a **fixed distribution**:
 
-### Burn Percentage Formula
-
-```
-storage_gb      = total_network_storage / 1,073,741,824
-cost            = storage_gb * price_per_gb              (in tokens)
-emissions       = alpha_price * 50                       (EMISSION_PERIOD)
-burn_number     = max(0, emissions - cost)
-burn_percentage = burn_number / emissions                (defaults to 0.2 if emissions = 0)
-```
-
-### Pool Split
+### Pool Split (Fixed)
 
 ```
-uid_238_pool = 65,535 * burn_percentage      (goes to validator / UID 238)
-miners_pool   = 65,535 - uid_238_pool         (distributed among miners)
+miners_pool   = 65,535 * 0.01           (1% distributed among miners)
+uid_238_pool  = 65,535 * 0.99           (99% goes to validator / UID 238)
 ```
 
-**What this means for miners**: When the network stores more data (higher cost relative to emissions), the burn percentage decreases, giving miners a larger share of the weight pool. When emissions far exceed storage cost, more weight goes to the validator.
+Or in absolute terms:
+- `miners_pool = ~655` weight units
+- `uid_238_pool = ~64,880` weight units
+
+**What this means for miners**: The validator (UID 238) receives 99% of the total weight budget, while miner payouts are allocated 1% of the budget proportionally by their Arion family weight.
 
 ### Constants
 

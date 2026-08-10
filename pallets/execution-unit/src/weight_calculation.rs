@@ -15,7 +15,6 @@ struct PoolContext {
 	available_pool: f64,
 	miners_pool: f64,
 	uid_238_pool: f64,
-	burn_percentage: f64,
 }
 
 impl NodeMetricsData {
@@ -54,27 +53,14 @@ impl NodeMetricsData {
 		info!("price_per_gb_token: {}", price_per_gb_token);
 		info!("alpha_price_token: {}", alpha_price_token);
 
-		// ---- 3) Calculate COST and EMISSIONS ----
-		let cost = total_resource_gb * price_per_gb_token;
-		info!("cost: {}", cost);
-		let emissions = alpha_price_token * (Self::EMISSION_PERIOD as f64);
-		info!("emissions: {}", emissions);
-
-		// ---- 4) Calculate burn amount and percentage ----
-		let burn_number = if emissions > cost { emissions - cost } else { 0.0 };
-		info!("burn_number: {}", burn_number);
-
-		let burn_percentage = if emissions != 0.0 { burn_number / emissions } else { 0.2 };
-		info!("burn_percentage: {}", burn_percentage);
-
-		// ---- 5) Calculate pool distribution ----
+		// ---- 3) Calculate pool distribution (fixed 1% miners, 99% uid 238) ----
 		let max_score = Self::MAX_SCORE as f64;
 		let miners_pool = max_score * 0.01; // 1% to miners
 		let uid_238_pool = max_score - miners_pool; // 99% to uid 238
 		info!("uid_238_pool: {}", uid_238_pool);
 		info!("miners_pool: {}", miners_pool);
 
-		Some(PoolContext { available_pool: max_score, miners_pool, uid_238_pool, burn_percentage })
+		Some(PoolContext { available_pool: max_score, miners_pool, uid_238_pool })
 	}
 
 	pub fn calculate_weight<
