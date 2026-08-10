@@ -193,17 +193,16 @@ pub fn create_signed_extrinsic(
 		call: data,
 	};
 
-	let transaction_version: u32 = 1; // Replace with actual transaction version
 	let tip: u128 = 0; // Adjust as needed
 	let mode: u8 = 0; // Adjust as needed
 	let metadata_hash: Option<[u8; 32]> = None; // Adjust as needed
 
-	// Try to fetch the spec version, fallback to default if it fails
-	let spec_version = match fetch_spec_version(rpc_url) {
-		Ok(version) => version,
+	// Try to fetch spec version and transaction version, fallback to defaults if it fails
+	let (spec_version, transaction_version) = match fetch_runtime_version(rpc_url) {
+		Ok((spec, tx)) => (spec, tx),
 		Err(e) => {
-			eprintln!("Error fetching spec version: {}", e);
-			default_spec_version
+			eprintln!("Error fetching runtime version: {}", e);
+			(default_spec_version, 1)
 		},
 	};
 
@@ -354,17 +353,16 @@ pub fn create_signed_extrinsic_rankings(
 		call: data,
 	};
 
-	let transaction_version: u32 = 1; // Replace with actual transaction version
 	let tip: u128 = 0; // Adjust as needed
 	let mode: u8 = 0; // Adjust as needed
 	let metadata_hash: Option<[u8; 32]> = None; // Adjust as needed
 
-	// Try to fetch the spec version, fallback to default if it fails
-	let spec_version = match fetch_spec_version(rpc_url) {
-		Ok(version) => version,
+	// Try to fetch spec version and transaction version, fallback to defaults if it fails
+	let (spec_version, transaction_version) = match fetch_runtime_version(rpc_url) {
+		Ok((spec, tx)) => (spec, tx),
 		Err(e) => {
-			eprintln!("Error fetching spec version: {}", e);
-			default_spec_version
+			eprintln!("Error fetching runtime version: {}", e);
+			(default_spec_version, 1)
 		},
 	};
 
@@ -504,17 +502,16 @@ pub fn create_signed_extrinsic_hardware(
 		call: data,
 	};
 
-	let transaction_version: u32 = 1; // Replace with actual transaction version
 	let tip: u128 = 0; // Adjust as needed
 	let mode: u8 = 0; // Adjust as needed
 	let metadata_hash: Option<[u8; 32]> = None; // Adjust as needed
 
-	// Try to fetch the spec version, fallback to default if it fails
-	let spec_version = match fetch_spec_version(rpc_url) {
-		Ok(version) => version,
+	// Try to fetch spec version and transaction version, fallback to defaults if it fails
+	let (spec_version, transaction_version) = match fetch_runtime_version(rpc_url) {
+		Ok((spec, tx)) => (spec, tx),
 		Err(e) => {
-			eprintln!("Error fetching spec version: {}", e);
-			default_spec_version
+			eprintln!("Error fetching runtime version: {}", e);
+			(default_spec_version, 1)
 		},
 	};
 
@@ -677,17 +674,16 @@ pub fn create_signed_extrinsic_metrics(
 		call: data,
 	};
 
-	let transaction_version: u32 = 1; // Replace with actual transaction version
 	let tip: u128 = 0; // Adjust as needed
 	let mode: u8 = 0; // Adjust as needed
 	let metadata_hash: Option<[u8; 32]> = None; // Adjust as needed
 
-	// Try to fetch the spec version, fallback to default if it fails
-	let spec_version = match fetch_spec_version(rpc_url) {
-		Ok(version) => version,
+	// Try to fetch spec version and transaction version, fallback to defaults if it fails
+	let (spec_version, transaction_version) = match fetch_runtime_version(rpc_url) {
+		Ok((spec, tx)) => (spec, tx),
 		Err(e) => {
-			eprintln!("Error fetching spec version: {}", e);
-			default_spec_version
+			eprintln!("Error fetching runtime version: {}", e);
+			(default_spec_version, 1)
 		},
 	};
 
@@ -944,6 +940,11 @@ fn fetch_nonce(account: &[u8; 32], remote_url: &str) -> Result<u64, &'static str
 
 // Function to fetch the spec version from the RPC
 fn fetch_spec_version(rpc_url: &str) -> Result<u32, Box<dyn std::error::Error>> {
+	let (spec_version, _) = fetch_runtime_version(rpc_url)?;
+	Ok(spec_version)
+}
+
+fn fetch_runtime_version(rpc_url: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {
 	let client = reqwest::blocking::Client::new();
 
 	// Prepare the request body
@@ -957,8 +958,9 @@ fn fetch_spec_version(rpc_url: &str) -> Result<u32, Box<dyn std::error::Error>> 
 	// Send the request
 	let response: serde_json::Value = client.post(rpc_url).json(&request_body).send()?.json()?;
 
-	// Extract the spec version from the response
+	// Extract both spec version and transaction version from the response
 	let spec_version = response["result"]["specVersion"].as_u64().unwrap_or(247) as u32;
+	let tx_version = response["result"]["transactionVersion"].as_u64().unwrap_or(1) as u32;
 
-	Ok(spec_version)
+	Ok((spec_version, tx_version))
 }
