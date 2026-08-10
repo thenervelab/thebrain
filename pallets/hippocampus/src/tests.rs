@@ -2,9 +2,7 @@ use crate::{
 	mock::*, DepositType, EmissionPaidOut, Error, Event, MinerPaymentWhitelist, TotalDeposited,
 	TotalPaidByRequester, TotalPaidOut,
 };
-use frame_support::assert_noop;
-use frame_support::assert_ok;
-use crate::mock::{BlocksPer24Hours, Max24HourMinerPayout};
+use frame_support::{assert_noop, assert_ok};
 
 #[test]
 fn deposit_works() {
@@ -380,9 +378,8 @@ fn pay_storage_miners_bounds_the_miner_list() {
 			DepositType::Emission
 		));
 		// MaxMinersPerPayout is 16 in the mock; 17 entries must reject.
-		let miners: Vec<_> = (1u8..=17)
-			.map(|i| (sp_runtime::AccountId32::new([i; 32]).into(), 1u16))
-			.collect();
+		let miners: Vec<_> =
+			(1u8..=17).map(|i| (sp_runtime::AccountId32::new([i; 32]), 1u16)).collect();
 		set_ranked_miners(miners);
 		whitelist_miner_payment_caller(alice());
 		assert_noop!(
@@ -481,27 +478,35 @@ fn pay_storage_miners_compartment_is_cumulative() {
 #[test]
 fn pay_storage_miners_respects_24hour_cap() {
 	new_test_ext().execute_with(|| {
+		let cap = Max24HourMinerPayout::get();
+
 		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
-		// Deposit emission: 100 units (below the 1500 unit mock cap)
+		// Twice the cap in the compartment, so only the rate limit can reject.
 		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(alice()),
-			100,
+			cap * 2,
 			DepositType::Emission
 		));
 		set_ranked_miners(vec![(charlie(), 1)]);
 		whitelist_miner_payment_caller(alice());
 
-		// First payout succeeds
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 50));
-
-		// Second payout in same period succeeds (total now 100 < 1500 cap)
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 50));
-
-		// Third payout fails (would exceed cap if capped at 100 total for test)
+		// A single request above the cap rejects outright.
 		assert_noop!(
-			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1),
-			Error::<Test>::InsufficientEmissionFunds
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), cap + 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
 		);
+
+		// Spend most of the budget, then reject when the combined total
+		// would cross the cap.
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), cap - 100));
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 101),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+
+		// Exactly reaching the cap is allowed.
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100));
+		assert_eq!(Balances::free_balance(charlie()), cap);
 	});
 }
 
@@ -536,10 +541,7 @@ fn remove_miner_payment_caller_works() {
 		assert_ok!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::root(), caller.clone()));
 		assert!(MinerPaymentWhitelist::<Test>::contains_key(&caller));
 
-		assert_ok!(Hippocampus::remove_miner_payment_caller(
-			RuntimeOrigin::root(),
-			caller.clone()
-		));
+		assert_ok!(Hippocampus::remove_miner_payment_caller(RuntimeOrigin::root(), caller.clone()));
 		assert!(!MinerPaymentWhitelist::<Test>::contains_key(&caller));
 
 		System::assert_last_event(Event::MinerPaymentCallerRemoved { who: caller }.into());
@@ -549,25 +551,37 @@ fn remove_miner_payment_caller_works() {
 #[test]
 fn pay_storage_miners_resets_24hour_period() {
 	new_test_ext().execute_with(|| {
+		let cap = Max24HourMinerPayout::get();
+
 		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
-		// Deposit 200 units of emission
 		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(alice()),
-			200,
+			cap * 2,
 			DepositType::Emission
 		));
 		set_ranked_miners(vec![(charlie(), 1)]);
 		whitelist_miner_payment_caller(alice());
 
-		// First payout of 100 succeeds
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100));
-		assert_eq!(Hippocampus::emission_available(), 100);
+		// Exhaust the whole 24-hour budget; the next planck rejects.
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), cap));
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
 
-		// Advance blocks past 24-hour period
-		System::set_block_number(BlocksPer24Hours::get() + 1);
+		// One block short of the period boundary the budget is still spent.
+		// The first period is anchored at block 0 (MinerPayoutPeriodStart
+		// default), so the boundary falls exactly on BlocksPer24Hours.
+		System::set_block_number(BlocksPer24Hours::get() - 1);
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
 
-		// Second payout of 100 succeeds after period reset
-		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100));
+		// At the boundary the period resets and a full budget is available.
+		System::set_block_number(BlocksPer24Hours::get());
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), cap));
 		assert_eq!(Hippocampus::emission_available(), 0);
+		assert_eq!(Balances::free_balance(charlie()), cap * 2);
 	});
 }
