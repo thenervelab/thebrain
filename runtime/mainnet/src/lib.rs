@@ -33,7 +33,7 @@ use sp_runtime::AccountId32;
 
 use frame_election_provider_support::{
 	bounds::{ElectionBounds, ElectionBoundsBuilder},
-	 onchain, BalancingConfig, ElectionDataProvider, SequentialPhragmen, VoteWeight,
+	onchain, BalancingConfig, ElectionDataProvider, SequentialPhragmen, VoteWeight,
 };
 use frame_support::derive_impl;
 use frame_support::genesis_builder_helper::build_state;

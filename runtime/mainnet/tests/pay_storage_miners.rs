@@ -1,13 +1,17 @@
 //! End-to-end: emission deposited into the bank is distributed to ranked
-//! storage-miner owners by `pay_storage_miners`, and the emission
-//! compartment is invisible to the arion settlement headroom.
+//! storage-miner owners by `pay_storage_miners`, the runtime's ranking
+//! source resolves owners and applies the uid-238/activity filters, and the
+//! emission compartment is invisible to the arion settlement headroom.
 
 use frame_support::traits::Currency;
+use frame_support::{assert_noop, assert_ok};
 use hippius_mainnet_runtime::{
 	AccountId, ArionPayoutSource, Balances, Hippocampus, Runtime, RuntimeOrigin, System,
 };
 use pallet_arion::PayoutSource;
 use pallet_hippocampus::DepositType;
+use pallet_metagraph::{Role, UID};
+use pallet_registration::{ColdkeyNodeInfoLite, NodeType, Status};
 use sp_core::crypto::Ss58Codec;
 use sp_runtime::{AccountId32, BuildStorage};
 
@@ -30,29 +34,72 @@ fn new_test_ext() -> sp_io::TestExternalities {
 	ext
 }
 
+/// Register a storage-miner node and append it to the ranked list. Seeds
+/// storage directly, the same way miner_payments.rs seeds arion children.
+fn seed_ranked_storage_miner(node_seed: u8, owner: &AccountId, weight: u16, is_active: bool) {
+	let node_id = vec![node_seed; 32];
+	pallet_registration::ColdkeyNodeRegistrationV2::<Runtime>::insert(
+		node_id.clone(),
+		Some(ColdkeyNodeInfoLite {
+			node_id: node_id.clone(),
+			node_type: NodeType::StorageMiner,
+			status: Status::Online,
+			registered_at: 0u32.into(),
+			owner: owner.clone(),
+		}),
+	);
+	let mut list = pallet_rankings::RankedList::<Runtime>::get();
+	list.push(pallet_rankings::NodeRankings {
+		rank: u32::from(node_seed),
+		node_id,
+		node_ss58_address: owner.to_ss58check().into_bytes(),
+		node_type: NodeType::StorageMiner,
+		weight,
+		last_updated: 0u32.into(),
+		is_active,
+	});
+	pallet_rankings::RankedList::<Runtime>::put(list);
+}
+
+/// Fund the bank with an ED cushion plus `emission` tagged as Emission, and
+/// whitelist the admin account as the payout caller.
+fn fund_bank_and_whitelist_admin(emission: u128) {
+	let funder = account(1);
+	Balances::make_free_balance_be(&funder, emission + 1_000_000);
+
+	assert_ok!(Hippocampus::deposit(
+		RuntimeOrigin::signed(funder.clone()),
+		ED * 2,
+		DepositType::Grant
+	));
+	assert_ok!(Hippocampus::deposit(
+		RuntimeOrigin::signed(funder),
+		emission,
+		DepositType::Emission
+	));
+	// AdminOrigin is EnsureSignedBy<ArionAdminMembers>, not root.
+	assert_ok!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::signed(admin()), admin()));
+}
+
 #[test]
 fn emission_compartment_invisible_to_arion_settlement() {
 	new_test_ext().execute_with(|| {
 		let funder = account(1);
 		Balances::make_free_balance_be(&funder, 1_000_000);
 
-		// ED cushion + the emission pot.
-		assert!(Hippocampus::deposit(
+		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(funder.clone()),
 			ED * 2,
 			DepositType::Grant
-		)
-		.is_ok());
+		));
 		let arion_headroom_before = ArionPayoutSource::available();
-		assert!(Hippocampus::deposit(
+		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(funder),
 			100_000,
 			DepositType::Emission
-		)
-		.is_ok());
+		));
 
 		// Wall: emission is invisible to the arion settlement headroom.
-		// Arion can only spend what the bank has *minus* emission.
 		assert_eq!(ArionPayoutSource::available(), arion_headroom_before);
 		assert_eq!(Hippocampus::emission_available(), 100_000);
 	});
@@ -61,29 +108,12 @@ fn emission_compartment_invisible_to_arion_settlement() {
 #[test]
 fn pay_storage_miners_with_empty_ranking() {
 	new_test_ext().execute_with(|| {
-		let funder = account(1);
-		Balances::make_free_balance_be(&funder, 1_000_000);
+		fund_bank_and_whitelist_admin(100_000);
 
-		assert!(Hippocampus::deposit(
-			RuntimeOrigin::signed(funder.clone()),
-			ED * 2,
-			DepositType::Grant
-		)
-		.is_ok());
-		assert!(Hippocampus::deposit(
-			RuntimeOrigin::signed(funder),
-			100_000,
-			DepositType::Emission
-		)
-		.is_ok());
-
-		// Whitelist admin and attempt payout with no ranked miners
-		assert!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::root(), admin()).is_ok());
-
-		// With no ranked miners, the call should fail with NoEligibleMiners
-		let result = Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000);
-		assert!(result.is_err());
-		// Emission is untouched.
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000),
+			pallet_hippocampus::Error::<Runtime>::NoEligibleMiners
+		);
 		assert_eq!(Hippocampus::emission_available(), 100_000);
 	});
 }
@@ -91,36 +121,45 @@ fn pay_storage_miners_with_empty_ranking() {
 #[test]
 fn pay_storage_miners_distributes_to_ranked_miners() {
 	new_test_ext().execute_with(|| {
-		let funder = account(1);
-		let miner1 = account(2);
-		let miner2 = account(3);
+		let (miner_a, miner_b, inactive) = (account(2), account(3), account(4));
+		fund_bank_and_whitelist_admin(100_000);
 
-		Balances::make_free_balance_be(&funder, 1_000_000);
-		Balances::make_free_balance_be(&miner1, ED * 2);
-		Balances::make_free_balance_be(&miner2, ED * 2);
+		seed_ranked_storage_miner(10, &miner_a, 100, true);
+		seed_ranked_storage_miner(11, &miner_b, 300, true);
+		// Inactive nodes must not receive a share or dilute the split.
+		seed_ranked_storage_miner(12, &inactive, 600, false);
 
-		// Deposit funds
-		assert!(Hippocampus::deposit(
-			RuntimeOrigin::signed(funder.clone()),
-			ED * 2,
-			DepositType::Grant
-		)
-		.is_ok());
-		assert!(Hippocampus::deposit(
-			RuntimeOrigin::signed(funder),
-			1_000,
-			DepositType::Emission
-		)
-		.is_ok());
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
 
-		// Whitelist admin for payout
-		assert!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::root(), admin()).is_ok());
+		assert_eq!(Balances::free_balance(&miner_a), 25_000);
+		assert_eq!(Balances::free_balance(&miner_b), 75_000);
+		assert_eq!(Balances::free_balance(&inactive), 0);
+		assert_eq!(Hippocampus::emission_available(), 0);
+	});
+}
 
-		// Note: In a real runtime integration test, we'd seed the ranking pallet with
-		// actual ranked miners. This test verifies the bank's payout logic works, but the
-		// full runtime path (ranking → registration → bank) requires those pallets to be
-		// fully initialized, which is beyond the scope of this bank-focused test.
-		// For complete E2E testing, see the pallet tests in hippocampus/tests.rs which
-		// control the miner list via MockRanking.
+#[test]
+fn pay_storage_miners_excludes_uid_238_account() {
+	new_test_ext().execute_with(|| {
+		let (miner_a, capture) = (account(2), account(5));
+		fund_bank_and_whitelist_admin(100_000);
+
+		seed_ranked_storage_miner(10, &miner_a, 100, true);
+		seed_ranked_storage_miner(13, &capture, 300, true);
+
+		// Mark `capture` as the uid-238 (emission capture) account on the
+		// metagraph: it must be excluded and not dilute the miner split.
+		pallet_metagraph::UIDs::<Runtime>::put(vec![UID {
+			address: sp_core::sr25519::Public::from_raw([0u8; 32]),
+			id: 238,
+			role: Role::Validator,
+			substrate_address: capture.clone(),
+		}]);
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
+
+		assert_eq!(Balances::free_balance(&capture), 0);
+		assert_eq!(Balances::free_balance(&miner_a), 100_000);
+		assert_eq!(Hippocampus::emission_available(), 0);
 	});
 }
