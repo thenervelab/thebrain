@@ -44,6 +44,16 @@ pub mod pallet {
 	pub type BalanceOf<T> =
 		<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
+	/// Ranked storage miners the bank distributes emission to.
+	///
+	/// Implemented by the runtime against the storage-ranking pallet so the
+	/// bank stays decoupled from where rankings come from.
+	pub trait StorageMinerRanking<AccountId> {
+		/// Payout account and current ranking weight of every active storage
+		/// miner. Zero-weight entries receive nothing.
+		fn active_storage_miners() -> Vec<(AccountId, u16)>;
+	}
+
 	/// Version 1 is "activated": requesters whitelisted and pre-upgrade backing
 	/// seeded by `ActivateMinerPaymentBank`. That migration seeds real funds
 	/// from sudo, so it keys its one-shot guard on this rather than on
@@ -69,6 +79,13 @@ pub mod pallet {
 
 		/// Origin allowed to manage the requester whitelist.
 		type AdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+		/// Ranked storage miners paid by `pay_storage_miners`.
+		type MinerRanking: StorageMinerRanking<Self::AccountId>;
+
+		/// Most ranked miners a single `pay_storage_miners` call will pay.
+		#[pallet::constant]
+		type MaxMinersPerPayout: Get<u32>;
 
 		type WeightInfo: WeightInfo;
 	}
@@ -107,9 +124,15 @@ pub mod pallet {
 	pub type TotalDeposited<T: Config> =
 		StorageMap<_, Blake2_128Concat, DepositType, BalanceOf<T>, ValueQuery>;
 
-	/// Lifetime total released through `request_payment`.
+	/// Lifetime total released through `request_payment` and `pay_storage_miners`.
 	#[pallet::storage]
 	pub type TotalPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+	/// Lifetime total distributed to storage miners out of the emission
+	/// compartment. `TotalDeposited[Emission] - EmissionPaidOut` is the
+	/// compartment balance still reserved for `pay_storage_miners`.
+	#[pallet::storage]
+	pub type EmissionPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
 	/// Lifetime total released per requester (e.g. arion vs compute escrow).
 	#[pallet::storage]
@@ -180,6 +203,15 @@ pub mod pallet {
 		RequesterCapRemoved { who: T::AccountId },
 		/// Distribution enabled/disabled status changed.
 		DistributionEnabledChanged { enabled: bool },
+		/// `pay_storage_miners` distributed emission pro-rata by ranking weight.
+		/// `paid < requested` when shares rounded to zero or a transfer was
+		/// skipped; the difference stays in the emission compartment.
+		StorageMinersPaid {
+			requested: BalanceOf<T>,
+			paid: BalanceOf<T>,
+			miners_paid: u32,
+			miners_skipped: u32,
+		},
 	}
 
 	#[pallet::error]
@@ -194,6 +226,14 @@ pub mod pallet {
 		NotWhitelisted,
 		/// Distributions are currently disabled.
 		DistributionDisabled,
+		/// `pay_storage_miners` asked for more than the emission compartment holds.
+		InsufficientEmissionFunds,
+		/// `pay_storage_miners` asked for more than the bank can physically pay.
+		InsufficientBankBalance,
+		/// The ranked-miner list exceeds `MaxMinersPerPayout`.
+		TooManyMiners,
+		/// No ranked storage miner carries a non-zero weight.
+		NoEligibleMiners,
 	}
 
 	#[pallet::call]
@@ -299,6 +339,16 @@ pub mod pallet {
 			)
 			.get()
 			.saturated_into()
+		}
+
+		/// Emission deposited but not yet distributed to storage miners.
+		///
+		/// Other bank consumers (arion settlement, referral commissions) subtract
+		/// this from their spendable headroom — the compartment is reserved for
+		/// `pay_storage_miners`.
+		pub fn emission_available() -> BalanceOf<T> {
+			TotalDeposited::<T>::get(DepositType::Emission)
+				.saturating_sub(EmissionPaidOut::<T>::get())
 		}
 
 		/// Transfer `amount` from `who` into the bank and record it. Shared by

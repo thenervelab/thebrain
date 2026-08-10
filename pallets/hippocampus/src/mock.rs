@@ -1,5 +1,6 @@
 use crate as pallet_hippocampus;
-use frame_support::{derive_impl, parameter_types, PalletId};
+use core::cell::RefCell;
+use frame_support::{derive_impl, parameter_types, traits::ConstU32, PalletId};
 use sp_keyring::AccountKeyring;
 use sp_runtime::{
 	traits::{IdentifyAccount, IdentityLookup, Verify},
@@ -45,11 +46,29 @@ parameter_types! {
 	pub const HippocampusPalletId: PalletId = PalletId(*b"hipocamp");
 }
 
+thread_local! {
+	static RANKED_MINERS: RefCell<Vec<(AccountId, u16)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Test control for the ranked-miner set `pay_storage_miners` reads.
+pub fn set_ranked_miners(miners: Vec<(AccountId, u16)>) {
+	RANKED_MINERS.with(|m| *m.borrow_mut() = miners);
+}
+
+pub struct MockRanking;
+impl pallet_hippocampus::StorageMinerRanking<AccountId> for MockRanking {
+	fn active_storage_miners() -> Vec<(AccountId, u16)> {
+		RANKED_MINERS.with(|m| m.borrow().clone())
+	}
+}
+
 impl pallet_hippocampus::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
 	type PalletId = HippocampusPalletId;
 	type AdminOrigin = frame_system::EnsureRoot<AccountId>;
+	type MinerRanking = MockRanking;
+	type MaxMinersPerPayout = ConstU32<16>;
 	type WeightInfo = ();
 }
 
@@ -63,6 +82,10 @@ pub fn bob() -> AccountId {
 
 pub fn charlie() -> AccountId {
 	AccountKeyring::Charlie.to_account_id()
+}
+
+pub fn dave() -> AccountId {
+	AccountKeyring::Dave.to_account_id()
 }
 
 pub fn hippocampus_account() -> AccountId {
@@ -80,6 +103,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 	let mut ext = sp_io::TestExternalities::new(t);
 	ext.execute_with(|| {
 		System::set_block_number(1);
+		set_ranked_miners(Vec::new());
 	});
 	ext
 }

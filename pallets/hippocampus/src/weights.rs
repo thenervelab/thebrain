@@ -16,6 +16,7 @@ pub trait WeightInfo {
 	fn deposit() -> Weight;
 	fn add_requester() -> Weight;
 	fn remove_requester() -> Weight;
+	fn pay_storage_miners(n: u32) -> Weight;
 }
 
 /// Weights using runtime `DbWeight`.
@@ -39,6 +40,19 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
+
+	fn pay_storage_miners(n: u32) -> Weight {
+		// Guards + compartment/ledger bookkeeping, then one transfer
+		// (2 account reads/writes) per miner.
+		Weight::from_parts(30_000_000, 0)
+			.saturating_add(T::DbWeight::get().reads(5_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+			.saturating_add(
+				Weight::from_parts(50_000_000, 0)
+					.saturating_add(T::DbWeight::get().reads_writes(2, 2))
+					.saturating_mul(n.into()),
+			)
+	}
 }
 
 impl WeightInfo for () {
@@ -58,5 +72,16 @@ impl WeightInfo for () {
 		Weight::from_parts(15_000_000, 0)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
+
+	fn pay_storage_miners(n: u32) -> Weight {
+		Weight::from_parts(30_000_000, 0)
+			.saturating_add(RocksDbWeight::get().reads(5_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+			.saturating_add(
+				Weight::from_parts(50_000_000, 0)
+					.saturating_add(RocksDbWeight::get().reads_writes(2, 2))
+					.saturating_mul(n.into()),
+			)
 	}
 }
