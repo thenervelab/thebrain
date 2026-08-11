@@ -359,7 +359,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	apis: RUNTIME_API_VERSIONS,
 	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
 	// argument, so previously-encoded calls no longer decode.
-	transaction_version: 2,
+	transaction_version: 3,
 	state_version: 0,
 };
 

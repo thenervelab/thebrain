@@ -208,7 +208,7 @@ fn unregistered_or_degraded_ranked_nodes_are_excluded() {
 }
 
 #[test]
-fn daily_miner_payout_cap_is_1500_alpha() {
+fn daily_miner_payout_cap_is_3500_alpha() {
 	// Guards the 18-decimals scaling of the cap: the constant originally
 	// shipped 1000x too small (3 alpha instead of 3000). If the intended
 	// daily cap changes, change this test together with the runtime value.
