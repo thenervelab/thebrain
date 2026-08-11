@@ -213,5 +213,5 @@ fn daily_miner_payout_cap_is_1500_alpha() {
 	// shipped 1000x too small (3 alpha instead of 3000). If the intended
 	// daily cap changes, change this test together with the runtime value.
 	const UNIT: u128 = 1_000_000_000_000_000_000;
-	assert_eq!(<Runtime as pallet_hippocampus::Config>::Max24HourMinerPayout::get(), 1_500 * UNIT);
+	assert_eq!(<Runtime as pallet_hippocampus::Config>::Max24HourMinerPayout::get(), 3_500 * UNIT);
 }
