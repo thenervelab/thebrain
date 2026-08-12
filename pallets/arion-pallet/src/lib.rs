@@ -613,6 +613,10 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxAttestationBucketsPrunePerCall: Get<u32>;
 
+		/// Max child weight entries removed per `prune_stale_node_weights` call (bounds weight).
+		#[pallet::constant]
+		type MaxNodeWeightPrunePerCall: Get<u32>;
+
 		// --- Registration economics / safety controls ---
 
 		/// Max distinct families that can ever claim their first “free” child slot.
@@ -1286,6 +1290,11 @@ pub mod pallet {
 			pruned: u32,
 			next_epoch: u64,
 		},
+		/// Stale node weight/quality entries of non-active children were pruned.
+		StaleNodeWeightsPruned {
+			children_pruned: u32,
+			families_pruned: u32,
+		},
 		UserStatsUpdated {
 			user: T::AccountId,
 			size: u128,
@@ -1441,6 +1450,8 @@ pub mod pallet {
 		InvalidAttestationPruneBatch,
 		/// `free_child_slots_per_family` exceeds [`Config::MaxChildrenPerFamily`].
 		FreeChildSlotsPerFamilyTooLarge,
+		/// Batch/staleness parameters for `prune_stale_node_weights` are out of bounds.
+		InvalidNodeWeightPruneBatch,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -3312,6 +3323,90 @@ pub mod pallet {
 			}
 
 			Self::deposit_event(Event::CrushEpochsPruned { start_epoch, pruned, next_epoch: e });
+			Ok(())
+		}
+
+		/// Remove stale per-child node weight/quality entries left behind by children that are
+		/// no longer `Active` (legacy deregistrations that predate automatic cleanup, expired
+		/// unbondings, forced removals). Also sweeps family weight entries of families with no
+		/// active children left.
+		///
+		/// A child entry is pruned only when BOTH hold:
+		/// - its `NodeWeightLastBucket` is older than `min_stale_buckets` (live children are
+		///   refreshed every bucket by the chain-submitter, so they are never eligible), and
+		/// - it has no `Active` registration in `ChildRegistrations`.
+		///
+		/// Restricted to `WeightAuthorityOrigin` (the whitelisted chain-submitter), same as
+		/// `submit_node_quality`: weight state is authority-owned, so its cleanup is too.
+		#[pallet::call_index(39)]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_stale_node_weights(*max_children), Pays::No))]
+		pub fn prune_stale_node_weights(
+			origin: OriginFor<T>,
+			min_stale_buckets: u32,
+			max_children: u32,
+		) -> DispatchResult {
+			T::WeightAuthorityOrigin::ensure_origin(origin)?;
+
+			let cap = T::MaxNodeWeightPrunePerCall::get();
+			ensure!(
+				max_children > 0 && max_children <= cap,
+				Error::<T>::InvalidNodeWeightPruneBatch
+			);
+			// Floor of 2 buckets: live children lag at most 1 bucket behind the submitter.
+			ensure!(min_stale_buckets >= 2, Error::<T>::InvalidNodeWeightPruneBatch);
+
+			let cur = CurrentWeightBucket::<T>::get();
+
+			// Collect first, then mutate: never remove from a map while iterating it.
+			let mut targets: Vec<T::AccountId> = Vec::new();
+			for (child, _weight) in NodeWeightByChild::<T>::iter() {
+				if targets.len() as u32 >= max_children {
+					break;
+				}
+				// Missing last-bucket entry decodes as default 0 == infinitely stale.
+				let last = NodeWeightLastBucket::<T>::get(&child);
+				if cur.saturating_sub(last) <= min_stale_buckets {
+					continue;
+				}
+				let active = matches!(
+					ChildRegistrations::<T>::get(&child),
+					Some(reg) if reg.status == ChildStatus::Active
+				);
+				if !active {
+					targets.push(child);
+				}
+			}
+
+			let mut families: Vec<T::AccountId> = Vec::new();
+			for child in &targets {
+				if let Some(reg) = ChildRegistrations::<T>::get(child) {
+					if !families.contains(&reg.family) {
+						families.push(reg.family);
+					}
+				}
+				Self::remove_child_node_weight_entries(child);
+			}
+
+			// Family sweep: drop weight entries of families with no active children left.
+			// Deliberately does NOT touch `FamilyCount` / `FamilyUsedFreeSlot`: those are
+			// registration-lifecycle state owned by the deregistration paths.
+			let mut families_pruned: u32 = 0;
+			for family in &families {
+				if FamilyActiveChildren::<T>::get(family) == 0 {
+					FamilyFirstSeenBucket::<T>::remove(family);
+					FamilyWeightRaw::<T>::remove(family);
+					FamilyWeight::<T>::remove(family);
+					families_pruned = families_pruned.saturating_add(1);
+				}
+			}
+
+			if !targets.is_empty() || families_pruned > 0 {
+				Self::deposit_event(Event::StaleNodeWeightsPruned {
+					children_pruned: targets.len() as u32,
+					families_pruned,
+				});
+			}
+
 			Ok(())
 		}
 	}

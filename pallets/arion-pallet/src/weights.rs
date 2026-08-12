@@ -46,6 +46,7 @@ pub trait WeightInfo {
     fn deregister_warden() -> Weight;
     fn prune_attestation_buckets(n: u32) -> Weight;
     fn prune_historical_crush_epochs(n: u32) -> Weight;
+    fn prune_stale_node_weights(n: u32) -> Weight;
     /// See [`UPDATE_USER_FILE_SIZE_READ_BUDGET`].
     fn update_user_file_size() -> Weight;
     /// `on_initialize` miner stats prune: bounded scan + protected-uid pass over registrations.
@@ -233,6 +234,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(4)))
     }
 
+    /// Storage: NodeWeightByChild iteration (r:n), NodeWeightLastBucket + ChildRegistrations
+    /// (r:n each), then per pruned child: NodeWeightByChild/NodeWeightLastBucket/NodeQualityByChild
+    /// removals (w:3) plus family weight sweep (r:1 w:3 worst case).
+    fn prune_stale_node_weights(n: u32) -> Weight {
+        Weight::from_parts(12_000_000, 0)
+            .saturating_add(Weight::from_parts(6_000_000, 0).saturating_mul(n.into()))
+            .saturating_add(T::DbWeight::get().reads(1_u64.saturating_add((n as u64).saturating_mul(4))))
+            .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(6)))
+    }
+
     /// Storage: Proxy Proxies (r:1+), Registration maps (iteration), UserTotalFilesSize (r:1 w:1),
     /// UserTotalFilesCount (r:1 w:1)
     fn update_user_file_size() -> Weight {
@@ -376,6 +387,13 @@ impl WeightInfo for () {
             .saturating_add(Weight::from_parts(4_000_000, 0).saturating_mul(n.into()))
             .saturating_add(RocksDbWeight::get().reads(1))
             .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(4)))
+    }
+
+    fn prune_stale_node_weights(n: u32) -> Weight {
+        Weight::from_parts(12_000_000, 0)
+            .saturating_add(Weight::from_parts(6_000_000, 0).saturating_mul(n.into()))
+            .saturating_add(RocksDbWeight::get().reads(1_u64.saturating_add((n as u64).saturating_mul(4))))
+            .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(6)))
     }
 
     fn update_user_file_size() -> Weight {

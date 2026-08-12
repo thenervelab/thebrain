@@ -100,6 +100,8 @@ parameter_types! {
 	pub const MaxCrushEpochPrunesPerCall: u32 = 200;
 	/// Cap on `prune_attestation_buckets` batch size (weight + anti-spam).
 	pub const MaxAttestationBucketsPrunePerCall: u32 = 64;
+	/// Cap on `prune_stale_node_weights` batch size (weight bound).
+	pub const MaxNodeWeightPrunePerCall: u32 = 200;
 	/// Periodic [`MinerStatsByUid`] pruning in arion (`0` = disabled).
 	pub const ArionMinerStatsPruneInterval: BlockNumber = 100;
 	/// Max stats uid keys scanned per pruning tick.
@@ -202,6 +204,7 @@ impl pallet_arion::Config for Runtime {
 	type MaxContentHashLen = ConstU32<32>;
 	type AttestationRetentionBuckets = ConstU32<168>;
 	type MaxAttestationBucketsPrunePerCall = MaxAttestationBucketsPrunePerCall;
+	type MaxNodeWeightPrunePerCall = MaxNodeWeightPrunePerCall;
 	type WeightInfo = pallet_arion::weights::SubstrateWeight<Runtime>;
 	type MaxAttestations = ConstU32<1000>;
 	type MaxShardHashLen = ConstU32<100>;
@@ -354,7 +357,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92001,
+	spec_version: 92002,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
