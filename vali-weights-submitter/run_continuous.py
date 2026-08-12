@@ -27,6 +27,10 @@ class ContinuousWeightSubmitter:
         self.logger = logging.getLogger(__name__)
         self.running = False
         self.subtensor = None
+        self.config_path = config_path
+        # Reuse single WeightSubmitter instance to prevent memory leaks
+        # Creating new WeightSubmitter each iteration leaks ~50MB via metagraph/scalecodec
+        self._weight_submitter = None
         
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from YAML file."""
@@ -151,6 +155,13 @@ class ContinuousWeightSubmitter:
             self.logger.info(f"Current block {current_block} is not a submission block, waiting for next one")
             current_block = await self.wait_for_next_submission_block()
         
+        # Initialize reusable WeightSubmitter once to prevent memory leaks
+        # Creating new WeightSubmitter each iteration leaks ~50MB via metagraph/scalecodec
+        if self._weight_submitter is None:
+            self._weight_submitter = WeightSubmitter(self.config_path)
+            await self._weight_submitter.initialize_connections()
+            self.logger.info("✅ Initialized reusable WeightSubmitter (memory-leak-safe)")
+        
         while self.running:
             try:
                 submission_count += 1
@@ -158,9 +169,9 @@ class ContinuousWeightSubmitter:
                 self.logger.info(f"=== SUBMISSION #{submission_count} ===")
                 self.logger.info(f"Starting weight submission at {start_time} (block {current_block})")
                 
-                # Run the weight submission
-                submitter = WeightSubmitter()
-                success = await submitter.run()
+                # Run the weight submission using reusable submitter
+                # This syncs existing metagraph instead of creating new one (no memory leak)
+                success = await self._weight_submitter.run_submission()
                 
                 end_time = datetime.now()
                 duration = (end_time - start_time).total_seconds()
@@ -194,6 +205,10 @@ class ContinuousWeightSubmitter:
         self.logger.info("Stopping continuous weight submission...")
         if self.subtensor:
             self.subtensor.close()
+        # Clean up the reusable WeightSubmitter
+        if self._weight_submitter:
+            self._weight_submitter.cleanup()
+            self._weight_submitter = None
 
 
 async def main():

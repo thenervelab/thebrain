@@ -35,6 +35,9 @@ class WeightSubmitter:
         self.hippius_interface = None
         self.wallet = None
         self.validator_ss58 = None
+        # Persistent metagraph to prevent memory leaks
+        # Creating new metagraph each time leaks ~50MB via scalecodec type registration
+        self._metagraph = None
         
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from YAML file."""
@@ -126,22 +129,31 @@ class WeightSubmitter:
     
     async def fetch_metagraph(self) -> Dict[int, str]:
         """
-        Step 1: Fetch the metagraph for subnet 75 and get all active hotkeys with their UIDs.
+        Step 1: Fetch/sync the metagraph for subnet 75 and get all active hotkeys with their UIDs.
+        
+        Uses sync() on existing metagraph to prevent memory leaks.
+        Creating new bt.metagraph() each time leaks ~50MB via scalecodec type registration.
         
         Returns:
             Dict[int, str]: Mapping of UID to hotkey (SS58 address)
         """
-        self.logger.info(f"Fetching metagraph for subnet {self.config['bittensor']['subnet_id']}...")
+        self.logger.info(f"Syncing metagraph for subnet {self.config['bittensor']['subnet_id']}...")
         
         try:
-            # Get metagraph for the subnet
-            metagraph = bt.metagraph(
-                netuid=self.config['bittensor']['subnet_id'],
-                subtensor=self.subtensor
-            )
+            # Create metagraph ONCE, then sync to refresh data (prevents memory leak)
+            if self._metagraph is None:
+                self.logger.info("Creating metagraph for the first time...")
+                self._metagraph = bt.metagraph(
+                    netuid=self.config['bittensor']['subnet_id'],
+                    subtensor=self.subtensor
+                )
+            else:
+                # Sync existing metagraph with latest chain data (NO MEMORY LEAK)
+                self.logger.info("Syncing existing metagraph with latest chain data...")
+                self._metagraph.sync(subtensor=self.subtensor)
             
             # Get active neurons
-            active_neurons = metagraph.neurons
+            active_neurons = self._metagraph.neurons
             
             # Create mapping of UID to hotkey
             uid_to_hotkey = {}
@@ -426,13 +438,20 @@ class WeightSubmitter:
             self.logger.error(f"Error submitting weights: {e}")
             return False
     
-    async def run(self):
-        """Main execution method that runs all steps."""
+    async def run_submission(self) -> bool:
+        """
+        Run weight submission without reinitializing connections.
+        
+        This method is designed for repeated calls in a loop. It:
+        - Assumes initialize_connections() was already called
+        - Uses sync() on existing metagraph (no memory leak)
+        - Does NOT close connections (caller manages lifecycle)
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            # Initialize connections
-            await self.initialize_connections()
-            
-            # Step 1: Fetch metagraph
+            # Step 1: Sync metagraph and fetch active neurons
             uid_to_hotkey = await self.fetch_metagraph()
             
             # Step 2: Fetch Hippius rankings
@@ -454,14 +473,46 @@ class WeightSubmitter:
                 return False
                 
         except Exception as e:
+            self.logger.error(f"Error in weight submission: {e}")
+            return False
+    
+    def cleanup(self):
+        """
+        Clean up connections explicitly.
+        
+        Call this when you're done using the WeightSubmitter instance.
+        """
+        self.logger.info("Cleaning up WeightSubmitter connections...")
+        if self.subtensor:
+            try:
+                self.subtensor.close()
+            except Exception as e:
+                self.logger.warning(f"Error closing subtensor: {e}")
+            self.subtensor = None
+        if self.hippius_interface:
+            try:
+                self.hippius_interface.close()
+            except Exception as e:
+                self.logger.warning(f"Error closing hippius interface: {e}")
+            self.hippius_interface = None
+        self._metagraph = None
+        self.logger.info("WeightSubmitter cleanup complete")
+
+    async def run(self):
+        """Main execution method that runs all steps (one-shot mode)."""
+        try:
+            # Initialize connections
+            await self.initialize_connections()
+            
+            # Run the submission
+            return await self.run_submission()
+                
+        except Exception as e:
             self.logger.error(f"Error in main execution: {e}")
             return False
         finally:
             # Clean up connections
-            if self.subtensor:
-                self.subtensor.close()
-            if self.hippius_interface:
-                self.hippius_interface.close()
+            self.cleanup()
 
 
 async def main():
