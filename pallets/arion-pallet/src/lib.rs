@@ -2417,18 +2417,19 @@ pub mod pallet {
 			let mut families_to_recompute: sp_std::vec::Vec<T::AccountId> = sp_std::vec::Vec::new();
 			let mut scanned: u32 = 0;
 			let mut last_scanned: Option<T::AccountId> = None;
-			let mut exhausted = true;
-			for (family, n) in family_iter {
-				if scanned >= max_families {
-					exhausted = false;
-					break;
-				}
+			// `take` bounds the walk without fetching a further entry to discard, so the
+			// page costs exactly `max_families` reads rather than one more.
+			for (family, n) in family_iter.take(max_families as usize) {
 				scanned = scanned.saturating_add(1);
 				last_scanned = Some(family.clone());
 				if n > 0 {
 					families_to_recompute.push(family);
 				}
 			}
+			// A short page means the map ended inside it. Ending exactly on the boundary
+			// parks the cursor instead; the next call then reads nothing and resets, which
+			// costs one extra call and never skips a family.
+			let exhausted = scanned < max_families;
 
 			// Park at the last scanned key; reset once the map end is reached so the next
 			// call starts a fresh pass. `iter_from` resumes strictly after the given key, so
@@ -2973,7 +2974,7 @@ pub mod pallet {
 		#[pallet::call_index(20)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::submit_node_quality(
 			updates.len() as u32,
-			T::MaxFamilyRecomputePerCall::get(),
+			T::MaxFamilyRecomputePerCall::get().max(1),
 			T::MaxChildrenPerFamily::get(),
 		), Pays::No))]
 		pub fn submit_node_quality(
