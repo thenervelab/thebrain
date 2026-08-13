@@ -49,7 +49,8 @@ class ContinuousWeightSubmitter:
         """Initialize Bittensor connection for block monitoring."""
         import bittensor as bt
         
-        self.subtensor = bt.subtensor(
+        # bittensor v11: bt.Subtensor is blocking when called directly
+        self.subtensor = bt.Subtensor(
             network=self.config['bittensor']['chain_endpoint']
         )
         self.logger.info("Initialized Bittensor connection for block monitoring")
@@ -73,7 +74,8 @@ class ContinuousWeightSubmitter:
             await self.initialize_subtensor()
         
         try:
-            block_number = self.subtensor.block
+            # bittensor v11: block is a method, not a property
+            block_number = self.subtensor.block()
             return block_number
         except Exception as e:
             self.logger.error(f"Error getting current block: {e}")
@@ -192,7 +194,8 @@ class ContinuousWeightSubmitter:
         """Stop the continuous submission process."""
         self.running = False
         self.logger.info("Stopping continuous weight submission...")
-        if self.subtensor:
+        # bittensor v11: close() is optional (auto on GC) and may not exist
+        if self.subtensor and hasattr(self.subtensor, "close"):
             self.subtensor.close()
 
 
