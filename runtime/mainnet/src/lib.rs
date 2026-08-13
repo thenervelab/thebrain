@@ -100,6 +100,16 @@ parameter_types! {
 	pub const MaxCrushEpochPrunesPerCall: u32 = 200;
 	/// Cap on `prune_attestation_buckets` batch size (weight + anti-spam).
 	pub const MaxAttestationBucketsPrunePerCall: u32 = 64;
+	/// Cap on `prune_stale_node_weights` batch size (weight bound).
+	pub const MaxNodeWeightPrunePerCall: u32 = 200;
+	/// Cap on `prune_stale_node_weights` scan size (bounds the walk over live entries).
+	pub const MaxNodeWeightScanPerCall: u32 = 2000;
+	/// Families visited per `submit_node_quality` recompute page. Declared weight scales
+	/// with this times `MaxChildrenPerFamily` (35), so 25 keeps a single call's family
+	/// term near 2.6k reads. The submitter issues many calls per bucket (batches are
+	/// capped at `MaxNodeWeightUpdates`), so the cursor still covers the whole family set
+	/// well inside a bucket at realistic sizes.
+	pub const MaxFamilyRecomputePerCall: u32 = 25;
 	/// Periodic [`MinerStatsByUid`] pruning in arion (`0` = disabled).
 	pub const ArionMinerStatsPruneInterval: BlockNumber = 100;
 	/// Max stats uid keys scanned per pruning tick.
@@ -202,6 +212,9 @@ impl pallet_arion::Config for Runtime {
 	type MaxContentHashLen = ConstU32<32>;
 	type AttestationRetentionBuckets = ConstU32<168>;
 	type MaxAttestationBucketsPrunePerCall = MaxAttestationBucketsPrunePerCall;
+	type MaxNodeWeightPrunePerCall = MaxNodeWeightPrunePerCall;
+	type MaxNodeWeightScanPerCall = MaxNodeWeightScanPerCall;
+	type MaxFamilyRecomputePerCall = MaxFamilyRecomputePerCall;
 	type WeightInfo = pallet_arion::weights::SubstrateWeight<Runtime>;
 	type MaxAttestations = ConstU32<1000>;
 	type MaxShardHashLen = ConstU32<100>;
@@ -229,8 +242,10 @@ impl pallet_arion::Config for Runtime {
 	type MaxNodeWeightUpdates = MaxNodeWeightUpdates;
 	type MaxNodeWeight = MaxNodeWeight;
 	type MaxFamilyWeight = MaxFamilyWeight;
-	type FamilyTopN = FamilyTopN;
-	type FamilyRankDecayPermille = FamilyRankDecayPermille;
+	type FamilyScoreFloorBytes = FamilyScoreFloorBytes;
+	type FamilyScoreCeilBytes = FamilyScoreCeilBytes;
+	type MaxFamilyScore = MaxFamilyScore;
+	type StaleChildBuckets = StaleChildBuckets;
 	type FamilyWeightEmaAlphaPermille = FamilyWeightEmaAlphaPermille;
 	type MaxFamilyWeightDeltaPerBucket = MaxFamilyWeightDeltaPerBucket;
 	type NewcomerGraceBuckets = NewcomerGraceBuckets;
@@ -354,7 +369,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92001,
+	spec_version: 92002,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
@@ -397,10 +412,14 @@ parameter_types! {
 	pub const MaxNodeWeight: u16 = 50_000;
 	// Maximum family weight
 	pub const MaxFamilyWeight: u16 = 65_535;
-	// Number of top nodes to consider per family
-	pub const FamilyTopN: u32 = 10;
-	// Decay factor for family rank (permille)
-	pub const FamilyRankDecayPermille: u32 = 800;
+	// Aggregate family scoring range: 0 at 100 GiB, MaxFamilyScore at 1 PiB
+	pub const FamilyScoreFloorBytes: u128 = 100 * (1u128 << 30);
+	pub const FamilyScoreCeilBytes: u128 = 1u128 << 50;
+	// Max achievable family score — strictly below MaxFamilyWeight (u16::MAX)
+	// so families can never sit saturated at the storage-type ceiling.
+	pub const MaxFamilyScore: u16 = 60_000;
+	// Children not refreshed for more than this many buckets stop counting.
+	pub const StaleChildBuckets: u32 = 4;
 	// EMA alpha for family weight (permille)
 	pub const FamilyWeightEmaAlphaPermille: u32 = 300;
 	// Maximum family weight delta per bucket
@@ -810,6 +829,8 @@ parameter_types! {
 	pub const BlockChargeCheckInterval: u32 = 8;
 	pub const MaxRequestsPerBlock: u32 = 5;
 	pub const MaxUserFileUsageUpdatesPerCall: u32 = 250;
+	/// Cap on `create_referral_codes_for` batch size.
+	pub const MaxReferralCodesPerCall: u32 = 250;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -828,6 +849,7 @@ impl pallet_marketplace::Config for Runtime {
 	type AuthorityId = pallet_marketplace::crypto::TestAuthId;
 	type MaxRequestsPerBlock = MaxRequestsPerBlock;
 	type MaxUserFileUsageUpdatesPerCall = MaxUserFileUsageUpdatesPerCall;
+	type MaxReferralCodesPerCall = MaxReferralCodesPerCall;
 }
 
 parameter_types! {

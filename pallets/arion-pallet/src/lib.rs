@@ -613,6 +613,25 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxAttestationBucketsPrunePerCall: Get<u32>;
 
+		/// Max child weight entries removed per `prune_stale_node_weights` call (bounds weight).
+		#[pallet::constant]
+		type MaxNodeWeightPrunePerCall: Get<u32>;
+
+		/// Max `NodeWeightByChild` entries scanned per `prune_stale_node_weights` call.
+		/// Bounds the walk even when every scanned entry is live (nothing to prune).
+		#[pallet::constant]
+		type MaxNodeWeightScanPerCall: Get<u32>;
+
+		/// Max families visited per `submit_node_quality` family-weight recompute page.
+		///
+		/// Bounds the recompute so its cost cannot outgrow the declared weight as the
+		/// family set grows. Coverage is not lost, only spread: [`FamilyRecomputeCursor`]
+		/// resumes the walk on the next call, so consecutive calls page through the whole
+		/// map. Tune against `MaxChildrenPerFamily` — declared weight scales with the
+		/// product, since a page may hit families that are all at the child cap.
+		#[pallet::constant]
+		type MaxFamilyRecomputePerCall: Get<u32>;
+
 		// --- Registration economics / safety controls ---
 
 		/// Max distinct families that can ever claim their first “free” child slot.
@@ -666,13 +685,25 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxFamilyWeight: Get<u16>;
 
-		/// How many top node weights to count per family (anti “just add infinite children”).
+		/// Byte total at (or below) which a family's aggregate score is 0.
+		/// Lower bound of the useful scoring range (e.g. 100 GiB).
 		#[pallet::constant]
-		type FamilyTopN: Get<u32>;
+		type FamilyScoreFloorBytes: Get<u128>;
 
-		/// Decay factor per rank (permille). Example: 800 → each next node contributes 0.8x the previous.
+		/// Byte total at (or above) which a family's aggregate score reaches [`Config::MaxFamilyScore`].
+		/// Upper bound of the useful scoring range (e.g. 1 PiB).
 		#[pallet::constant]
-		type FamilyRankDecayPermille: Get<u32>;
+		type FamilyScoreCeilBytes: Get<u128>;
+
+		/// Maximum achievable family score from the aggregate formula.
+		/// MUST be < `MaxFamilyWeight` so families can never sit at the storage-type ceiling.
+		#[pallet::constant]
+		type MaxFamilyScore: Get<u16>;
+
+		/// A child whose `NodeWeightLastBucket` is older than this many buckets contributes
+		/// nothing to its family's aggregate (live children are refreshed every bucket).
+		#[pallet::constant]
+		type StaleChildBuckets: Get<u32>;
 
 		/// EMA alpha (permille) for smoothing family weight over time.
 		/// Example: 300 → 30% new, 70% previous.
@@ -939,6 +970,16 @@ pub mod pallet {
 	/// Last `MinerStatsByUid` key processed by batched pruning (`None` = next pass from the start).
 	#[pallet::storage]
 	pub type MinerStatsPruneCursor<T> = StorageValue<_, u32, OptionQuery>;
+
+	/// Last `NodeWeightByChild` key scanned by `prune_stale_node_weights`
+	/// (`None` = next call restarts from the beginning of the map).
+	#[pallet::storage]
+	pub type NodeWeightPruneCursor<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
+
+	/// Last `FamilyActiveChildren` key visited by the family-weight recompute page
+	/// (`None` = next call restarts from the beginning of the map).
+	#[pallet::storage]
+	pub type FamilyRecomputeCursor<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
 
 	// -------------------------
 	// Miner payment state
@@ -1286,6 +1327,11 @@ pub mod pallet {
 			pruned: u32,
 			next_epoch: u64,
 		},
+		/// Stale node weight/quality entries of non-active children were pruned.
+		StaleNodeWeightsPruned {
+			children_pruned: u32,
+			families_pruned: u32,
+		},
 		UserStatsUpdated {
 			user: T::AccountId,
 			size: u128,
@@ -1441,6 +1487,8 @@ pub mod pallet {
 		InvalidAttestationPruneBatch,
 		/// `free_child_slots_per_family` exceeds [`Config::MaxChildrenPerFamily`].
 		FreeChildSlotsPerFamilyTooLarge,
+		/// Batch/staleness parameters for `prune_stale_node_weights` are out of bounds.
+		InvalidNodeWeightPruneBatch,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -2130,46 +2178,112 @@ pub mod pallet {
 			v.min(u16::MAX as u128) as u16
 		}
 
-		fn compute_family_weight_from_nodes(family: &T::AccountId) -> u16 {
-			let max_node = T::MaxNodeWeight::get();
-			let max_family = T::MaxFamilyWeight::get();
-			let top_n = T::FamilyTopN::get().max(1) as usize;
-			let decay = T::FamilyRankDecayPermille::get().min(1000);
-
+		/// Compute a family's weight by scoring its AGGREGATE contribution, not by summing
+		/// per-node scores. This makes the result invariant to how an operator splits the
+		/// same data across children: 1 node with 200 TB scores exactly like 200 nodes with
+		/// 1 TB each. Piling on empty/dust children adds nothing (zero bytes → zero effect).
+		///
+		/// Only `Active` children whose quality was refreshed within
+		/// [`Config::StaleChildBuckets`] contribute; dark children decay out naturally.
+		///
+		/// The log2 blend is normalized over the useful range
+		/// [`Config::FamilyScoreFloorBytes`, `Config::FamilyScoreCeilBytes`] and scaled to
+		/// [`Config::MaxFamilyScore`] (< `MaxFamilyWeight`), so the storage-type ceiling is
+		/// unreachable: rankings never collapse into a saturated plateau.
+		fn compute_family_weight_from_nodes(family: &T::AccountId, current_bucket: u32) -> u16 {
 			let children = FamilyChildren::<T>::get(family);
 			if children.is_empty() {
 				return 0;
 			}
 
-			// Collect node weights for this family.
-			let mut ws: sp_std::vec::Vec<u16> = sp_std::vec::Vec::with_capacity(children.len());
+			// Aggregate raw quality over fresh, Active children. u128 saturating adds:
+			// even MaxChildrenPerFamily children reporting u128::MAX cannot overflow/panic.
+			let stale = T::StaleChildBuckets::get();
+			let mut st_total: u128 = 0;
+			let mut bw_total: u128 = 0;
+			// Weighted uptime numerator: sum(uptime_i * bytes_i). Max per term is
+			// 1000 * u128::MAX which saturates safely; realistic values are far below.
+			let mut up_num: u128 = 0;
+			let mut up_plain_sum: u128 = 0;
+			let mut fresh_children: u128 = 0;
+			let mut strikes_total: u32 = 0;
+			let mut integrity_total: u32 = 0;
 			for c in children.iter() {
-				let w = NodeWeightByChild::<T>::get(c).min(max_node);
-				if w > 0 {
-					ws.push(w);
+				let active = matches!(
+					ChildRegistrations::<T>::get(c),
+					Some(reg) if reg.status == ChildStatus::Active
+				);
+				if !active {
+					continue;
 				}
+				let last = NodeWeightLastBucket::<T>::get(c);
+				if current_bucket.saturating_sub(last) > stale {
+					continue;
+				}
+				let Some(q) = NodeQualityByChild::<T>::get(c) else { continue };
+				let up = q.uptime_permille.min(1000) as u128;
+				st_total = st_total.saturating_add(q.shard_data_bytes);
+				bw_total = bw_total.saturating_add(q.bandwidth_bytes);
+				up_num = up_num.saturating_add(up.saturating_mul(q.shard_data_bytes));
+				up_plain_sum = up_plain_sum.saturating_add(up);
+				fresh_children = fresh_children.saturating_add(1);
+				strikes_total = strikes_total.saturating_add(q.strikes);
+				integrity_total = integrity_total.saturating_add(q.integrity_fails);
 			}
-			if ws.is_empty() {
+			if fresh_children == 0 {
 				return 0;
 			}
-			ws.sort_unstable_by(|a, b| b.cmp(a)); // desc
 
-			// Top-N with rank decay: w0 + w1*decay + w2*decay^2 ...
-			let mut factor_permille: u128 = 1000;
-			let mut sum: u128 = 0;
-			for (i, w) in ws.iter().take(top_n).enumerate() {
-				if i == 0 {
-					// factor=1000 for first term
-				} else {
-					factor_permille = factor_permille.saturating_mul(decay as u128) / 1000u128;
-				}
-				let term = (*w as u128).saturating_mul(factor_permille) / 1000u128;
-				sum = sum.saturating_add(term);
-				if sum >= max_family as u128 {
-					return max_family;
-				}
-			}
-			sum.min(max_family as u128) as u16
+			// Uptime of the aggregate: byte-weighted when bytes exist, plain mean otherwise.
+			let uptime = if st_total > 0 {
+				(up_num / st_total).min(1000)
+			} else {
+				(up_plain_sum / fresh_children).min(1000)
+			};
+
+			// Normalize log2 of the aggregates over [floor, ceil]. All fixed-point 8.8
+			// (log2 * 256), so every value fits in u32 and products stay tiny for u128.
+			let lo_fx = Self::log2_fixed_u128(T::FamilyScoreFloorBytes::get().max(1)) as u128;
+			let hi_fx = Self::log2_fixed_u128(T::FamilyScoreCeilBytes::get().max(2)) as u128;
+			let den_fx = hi_fx.saturating_sub(lo_fx).max(1);
+			let component = |bytes: u128| -> u128 {
+				let v = Self::log2_fixed_u128(bytes.saturating_add(1)) as u128;
+				v.saturating_sub(lo_fx).min(den_fx)
+			};
+			let bw_w = T::NodeBandwidthWeightPermille::get().min(1000) as u128;
+			let st_w = T::NodeStorageWeightPermille::get().min(1000) as u128;
+			let denom_w = (bw_w + st_w).max(1);
+			// Max blend = den_fx * 1000; den_fx <= 127*256+255 (~32.7k) → max ~32.7M, fits u128.
+			let blend = component(bw_total)
+				.saturating_mul(bw_w)
+				.saturating_add(component(st_total).saturating_mul(st_w))
+				/ denom_w;
+
+			// Scale to MaxFamilyScore. Max product = 32.7k * 60_000 (~2e9) — fits u128.
+			let max_score = T::MaxFamilyScore::get().min(T::MaxFamilyWeight::get()) as u128;
+			let base = blend.saturating_mul(max_score) / den_fx;
+
+			// Uptime multiplier, then penalties (same constants as per-node scoring).
+			//
+			// Penalties are averaged over the contributing children, not summed. Summing
+			// breaks the fragmentation invariance this function exists for: the base score
+			// is logarithmic in AGGREGATE bytes, so it is unchanged by splitting data across
+			// more children, but a summed penalty scales linearly with child count. The same
+			// 4 TiB carrying one strike per node would cost 1x the penalty as a single child
+			// and 4x as four, making fragmentation anything but neutral. Averaging keeps
+			// "one strike per node" costing the same regardless of how the data is split,
+			// while a single bad node among many correctly dilutes.
+			let with_uptime = base.saturating_mul(uptime) / 1000u128;
+			let pen_total = (strikes_total as u128)
+				.saturating_mul(T::StrikePenalty::get() as u128)
+				.saturating_add(
+					(integrity_total as u128)
+						.saturating_mul(T::IntegrityFailPenalty::get() as u128),
+				);
+			// `fresh_children` is non-zero: the early return above covers the zero case.
+			let pen = pen_total / fresh_children;
+			let final_score = with_uptime.saturating_sub(pen).min(max_score);
+			final_score as u16
 		}
 
 		pub fn get_total_family_weight() -> u128 {
@@ -2280,18 +2394,55 @@ pub mod pallet {
 				updates: updates.len() as u32,
 			});
 
-			// Recompute every family with active children so weights cannot be suppressed by
-			// omitting a family's children from this batch.
+			// Recompute families with active children in a bounded, resumable page.
+			//
+			// Weights still cannot be suppressed by omitting a family's children from this
+			// batch: which families a page covers is driven by the on-chain cursor, never by
+			// the batch contents, so a submitter has no way to steer the walk away from a
+			// family. Bounding the page is what keeps the work inside the declared weight —
+			// an unbounded walk costs `families x children x 3` reads while the weight is
+			// keyed only on `updates.len()`.
+			//
+			// The scan is metered, not just the recompute list: families sitting at zero
+			// active children are skipped but still cost a read, so counting only pushed
+			// families would leave the same unbounded walk in place.
+			let max_families = T::MaxFamilyRecomputePerCall::get().max(1);
+			let family_iter = match FamilyRecomputeCursor::<T>::get() {
+				Some(last) => FamilyActiveChildren::<T>::iter_from(
+					FamilyActiveChildren::<T>::hashed_key_for(&last),
+				),
+				None => FamilyActiveChildren::<T>::iter(),
+			};
+
 			let mut families_to_recompute: sp_std::vec::Vec<T::AccountId> = sp_std::vec::Vec::new();
-			for (family, n) in FamilyActiveChildren::<T>::iter() {
+			let mut scanned: u32 = 0;
+			let mut last_scanned: Option<T::AccountId> = None;
+			// `take` bounds the walk without fetching a further entry to discard, so the
+			// page costs exactly `max_families` reads rather than one more.
+			for (family, n) in family_iter.take(max_families as usize) {
+				scanned = scanned.saturating_add(1);
+				last_scanned = Some(family.clone());
 				if n > 0 {
 					families_to_recompute.push(family);
 				}
 			}
+			// A short page means the map ended inside it. Ending exactly on the boundary
+			// parks the cursor instead; the next call then reads nothing and resets, which
+			// costs one extra call and never skips a family.
+			let exhausted = scanned < max_families;
+
+			// Park at the last scanned key; reset once the map end is reached so the next
+			// call starts a fresh pass. `iter_from` resumes strictly after the given key, so
+			// parking on a family that is later removed is still a valid resume point.
+			if exhausted {
+				FamilyRecomputeCursor::<T>::kill();
+			} else if let Some(last) = last_scanned {
+				FamilyRecomputeCursor::<T>::put(last);
+			}
 
 			let mut computed: u32 = 0;
 			for family in families_to_recompute.iter() {
-				let raw = Self::compute_family_weight_from_nodes(family);
+				let raw = Self::compute_family_weight_from_nodes(family, bucket);
 
 				// Newcomer floor, only if raw > 0 and within grace
 				let raw = if raw > 0 {
@@ -2821,7 +2972,11 @@ pub mod pallet {
 		///
 		/// This is the **recommended** path (deterministic on-chain weight calculation).
 		#[pallet::call_index(20)]
-		#[pallet::weight((<T as pallet::Config>::WeightInfo::submit_node_quality(updates.len() as u32), Pays::No))]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::submit_node_quality(
+			updates.len() as u32,
+			T::MaxFamilyRecomputePerCall::get().max(1),
+			T::MaxChildrenPerFamily::get(),
+		), Pays::No))]
 		pub fn submit_node_quality(
 			origin: OriginFor<T>,
 			bucket: u32,
@@ -3312,6 +3467,123 @@ pub mod pallet {
 			}
 
 			Self::deposit_event(Event::CrushEpochsPruned { start_epoch, pruned, next_epoch: e });
+			Ok(())
+		}
+
+		/// Remove stale per-child node weight/quality entries left behind by children that are
+		/// no longer `Active` (legacy deregistrations that predate automatic cleanup, expired
+		/// unbondings, forced removals). Also sweeps family weight entries of families with no
+		/// active children left.
+		///
+		/// A child entry is pruned only when BOTH hold:
+		/// - its `NodeWeightLastBucket` is older than `min_stale_buckets` (live children are
+		///   refreshed every bucket by the chain-submitter, so they are never eligible), and
+		/// - it has no `Active` registration in `ChildRegistrations`.
+		///
+		/// Restricted to `WeightAuthorityOrigin` (the whitelisted chain-submitter), same as
+		/// `submit_node_quality`: weight state is authority-owned, so its cleanup is too.
+		///
+		/// The walk over `NodeWeightByChild` is bounded by `max_scan` and resumable via
+		/// [`NodeWeightPruneCursor`], so a map full of live entries cannot make a single
+		/// call scan unboundedly: repeated calls page through the whole map and the
+		/// cursor resets once the end is reached.
+		#[pallet::call_index(39)]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_stale_node_weights(*max_scan, *max_children), Pays::No))]
+		pub fn prune_stale_node_weights(
+			origin: OriginFor<T>,
+			min_stale_buckets: u32,
+			max_children: u32,
+			max_scan: u32,
+		) -> DispatchResult {
+			T::WeightAuthorityOrigin::ensure_origin(origin)?;
+
+			let cap = T::MaxNodeWeightPrunePerCall::get();
+			ensure!(
+				max_children > 0 && max_children <= cap,
+				Error::<T>::InvalidNodeWeightPruneBatch
+			);
+			ensure!(
+				max_scan >= max_children && max_scan <= T::MaxNodeWeightScanPerCall::get(),
+				Error::<T>::InvalidNodeWeightPruneBatch
+			);
+			// Floor of 2 buckets: live children lag at most 1 bucket behind the submitter.
+			ensure!(min_stale_buckets >= 2, Error::<T>::InvalidNodeWeightPruneBatch);
+
+			let cur = CurrentWeightBucket::<T>::get();
+
+			// Resume the walk where the previous call stopped.
+			let iter = match NodeWeightPruneCursor::<T>::get() {
+				Some(last) => NodeWeightByChild::<T>::iter_from(
+					NodeWeightByChild::<T>::hashed_key_for(&last),
+				),
+				None => NodeWeightByChild::<T>::iter(),
+			};
+
+			// Collect first, then mutate: never remove from a map while iterating it.
+			let mut targets: Vec<T::AccountId> = Vec::new();
+			let mut scanned: u32 = 0;
+			let mut last_scanned: Option<T::AccountId> = None;
+			let mut exhausted = true;
+			for (child, _weight) in iter {
+				if scanned >= max_scan || targets.len() as u32 >= max_children {
+					exhausted = false;
+					break;
+				}
+				scanned = scanned.saturating_add(1);
+				last_scanned = Some(child.clone());
+				// Missing last-bucket entry decodes as default 0 == infinitely stale.
+				let last = NodeWeightLastBucket::<T>::get(&child);
+				if cur.saturating_sub(last) <= min_stale_buckets {
+					continue;
+				}
+				let active = matches!(
+					ChildRegistrations::<T>::get(&child),
+					Some(reg) if reg.status == ChildStatus::Active
+				);
+				if !active {
+					targets.push(child);
+				}
+			}
+
+			// Cursor: park at the last scanned key, reset once the map end is reached
+			// (removed targets are gone, so parking on one of them is still a valid
+			// resume point — iter_from starts strictly after the given key).
+			if exhausted {
+				NodeWeightPruneCursor::<T>::kill();
+			} else if let Some(last) = last_scanned {
+				NodeWeightPruneCursor::<T>::put(last);
+			}
+
+			let mut families: Vec<T::AccountId> = Vec::new();
+			for child in &targets {
+				if let Some(reg) = ChildRegistrations::<T>::get(child) {
+					if !families.contains(&reg.family) {
+						families.push(reg.family);
+					}
+				}
+				Self::remove_child_node_weight_entries(child);
+			}
+
+			// Family sweep: drop weight entries of families with no active children left.
+			// Deliberately does NOT touch `FamilyCount` / `FamilyUsedFreeSlot`: those are
+			// registration-lifecycle state owned by the deregistration paths.
+			let mut families_pruned: u32 = 0;
+			for family in &families {
+				if FamilyActiveChildren::<T>::get(family) == 0 {
+					FamilyFirstSeenBucket::<T>::remove(family);
+					FamilyWeightRaw::<T>::remove(family);
+					FamilyWeight::<T>::remove(family);
+					families_pruned = families_pruned.saturating_add(1);
+				}
+			}
+
+			if !targets.is_empty() || families_pruned > 0 {
+				Self::deposit_event(Event::StaleNodeWeightsPruned {
+					children_pruned: targets.len() as u32,
+					families_pruned,
+				});
+			}
+
 			Ok(())
 		}
 	}

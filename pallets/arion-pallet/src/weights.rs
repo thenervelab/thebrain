@@ -33,7 +33,11 @@ const UPDATE_USER_FILE_SIZE_READ_BUDGET: u64 = 8_192;
 pub trait WeightInfo {
     fn submit_crush_map(n: u32) -> Weight;
     fn submit_miner_stats(n: u32) -> Weight;
-    fn submit_node_quality(n: u32) -> Weight;
+    /// `n` = quality rows in the batch. `families` / `children_per_family` bound the
+    /// family-weight recompute page, whose cost scales with their product and is not
+    /// implied by `n` — an unbounded recompute is what makes actual work outrun the
+    /// declared weight as the family set grows.
+    fn submit_node_quality(n: u32, families: u32, children_per_family: u32) -> Weight;
     fn submit_attestations(n: u32) -> Weight;
     fn submit_attestation_commitment() -> Weight;
     fn register_child() -> Weight;
@@ -46,6 +50,11 @@ pub trait WeightInfo {
     fn deregister_warden() -> Weight;
     fn prune_attestation_buckets(n: u32) -> Weight;
     fn prune_historical_crush_epochs(n: u32) -> Weight;
+    /// `scan` = entries walked, `prune` = entries actually removed. Split because the
+    /// walk is bounded by `max_scan` while removals are bounded by the far smaller
+    /// `max_children`; keying writes on `scan` over-declares them by the ratio between
+    /// the two, reserving most of a block for writes that cannot happen.
+    fn prune_stale_node_weights(scan: u32, prune: u32) -> Weight;
     /// See [`UPDATE_USER_FILE_SIZE_READ_BUDGET`].
     fn update_user_file_size() -> Weight;
     /// `on_initialize` miner stats prune: bounded scan + protected-uid pass over registrations.
@@ -101,21 +110,30 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// Storage: Arion NodeWeightByChild (r:0 w:n)
     /// Storage: Arion FamilyWeight (r:n w:n) - read and write for each family
     /// Storage: Arion FamilyFirstSeenBucket (r:n w:0) - newcomer check
-    fn submit_node_quality(n: u32) -> Weight {
+    fn submit_node_quality(n: u32, families: u32, children_per_family: u32) -> Weight {
         // Base cost + per-node writes + family weight recalculation
         // Family weight calculation involves log2 operations and EMA
         // Reads: 1 base + n child registrations + n family weights + n first seen buckets
         // Writes: 1 base + n qualities + n node weights + n family weights
+        let child_slots = (families as u64).saturating_mul(children_per_family as u64);
         Weight::from_parts(20_000_000, 0)
             .saturating_add(Weight::from_parts(5_000_000, 0).saturating_mul(n.into()))
             .saturating_add(T::DbWeight::get().reads(1)) // CurrentWeightBucket
             .saturating_add(T::DbWeight::get().reads(n.into())) // ChildRegistrations
-            .saturating_add(T::DbWeight::get().reads(n.into())) // FamilyWeight reads
-            .saturating_add(T::DbWeight::get().reads(n.into())) // FamilyFirstSeenBucket
             .saturating_add(T::DbWeight::get().writes(1)) // CurrentWeightBucket
             .saturating_add(T::DbWeight::get().writes(n.into())) // NodeQuality
             .saturating_add(T::DbWeight::get().writes(n.into())) // NodeWeightByChild
-            .saturating_add(T::DbWeight::get().writes(n.into())) // FamilyWeight
+            // Family recompute page: per family the FamilyActiveChildren iteration,
+            // FamilyChildren, FamilyFirstSeenBucket and FamilyWeight reads; per child slot
+            // the ChildRegistrations + NodeWeightLastBucket + NodeQualityByChild reads that
+            // `compute_family_weight_from_nodes` performs. Writes are FamilyWeightRaw +
+            // FamilyWeight per family, plus the cursor.
+            .saturating_add(T::DbWeight::get().reads(1)) // FamilyRecomputeCursor
+            .saturating_add(T::DbWeight::get().reads((families as u64).saturating_mul(4)))
+            .saturating_add(T::DbWeight::get().reads(child_slots.saturating_mul(3)))
+            .saturating_add(T::DbWeight::get().writes(1)) // FamilyRecomputeCursor
+            .saturating_add(T::DbWeight::get().writes((families as u64).saturating_mul(2)))
+            .saturating_add(Weight::from_parts(2_000_000, 0).saturating_mul(child_slots))
     }
 
     /// Storage: Arion AuditResults (r:n w:n)
@@ -233,6 +251,24 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(4)))
     }
 
+    /// Reads scale with `scan`: NodeWeightByChild iteration + NodeWeightLastBucket +
+    /// ChildRegistrations per scanned entry, plus a ChildRegistrations re-read and a
+    /// family lookup per pruned child, plus the cursor. Writes scale with `prune`
+    /// only: weight-trio removals (w:3) plus family sweep (w:3 worst case), plus the
+    /// cursor.
+    fn prune_stale_node_weights(scan: u32, prune: u32) -> Weight {
+        Weight::from_parts(12_000_000, 0)
+            .saturating_add(Weight::from_parts(6_000_000, 0).saturating_mul(scan.into()))
+            .saturating_add(T::DbWeight::get().reads(
+                2_u64
+                    .saturating_add((scan as u64).saturating_mul(3))
+                    .saturating_add((prune as u64).saturating_mul(2)),
+            ))
+            .saturating_add(
+                T::DbWeight::get().writes(1_u64.saturating_add((prune as u64).saturating_mul(6))),
+            )
+    }
+
     /// Storage: Proxy Proxies (r:1+), Registration maps (iteration), UserTotalFilesSize (r:1 w:1),
     /// UserTotalFilesCount (r:1 w:1)
     fn update_user_file_size() -> Weight {
@@ -291,17 +327,21 @@ impl WeightInfo for () {
             .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(2)))
     }
 
-    fn submit_node_quality(n: u32) -> Weight {
+    fn submit_node_quality(n: u32, families: u32, children_per_family: u32) -> Weight {
+        let child_slots = (families as u64).saturating_mul(children_per_family as u64);
         Weight::from_parts(20_000_000, 0)
             .saturating_add(Weight::from_parts(5_000_000, 0).saturating_mul(n.into()))
             .saturating_add(RocksDbWeight::get().reads(1)) // CurrentWeightBucket
             .saturating_add(RocksDbWeight::get().reads(n.into())) // ChildRegistrations
-            .saturating_add(RocksDbWeight::get().reads(n.into())) // FamilyWeight reads
-            .saturating_add(RocksDbWeight::get().reads(n.into())) // FamilyFirstSeenBucket
             .saturating_add(RocksDbWeight::get().writes(1)) // CurrentWeightBucket
             .saturating_add(RocksDbWeight::get().writes(n.into())) // NodeQuality
             .saturating_add(RocksDbWeight::get().writes(n.into())) // NodeWeightByChild
-            .saturating_add(RocksDbWeight::get().writes(n.into())) // FamilyWeight
+            .saturating_add(RocksDbWeight::get().reads(1)) // FamilyRecomputeCursor
+            .saturating_add(RocksDbWeight::get().reads((families as u64).saturating_mul(4)))
+            .saturating_add(RocksDbWeight::get().reads(child_slots.saturating_mul(3)))
+            .saturating_add(RocksDbWeight::get().writes(1)) // FamilyRecomputeCursor
+            .saturating_add(RocksDbWeight::get().writes((families as u64).saturating_mul(2)))
+            .saturating_add(Weight::from_parts(2_000_000, 0).saturating_mul(child_slots))
     }
 
     fn submit_attestations(n: u32) -> Weight {
@@ -376,6 +416,19 @@ impl WeightInfo for () {
             .saturating_add(Weight::from_parts(4_000_000, 0).saturating_mul(n.into()))
             .saturating_add(RocksDbWeight::get().reads(1))
             .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(4)))
+    }
+
+    fn prune_stale_node_weights(scan: u32, prune: u32) -> Weight {
+        Weight::from_parts(12_000_000, 0)
+            .saturating_add(Weight::from_parts(6_000_000, 0).saturating_mul(scan.into()))
+            .saturating_add(RocksDbWeight::get().reads(
+                2_u64
+                    .saturating_add((scan as u64).saturating_mul(3))
+                    .saturating_add((prune as u64).saturating_mul(2)),
+            ))
+            .saturating_add(
+                RocksDbWeight::get().writes(1_u64.saturating_add((prune as u64).saturating_mul(6))),
+            )
     }
 
     fn update_user_file_size() -> Weight {

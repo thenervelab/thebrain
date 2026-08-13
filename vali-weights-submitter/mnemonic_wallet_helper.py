@@ -70,10 +70,12 @@ def test_mnemonic_wallet():
     if wallet:
         # Test connection to Bittensor
         try:
-            subtensor = bt.subtensor(network=config['bittensor']['chain_endpoint'])
-            balance = subtensor.get_balance(wallet.hotkey.ss58_address)
+            # bittensor v11: blocking Subtensor, balances namespace, close optional
+            subtensor = bt.Subtensor(network=config['bittensor']['chain_endpoint'])
+            balance = subtensor.balances.get(wallet.hotkey.ss58_address)
             print(f"✓ Wallet balance: {balance} TAO")
-            subtensor.close()
+            if hasattr(subtensor, "close"):
+                subtensor.close()
         except Exception as e:
             print(f"✗ Error checking balance: {e}")
 

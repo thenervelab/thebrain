@@ -19,7 +19,7 @@ os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['SSL_CERT_DIR'] = certifi.where()
 
 import bittensor as bt
-from bittensor.core.extrinsics.set_weights import set_weights_extrinsic
+from bittensor.wallet import Wallet
 from substrateinterface import SubstrateInterface, Keypair
 
 
@@ -57,8 +57,8 @@ class WeightSubmitter:
         """Initialize connections to Bittensor and Hippius chain."""
         self.logger.info("Initializing connections...")
         
-        # Initialize Bittensor subtensor
-        self.subtensor = bt.subtensor(
+        # Initialize Bittensor subtensor (v11: blocking when called directly)
+        self.subtensor = bt.Subtensor(
             network=self.config['bittensor']['chain_endpoint']
         )
         
@@ -99,7 +99,7 @@ class WeightSubmitter:
         else:
             # Use local wallet files
             try:
-                self.wallet = bt.wallet(
+                self.wallet = Wallet(
                     name=self.config['wallet']['name'],
                     hotkey=self.config['wallet']['hotkey'],
                     path=self.config['wallet']['path']
@@ -134,20 +134,15 @@ class WeightSubmitter:
         self.logger.info(f"Fetching metagraph for subnet {self.config['bittensor']['subnet_id']}...")
         
         try:
-            # Get metagraph for the subnet
-            metagraph = bt.metagraph(
-                netuid=self.config['bittensor']['subnet_id'],
-                subtensor=self.subtensor
+            # v11: metagraph lives under the subnets namespace, neurons are typed records
+            metagraph = self.subtensor.subnets.metagraph(
+                netuid=self.config['bittensor']['subnet_id']
             )
-            
-            # Get active neurons
-            active_neurons = metagraph.neurons
-            
+
             # Create mapping of UID to hotkey
-            uid_to_hotkey = {}
-            for uid, neuron in enumerate(active_neurons):
-                if neuron.axon_info.ip != 0:  # Active neuron
-                    uid_to_hotkey[uid] = neuron.axon_info.hotkey
+            # Note: no axon filter — subnet 75 miners don't serve axons, and the
+            # legacy code's `axon_info.ip != 0` check was a no-op (ip was a str)
+            uid_to_hotkey = {neuron.uid: neuron.hotkey for neuron in metagraph}
             
             self.logger.info(f"Found {len(uid_to_hotkey)} active neurons in subnet {self.config['bittensor']['subnet_id']}")
             return uid_to_hotkey
@@ -346,20 +341,23 @@ class WeightSubmitter:
                 success = result.is_success
                 
             else:
-                # Local wallet - use Bittensor's set_weights_extrinsic
+                # Local wallet - v11: submit via SetWeights intent (normalization handled by SDK)
                 self.logger.info(f"Submitting weights using local wallet: {self.wallet.hotkey.ss58_address}")
-                
-                success = set_weights_extrinsic(
-                    subtensor=self.subtensor,
-                    wallet=self.wallet,
-                    netuid=self.config['bittensor']['subnet_id'],
-                    uids=uids_array,
-                    weights=weights_array,
-                    version_key=self.config['weights']['version_key'],
+
+                result = self.subtensor.execute(
+                    bt.SetWeights(
+                        netuid=self.config['bittensor']['subnet_id'],
+                        weights={uid: float(weight) for uid, weight in matched_weights},
+                        version_key=self.config['weights']['version_key']
+                    ),
+                    self.wallet,
                     wait_for_inclusion=self.config['weights']['wait_for_inclusion'],
                     wait_for_finalization=self.config['weights']['wait_for_finalization'],
                     period=self.config['weights']['period']
                 )
+                success = result.success
+                if not success and result.error is not None:
+                    self.logger.error(f"SetWeights failed: {result.error.name} - {result.error.remediation}")
             
             if success:
                 self.logger.info("Weights submitted successfully")
@@ -457,8 +455,8 @@ class WeightSubmitter:
             self.logger.error(f"Error in main execution: {e}")
             return False
         finally:
-            # Clean up connections
-            if self.subtensor:
+            # Clean up connections (v11: subtensor close is optional, auto on GC)
+            if self.subtensor and hasattr(self.subtensor, "close"):
                 self.subtensor.close()
             if self.hippius_interface:
                 self.hippius_interface.close()
