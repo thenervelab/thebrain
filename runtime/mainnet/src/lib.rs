@@ -102,6 +102,8 @@ parameter_types! {
 	pub const MaxAttestationBucketsPrunePerCall: u32 = 64;
 	/// Cap on `prune_stale_node_weights` batch size (weight bound).
 	pub const MaxNodeWeightPrunePerCall: u32 = 200;
+	/// Cap on `prune_stale_node_weights` scan size (bounds the walk over live entries).
+	pub const MaxNodeWeightScanPerCall: u32 = 2000;
 	/// Periodic [`MinerStatsByUid`] pruning in arion (`0` = disabled).
 	pub const ArionMinerStatsPruneInterval: BlockNumber = 100;
 	/// Max stats uid keys scanned per pruning tick.
@@ -205,6 +207,7 @@ impl pallet_arion::Config for Runtime {
 	type AttestationRetentionBuckets = ConstU32<168>;
 	type MaxAttestationBucketsPrunePerCall = MaxAttestationBucketsPrunePerCall;
 	type MaxNodeWeightPrunePerCall = MaxNodeWeightPrunePerCall;
+	type MaxNodeWeightScanPerCall = MaxNodeWeightScanPerCall;
 	type WeightInfo = pallet_arion::weights::SubstrateWeight<Runtime>;
 	type MaxAttestations = ConstU32<1000>;
 	type MaxShardHashLen = ConstU32<100>;

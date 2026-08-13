@@ -89,7 +89,7 @@ fn prunes_stale_children_without_active_registration() {
 		seed_weight(&unbonding, 300, 500);
 		register(&unbonding, &family, ChildStatus::Unbonding);
 
-		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100));
+		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100, 1000));
 
 		for child in [&ghost, &unbonding] {
 			assert!(!NodeWeightByChild::<Runtime>::contains_key(child));
@@ -113,7 +113,7 @@ fn keeps_live_and_active_children() {
 		register(&stale_active, &family, ChildStatus::Active);
 		FamilyActiveChildren::<Runtime>::insert(&family, 1u32);
 
-		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100));
+		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100, 1000));
 
 		assert_eq!(NodeWeightByChild::<Runtime>::get(&live), 500);
 		assert_eq!(NodeWeightByChild::<Runtime>::get(&stale_active), 200);
@@ -129,7 +129,7 @@ fn missing_last_bucket_counts_as_stale() {
 		NodeWeightByChild::<Runtime>::insert(&orphan, 123u16);
 		NodeQualityByChild::<Runtime>::insert(&orphan, quality(500));
 
-		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100));
+		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100, 1000));
 
 		assert!(!NodeWeightByChild::<Runtime>::contains_key(&orphan));
 		assert!(!NodeQualityByChild::<Runtime>::contains_key(&orphan));
@@ -160,7 +160,7 @@ fn family_sweep_only_when_no_active_children() {
 		FamilyWeight::<Runtime>::insert(&fam_b, 60u16);
 		FamilyWeightRaw::<Runtime>::insert(&fam_b, 60u16);
 
-		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100));
+		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100, 1000));
 
 		assert!(!FamilyWeight::<Runtime>::contains_key(&fam_a));
 		assert!(!FamilyWeightRaw::<Runtime>::contains_key(&fam_a));
@@ -178,7 +178,7 @@ fn respects_max_children_cap() {
 			seed_weight(&account(seed), 100, 500);
 		}
 
-		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 3));
+		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 3, 1000));
 		assert_eq!(last_prune_event(), Some((3, 0)));
 
 		let remaining =
@@ -186,7 +186,7 @@ fn respects_max_children_cap() {
 		assert_eq!(remaining, 7);
 
 		// A second call keeps draining the backlog.
-		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100));
+		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100, 1000));
 		assert_eq!(last_prune_event(), Some((7, 0)));
 	});
 }
@@ -196,11 +196,11 @@ fn rejects_non_authority_origin() {
 	new_test_ext().execute_with(|| {
 		seed_weight(&account(70), 100, 500);
 		assert_noop!(
-			Arion::prune_stale_node_weights(RuntimeOrigin::signed(account(99)), 4, 100),
+			Arion::prune_stale_node_weights(RuntimeOrigin::signed(account(99)), 4, 100, 1000),
 			sp_runtime::DispatchError::BadOrigin
 		);
 		assert_noop!(
-			Arion::prune_stale_node_weights(RuntimeOrigin::root(), 4, 100),
+			Arion::prune_stale_node_weights(RuntimeOrigin::root(), 4, 100, 1000),
 			sp_runtime::DispatchError::BadOrigin
 		);
 	});
@@ -210,18 +210,74 @@ fn rejects_non_authority_origin() {
 fn validates_batch_and_staleness_params() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
-			Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 0),
+			Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 0, 1000),
 			pallet_arion::Error::<Runtime>::InvalidNodeWeightPruneBatch
 		);
 		// MaxNodeWeightPrunePerCall is 200 on mainnet.
 		assert_noop!(
-			Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 201),
+			Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 201, 1000),
 			pallet_arion::Error::<Runtime>::InvalidNodeWeightPruneBatch
 		);
 		// Staleness floor of 2 buckets protects live children.
 		assert_noop!(
-			Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 1, 100),
+			Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 1, 100, 1000),
 			pallet_arion::Error::<Runtime>::InvalidNodeWeightPruneBatch
 		);
+		// max_scan must cover max_children and respect MaxNodeWeightScanPerCall (2000).
+		assert_noop!(
+			Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100, 50),
+			pallet_arion::Error::<Runtime>::InvalidNodeWeightPruneBatch
+		);
+		assert_noop!(
+			Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 100, 2001),
+			pallet_arion::Error::<Runtime>::InvalidNodeWeightPruneBatch
+		);
+	});
+}
+
+#[test]
+fn bounded_scan_pages_through_live_entries() {
+	new_test_ext().execute_with(|| {
+		use pallet_arion::NodeWeightPruneCursor;
+		// 12 LIVE children (fresh last_bucket, Active): nothing prunable, but the
+		// walk must stay bounded by max_scan and resume via the cursor.
+		let fam = account(80);
+		for seed in 0u8..12u8 {
+			let c = AccountId32::new([seed.wrapping_add(100); 32]);
+			seed_weight(&c, 100, 0);
+			ChildRegistrations::<Runtime>::insert(
+				&c,
+				ChildRegistration {
+					family: fam.clone(),
+					node_id: [seed; 32],
+					status: ChildStatus::Active,
+					deposit: 0u128,
+					unbonding_end: 0u32.into(),
+				},
+			);
+		}
+		// One stale ghost parked at the end of the walk (position depends on key
+		// hash; the three paged calls below must find it wherever it lands).
+		let ghost = account(81);
+		seed_weight(&ghost, 400, 500);
+
+		assert!(NodeWeightPruneCursor::<Runtime>::get().is_none());
+		// Page 1: scan 5 of 13 entries.
+		assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 4, 5));
+		assert!(NodeWeightPruneCursor::<Runtime>::get().is_some(), "cursor must park mid-map");
+		// Pages 2..: finish the map; cursor resets at the end.
+		for _ in 0..4 {
+			assert_ok!(Arion::prune_stale_node_weights(RuntimeOrigin::signed(admin()), 4, 4, 5));
+			if NodeWeightPruneCursor::<Runtime>::get().is_none() {
+				break;
+			}
+		}
+		assert!(NodeWeightPruneCursor::<Runtime>::get().is_none(), "cursor must reset after full pass");
+		assert!(!NodeWeightByChild::<Runtime>::contains_key(&ghost), "ghost pruned during paging");
+		// Live children untouched.
+		let live_left = (0u8..12u8)
+			.filter(|s| NodeWeightByChild::<Runtime>::contains_key(&AccountId32::new([s.wrapping_add(100); 32])))
+			.count();
+		assert_eq!(live_left, 12);
 	});
 }

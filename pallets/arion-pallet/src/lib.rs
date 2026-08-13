@@ -617,6 +617,11 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxNodeWeightPrunePerCall: Get<u32>;
 
+		/// Max `NodeWeightByChild` entries scanned per `prune_stale_node_weights` call.
+		/// Bounds the walk even when every scanned entry is live (nothing to prune).
+		#[pallet::constant]
+		type MaxNodeWeightScanPerCall: Get<u32>;
+
 		// --- Registration economics / safety controls ---
 
 		/// Max distinct families that can ever claim their first “free” child slot.
@@ -943,6 +948,11 @@ pub mod pallet {
 	/// Last `MinerStatsByUid` key processed by batched pruning (`None` = next pass from the start).
 	#[pallet::storage]
 	pub type MinerStatsPruneCursor<T> = StorageValue<_, u32, OptionQuery>;
+
+	/// Last `NodeWeightByChild` key scanned by `prune_stale_node_weights`
+	/// (`None` = next call restarts from the beginning of the map).
+	#[pallet::storage]
+	pub type NodeWeightPruneCursor<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
 
 	// -------------------------
 	// Miner payment state
@@ -3338,12 +3348,18 @@ pub mod pallet {
 		///
 		/// Restricted to `WeightAuthorityOrigin` (the whitelisted chain-submitter), same as
 		/// `submit_node_quality`: weight state is authority-owned, so its cleanup is too.
+		///
+		/// The walk over `NodeWeightByChild` is bounded by `max_scan` and resumable via
+		/// [`NodeWeightPruneCursor`], so a map full of live entries cannot make a single
+		/// call scan unboundedly: repeated calls page through the whole map and the
+		/// cursor resets once the end is reached.
 		#[pallet::call_index(39)]
-		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_stale_node_weights(*max_children), Pays::No))]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_stale_node_weights(*max_scan), Pays::No))]
 		pub fn prune_stale_node_weights(
 			origin: OriginFor<T>,
 			min_stale_buckets: u32,
 			max_children: u32,
+			max_scan: u32,
 		) -> DispatchResult {
 			T::WeightAuthorityOrigin::ensure_origin(origin)?;
 
@@ -3352,17 +3368,35 @@ pub mod pallet {
 				max_children > 0 && max_children <= cap,
 				Error::<T>::InvalidNodeWeightPruneBatch
 			);
+			ensure!(
+				max_scan >= max_children && max_scan <= T::MaxNodeWeightScanPerCall::get(),
+				Error::<T>::InvalidNodeWeightPruneBatch
+			);
 			// Floor of 2 buckets: live children lag at most 1 bucket behind the submitter.
 			ensure!(min_stale_buckets >= 2, Error::<T>::InvalidNodeWeightPruneBatch);
 
 			let cur = CurrentWeightBucket::<T>::get();
 
+			// Resume the walk where the previous call stopped.
+			let iter = match NodeWeightPruneCursor::<T>::get() {
+				Some(last) => NodeWeightByChild::<T>::iter_from(
+					NodeWeightByChild::<T>::hashed_key_for(&last),
+				),
+				None => NodeWeightByChild::<T>::iter(),
+			};
+
 			// Collect first, then mutate: never remove from a map while iterating it.
 			let mut targets: Vec<T::AccountId> = Vec::new();
-			for (child, _weight) in NodeWeightByChild::<T>::iter() {
-				if targets.len() as u32 >= max_children {
+			let mut scanned: u32 = 0;
+			let mut last_scanned: Option<T::AccountId> = None;
+			let mut exhausted = true;
+			for (child, _weight) in iter {
+				if scanned >= max_scan || targets.len() as u32 >= max_children {
+					exhausted = false;
 					break;
 				}
+				scanned = scanned.saturating_add(1);
+				last_scanned = Some(child.clone());
 				// Missing last-bucket entry decodes as default 0 == infinitely stale.
 				let last = NodeWeightLastBucket::<T>::get(&child);
 				if cur.saturating_sub(last) <= min_stale_buckets {
@@ -3375,6 +3409,15 @@ pub mod pallet {
 				if !active {
 					targets.push(child);
 				}
+			}
+
+			// Cursor: park at the last scanned key, reset once the map end is reached
+			// (removed targets are gone, so parking on one of them is still a valid
+			// resume point — iter_from starts strictly after the given key).
+			if exhausted {
+				NodeWeightPruneCursor::<T>::kill();
+			} else if let Some(last) = last_scanned {
+				NodeWeightPruneCursor::<T>::put(last);
 			}
 
 			let mut families: Vec<T::AccountId> = Vec::new();

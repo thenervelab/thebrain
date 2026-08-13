@@ -234,14 +234,15 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(4)))
     }
 
-    /// Storage: NodeWeightByChild iteration (r:n), NodeWeightLastBucket + ChildRegistrations
-    /// (r:n each), then per pruned child: NodeWeightByChild/NodeWeightLastBucket/NodeQualityByChild
-    /// removals (w:3) plus family weight sweep (r:1 w:3 worst case).
+    /// `n` = max_scan (upper bound on entries walked). Per scanned entry:
+    /// NodeWeightByChild iteration + NodeWeightLastBucket + ChildRegistrations reads;
+    /// per pruned child (<= n): weight-trio removals (w:3) plus family sweep
+    /// (r:1 w:3 worst case); plus cursor read/write.
     fn prune_stale_node_weights(n: u32) -> Weight {
         Weight::from_parts(12_000_000, 0)
             .saturating_add(Weight::from_parts(6_000_000, 0).saturating_mul(n.into()))
-            .saturating_add(T::DbWeight::get().reads(1_u64.saturating_add((n as u64).saturating_mul(4))))
-            .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(6)))
+            .saturating_add(T::DbWeight::get().reads(2_u64.saturating_add((n as u64).saturating_mul(4))))
+            .saturating_add(T::DbWeight::get().writes(1_u64.saturating_add((n as u64).saturating_mul(6))))
     }
 
     /// Storage: Proxy Proxies (r:1+), Registration maps (iteration), UserTotalFilesSize (r:1 w:1),
@@ -392,8 +393,8 @@ impl WeightInfo for () {
     fn prune_stale_node_weights(n: u32) -> Weight {
         Weight::from_parts(12_000_000, 0)
             .saturating_add(Weight::from_parts(6_000_000, 0).saturating_mul(n.into()))
-            .saturating_add(RocksDbWeight::get().reads(1_u64.saturating_add((n as u64).saturating_mul(4))))
-            .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(6)))
+            .saturating_add(RocksDbWeight::get().reads(2_u64.saturating_add((n as u64).saturating_mul(4))))
+            .saturating_add(RocksDbWeight::get().writes(1_u64.saturating_add((n as u64).saturating_mul(6))))
     }
 
     fn update_user_file_size() -> Weight {
