@@ -203,6 +203,10 @@ pub mod pallet {
 		/// Max number of user file-usage rows that can be updated in a single batch call.
 		#[pallet::constant]
 		type MaxUserFileUsageUpdatesPerCall: Get<u32>;
+
+		/// Max number of users a single `create_referral_codes_for` call may cover.
+		#[pallet::constant]
+		type MaxReferralCodesPerCall: Get<u32>;
     }
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -501,6 +505,16 @@ pub mod pallet {
 			drive_count: u128,
 			s3_size: u128,
 			s3_count: u128,
+		},
+		/// A referral code was created for `user` by a whitelisted caller.
+		ReferralCodeCreatedFor {
+			user: T::AccountId,
+		},
+		/// Summary of a `create_referral_codes_for` batch. `skipped` counts users
+		/// that already had a code and were left untouched.
+		ReferralCodesCreatedFor {
+			created: u32,
+			skipped: u32,
 		},
 		WhitelistedCallerAdded {
 			account: T::AccountId,
@@ -1182,6 +1196,54 @@ pub mod pallet {
 			ensure_root(origin)?;
 			ReferralBankFloor::<T>::put(floor);
 			Self::deposit_event(Event::ReferralBankFloorUpdated { floor });
+			Ok(())
+		}
+
+		/// Create referral codes on behalf of users. Callable only by a whitelisted caller,
+		/// bounded by `MaxReferralCodesPerCall`.
+		///
+		/// Idempotent: users that already hold a referral code are skipped, not issued a
+		/// second one. `pallet_credits::do_change_referral_code` always mints a *new* code
+		/// and deliberately never deletes the old one, so calling it for an existing holder
+		/// would proliferate codes — and would fail outright with `ReferralCodeCooldown`
+		/// inside the per-user cooldown window. Skipping keeps retries and backfill sweeps
+		/// safe to repeat.
+		#[pallet::call_index(29)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn create_referral_codes_for(
+			origin: OriginFor<T>,
+			users: Vec<T::AccountId>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			let allowed = WhitelistedCallers::<T>::get();
+			ensure!(allowed.contains(&who), Error::<T>::WhitelistedCallerNotAuthorized);
+
+			ensure!(
+				(users.len() as u32) <= T::MaxReferralCodesPerCall::get(),
+				Error::<T>::TooManyUpdates
+			);
+
+			let mut created: u32 = 0;
+			let mut skipped: u32 = 0;
+
+			for user in users {
+				// `LastReferralCreationBlock` is written by `do_change_referral_code`, the only
+				// path that inserts into `ReferralCodes`, so its presence is an exact
+				// "already has a code" test. A user repeated within one batch is also caught
+				// here: the first iteration sets the block, later ones skip.
+				if CreditsPallet::<T>::last_referral_creation_block(&user).is_some() {
+					skipped = skipped.saturating_add(1);
+					continue;
+				}
+
+				CreditsPallet::<T>::do_change_referral_code(user.clone())?;
+				created = created.saturating_add(1);
+				Self::deposit_event(Event::ReferralCodeCreatedFor { user });
+			}
+
+			Self::deposit_event(Event::ReferralCodesCreatedFor { created, skipped });
+
 			Ok(())
 		}
 	}

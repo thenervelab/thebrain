@@ -810,6 +810,8 @@ parameter_types! {
 	pub const BlockChargeCheckInterval: u32 = 8;
 	pub const MaxRequestsPerBlock: u32 = 5;
 	pub const MaxUserFileUsageUpdatesPerCall: u32 = 250;
+	/// Cap on `create_referral_codes_for` batch size.
+	pub const MaxReferralCodesPerCall: u32 = 250;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -828,6 +830,7 @@ impl pallet_marketplace::Config for Runtime {
 	type AuthorityId = pallet_marketplace::crypto::TestAuthId;
 	type MaxRequestsPerBlock = MaxRequestsPerBlock;
 	type MaxUserFileUsageUpdatesPerCall = MaxUserFileUsageUpdatesPerCall;
+	type MaxReferralCodesPerCall = MaxReferralCodesPerCall;
 }
 
 parameter_types! {
