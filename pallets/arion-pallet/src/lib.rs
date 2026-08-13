@@ -675,13 +675,25 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxFamilyWeight: Get<u16>;
 
-		/// How many top node weights to count per family (anti “just add infinite children”).
+		/// Byte total at (or below) which a family's aggregate score is 0.
+		/// Lower bound of the useful scoring range (e.g. 100 GiB).
 		#[pallet::constant]
-		type FamilyTopN: Get<u32>;
+		type FamilyScoreFloorBytes: Get<u128>;
 
-		/// Decay factor per rank (permille). Example: 800 → each next node contributes 0.8x the previous.
+		/// Byte total at (or above) which a family's aggregate score reaches [`Config::MaxFamilyScore`].
+		/// Upper bound of the useful scoring range (e.g. 1 PiB).
 		#[pallet::constant]
-		type FamilyRankDecayPermille: Get<u32>;
+		type FamilyScoreCeilBytes: Get<u128>;
+
+		/// Maximum achievable family score from the aggregate formula.
+		/// MUST be < `MaxFamilyWeight` so families can never sit at the storage-type ceiling.
+		#[pallet::constant]
+		type MaxFamilyScore: Get<u16>;
+
+		/// A child whose `NodeWeightLastBucket` is older than this many buckets contributes
+		/// nothing to its family's aggregate (live children are refreshed every bucket).
+		#[pallet::constant]
+		type StaleChildBuckets: Get<u32>;
 
 		/// EMA alpha (permille) for smoothing family weight over time.
 		/// Example: 300 → 30% new, 70% previous.
@@ -2151,46 +2163,101 @@ pub mod pallet {
 			v.min(u16::MAX as u128) as u16
 		}
 
-		fn compute_family_weight_from_nodes(family: &T::AccountId) -> u16 {
-			let max_node = T::MaxNodeWeight::get();
-			let max_family = T::MaxFamilyWeight::get();
-			let top_n = T::FamilyTopN::get().max(1) as usize;
-			let decay = T::FamilyRankDecayPermille::get().min(1000);
-
+		/// Compute a family's weight by scoring its AGGREGATE contribution, not by summing
+		/// per-node scores. This makes the result invariant to how an operator splits the
+		/// same data across children: 1 node with 200 TB scores exactly like 200 nodes with
+		/// 1 TB each. Piling on empty/dust children adds nothing (zero bytes → zero effect).
+		///
+		/// Only `Active` children whose quality was refreshed within
+		/// [`Config::StaleChildBuckets`] contribute; dark children decay out naturally.
+		///
+		/// The log2 blend is normalized over the useful range
+		/// [`Config::FamilyScoreFloorBytes`, `Config::FamilyScoreCeilBytes`] and scaled to
+		/// [`Config::MaxFamilyScore`] (< `MaxFamilyWeight`), so the storage-type ceiling is
+		/// unreachable: rankings never collapse into a saturated plateau.
+		fn compute_family_weight_from_nodes(family: &T::AccountId, current_bucket: u32) -> u16 {
 			let children = FamilyChildren::<T>::get(family);
 			if children.is_empty() {
 				return 0;
 			}
 
-			// Collect node weights for this family.
-			let mut ws: sp_std::vec::Vec<u16> = sp_std::vec::Vec::with_capacity(children.len());
+			// Aggregate raw quality over fresh, Active children. u128 saturating adds:
+			// even MaxChildrenPerFamily children reporting u128::MAX cannot overflow/panic.
+			let stale = T::StaleChildBuckets::get();
+			let mut st_total: u128 = 0;
+			let mut bw_total: u128 = 0;
+			// Weighted uptime numerator: sum(uptime_i * bytes_i). Max per term is
+			// 1000 * u128::MAX which saturates safely; realistic values are far below.
+			let mut up_num: u128 = 0;
+			let mut up_plain_sum: u128 = 0;
+			let mut fresh_children: u128 = 0;
+			let mut strikes_total: u32 = 0;
+			let mut integrity_total: u32 = 0;
 			for c in children.iter() {
-				let w = NodeWeightByChild::<T>::get(c).min(max_node);
-				if w > 0 {
-					ws.push(w);
+				let active = matches!(
+					ChildRegistrations::<T>::get(c),
+					Some(reg) if reg.status == ChildStatus::Active
+				);
+				if !active {
+					continue;
 				}
+				let last = NodeWeightLastBucket::<T>::get(c);
+				if current_bucket.saturating_sub(last) > stale {
+					continue;
+				}
+				let Some(q) = NodeQualityByChild::<T>::get(c) else { continue };
+				let up = q.uptime_permille.min(1000) as u128;
+				st_total = st_total.saturating_add(q.shard_data_bytes);
+				bw_total = bw_total.saturating_add(q.bandwidth_bytes);
+				up_num = up_num.saturating_add(up.saturating_mul(q.shard_data_bytes));
+				up_plain_sum = up_plain_sum.saturating_add(up);
+				fresh_children = fresh_children.saturating_add(1);
+				strikes_total = strikes_total.saturating_add(q.strikes);
+				integrity_total = integrity_total.saturating_add(q.integrity_fails);
 			}
-			if ws.is_empty() {
+			if fresh_children == 0 {
 				return 0;
 			}
-			ws.sort_unstable_by(|a, b| b.cmp(a)); // desc
 
-			// Top-N with rank decay: w0 + w1*decay + w2*decay^2 ...
-			let mut factor_permille: u128 = 1000;
-			let mut sum: u128 = 0;
-			for (i, w) in ws.iter().take(top_n).enumerate() {
-				if i == 0 {
-					// factor=1000 for first term
-				} else {
-					factor_permille = factor_permille.saturating_mul(decay as u128) / 1000u128;
-				}
-				let term = (*w as u128).saturating_mul(factor_permille) / 1000u128;
-				sum = sum.saturating_add(term);
-				if sum >= max_family as u128 {
-					return max_family;
-				}
-			}
-			sum.min(max_family as u128) as u16
+			// Uptime of the aggregate: byte-weighted when bytes exist, plain mean otherwise.
+			let uptime = if st_total > 0 {
+				(up_num / st_total).min(1000)
+			} else {
+				(up_plain_sum / fresh_children).min(1000)
+			};
+
+			// Normalize log2 of the aggregates over [floor, ceil]. All fixed-point 8.8
+			// (log2 * 256), so every value fits in u32 and products stay tiny for u128.
+			let lo_fx = Self::log2_fixed_u128(T::FamilyScoreFloorBytes::get().max(1)) as u128;
+			let hi_fx = Self::log2_fixed_u128(T::FamilyScoreCeilBytes::get().max(2)) as u128;
+			let den_fx = hi_fx.saturating_sub(lo_fx).max(1);
+			let component = |bytes: u128| -> u128 {
+				let v = Self::log2_fixed_u128(bytes.saturating_add(1)) as u128;
+				v.saturating_sub(lo_fx).min(den_fx)
+			};
+			let bw_w = T::NodeBandwidthWeightPermille::get().min(1000) as u128;
+			let st_w = T::NodeStorageWeightPermille::get().min(1000) as u128;
+			let denom_w = (bw_w + st_w).max(1);
+			// Max blend = den_fx * 1000; den_fx <= 127*256+255 (~32.7k) → max ~32.7M, fits u128.
+			let blend = component(bw_total)
+				.saturating_mul(bw_w)
+				.saturating_add(component(st_total).saturating_mul(st_w))
+				/ denom_w;
+
+			// Scale to MaxFamilyScore. Max product = 32.7k * 60_000 (~2e9) — fits u128.
+			let max_score = T::MaxFamilyScore::get().min(T::MaxFamilyWeight::get()) as u128;
+			let base = blend.saturating_mul(max_score) / den_fx;
+
+			// Uptime multiplier, then penalties (same constants as per-node scoring).
+			let with_uptime = base.saturating_mul(uptime) / 1000u128;
+			let pen = (strikes_total as u128)
+				.saturating_mul(T::StrikePenalty::get() as u128)
+				.saturating_add(
+					(integrity_total as u128)
+						.saturating_mul(T::IntegrityFailPenalty::get() as u128),
+				);
+			let final_score = with_uptime.saturating_sub(pen).min(max_score);
+			final_score as u16
 		}
 
 		pub fn get_total_family_weight() -> u128 {
@@ -2312,7 +2379,7 @@ pub mod pallet {
 
 			let mut computed: u32 = 0;
 			for family in families_to_recompute.iter() {
-				let raw = Self::compute_family_weight_from_nodes(family);
+				let raw = Self::compute_family_weight_from_nodes(family, bucket);
 
 				// Newcomer floor, only if raw > 0 and within grace
 				let raw = if raw > 0 {
