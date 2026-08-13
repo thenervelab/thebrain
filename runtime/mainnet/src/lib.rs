@@ -104,6 +104,12 @@ parameter_types! {
 	pub const MaxNodeWeightPrunePerCall: u32 = 200;
 	/// Cap on `prune_stale_node_weights` scan size (bounds the walk over live entries).
 	pub const MaxNodeWeightScanPerCall: u32 = 2000;
+	/// Families visited per `submit_node_quality` recompute page. Declared weight scales
+	/// with this times `MaxChildrenPerFamily` (35), so 25 keeps a single call's family
+	/// term near 2.6k reads. The submitter issues many calls per bucket (batches are
+	/// capped at `MaxNodeWeightUpdates`), so the cursor still covers the whole family set
+	/// well inside a bucket at realistic sizes.
+	pub const MaxFamilyRecomputePerCall: u32 = 25;
 	/// Periodic [`MinerStatsByUid`] pruning in arion (`0` = disabled).
 	pub const ArionMinerStatsPruneInterval: BlockNumber = 100;
 	/// Max stats uid keys scanned per pruning tick.
@@ -208,6 +214,7 @@ impl pallet_arion::Config for Runtime {
 	type MaxAttestationBucketsPrunePerCall = MaxAttestationBucketsPrunePerCall;
 	type MaxNodeWeightPrunePerCall = MaxNodeWeightPrunePerCall;
 	type MaxNodeWeightScanPerCall = MaxNodeWeightScanPerCall;
+	type MaxFamilyRecomputePerCall = MaxFamilyRecomputePerCall;
 	type WeightInfo = pallet_arion::weights::SubstrateWeight<Runtime>;
 	type MaxAttestations = ConstU32<1000>;
 	type MaxShardHashLen = ConstU32<100>;

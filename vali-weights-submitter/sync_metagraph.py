@@ -108,7 +108,8 @@ class StorageMonitor:
 
                 logger.info(f"Connecting to Bittensor chain using Bittensor library...")
                 # Use Bittensor library for Bittensor connection (same as run_continuous.py)
-                self.bittensor_chain = bt.subtensor(network="finney")  # Use mainnet
+                # bittensor v11: bt.Subtensor is blocking when called directly
+                self.bittensor_chain = bt.Subtensor(network="finney")  # Use mainnet
                 logger.info("✅ Connected to Bittensor chain using Bittensor library")
 
                 return True
@@ -170,25 +171,20 @@ class StorageMonitor:
     def get_uids_from_bittensor(self):
         """Fetch UIDs from Bittensor chain for net_uid 75"""
         try:
-            # Use Bittensor library's metagraph method (same as run_continuous.py)
-            metagraph = bt.metagraph(
-                netuid=self.net_uid,
-                subtensor=self.bittensor_chain
-            )
-            
-            # Get active neurons
-            active_neurons = metagraph.neurons
-            
+            # bittensor v11: metagraph lives under subnets namespace, neurons are typed records
+            metagraph = self.bittensor_chain.subnets.metagraph(netuid=self.net_uid)
+
             # Create mapping of UID to hotkey
+            # Note: no axon filter — subnet 75 miners don't serve axons, and the
+            # legacy code's `axon_info.ip != 0` check was a no-op (ip was a str)
             uids = []
-            for uid, neuron in enumerate(active_neurons):
-                if neuron.axon_info.ip != 0:  # Active neuron
-                    uids.append({
-                        "address": neuron.axon_info.hotkey,
-                        "id": uid,
-                        "role": "None",
-                        "substrate_address": neuron.axon_info.hotkey
-                    })
+            for neuron in metagraph:
+                uids.append({
+                    "address": neuron.hotkey,
+                    "id": neuron.uid,
+                    "role": "None",
+                    "substrate_address": neuron.hotkey
+                })
             
             logger.info(f"Fetched {len(uids)} active UIDs from Bittensor")
             return uids
@@ -200,17 +196,16 @@ class StorageMonitor:
     def get_dividends_from_bittensor(self):
         """Fetch dividends from Bittensor chain for net_uid 75"""
         try:
-            # Use Bittensor library's metagraph method to get dividends
-            metagraph = bt.metagraph(
-                netuid=self.net_uid,
-                subtensor=self.bittensor_chain
-            )
-            
-            # Get dividends from the metagraph
-            dividends = metagraph.dividends
-            if dividends is not None:
+            # bittensor v11: dividends are per-neuron fields, rebuild the uid-indexed list
+            metagraph = self.bittensor_chain.subnets.metagraph(netuid=self.net_uid)
+
+            neurons = list(metagraph)
+            if neurons:
+                dividends = [0.0] * (max(n.uid for n in neurons) + 1)
+                for n in neurons:
+                    dividends[n.uid] = float(n.dividends)
                 logger.info(f"Fetched {len(dividends)} dividends from Bittensor")
-                return list(dividends)
+                return dividends
             else:
                 logger.warning("No dividends found in metagraph")
                 return []

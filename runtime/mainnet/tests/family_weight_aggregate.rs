@@ -278,3 +278,147 @@ fn below_floor_scores_zero() {
 		assert_eq!(raw(&fam), 0);
 	});
 }
+
+/// Same as `quality`, but carrying strikes/integrity failures.
+fn quality_penalized(bytes: u128, uptime: u16, strikes: u32, integrity_fails: u32) -> NodeQuality {
+	NodeQuality {
+		shard_data_bytes: bytes,
+		bandwidth_bytes: 0,
+		uptime_permille: uptime,
+		strikes,
+		integrity_fails,
+	}
+}
+
+#[test]
+fn fragmentation_is_neutral_with_penalties() {
+	new_test_ext().execute_with(|| {
+		// The invariance `fragmentation_is_neutral` proves at zero penalties must also
+		// hold when every node carries the same penalty load. Summing penalties across
+		// children breaks it: the base score is logarithmic in AGGREGATE bytes and so is
+		// unchanged by splitting, but a summed penalty scales with child count, making
+		// four 1 TiB nodes cost 4x what one 4 TiB node costs for identical data+strikes.
+		let fam_a = account(80, 0);
+		let fam_b = account(81, 0);
+
+		let a1 = account(80, 10);
+		add_child(&fam_a, &a1);
+		let mut pairs = vec![(a1, quality_penalized(4 * TIB, 900, 1, 0))];
+
+		for i in 0..4u8 {
+			let c = account(81, 10 + i);
+			add_child(&fam_b, &c);
+			pairs.push((c, quality_penalized(TIB, 900, 1, 0)));
+		}
+		submit(pairs);
+
+		assert_eq!(
+			raw(&fam_a),
+			raw(&fam_b),
+			"same bytes and same per-node penalty must score identically regardless of split"
+		);
+		assert!(raw(&fam_a) > 0, "penalty must not wipe the score out entirely");
+	});
+}
+
+#[test]
+fn penalties_still_reduce_the_score() {
+	new_test_ext().execute_with(|| {
+		// Averaging must not neuter penalties: a penalized family still scores strictly
+		// below an identical clean one, and integrity failures bite harder than strikes
+		// (IntegrityFailPenalty 100 vs StrikePenalty 50).
+		let clean = account(82, 0);
+		let struck = account(83, 0);
+		let broken = account(84, 0);
+
+		let c1 = account(82, 10);
+		let c2 = account(83, 10);
+		let c3 = account(84, 10);
+		add_child(&clean, &c1);
+		add_child(&struck, &c2);
+		add_child(&broken, &c3);
+
+		submit(vec![
+			(c1, quality_penalized(10 * TIB, 1000, 0, 0)),
+			(c2, quality_penalized(10 * TIB, 1000, 1, 0)),
+			(c3, quality_penalized(10 * TIB, 1000, 0, 1)),
+		]);
+
+		assert!(raw(&clean) > raw(&struck), "a strike must cost something");
+		assert!(raw(&struck) > raw(&broken), "an integrity fail must cost more than a strike");
+	});
+}
+
+#[test]
+fn one_bad_node_among_many_dilutes() {
+	new_test_ext().execute_with(|| {
+		// A single bad node in a four-node family should cost less than the same node
+		// standing alone — the family is mostly healthy. This is the behaviour that
+		// distinguishes averaging from summing, which would charge both identically.
+		let solo = account(85, 0);
+		let mixed = account(86, 0);
+
+		let s1 = account(85, 10);
+		add_child(&solo, &s1);
+		let mut pairs = vec![(s1, quality_penalized(TIB, 1000, 4, 0))];
+
+		// Same aggregate bytes, same total strikes, spread over four nodes.
+		for i in 0..4u8 {
+			let c = account(86, 10 + i);
+			add_child(&mixed, &c);
+			let strikes = if i == 0 { 4 } else { 0 };
+			pairs.push((c, quality_penalized(TIB / 4, 1000, strikes, 0)));
+		}
+		submit(pairs);
+
+		assert!(
+			raw(&mixed) > raw(&solo),
+			"the same strike load spread over more healthy nodes must hurt less: \
+			 mixed={} solo={}",
+			raw(&mixed),
+			raw(&solo)
+		);
+	});
+}
+
+#[test]
+fn family_recompute_pages_across_calls() {
+	new_test_ext().execute_with(|| {
+		// MaxFamilyRecomputePerCall is 25 on mainnet. With more families than that, one
+		// call cannot cover them all — the cursor must carry the walk forward so repeated
+		// calls reach every family. This is what keeps the recompute inside its declared
+		// weight without permanently starving families outside the first page.
+		let mut fams = Vec::new();
+		let mut pairs = Vec::new();
+		for i in 0..40u8 {
+			let fam = account(100 + i, 0);
+			let child = account(100 + i, 200);
+			add_child(&fam, &child);
+			pairs.push((child, quality(10 * TIB, 0, 1000)));
+			fams.push(fam);
+		}
+
+		// Seed every family's weight in one submit batch. The batch itself is capped by
+		// MaxNodeWeightUpdates (100), so all 40 children land in a single call.
+		submit(pairs);
+
+		let scored_after_first = fams.iter().filter(|f| raw(f) > 0).count();
+		assert!(
+			scored_after_first < fams.len(),
+			"a single page must not cover all 40 families (cap is 25), got {scored_after_first}"
+		);
+
+		// Keep calling with an empty batch: the recompute page advances on the cursor
+		// alone, so coverage must reach every family.
+		for _ in 0..4 {
+			submit(vec![]);
+		}
+
+		let scored_after_paging = fams.iter().filter(|f| raw(f) > 0).count();
+		assert_eq!(
+			scored_after_paging,
+			fams.len(),
+			"cursor must eventually cover every family"
+		);
+	});
+}

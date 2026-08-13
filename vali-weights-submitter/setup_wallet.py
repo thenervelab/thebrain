@@ -3,7 +3,7 @@
 Setup script to create a local wallet for weight submission
 """
 
-import bittensor as bt
+from bittensor.wallet import Wallet
 import os
 
 def setup_wallet():
@@ -41,7 +41,7 @@ def setup_wallet():
         print("Wallet location: ~/.bittensor/wallets/default/")
         
         # Load and display wallet info
-        wallet = bt.wallet(name="default", hotkey="default")
+        wallet = Wallet(name="default", hotkey="default")
         print(f"Hotkey SS58 address: {wallet.hotkey.ss58_address}")
         
         return True

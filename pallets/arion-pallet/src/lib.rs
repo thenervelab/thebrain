@@ -622,6 +622,16 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxNodeWeightScanPerCall: Get<u32>;
 
+		/// Max families visited per `submit_node_quality` family-weight recompute page.
+		///
+		/// Bounds the recompute so its cost cannot outgrow the declared weight as the
+		/// family set grows. Coverage is not lost, only spread: [`FamilyRecomputeCursor`]
+		/// resumes the walk on the next call, so consecutive calls page through the whole
+		/// map. Tune against `MaxChildrenPerFamily` — declared weight scales with the
+		/// product, since a page may hit families that are all at the child cap.
+		#[pallet::constant]
+		type MaxFamilyRecomputePerCall: Get<u32>;
+
 		// --- Registration economics / safety controls ---
 
 		/// Max distinct families that can ever claim their first “free” child slot.
@@ -965,6 +975,11 @@ pub mod pallet {
 	/// (`None` = next call restarts from the beginning of the map).
 	#[pallet::storage]
 	pub type NodeWeightPruneCursor<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
+
+	/// Last `FamilyActiveChildren` key visited by the family-weight recompute page
+	/// (`None` = next call restarts from the beginning of the map).
+	#[pallet::storage]
+	pub type FamilyRecomputeCursor<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
 
 	// -------------------------
 	// Miner payment state
@@ -2249,13 +2264,24 @@ pub mod pallet {
 			let base = blend.saturating_mul(max_score) / den_fx;
 
 			// Uptime multiplier, then penalties (same constants as per-node scoring).
+			//
+			// Penalties are averaged over the contributing children, not summed. Summing
+			// breaks the fragmentation invariance this function exists for: the base score
+			// is logarithmic in AGGREGATE bytes, so it is unchanged by splitting data across
+			// more children, but a summed penalty scales linearly with child count. The same
+			// 4 TiB carrying one strike per node would cost 1x the penalty as a single child
+			// and 4x as four, making fragmentation anything but neutral. Averaging keeps
+			// "one strike per node" costing the same regardless of how the data is split,
+			// while a single bad node among many correctly dilutes.
 			let with_uptime = base.saturating_mul(uptime) / 1000u128;
-			let pen = (strikes_total as u128)
+			let pen_total = (strikes_total as u128)
 				.saturating_mul(T::StrikePenalty::get() as u128)
 				.saturating_add(
 					(integrity_total as u128)
 						.saturating_mul(T::IntegrityFailPenalty::get() as u128),
 				);
+			// `fresh_children` is non-zero: the early return above covers the zero case.
+			let pen = pen_total / fresh_children;
 			let final_score = with_uptime.saturating_sub(pen).min(max_score);
 			final_score as u16
 		}
@@ -2368,13 +2394,50 @@ pub mod pallet {
 				updates: updates.len() as u32,
 			});
 
-			// Recompute every family with active children so weights cannot be suppressed by
-			// omitting a family's children from this batch.
+			// Recompute families with active children in a bounded, resumable page.
+			//
+			// Weights still cannot be suppressed by omitting a family's children from this
+			// batch: which families a page covers is driven by the on-chain cursor, never by
+			// the batch contents, so a submitter has no way to steer the walk away from a
+			// family. Bounding the page is what keeps the work inside the declared weight —
+			// an unbounded walk costs `families x children x 3` reads while the weight is
+			// keyed only on `updates.len()`.
+			//
+			// The scan is metered, not just the recompute list: families sitting at zero
+			// active children are skipped but still cost a read, so counting only pushed
+			// families would leave the same unbounded walk in place.
+			let max_families = T::MaxFamilyRecomputePerCall::get().max(1);
+			let family_iter = match FamilyRecomputeCursor::<T>::get() {
+				Some(last) => FamilyActiveChildren::<T>::iter_from(
+					FamilyActiveChildren::<T>::hashed_key_for(&last),
+				),
+				None => FamilyActiveChildren::<T>::iter(),
+			};
+
 			let mut families_to_recompute: sp_std::vec::Vec<T::AccountId> = sp_std::vec::Vec::new();
-			for (family, n) in FamilyActiveChildren::<T>::iter() {
+			let mut scanned: u32 = 0;
+			let mut last_scanned: Option<T::AccountId> = None;
+			// `take` bounds the walk without fetching a further entry to discard, so the
+			// page costs exactly `max_families` reads rather than one more.
+			for (family, n) in family_iter.take(max_families as usize) {
+				scanned = scanned.saturating_add(1);
+				last_scanned = Some(family.clone());
 				if n > 0 {
 					families_to_recompute.push(family);
 				}
+			}
+			// A short page means the map ended inside it. Ending exactly on the boundary
+			// parks the cursor instead; the next call then reads nothing and resets, which
+			// costs one extra call and never skips a family.
+			let exhausted = scanned < max_families;
+
+			// Park at the last scanned key; reset once the map end is reached so the next
+			// call starts a fresh pass. `iter_from` resumes strictly after the given key, so
+			// parking on a family that is later removed is still a valid resume point.
+			if exhausted {
+				FamilyRecomputeCursor::<T>::kill();
+			} else if let Some(last) = last_scanned {
+				FamilyRecomputeCursor::<T>::put(last);
 			}
 
 			let mut computed: u32 = 0;
@@ -2909,7 +2972,11 @@ pub mod pallet {
 		///
 		/// This is the **recommended** path (deterministic on-chain weight calculation).
 		#[pallet::call_index(20)]
-		#[pallet::weight((<T as pallet::Config>::WeightInfo::submit_node_quality(updates.len() as u32), Pays::No))]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::submit_node_quality(
+			updates.len() as u32,
+			T::MaxFamilyRecomputePerCall::get().max(1),
+			T::MaxChildrenPerFamily::get(),
+		), Pays::No))]
 		pub fn submit_node_quality(
 			origin: OriginFor<T>,
 			bucket: u32,
@@ -3421,7 +3488,7 @@ pub mod pallet {
 		/// call scan unboundedly: repeated calls page through the whole map and the
 		/// cursor resets once the end is reached.
 		#[pallet::call_index(39)]
-		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_stale_node_weights(*max_scan), Pays::No))]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::prune_stale_node_weights(*max_scan, *max_children), Pays::No))]
 		pub fn prune_stale_node_weights(
 			origin: OriginFor<T>,
 			min_stale_buckets: u32,
