@@ -522,6 +522,19 @@ pub mod pallet {
 		WhitelistedCallerRemoved {
 			account: T::AccountId,
 		},
+		/// A user's active storage subscription was moved onto a different plan
+		/// by a whitelisted caller, in one dispatch.
+		///
+		/// `charged_credits` and `refunded_credits` are the two halves of a single
+		/// net credit movement, so at most one of them is ever non-zero.
+		StoragePlanChanged {
+			user: T::AccountId,
+			old_plan: T::Hash,
+			new_plan: T::Hash,
+			subscription_id: SubscriptionId,
+			charged_credits: u128,
+			refunded_credits: u128,
+		},
 	}
 
 	#[pallet::error]
@@ -1080,6 +1093,65 @@ pub mod pallet {
 				Some(id) => Self::do_cancel_subscription_by_id(&user, id),
 				None => Self::do_delete_storage_subscription_with_refund(&user),
 			}
+		}
+
+		/// Move a user's active storage subscription onto a different storage plan
+		/// — upgrade or downgrade — in one dispatch (restricted to whitelisted
+		/// callers, same ACL as `purchase_plan` / `cancel_user_subscription`).
+		///
+		/// This exists because cancel + re-purchase is not a plan change:
+		/// - it opens a window in which the user holds no storage entitlement,
+		/// - the re-purchase re-checks the `MinSubscriptionBlocks` resubscribe
+		///   cooldown against `LastSubscriptionCancelledAt`, forcing the caller to
+		///   sequence the two calls across blocks and retry on
+		///   `ResubscribeCooldownActive`,
+		/// - and it splits the refund and the new charge into two credit movements,
+		///   which double-charges the month the user has already paid for.
+		///
+		/// So this call never sets `LastSubscriptionCancelledAt` (a change is not a
+		/// cancellation), never lets the subscription slot go empty, and settles the
+		/// whole swap as a single net credit movement. Referral attribution
+		/// (`ReferredUsers`) is left exactly as it was; the buyer discount and the
+		/// referrer commission apply to the new plan as they do at purchase.
+		///
+		/// `selected_image_name` / `location_id` / `cloud_init_cid` mirror
+		/// `purchase_plan`'s per-plan inputs so the backend can pass the same shape
+		/// on both calls. Storage plans are provisioned from the plan alone, so —
+		/// exactly as in `purchase_plan`'s `is_storage_plan` branch — they are
+		/// accepted and not written to the subscription.
+		#[pallet::call_index(30)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn change_storage_plan(
+			origin: OriginFor<T>,
+			user: T::AccountId,
+			new_plan_id: T::Hash,
+			selected_image_name: Option<Vec<u8>>,
+			location_id: Option<u32>,
+			cloud_init_cid: Option<Vec<u8>>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			let allowed = WhitelistedCallers::<T>::get();
+			ensure!(allowed.contains(&who), Error::<T>::WhitelistedCallerNotAuthorized);
+
+			// Same per-block rate limit `purchase_plan` applies, counted against the
+			// subscriber rather than the relayer — it is what bounds repeated plan
+			// changes within a block, since this call has no resubscribe cooldown.
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&user);
+			ensure!(
+				user_requests_count.saturating_add(1) <= max_requests_per_block,
+				Error::<T>::TooManyRequests
+			);
+			UserRequestsCount::<T>::insert(&user, user_requests_count.saturating_add(1));
+
+			Self::do_change_storage_plan(
+				&user,
+				new_plan_id,
+				location_id,
+				Self::normalize_image_selection(selected_image_name),
+				cloud_init_cid,
+			)
 		}
 
 		/// Update the total Drive + S3 file size/count for a user.
@@ -1664,6 +1736,164 @@ pub mod pallet {
 
 			// Save the updated subscriptions list
 			UserAllSubscriptionPlans::<T>::insert(&who, subscriptions);
+
+			Ok(())
+		}
+
+		/// Swap `account_id`'s single active storage subscription onto `new_plan_id`.
+		///
+		/// Money model — one net movement, never two:
+		/// - `refund_credits`: unused prepaid *full* months on the old plan, i.e.
+		///   exactly what the cancel path refunds (`unused_prepaid_refund_credits`).
+		/// - `carry_credits`: what the unexpired remainder of the **current** month
+		///   is worth on the old plan. The cancel path deliberately never refunds
+		///   the current month, and neither do we — this is only applied as a credit
+		///   *against* the new plan's first month, so an upgrade pays the difference
+		///   instead of paying for the same month twice. Paying it out on a
+		///   downgrade would mint credits carrying no alpha backing on a call that
+		///   has no resubscribe cooldown, i.e. a free plan-cycling loop; capping it
+		///   at the new charge closes that while still fixing the double-charge.
+		/// - The new plan's first month is prorated and discounted exactly as a
+		///   fresh purchase would be, and `next_charge_unix_day` lands on the 1st of
+		///   next month, so recurring charging treats it like any other new
+		///   subscription.
+		///
+		/// The refund is then netted against the charge, so `FreeCredits` moves once
+		/// and prepaid months can pay for the new plan directly.
+		fn do_change_storage_plan(
+			account_id: &T::AccountId,
+			new_plan_id: T::Hash,
+			_location_id: Option<u32>,
+			_selected_image_name: Option<Vec<u8>>,
+			_cloud_init_cid: Option<Vec<u8>>,
+		) -> DispatchResult {
+			ensure!(
+				!RegistrationPallet::<T>::is_node_type_disabled(NodeType::StorageMiner),
+				Error::<T>::NodeTypeDisabled
+			);
+
+			// Same kill switch `purchase_plan` honours: if new storage plans cannot
+			// be bought, they cannot be switched into either.
+			ensure!(Self::is_purchase_plan_enabled(), Error::<T>::PlanOperationDisabled);
+
+			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(account_id);
+
+			// Exactly one active storage subscription. `do_purchase_storage_plan`
+			// enforces that invariant on the way in, so more than one is corrupt
+			// state we refuse rather than silently pick a winner from.
+			let mut active_storage = subscriptions
+				.iter()
+				.enumerate()
+				.filter(|(_, s)| s.active && s.package.is_storage_plan)
+				.map(|(i, _)| i);
+			let index = active_storage.next().ok_or(Error::<T>::NoActiveSubscription)?;
+			ensure!(active_storage.next().is_none(), Error::<T>::TooManyActiveSubscriptions);
+
+			let old_sub = subscriptions[index].clone();
+			let old_plan_id = old_sub.package.id;
+			ensure!(new_plan_id != old_plan_id, Error::<T>::InvalidInput);
+
+			let new_plan = Plans::<T>::get(&new_plan_id).ok_or(Error::<T>::PlanNotFound)?;
+			ensure!(!new_plan.is_suspended, Error::<T>::PlanSuspended);
+			ensure!(new_plan.is_storage_plan, Error::<T>::InvalidPlanType);
+
+			// Unused prepaid full months on the old plan — the cancel refund, unchanged.
+			let refund_credits = Self::unused_prepaid_refund_credits(&old_sub);
+
+			// Value of the remaining days of the current month on the old plan. Only
+			// counts while the old subscription is actually paid through the current
+			// month; a lapsed subscription, or a legacy one with no
+			// `next_charge_unix_day`, carries nothing forward. `paid_per_month` is
+			// the discounted price actually billed, so the carry never exceeds what
+			// the user paid for those days.
+			let paid_through_this_month = old_sub
+				.next_charge_unix_day
+				.is_some_and(|due_day| due_day > Self::current_unix_day());
+			let carry_credits = if paid_through_this_month {
+				Self::prorated_monthly_price(old_sub.paid_per_month)
+			} else {
+				0
+			};
+
+			// New plan's first month, prorated and discounted like a fresh purchase.
+			let new_plan_price = Self::prorated_monthly_price(new_plan.price);
+			let (referral_discount, ref_owner) =
+				Self::referral_discount_and_owner(account_id, new_plan_price);
+			let charged_credits =
+				new_plan_price.saturating_sub(referral_discount).saturating_sub(carry_credits);
+
+			// Net the two halves so `FreeCredits` moves exactly once, and check
+			// affordability against that net delta before touching any state.
+			let net_charge = charged_credits.saturating_sub(refund_credits);
+			let net_refund = refund_credits.saturating_sub(charged_credits);
+
+			let user_free_credits = CreditsPallet::<T>::get_free_credits(account_id);
+			ensure!(user_free_credits >= net_charge, Error::<T>::InsufficientFreeCredits);
+
+			if net_charge > 0 {
+				Self::consume_credits(account_id.clone(), net_charge)?;
+				Self::record_credits_transaction(
+					account_id,
+					NativeTransactionType::Subscription,
+					net_charge,
+				)?;
+			}
+
+			if net_refund > 0 {
+				// Mints the refund and records the `Refund` transaction itself.
+				Self::refund_credits_with_batch(account_id, net_refund)?;
+			}
+
+			// Commission on the credits actually collected by this call. The
+			// refunded months already paid a commission when they were bought, so
+			// netting first is what stops a plan change from paying twice on them.
+			if let Some(owner) = ref_owner {
+				let commission = Self::referral_commission_credits(net_charge);
+				Self::try_pay_referral_commission_tokens(&owner, commission);
+			}
+
+			let subscription_id = NextSubscriptionId::<T>::mutate(|id| {
+				let current_id = *id;
+				*id = id.saturating_add(1);
+				current_id
+			});
+
+			// 95% of face price for referred users — the same conserved split the
+			// purchase paths record, so future refunds keep valuing a month correctly.
+			let paid_per_month = if CreditsPallet::<T>::referred_users(account_id).is_some() {
+				split(Credits::new(new_plan.price), BasisPoints::new(9_500)).0.get()
+			} else {
+				new_plan.price
+			};
+
+			// Replace in place. The slot stays occupied for the whole dispatch, so
+			// the storage entitlement never lapses and the change can never trip
+			// `MaxActiveSubscriptions` the way a re-purchase could.
+			subscriptions[index] = UserPlanSubscription {
+				id: subscription_id,
+				owner: account_id.clone(),
+				package: new_plan,
+				cdn_location_id: None,
+				active: true,
+				last_charged_at: <frame_system::Pallet<T>>::block_number(),
+				selected_image_name: None,
+				next_charge_unix_day: Some(
+					pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(1),
+				),
+				paid_per_month,
+				_phantom: PhantomData,
+			};
+
+			UserAllSubscriptionPlans::<T>::insert(account_id, subscriptions);
+
+			Self::deposit_event(Event::StoragePlanChanged {
+				user: account_id.clone(),
+				old_plan: old_plan_id,
+				new_plan: new_plan_id,
+				subscription_id,
+				charged_credits: net_charge,
+				refunded_credits: net_refund,
+			});
 
 			Ok(())
 		}

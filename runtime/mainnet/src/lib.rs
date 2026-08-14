@@ -369,7 +369,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92002,
+	spec_version: 92003,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
@@ -1914,6 +1914,10 @@ impl InstanceFilter<RuntimeCall> for ProxyType {
 					// NonTransfer proxies must not be able to drain the principal via
 					// credit purchases or hAlpha withdrawals.
 					| RuntimeCall::Marketplace(pallet_marketplace::Call::purchase_plan { .. })
+					// A plan upgrade consumes credits for the net delta, same drain.
+					| RuntimeCall::Marketplace(
+						pallet_marketplace::Call::change_storage_plan { .. }
+					)
 					| RuntimeCall::AlphaBridge(pallet_alpha_bridge::Call::withdraw { .. })
 			),
 			ProxyType::Governance => matches!(
