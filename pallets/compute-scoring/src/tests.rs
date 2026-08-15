@@ -2643,11 +2643,18 @@ fn deregister_clears_marketplace_price_state() {
             CHILD_FORCE,
         ));
 
-        // All price state for the node id is gone — a re-registration by a
-        // new operator can't inherit it (review fix).
+        // The PRICE state is gone — a re-registration by a new
+        // operator can't inherit it — but the SPEED LIMIT is not
+        // (R10): the change-interval clock keeps running and the last
+        // effective price becomes the magnitude anchor, so a
+        // dereg/re-register cycle no longer resets the ladder.
         assert!(MinerPrice::<TestRuntime>::get(node_id).is_none());
         assert!(PendingPriceChange::<TestRuntime>::get(node_id).is_none());
-        assert_eq!(LastPriceChangeBlock::<TestRuntime>::get(node_id), 0);
+        assert_eq!(LastPriceChangeBlock::<TestRuntime>::get(node_id), 5);
+        assert_eq!(
+            crate::pallet::PriceMagnitudeAnchor::<TestRuntime>::get(node_id),
+            Some(1_000)
+        );
     });
 }
 
@@ -3385,10 +3392,13 @@ mod review_b3 {
             const NODE: [u8; 32] = [0xEE; 32];
             const OP: AccountId = 61;
             NodeIdToChild::<TestRuntime>::insert(NODE, OP);
+            // R12 refuses announcements while PriceCeiling is None,
+            // so configure an explicit (astronomical) ceiling — this
+            // test is about the magnitude overflow, not the bounds.
             assert_ok!(ComputeScoring::set_price_bounds(
                 RuntimeOrigin::root(),
                 1,
-                None
+                Some(u128::MAX)
             ));
             assert_ok!(ComputeScoring::set_price_change_policy(
                 RuntimeOrigin::root(),
@@ -3565,6 +3575,141 @@ mod review_b4 {
             // active 200, unbonding 300: 300 required must now FAIL —
             // stake being withdrawn is not collateral you can point to.
             assert!(!ComputeScoring::is_stake_sufficient(&73, 300));
+        });
+    }
+}
+
+// =====================================================================
+// thebrain#49 review batch B5 — pricing
+// =====================================================================
+
+mod review_b5 {
+    use super::*;
+    use crate::pallet::{
+        LastPriceChangeBlock, MinerPrice, NodeIdToChild, PendingPriceChange, PriceMagnitudeAnchor,
+    };
+
+    const NODE: [u8; 32] = [0xD5; 32];
+    const OP: AccountId = 81;
+
+    fn setup_with_bounds(ceiling: u128) {
+        NodeIdToChild::<TestRuntime>::insert(NODE, OP);
+        assert_ok!(ComputeScoring::set_price_bounds(
+            RuntimeOrigin::root(),
+            1,
+            Some(ceiling)
+        ));
+        assert_ok!(ComputeScoring::set_price_change_policy(
+            RuntimeOrigin::root(),
+            10,
+            5,
+            3,
+            2
+        ));
+    }
+
+    /// R12: with no PriceCeiling configured (the state every upgraded
+    /// runtime starts in — genesis does not run on upgrade), the
+    /// market is CLOSED, not unbounded.
+    #[test]
+    fn unconfigured_bounds_refuse_every_announcement() {
+        new_test_ext().execute_with(|| {
+            NodeIdToChild::<TestRuntime>::insert(NODE, OP);
+            assert_ok!(ComputeScoring::set_price_change_policy(
+                RuntimeOrigin::root(),
+                10,
+                5,
+                3,
+                2
+            ));
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP), NODE, 100),
+                Error::<TestRuntime>::PriceBoundsNotConfigured,
+            );
+        });
+    }
+
+    /// R10: the ladder survives deregistration — the first
+    /// announcement after a re-register is magnitude-limited against
+    /// the anchor the node id kept, not free.
+    #[test]
+    fn ladder_survives_reregistration() {
+        new_test_ext().execute_with(|| {
+            setup_with_bounds(u128::MAX);
+            // Simulate the post-deregistration state the R10 fix
+            // leaves behind: no current price, an anchor of 1 000.
+            PriceMagnitudeAnchor::<TestRuntime>::insert(NODE, 1_000u128);
+            // ×10 in one call: over the 3/2 ladder — refused.
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP), NODE, 10_000),
+                Error::<TestRuntime>::PriceChangeTooLarge,
+            );
+            // Within the ladder from the anchor — accepted.
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                1_400
+            ));
+        });
+    }
+
+    /// R13: a pending announced under looser bounds is DISCARDED at
+    /// apply time once the bounds have been tightened — and the
+    /// read path never serves it either.
+    #[test]
+    fn tightened_bounds_kill_a_pending_change() {
+        new_test_ext().execute_with(|| {
+            setup_with_bounds(1_000_000);
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                500_000
+            ));
+            // Admin tightens the ceiling BELOW the pending price.
+            assert_ok!(ComputeScoring::set_price_bounds(
+                RuntimeOrigin::root(),
+                1,
+                Some(100_000)
+            ));
+            // Past the notice window…
+            System::set_block_number(System::block_number() + 6);
+            // …the read path must NOT serve the escaped pending…
+            assert_eq!(ComputeScoring::effective_price(&NODE), None);
+            // …and applying it discards it with an explicit error.
+            assert_noop!(
+                ComputeScoring::apply_price_change(RuntimeOrigin::signed(OP), NODE),
+                Error::<TestRuntime>::PriceOutOfBounds,
+            );
+        });
+    }
+
+    /// R14: the magnitude anchors on `effective_price` — once a
+    /// pending change passes its notice window it IS the price, and
+    /// the next announcement is measured from it, not from the stale
+    /// `MinerPrice`.
+    #[test]
+    fn magnitude_anchors_on_the_effective_price() {
+        new_test_ext().execute_with(|| {
+            setup_with_bounds(u128::MAX);
+            MinerPrice::<TestRuntime>::insert(NODE, 1_000u128);
+            LastPriceChangeBlock::<TestRuntime>::insert(NODE, 0u64);
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                1_500
+            ));
+            // Past the notice window the pending IS the effective
+            // price (1 500), though MinerPrice still says 1 000.
+            System::set_block_number(System::block_number() + 20);
+            assert_eq!(ComputeScoring::effective_price(&NODE), Some(1_500));
+            // 2 000 is within 3/2 of the EFFECTIVE 1 500 but NOT of
+            // the stale 1 000 — the old anchor wrongly refused it.
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                2_000
+            ));
+            let _ = PendingPriceChange::<TestRuntime>::get(NODE);
         });
     }
 }

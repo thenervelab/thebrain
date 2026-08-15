@@ -1072,6 +1072,17 @@ pub mod pallet {
     pub type ChildCooldownUntil<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, BlockNumberFor<T>, ValueQuery>;
 
+    /// R10 (thebrain#49): the magnitude anchor a node id keeps
+    /// THROUGH deregistration. `MinerPrice` is purged on deregister
+    /// (a new operator must not inherit the old operator's price),
+    /// but purging the ANCHOR too meant deregister → cooldown →
+    /// re-register set any price in one call — the ladder reset. The
+    /// anchor carries the last effective price so the first
+    /// post-re-registration announcement is still speed-limited.
+    #[pallet::storage]
+    pub type PriceMagnitudeAnchor<T: Config> =
+        StorageMap<_, Blake2_128Concat, [u8; 32], u128, OptionQuery>;
+
     /// Cooldown until for node ids (after deregistration).
     #[pallet::storage]
     pub type NodeIdCooldownUntil<T: Config> =
@@ -1428,12 +1439,18 @@ pub mod pallet {
 
         // --- Admin ---
         /// Registration lockup was enabled/disabled by admin.
-        LockupEnabledSet { enabled: bool },
+        LockupEnabledSet {
+            enabled: bool,
+        },
         /// Base child deposit floor was set by admin.
-        BaseChildDepositSet { deposit: BalanceOf<T> },
+        BaseChildDepositSet {
+            deposit: BalanceOf<T>,
+        },
         /// Number of fee-free child registrations per family was
         /// set by admin.
-        FreeChildSlotsPerFamilySet { slots: u32 },
+        FreeChildSlotsPerFamilySet {
+            slots: u32,
+        },
 
         // --- PR-I3 audit-stats ---
         /// An audit-VM-signed aggregate was accepted. `served_units`
@@ -1450,7 +1467,10 @@ pub mod pallet {
             body_hash: [u8; 32],
         },
         /// Admin set the audit-VM Ed25519 pubkey for a node.
-        AuditVmPubkeySet { node_id: [u8; 32], pubkey: [u8; 32] },
+        AuditVmPubkeySet {
+            node_id: [u8; 32],
+            pubkey: [u8; 32],
+        },
 
         // --- PR-I4 vali_submit_epoch_close ---
         /// A node's `MinerStatus` changed. Emitted **only on
@@ -1472,15 +1492,22 @@ pub mod pallet {
         },
         /// An epoch was closed: `EpochWeights[epoch][*]` is now
         /// authoritative and read by the off-chain ranking pallet.
-        EpochClosed { epoch: u64, updates: u32 },
+        EpochClosed {
+            epoch: u64,
+            updates: u32,
+        },
 
         // --- #322 live attestation ---
         /// A KBS L0 verifying key was added to the
         /// [`KbsAttestationPubkeys`] allowlist by admin.
-        KbsAttestationPubkeyAdded { pubkey: [u8; 32] },
+        KbsAttestationPubkeyAdded {
+            pubkey: [u8; 32],
+        },
         /// A KBS L0 verifying key was removed from the
         /// [`KbsAttestationPubkeys`] allowlist by admin.
-        KbsAttestationPubkeyRemoved { pubkey: [u8; 32] },
+        KbsAttestationPubkeyRemoved {
+            pubkey: [u8; 32],
+        },
         /// A KBS-signed live attestation was accepted for a tenant
         /// CVM. `body_hash` is the SHA-256 of the canonical CBOR
         /// body, stored as the new `prev_attestation_hash` for the
@@ -1497,9 +1524,13 @@ pub mod pallet {
 
         // --- PR-1 stake ---
         /// The stake-eligibility layer was enabled/disabled by admin.
-        StakeEnabledSet { enabled: bool },
+        StakeEnabledSet {
+            enabled: bool,
+        },
         /// USD value-at-risk per child updated (R2).
-        StakeUsdPerChildSet { usd: u128 },
+        StakeUsdPerChildSet {
+            usd: u128,
+        },
         /// Oracle guard rails updated (R3).
         OracleGuardsSet {
             max_deviation_permille: u32,
@@ -1507,11 +1538,19 @@ pub mod pallet {
         },
         /// The native-coin USD price was posted; `ema` is the new
         /// asymmetric-EMA value the stake math now uses.
-        AlphaPerUsdUpdated { spot: u128, ema: u128 },
+        AlphaPerUsdUpdated {
+            spot: u128,
+            ema: u128,
+        },
         /// The minimum stake floor was set by admin.
-        StakeFloorSet { floor: BalanceOf<T> },
+        StakeFloorSet {
+            floor: BalanceOf<T>,
+        },
         /// The asymmetric-EMA smoothing factors (per-mille) were set.
-        EmaPermilleSet { down: u32, up: u32 },
+        EmaPermilleSet {
+            down: u32,
+            up: u32,
+        },
         /// An owner reserved additional stake collateral.
         StakeToppedUp {
             who: T::AccountId,
@@ -1531,7 +1570,10 @@ pub mod pallet {
         /// `Quarantined` so the off-chain validator drains them during the
         /// unbonding period. `nodes` counts only nodes that ACTUALLY
         /// transitioned (already-Quarantined nodes are not re-counted).
-        OwnerQuarantinedOnUnstake { who: T::AccountId, nodes: u32 },
+        OwnerQuarantinedOnUnstake {
+            who: T::AccountId,
+            nodes: u32,
+        },
         /// Fully-unbonded stake was unreserved and released.
         StakeReleased {
             who: T::AccountId,
@@ -1540,9 +1582,13 @@ pub mod pallet {
 
         // --- PR-2 slashing ---
         /// Slashing was enabled/disabled by admin.
-        SlashingEnabledSet { enabled: bool },
+        SlashingEnabledSet {
+            enabled: bool,
+        },
         /// The slash beneficiary was set (`None` ⇒ burn).
-        SlashBeneficiarySet { beneficiary: Option<T::AccountId> },
+        SlashBeneficiarySet {
+            beneficiary: Option<T::AccountId>,
+        },
         /// Stake was slashed: `amount` burned or repatriated.
         Slashed {
             owner: T::AccountId,
@@ -1567,9 +1613,21 @@ pub mod pallet {
             effective_block: BlockNumberFor<T>,
         },
         /// A previously-announced price change became effective.
-        PriceChangeApplied { node_id: [u8; 32], new_price: u128 },
+        /// R13: a pending price announced under older, looser bounds
+        /// no longer fits and was discarded at apply time.
+        PendingPriceDiscarded {
+            node_id: [u8; 32],
+            new_price: u128,
+        },
+        PriceChangeApplied {
+            node_id: [u8; 32],
+            new_price: u128,
+        },
         /// Admin set the price floor/ceiling.
-        PriceBoundsSet { floor: u128, ceiling: Option<u128> },
+        PriceBoundsSet {
+            floor: u128,
+            ceiling: Option<u128>,
+        },
         /// Admin set the price-change policy (rate + magnitude + notice).
         PriceChangePolicySet {
             min_interval: BlockNumberFor<T>,
@@ -1763,6 +1821,11 @@ pub mod pallet {
         PriceOutOfBounds,
         /// The price change exceeds the allowed per-step magnitude.
         PriceChangeTooLarge,
+        /// R12: no `PriceCeiling` is configured. The market comes up
+        /// CLOSED, not unbounded — `set_price_bounds` is the day-one
+        /// admin call, and forgetting it now refuses loudly instead
+        /// of silently accepting any price.
+        PriceBoundsNotConfigured,
         /// A price change was announced too soon after the previous one.
         PriceChangeTooSoon,
         /// An invalid price-change policy (bad ratio / zero denom).
@@ -2049,7 +2112,10 @@ pub mod pallet {
         /// [`apply_price_change`] has materialised it on-chain.
         pub fn effective_price(node_id: &[u8; 32]) -> Option<u128> {
             if let Some(p) = PendingPriceChange::<T>::get(node_id) {
-                if Self::now() >= p.effective_block {
+                // R13: a pending that has escaped a later bounds
+                // tightening must not become the consumed price just
+                // because its notice elapsed.
+                if Self::now() >= p.effective_block && Self::within_price_bounds(p.new_price) {
                     return Some(p.new_price);
                 }
             }
@@ -2069,6 +2135,10 @@ pub mod pallet {
 
         /// `true` iff moving `current` → `new_price` is within the allowed
         /// per-step magnitude `[current·denom/numer, current·numer/denom]`.
+        /// R11 (thebrain#49): this is a SPEED LIMIT, not a cap —
+        /// ±50%/day compounds to ~57×/week. The absolute bound is
+        /// `PriceCeiling`/`PriceFloor`, which R12 makes mandatory
+        /// before any announcement is accepted at all.
         fn within_price_magnitude(current: u128, new_price: u128) -> bool {
             let numer = MaxPriceChangeNumer::<T>::get() as u128;
             let denom = MaxPriceChangeDenom::<T>::get() as u128;
@@ -3334,6 +3404,14 @@ pub mod pallet {
             // would trap the node — once `MinerPrice == 0` the magnitude
             // bounds collapse to `[0, 0]`, so it could never be raised.
             ensure!(new_price > 0, Error::<T>::PriceOutOfBounds);
+            // R12: genesis does not run on a runtime upgrade, so a
+            // chain upgraded into this pallet has PriceCeiling = None.
+            // Unbounded is not an acceptable default — refuse every
+            // announcement until the admin sets real bounds.
+            ensure!(
+                PriceCeiling::<T>::get().is_some(),
+                Error::<T>::PriceBoundsNotConfigured
+            );
             ensure!(
                 Self::within_price_bounds(new_price),
                 Error::<T>::PriceOutOfBounds
@@ -3348,9 +3426,21 @@ pub mod pallet {
                     Error::<T>::PriceChangeTooSoon
                 );
             }
-            // Magnitude is bounded only against an existing price; the very
-            // first price a miner sets is unconstrained (within bounds).
-            if let Some(current) = MinerPrice::<T>::get(node_id) {
+            // Magnitude anchor, two fixes deep:
+            // R14 — anchor on `effective_price`, not `MinerPrice`: a
+            //   pending change past its notice window is already the
+            //   price consumers see, so the speed limit must measure
+            //   from IT (anchoring on the stale value wrongly limited
+            //   increases relative to reality).
+            // R10 — when the node has no current price (fresh
+            //   registration), fall back to the anchor the node id
+            //   kept through deregistration, so the dereg/re-register
+            //   cycle no longer resets the ladder. A genuinely NEW
+            //   node id has neither and sets its first price freely
+            //   (within bounds).
+            let anchor =
+                Self::effective_price(&node_id).or_else(|| PriceMagnitudeAnchor::<T>::get(node_id));
+            if let Some(current) = anchor {
                 ensure!(
                     Self::within_price_magnitude(current, new_price),
                     Error::<T>::PriceChangeTooLarge
@@ -3388,6 +3478,20 @@ pub mod pallet {
                 Self::now() >= pending.effective_block,
                 Error::<T>::NoPriceChangeDue
             );
+            // R13: bounds were checked at ANNOUNCEMENT only, so a
+            // change announced before an admin tightened the bounds
+            // materialised outside them. Re-check here; a pending
+            // that no longer fits is DISCARDED (kept, it would block
+            // the node forever) and said so — the miner re-announces
+            // within the new bounds.
+            if !Self::within_price_bounds(pending.new_price) {
+                PendingPriceChange::<T>::remove(node_id);
+                Self::deposit_event(Event::PendingPriceDiscarded {
+                    node_id,
+                    new_price: pending.new_price,
+                });
+                return Err(Error::<T>::PriceOutOfBounds.into());
+            }
             MinerPrice::<T>::insert(node_id, pending.new_price);
             PendingPriceChange::<T>::remove(node_id);
             Self::deposit_event(Event::PriceChangeApplied {
@@ -3481,9 +3585,17 @@ pub mod pallet {
             NodeIdToChild::<T>::remove(reg.node_id);
             // Clear marketplace price state so a node id re-registered by a
             // different operator never inherits stale current/pending price.
+            // R10: the PRICE is purged (a new operator of this node
+            // id must not inherit it) but the SPEED LIMIT is not —
+            // the last effective price becomes the magnitude anchor,
+            // and the change-interval clock keeps running, so
+            // deregister → cooldown → re-register no longer resets
+            // the ladder.
+            if let Some(last_price) = Self::effective_price(&reg.node_id) {
+                PriceMagnitudeAnchor::<T>::insert(reg.node_id, last_price);
+            }
             MinerPrice::<T>::remove(reg.node_id);
             PendingPriceChange::<T>::remove(reg.node_id);
-            LastPriceChangeBlock::<T>::remove(reg.node_id);
             // R23 (thebrain#49): the price state was cleared but the
             // AUDIT state was not — a node id re-registered under a
             // different family inherited the old operator's audit-VM
