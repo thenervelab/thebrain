@@ -1911,19 +1911,36 @@ mod stake {
     #[test]
     fn required_alpha_scales_with_value_at_risk_and_ema() {
         new_test_ext().execute_with(|| {
-            // No price posted yet ⇒ 0 required (cannot size an obligation).
+            // No price posted yet ⇒ 0 required. Harmless only because
+            // `is_stake_sufficient` fails CLOSED on a zero EMA (R4) —
+            // this value never gates anything on its own.
             assert_eq!(ComputeScoring::required_alpha(100), 0);
 
-            // 1 alpha = 1 USD (×1e6). value-at-risk $50 ⇒ 50 alpha.
+            // R1: the oracle unit is PLANCK per USD, fixed-point ×1e6.
+            // 1 alpha = 1e18 planck. At 1 alpha per USD the oracle
+            // posts 1e18 × 1e6 = 1e24; $50 at risk ⇒ 50 alpha in
+            // planck. The old test pinned `required_alpha(50) == 50`,
+            // i.e. WHOLE units against an 18-decimal balance — a 1e18
+            // understatement of collateral.
+            const PLANCK_PER_ALPHA: u128 = 1_000_000_000_000_000_000;
             assert_ok!(ComputeScoring::set_alpha_per_usd(
                 RuntimeOrigin::root(),
-                1_000_000
+                PLANCK_PER_ALPHA * 1_000_000
             ));
-            assert_eq!(ComputeScoring::required_alpha(50), 50);
+            assert_eq!(ComputeScoring::required_alpha(50), 50 * PLANCK_PER_ALPHA);
 
-            // Coin dumps to 1 USD = 2 alpha (bootstrap reset). $50 ⇒ 100.
-            AlphaPerUsdEma::<TestRuntime>::put(2_000_000);
-            assert_eq!(ComputeScoring::required_alpha(50), 100);
+            // Coin dumps to 1 USD = 2 alpha (bootstrap reset). $50 ⇒ 100 alpha.
+            AlphaPerUsdEma::<TestRuntime>::put(2 * PLANCK_PER_ALPHA * 1_000_000);
+            assert_eq!(ComputeScoring::required_alpha(50), 100 * PLANCK_PER_ALPHA);
+
+            // R5: the floor rounds UP — one planck of risk above an
+            // exact multiple must cost one more planck, not zero.
+            AlphaPerUsdEma::<TestRuntime>::put(1); // 1e-6 planck per USD
+            assert_eq!(
+                ComputeScoring::required_alpha(1),
+                1,
+                "1 × 1 / 1e6 truncates to 0; a collateral floor must round up"
+            );
         });
     }
 
@@ -1938,6 +1955,25 @@ mod stake {
                 true
             ));
             assert_ok!(ComputeScoring::set_stake_floor(RuntimeOrigin::root(), 100));
+
+            // R4: gate armed but NO oracle price ever posted — fail
+            // closed. An oracle outage must never RELAX collateral,
+            // and "no price yet" must not admit anyone.
+            fund(9, 1_000_000);
+            assert_ok!(ComputeScoring::top_up_stake(
+                RuntimeOrigin::signed(9),
+                500_000
+            ));
+            assert!(
+                !ComputeScoring::is_stake_sufficient(&9, 0),
+                "no oracle price: nothing is sufficient, whatever is staked"
+            );
+
+            // A posted price arms the normal path below.
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
 
             // Nothing staked ⇒ below floor ⇒ insufficient.
             assert!(!ComputeScoring::is_stake_sufficient(&1, 0));
@@ -3234,6 +3270,126 @@ mod review_b2 {
             dereg_and_unbond(FAM, 211);
             assert!(FamilyChildren::<TestRuntime>::get(FAM).is_empty());
             assert_eq!(FamilyCount::<TestRuntime>::get(), 0);
+        });
+    }
+}
+
+// =====================================================================
+// thebrain#49 review batch B3 — stake/oracle math hygiene
+// =====================================================================
+
+mod review_b3 {
+    use super::*;
+    use crate::pallet::{AlphaPerUsdEma, EmaDownPermille, MinerPrice, NodeIdToChild};
+
+    /// R6: a small gap must still converge. With down = 300‰ a gap of
+    /// 3 computed a ZERO step (3×300/1000 truncates), so the EMA
+    /// stuck 3 units off spot forever. The minimum step of 1 closes
+    /// it in exactly `gap` posts.
+    #[test]
+    fn ema_converges_on_small_gaps() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            assert_eq!(AlphaPerUsdEma::<TestRuntime>::get(), 1_000_000);
+
+            // Spot 3 above the EMA — the old stall case.
+            for i in 1..=3u128 {
+                assert_ok!(ComputeScoring::set_alpha_per_usd(
+                    RuntimeOrigin::root(),
+                    1_000_003
+                ));
+                assert_eq!(
+                    AlphaPerUsdEma::<TestRuntime>::get(),
+                    1_000_000 + i,
+                    "post {i}: the EMA must move at least 1 per post"
+                );
+            }
+            // Converged exactly; a further post is a no-op step of 0.
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_003
+            ));
+            assert_eq!(AlphaPerUsdEma::<TestRuntime>::get(), 1_000_003);
+        });
+    }
+
+    /// R7 (ema_step): an astronomically large delta must produce the
+    /// EXACT divide-first step, not a saturate-then-divide artefact
+    /// (which understated the step by a factor of `perm`).
+    #[test]
+    fn ema_step_is_exact_for_huge_deltas() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            let ema = AlphaPerUsdEma::<TestRuntime>::get();
+            let spot = u128::MAX;
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                spot
+            ));
+            let delta = spot - ema;
+            let perm = EmaDownPermille::<TestRuntime>::get() as u128;
+            let expected_step = (delta / 1000) * perm + (delta % 1000) * perm / 1000;
+            assert_eq!(
+                AlphaPerUsdEma::<TestRuntime>::get(),
+                ema + expected_step,
+                "saturate-then-divide would understate this step ~{perm}x"
+            );
+        });
+    }
+
+    /// R7/R5 (required_alpha): an overflowing product must fail
+    /// CLOSED — Balance::MAX, an unmeetable floor — never a
+    /// saturated-then-divided value that silently UNDERSTATES
+    /// collateral by a factor of a million.
+    #[test]
+    fn required_alpha_overflow_is_an_unmeetable_floor() {
+        new_test_ext().execute_with(|| {
+            AlphaPerUsdEma::<TestRuntime>::put(2_000_000u128);
+            assert_eq!(
+                ComputeScoring::required_alpha(u128::MAX),
+                u128::MAX,
+                "overflow must read as `cannot be met`, not `MAX / 1e6`"
+            );
+        });
+    }
+
+    /// R7/R15 (within_price_magnitude): a huge current price used to
+    /// BRICK the node — `current × numer` saturated, `upper` computed
+    /// BELOW `current`, and every future announcement (even a
+    /// no-op re-announcement of the same price) was rejected forever.
+    #[test]
+    fn huge_price_does_not_brick_the_node() {
+        new_test_ext().execute_with(|| {
+            const NODE: [u8; 32] = [0xEE; 32];
+            const OP: AccountId = 61;
+            NodeIdToChild::<TestRuntime>::insert(NODE, OP);
+            assert_ok!(ComputeScoring::set_price_bounds(
+                RuntimeOrigin::root(),
+                1,
+                None
+            ));
+            assert_ok!(ComputeScoring::set_price_change_policy(
+                RuntimeOrigin::root(),
+                10,
+                5,
+                3,
+                2
+            ));
+            // current × 3 overflows u128; current > (sat MAX)/2, so the
+            // saturated upper bound fell BELOW current.
+            let huge = u128::MAX - 10;
+            MinerPrice::<TestRuntime>::insert(NODE, huge);
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                huge
+            ));
         });
     }
 }

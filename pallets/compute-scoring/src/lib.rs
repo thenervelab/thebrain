@@ -1125,6 +1125,11 @@ pub mod pallet {
 
     /// Last admin-posted native-coin price, fixed-point `alpha_per_usd ×
     /// 1e6` (how many native units buy 1 USD). No floats on-chain.
+    /// UNIT (R1, thebrain#49): PLANCK per USD, fixed-point ×1e6 —
+    /// i.e. `spot = alpha_planck_per_usd * 1_000_000`. The balance
+    /// this chain accounts in is the 18-decimal planck, so the
+    /// oracle MUST post planck-scaled values; posting whole-alpha
+    /// values understates required collateral by 1e18.
     #[pallet::storage]
     pub type AlphaPerUsdSpot<T> = StorageValue<_, u128, ValueQuery>;
 
@@ -1805,12 +1810,31 @@ pub mod pallet {
             if ema == 0 {
                 return spot;
             }
+            // R7 (thebrain#49): `delta * perm` could overflow into a
+            // saturate-then-divide garbage step. Divide FIRST — both
+            // partial products are overflow-free ((delta/1000)*perm
+            // caps at u128::MAX for perm <= 1000; (delta%1000)*perm
+            // < 1e6) and the split loses only the sub-permille
+            // remainder of the tail term.
+            //
+            // R6: the truncated step stalled — a gap under
+            // `1000/perm` computed a ZERO step, so the EMA stuck a
+            // handful of units off spot forever. A non-zero gap with
+            // a non-zero permille now always moves at least 1.
+            let step_toward = |delta: u128, perm: u128| -> u128 {
+                if delta == 0 || perm == 0 {
+                    return 0;
+                }
+                let step = (delta / 1000).saturating_mul(perm)
+                    + (delta % 1000).saturating_mul(perm) / 1000;
+                step.max(1)
+            };
             if spot >= ema {
                 let perm = EmaDownPermille::<T>::get() as u128;
-                ema.saturating_add(spot.saturating_sub(ema).saturating_mul(perm) / 1000)
+                ema.saturating_add(step_toward(spot - ema, perm))
             } else {
                 let perm = EmaUpPermille::<T>::get() as u128;
-                ema.saturating_sub(ema.saturating_sub(spot).saturating_mul(perm) / 1000)
+                ema.saturating_sub(step_toward(ema - spot, perm))
             }
         }
 
@@ -1818,9 +1842,20 @@ pub mod pallet {
         /// EMA-smoothed price (`alpha_per_usd × 1e6`). Public so the
         /// off-chain validator / a later on-chain guard can size a miner's
         /// obligation. `0` while no price has been posted.
+        /// Collateral required for `value_at_risk_usd`, in PLANCK
+        /// (the EMA is planck-per-USD ×1e6 — see [`AlphaPerUsdSpot`]).
+        ///
+        /// R5: a collateral floor rounds UP — truncation would let a
+        /// miner stake one planck less than the risk it covers.
+        /// R7: the multiply is CHECKED — on overflow this returns
+        /// `Balance::MAX` (an unmeetable floor ⇒ refusal), never a
+        /// saturated-then-divided garbage value.
         pub fn required_alpha(value_at_risk_usd: u128) -> BalanceOf<T> {
             let ema = AlphaPerUsdEma::<T>::get();
-            let req = value_at_risk_usd.saturating_mul(ema) / 1_000_000u128;
+            let req = match value_at_risk_usd.checked_mul(ema) {
+                Some(prod) => prod.div_ceil(1_000_000u128),
+                None => u128::MAX,
+            };
             req.saturated_into::<BalanceOf<T>>()
         }
 
@@ -1830,6 +1865,15 @@ pub mod pallet {
         pub fn is_stake_sufficient(owner: &T::AccountId, required: BalanceOf<T>) -> bool {
             if !StakeEnabled::<T>::get() {
                 return true;
+            }
+            // R4 (thebrain#49): with the stake gate ARMED and no
+            // oracle price ever posted, `required_alpha` computes 0
+            // and only the floor applied — an oracle outage RELAXED
+            // collateral. Fail closed instead: no price ⇒ no stake is
+            // sufficient. `set_alpha_per_usd` rejects a zero spot, so
+            // a zero EMA can only mean "never posted".
+            if AlphaPerUsdEma::<T>::get() == 0 {
+                return false;
             }
             StakedAmount::<T>::get(owner) >= required.max(StakeFloor::<T>::get())
         }
@@ -1959,8 +2003,27 @@ pub mod pallet {
         fn within_price_magnitude(current: u128, new_price: u128) -> bool {
             let numer = MaxPriceChangeNumer::<T>::get() as u128;
             let denom = MaxPriceChangeDenom::<T>::get() as u128;
-            let upper = current.saturating_mul(numer) / denom;
-            let lower = current.saturating_mul(denom) / numer;
+            if numer == 0 || denom == 0 {
+                // Malformed policy — refuse every change rather than
+                // divide by zero or wave everything through.
+                return false;
+            }
+            // R7/R15 (thebrain#49): `current * numer` saturating made
+            // `upper` compute BELOW `current` for a huge price, after
+            // which every future change was rejected — the node was
+            // bricked. Checked multiply: an unrepresentable upper
+            // bound is NO upper bound from magnitude (the absolute
+            // `PriceCeiling` still applies); the lower bound divides
+            // first, which cannot overflow for denom < numer and
+            // loses only the sub-`numer` remainder.
+            let upper = match current.checked_mul(numer) {
+                Some(prod) => prod / denom,
+                None => u128::MAX,
+            };
+            let lower = match current.checked_mul(denom) {
+                Some(prod) => prod / numer,
+                None => (current / numer).saturating_mul(denom),
+            };
             new_price <= upper && new_price >= lower
         }
 
