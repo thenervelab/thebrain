@@ -1000,9 +1000,14 @@ pub mod pallet {
     pub type LockupEnabled<T> = StorageValue<_, bool, ValueQuery>;
 
     /// Runtime-configurable base deposit (floor for the global
-    /// fee curve).
+    /// fee curve). `None` = never set (fall back to the Config
+    /// constant); `Some(0)` = an EXPLICIT admin zero. The old
+    /// `ValueQuery` encoding conflated the two, so
+    /// `set_base_child_deposit(0)` succeeded and then silently
+    /// reverted to the Config value on the next read (thebrain#49
+    /// R16).
     #[pallet::storage]
-    pub type BaseChildDepositValue<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+    pub type BaseChildDepositValue<T: Config> = StorageValue<_, BalanceOf<T>, OptionQuery>;
 
     /// Number of families that have claimed the "first child
     /// free" slot.
@@ -1025,11 +1030,6 @@ pub mod pallet {
     /// family before the global paid curve.
     #[pallet::storage]
     pub type FreeChildSlotsPerFamily<T> = StorageValue<_, u32, OptionQuery>;
-
-    /// Active children count per family.
-    #[pallet::storage]
-    pub type FamilyActiveChildren<T: Config> =
-        StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
 
     /// Total active children across all families.
     #[pallet::storage]
@@ -1420,6 +1420,13 @@ pub mod pallet {
             new_status: MinerStatus,
             epoch: u64,
         },
+        /// A status submission tried to move a node OUT of the
+        /// terminal `Decommissioned` state and was refused (R22).
+        TerminalStatusChangeRejected {
+            node_id: [u8; 32],
+            attempted: MinerStatus,
+            epoch: u64,
+        },
         /// An epoch was closed: `EpochWeights[epoch][*]` is now
         /// authoritative and read by the off-chain ranking pallet.
         EpochClosed { epoch: u64, updates: u32 },
@@ -1747,6 +1754,20 @@ pub mod pallet {
                 // Heartbeat — no storage write, no event.
                 return false;
             }
+            // R22 (thebrain#49): `Decommissioned` is TERMINAL. The
+            // variant was defined and never enforced, so a
+            // `Decommissioned -> Active` submission removed the row
+            // and made a §24-retired node look brand new. Refuse the
+            // write and say so — silence here would hide an operator
+            // error.
+            if prev_status == MinerStatus::Decommissioned {
+                Self::deposit_event(Event::TerminalStatusChangeRejected {
+                    node_id,
+                    attempted: new_status,
+                    epoch,
+                });
+                return false;
+            }
             // Recovery to default-Active REMOVES the row so a node that
             // recovers from Quarantined back to Active doesn't leave an
             // explicit Active row contradicting the "default-Active implicit /
@@ -1944,13 +1965,15 @@ pub mod pallet {
         }
 
         fn base_child_deposit() -> BalanceOf<T> {
-            let cur = BaseChildDepositValue::<T>::get();
-            if cur.is_zero() {
-                let d = T::BaseChildDeposit::get();
-                BaseChildDepositValue::<T>::put(d);
-                d
-            } else {
-                cur
+            match BaseChildDepositValue::<T>::get() {
+                // Explicitly set — zero included (R16: an admin zero
+                // is a decision, not an uninitialized cell).
+                Some(v) => v,
+                None => {
+                    let d = T::BaseChildDeposit::get();
+                    BaseChildDepositValue::<T>::put(d);
+                    d
+                }
             }
         }
 
@@ -2063,11 +2086,10 @@ pub mod pallet {
         /// (anti-yoyo: a family that already claimed its first
         /// free child must not get another).
         fn cleanup_family_when_no_active_children(family: &T::AccountId) {
-            if FamilyActiveChildren::<T>::get(family) != 0 {
+            if !FamilyChildren::<T>::get(family).is_empty() {
                 return;
             }
             FamilyChildren::<T>::remove(family);
-            FamilyActiveChildren::<T>::remove(family);
             FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
         }
 
@@ -2159,17 +2181,29 @@ pub mod pallet {
                 total < T::MaxChildrenTotal::get(),
                 Error::<T>::TooManyChildrenTotal
             );
-            let fam_count = FamilyActiveChildren::<T>::get(&family);
+            // R24 (thebrain#49): the child count is DERIVED from
+            // `FamilyChildren` — the counter it used to be stored
+            // beside could drift (`saturating_sub` vs `swap_remove
+            // if found`) and nothing reconciled them.
+            let fam_count = FamilyChildren::<T>::get(&family).len() as u32;
             ensure!(
                 fam_count < T::MaxChildrenPerFamily::get(),
                 Error::<T>::TooManyChildrenInFamily
             );
 
-            // Enforce MaxFamilies the moment a family claims their
-            // first fee-free registration.
+            // Enforce MaxFamilies whenever this registration would
+            // CREATE a current family (0 active children -> 1).
+            // R17 (thebrain#49): the old gate keyed on "first ever
+            // fee-free slot", while the decrement in
+            // `cleanup_family_when_no_active_children` fires on every
+            // drop-to-zero — register/deregister/re-register netted
+            // FamilyCount minus one per cycle until the cap enforced
+            // nothing. Count and cap now both mean the same thing:
+            // families with >= 1 active child, symmetric on both
+            // edges.
             let slots_used = Self::family_free_slots_used(&family);
             let free_slots_limit = Self::free_child_slots_per_family();
-            if slots_used == 0 {
+            if fam_count == 0 {
                 let families = FamilyCount::<T>::get();
                 ensure!(
                     families < T::MaxFamilies::get(),
@@ -2214,7 +2248,11 @@ pub mod pallet {
 
             // Update counts
             TotalActiveChildren::<T>::put(total.saturating_add(1));
-            FamilyActiveChildren::<T>::insert(&family, fam_count.saturating_add(1));
+            // Symmetric counterpart of the decrement in
+            // `cleanup_family_when_no_active_children` (R17).
+            if fam_count == 0 {
+                FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_add(1));
+            }
             FamilyChildren::<T>::try_mutate(&family, |v| v.try_push(child.clone()))
                 .map_err(|_| Error::<T>::TooManyChildrenInFamily)?;
 
@@ -2224,9 +2262,6 @@ pub mod pallet {
                 let new_used = slots_used.saturating_add(1);
                 FamilyFreeSlotsUsed::<T>::insert(&family, new_used);
                 FamilyUsedFreeSlot::<T>::insert(&family, true);
-                if slots_used == 0 {
-                    FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_add(1));
-                }
             } else if lockup_enabled {
                 let next = Self::global_next_deposit_floor_init();
                 GlobalNextDeposit::<T>::put(next.saturating_add(next));
@@ -3249,16 +3284,34 @@ pub mod pallet {
             MinerPrice::<T>::remove(reg.node_id);
             PendingPriceChange::<T>::remove(reg.node_id);
             LastPriceChangeBlock::<T>::remove(reg.node_id);
+            // R23 (thebrain#49): the price state was cleared but the
+            // AUDIT state was not — a node id re-registered under a
+            // different family inherited the old operator's audit-VM
+            // pubkey (and its aggregate hash-chain anchor), letting
+            // the previous operator keep signing aggregates for a
+            // machine that is no longer theirs.
+            AuditVmPubkeyByNode::<T>::remove(reg.node_id);
+            LastAggregateHashByNode::<T>::remove(reg.node_id);
+            // The status row follows the registration — EXCEPT the
+            // terminal `Decommissioned`, which is a §24 tombstone and
+            // must survive re-registration attempts (R22).
+            if MinerStatuses::<T>::get(reg.node_id).map(|e| e.status)
+                != Some(MinerStatus::Decommissioned)
+            {
+                MinerStatuses::<T>::remove(reg.node_id);
+            }
             TotalActiveChildren::<T>::put(TotalActiveChildren::<T>::get().saturating_sub(1));
-            let fam_active = FamilyActiveChildren::<T>::get(&reg.family);
-            let new_fam_active = fam_active.saturating_sub(1);
-            FamilyActiveChildren::<T>::insert(&reg.family, new_fam_active);
-            FamilyChildren::<T>::mutate(&reg.family, |v| {
+            // R24: `FamilyChildren` is the single source of truth for
+            // the per-family count — mutate it and read the new
+            // length back, instead of maintaining a counter that can
+            // drift from it.
+            let new_fam_active = FamilyChildren::<T>::mutate(&reg.family, |v| {
                 if let Some(pos) = v.iter().position(|c| c == &child) {
                     v.swap_remove(pos);
                 }
+                v.len() as u32
             });
-            if new_fam_active.is_zero() {
+            if new_fam_active == 0 {
                 Self::cleanup_family_when_no_active_children(&reg.family);
             }
 

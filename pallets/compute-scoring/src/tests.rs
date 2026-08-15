@@ -3004,3 +3004,236 @@ fn genesis_rejects_an_inverted_price_policy() {
     .assimilate_storage(&mut storage)
     .expect("compute-scoring genesis assimilates");
 }
+
+// =====================================================================
+// thebrain#49 review batch B2 — live-surface registration/deposit fixes
+// =====================================================================
+
+mod review_b2 {
+    use super::*;
+    use crate::pallet::{
+        AuditVmPubkeyByNode, BaseChildDepositValue, ChildRegistrations, FamilyChildren,
+        FamilyCount, MinerStatusEntry, MinerStatuses,
+    };
+    use frame_support::traits::Currency;
+
+    /// Register `child`/`node_seed` under `family` through the real
+    /// extrinsic (real ed25519 registration signature).
+    fn register(family: AccountId, child: AccountId, node_seed: u8) -> [u8; 32] {
+        use sp_core::{ed25519, Pair};
+        let _ = Balances::make_free_balance_be(&family, 100_000);
+        let pair = ed25519::Pair::from_seed(&[node_seed; 32]);
+        let node_id = pair.public().0;
+        let msg = (
+            b"HIPPIUS_COMPUTE_NODE_REG_V1",
+            &family,
+            &child,
+            &node_id,
+            0u64,
+        )
+            .encode();
+        let sig = pair.sign(&msg);
+        assert_ok!(ComputeScoring::register_child(
+            RuntimeOrigin::signed(family),
+            family,
+            child,
+            node_id,
+            sig.0,
+        ));
+        node_id
+    }
+
+    fn dereg_and_unbond(family: AccountId, child: AccountId) {
+        assert_ok!(ComputeScoring::deregister_child(
+            RuntimeOrigin::signed(family),
+            child
+        ));
+        let reg = ChildRegistrations::<TestRuntime>::get(child).unwrap();
+        System::set_block_number(reg.unbonding_end);
+        assert_ok!(ComputeScoring::claim_unbonded(
+            RuntimeOrigin::signed(family),
+            child
+        ));
+    }
+
+    /// R16: an explicit admin ZERO must stick. It used to read as
+    /// "uninitialized" and silently revert to the Config constant on
+    /// the next read.
+    #[test]
+    fn explicit_zero_base_deposit_sticks() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_base_child_deposit(
+                RuntimeOrigin::root(),
+                0
+            ));
+            // Force a read through the lazy-seed path: register a child
+            // past the free slots so the deposit curve is consulted.
+            assert_ok!(ComputeScoring::set_lockup_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_free_child_slots_per_family(
+                RuntimeOrigin::root(),
+                0
+            ));
+            let node_id = register(45, 220, 0xC9);
+            // With an explicit zero base deposit, registration reserved
+            // NOTHING — the old code re-seeded the Config constant here.
+            assert_eq!(Balances::reserved_balance(45), 0);
+            let _ = node_id;
+            // And the storage still says an EXPLICIT zero afterwards —
+            // the old lazy-seed path overwrote it with the Config value.
+            assert_eq!(BaseChildDepositValue::<TestRuntime>::get(), Some(0));
+        });
+    }
+
+    /// R17: FamilyCount counts CURRENT families, symmetric on both
+    /// edges. A register/deregister/re-register cycle used to net -1
+    /// per lap (increment once per family LIFETIME, decrement on every
+    /// drop-to-zero) until MaxFamilies enforced nothing.
+    #[test]
+    fn family_count_survives_reregistration_cycles() {
+        new_test_ext().execute_with(|| {
+            const FAM: AccountId = 41;
+            for lap in 0u8..3 {
+                let child = 100 + lap as AccountId;
+                register(FAM, child, 0xB0 + lap);
+                assert_eq!(
+                    FamilyCount::<TestRuntime>::get(),
+                    1,
+                    "lap {lap}: one current family while its child is active"
+                );
+                dereg_and_unbond(FAM, child);
+                assert_eq!(
+                    FamilyCount::<TestRuntime>::get(),
+                    0,
+                    "lap {lap}: zero current families after drop-to-zero"
+                );
+            }
+        });
+    }
+
+    /// R22: `Decommissioned` is terminal — a later submission cannot
+    /// resurrect the node, and the tombstone row survives.
+    #[test]
+    fn decommissioned_is_terminal() {
+        new_test_ext().execute_with(|| {
+            const NODE: [u8; 32] = [0x77; 32];
+            let one = |st| BoundedVec::try_from(vec![upd(NODE, st, 0)]).unwrap();
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                1,
+                one(MinerStatus::Decommissioned),
+            ));
+            assert_eq!(
+                MinerStatuses::<TestRuntime>::get(NODE).map(|e| e.status),
+                Some(MinerStatus::Decommissioned)
+            );
+
+            // Attempted resurrection: refused, row intact, rejection
+            // event emitted.
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                2,
+                one(MinerStatus::Active),
+            ));
+            assert_eq!(
+                MinerStatuses::<TestRuntime>::get(NODE).map(|e| e.status),
+                Some(MinerStatus::Decommissioned),
+                "the terminal row must survive a resurrection attempt"
+            );
+            let events = frame_system::Pallet::<TestRuntime>::events();
+            assert!(events.iter().any(|e| matches!(
+                &e.event,
+                RuntimeEvent::ComputeScoring(
+                    ComputeEvent::TerminalStatusChangeRejected { node_id, .. }
+                ) if *node_id == NODE
+            )));
+        });
+    }
+
+    /// R23: deregistration purges the AUDIT state bound to the node
+    /// id — before the fix a node id re-registered under a different
+    /// family inherited the previous operator's audit-VM pubkey and
+    /// aggregate hash-chain anchor.
+    #[test]
+    fn deregister_purges_audit_state() {
+        new_test_ext().execute_with(|| {
+            const FAM: AccountId = 42;
+            const CHILD: AccountId = 200;
+            let node_id = register(FAM, CHILD, 0xC5);
+
+            assert_ok!(ComputeScoring::set_audit_vm_pubkey(
+                RuntimeOrigin::root(),
+                node_id,
+                [0xAB; 32],
+            ));
+            crate::pallet::LastAggregateHashByNode::<TestRuntime>::insert(node_id, [0xCD; 32]);
+            // A non-terminal status row also follows the registration.
+            MinerStatuses::<TestRuntime>::insert(
+                node_id,
+                MinerStatusEntry {
+                    status: MinerStatus::Quarantined,
+                    last_transition_block: 1,
+                    last_transition_epoch: 1,
+                },
+            );
+
+            dereg_and_unbond(FAM, CHILD);
+
+            assert_eq!(AuditVmPubkeyByNode::<TestRuntime>::get(node_id), None);
+            assert_eq!(
+                crate::pallet::LastAggregateHashByNode::<TestRuntime>::get(node_id),
+                None
+            );
+            assert_eq!(MinerStatuses::<TestRuntime>::get(node_id), None);
+        });
+    }
+
+    /// R23 x R22: the `Decommissioned` tombstone is the one status row
+    /// deregistration must NOT purge.
+    #[test]
+    fn deregister_keeps_the_decommissioned_tombstone() {
+        new_test_ext().execute_with(|| {
+            const FAM: AccountId = 43;
+            const CHILD: AccountId = 201;
+            let node_id = register(FAM, CHILD, 0xC6);
+            MinerStatuses::<TestRuntime>::insert(
+                node_id,
+                MinerStatusEntry {
+                    status: MinerStatus::Decommissioned,
+                    last_transition_block: 1,
+                    last_transition_epoch: 1,
+                },
+            );
+            dereg_and_unbond(FAM, CHILD);
+            assert_eq!(
+                MinerStatuses::<TestRuntime>::get(node_id).map(|e| e.status),
+                Some(MinerStatus::Decommissioned)
+            );
+        });
+    }
+
+    /// R24: the per-family child count is DERIVED from
+    /// `FamilyChildren` — there is no second counter left to drift.
+    /// Two children, remove one: the list is the count.
+    #[test]
+    fn family_children_is_the_single_source_of_truth() {
+        new_test_ext().execute_with(|| {
+            const FAM: AccountId = 44;
+            register(FAM, 210, 0xC7);
+            register(FAM, 211, 0xC8);
+            assert_eq!(FamilyChildren::<TestRuntime>::get(FAM).len(), 2);
+            assert_eq!(FamilyCount::<TestRuntime>::get(), 1);
+
+            dereg_and_unbond(FAM, 210);
+            assert_eq!(FamilyChildren::<TestRuntime>::get(FAM).len(), 1);
+            // Family still current — one child left.
+            assert_eq!(FamilyCount::<TestRuntime>::get(), 1);
+
+            dereg_and_unbond(FAM, 211);
+            assert!(FamilyChildren::<TestRuntime>::get(FAM).is_empty());
+            assert_eq!(FamilyCount::<TestRuntime>::get(), 0);
+        });
+    }
+}
