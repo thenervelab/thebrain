@@ -225,17 +225,29 @@ parameter_types! {
 	/// Genesis hash of the chain this runtime serves — NOT `block_hash(0)`,
 	/// which prunes after `BlockHashCount`.
 	///
-	/// VERIFIED, not copied. Read from the running chain:
-	///   curl -s -X POST <rpc> -H 'Content-Type: application/json' \
+	/// Read from the running chain:
+	///   curl -s -X POST https://rpc.hippius.network \
+	///     -H 'Content-Type: application/json' \
 	///     -d '{"jsonrpc":"2.0","id":1,"method":"chain_getBlockHash","params":[0]}'
-	///   -> 0x35eadc576f10dac447f3f0a41443fa75b545c0b85473e118a30b0fe2d41832c1
-	///      system_chain = "Hippius Testnet", specVersion = 92003
+	///   -> 0x28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9
+	///      system_chain = "Hippius Mainnet", specVersion = 92003
 	///
-	/// ⚠️ REVIEWER: if this runtime is ALSO deployed to a chain other than the
-	/// one above, this constant must be THAT chain's genesis. The value carried
-	/// on the `dev` branch (28a6b548…) matches neither and was not carried over.
+	/// Matches `LocalDefaultGenesisHash` further down this file, which
+	/// `pallet-execution-unit` already pins to the same chain.
+	///
+	/// ⚠️ THIS CRATE IS DEPLOYED TO TWO CHAINS. It builds both
+	/// `chainspecs/mainnet/hippius-mainnet.json` ("Hippius Mainnet") and the
+	/// "Hippius Testnet" spec in `node/src/chainspec/mainnet.rs`. Both report
+	/// specVersion 92003, so a specVersion match does NOT tell them apart —
+	/// only the genesis hash does. A compile-time constant can therefore only
+	/// ever be right for one of them; on testnet every `submit_audit_stats` /
+	/// `submit_live_attestation` will fail the genesis check with this value.
+	///
+	/// TODO: move this out of `parameter_types!` into a storage value set by an
+	/// admin extrinsic at post-upgrade init, so one runtime can serve both
+	/// chains. Until then, this constant tracks MAINNET.
 	pub const ComputeChainGenesis: [u8; 32] = hex_literal::hex!(
-		"35eadc576f10dac447f3f0a41443fa75b545c0b85473e118a30b0fe2d41832c1"
+		"28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9"
 	);
 }
 
