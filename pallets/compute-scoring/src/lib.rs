@@ -1597,6 +1597,13 @@ pub mod pallet {
         InvalidAggregateSignature,
         /// `signed.body` is empty.
         EmptyAggregateBody,
+        /// `signed.body` is not the canonical-CBOR encoding of the
+        /// submitted `view` — the signature therefore covers
+        /// different facts than the ones this call would act on.
+        /// Without this gate one honestly-signed body could be
+        /// replayed under arbitrary `view` fields (found in review of
+        /// thebrain#49).
+        AggregateBodyViewMismatch,
 
         // --- PR-I4 vali_submit_epoch_close ---
         /// `epoch` is not strictly increasing relative to the
@@ -1638,6 +1645,15 @@ pub mod pallet {
         /// Ed25519 verification of `signed.sig` over `signed.body`
         /// (against `view.signer_pubkey`) failed.
         InvalidLiveAttestationSignature,
+        /// `signed.body` did not decode as a canonical-CBOR
+        /// `LiveAttestation` (hippius-types schema).
+        MalformedLiveAttestationBody,
+        /// The decoded `signed.body` disagrees with the submitted
+        /// `view` on at least one field this call acts on. Without
+        /// this gate one honestly-KBS-signed body could be credited
+        /// to any VM / node / epoch with a forged `view` (found in
+        /// review of thebrain#49).
+        LiveAttestationBodyViewMismatch,
         /// The KBS L0 pubkey is already in the allowlist (admin
         /// `set_kbs_attestation_pubkey`).
         KbsAttestationPubkeyAlreadyAllowed,
@@ -2372,7 +2388,46 @@ pub mod pallet {
                 Error::<T>::AggregatePrevHashMismatch
             );
 
-            // (3) Ed25519 verification.
+            // (3) BIND the view to the body. The signature below is
+            // over `signed.body`; every gate above and every value
+            // committed below reads `view`. Nothing else ties the two
+            // together, so without this step one honestly-signed body
+            // could be submitted under arbitrary `view` fields
+            // (review finding, thebrain#49). The audit-VM signs the
+            // canonical-CBOR `ServedDeliveryAggregate`, which this
+            // pallet can RECOMPUTE from the view — so the bind is a
+            // single byte-equality, not a field-by-field walk.
+            //
+            // `served_units` is deliberately NOT part of the signed
+            // aggregate (it has no field in `ServedDeliveryAggregate`)
+            // — it stays a submitter claim carried on the event only,
+            // never committed to storage. See the `AggregateView`
+            // field doc.
+            let expected_body = hippius_types::audit_vm::ServedDeliveryAggregate {
+                chain_genesis: &view.chain_genesis,
+                pallet_instance: &view.pallet_instance,
+                validator_id: view.validator_id.as_slice(),
+                family_id: view.family_id.as_slice(),
+                node_id: &view.node_id,
+                audit_vm_key_id: view.audit_vm_key_id.as_slice(),
+                epoch: view.epoch,
+                challenge_nonce: &view.challenge_nonce,
+                interval_start: view.interval_start,
+                interval_end: view.interval_end,
+                map_root: &view.map_root,
+                totals_root: &view.totals_root,
+                prev_aggregate_hash: &view.prev_aggregate_hash,
+                expiry: view.expiry,
+            }
+            .canonical()
+            .map_err(|_| Error::<T>::AggregateBodyViewMismatch)?;
+            ensure!(
+                expected_body.as_slice() == signed.body.as_slice(),
+                Error::<T>::AggregateBodyViewMismatch
+            );
+
+            // (4) Ed25519 verification — now provably over the same
+            // facts the view carries.
             let pubkey_bytes = AuditVmPubkeyByNode::<T>::get(view.node_id)
                 .ok_or(Error::<T>::AuditVmPubkeyNotRegistered)?;
             let public = ed25519::Public::from_raw(pubkey_bytes);
@@ -2571,9 +2626,44 @@ pub mod pallet {
                 Error::<T>::LiveAttestationKbsNotAllowed
             );
 
-            // (6) Ed25519 verify the body bytes against the
-            // signer's pubkey carried in the view (which we just
-            // proved is in the allowlist).
+            // (6) BIND the view to the body. The signature in (7) is
+            // over `signed.body`; every gate above and every value
+            // committed in (9) reads `view`. Nothing else ties the
+            // two together, so without this step ONE honestly-KBS-
+            // signed body could be replayed indefinitely — bump
+            // `view.attestation_seq`, set `view.prev_attestation_hash`
+            // to the last stored hash, point `view.vm_id` /
+            // `view.node_id` anywhere — and `LiveAttestationCount`
+            // (the number uptime reward scales off) inflates freely
+            // (review finding, thebrain#49).
+            //
+            // Unlike the audit aggregate, the body carries MORE
+            // fields than the view (measurement, report digests), so
+            // it cannot be recomputed here — decode it (canonical-
+            // CBOR, `decode` also runs `validate()`) and compare
+            // every field this call acts on.
+            let body =
+                hippius_types::live_attestation::LiveAttestation::decode(signed.body.as_slice())
+                    .map_err(|_| Error::<T>::MalformedLiveAttestationBody)?;
+            ensure!(
+                body.chain_genesis == view.chain_genesis
+                    && body.pallet_instance == view.pallet_instance
+                    && body.vm_id.as_bytes() == view.vm_id.as_slice()
+                    && body.node_id == view.node_id
+                    && body.attestation_seq == view.attestation_seq
+                    && body.epoch == view.epoch
+                    && body.observed_at_unix == view.observed_at_unix
+                    && body.verified_at_unix == view.verified_at_unix
+                    && body.prev_attestation_hash == view.prev_attestation_hash
+                    && body.expiry_unix == view.expiry_unix
+                    && body.signer_pubkey == view.signer_pubkey,
+                Error::<T>::LiveAttestationBodyViewMismatch
+            );
+
+            // (7) Ed25519 verify the body bytes against the
+            // signer's pubkey carried in the view — which (5) proved
+            // is allowlisted and (6) proved is the SAME key the body
+            // itself names.
             let public = ed25519::Public::from_raw(view.signer_pubkey);
             let sig = ed25519::Signature::from_raw(signed.sig);
             ensure!(
@@ -2581,12 +2671,12 @@ pub mod pallet {
                 Error::<T>::InvalidLiveAttestationSignature
             );
 
-            // (7) SHA-256-chain the body. Same hash function as
+            // (8) SHA-256-chain the body. Same hash function as
             // `submit_audit_stats` so the off-chain prev-hash
             // accounting on the KBS side stays byte-identical.
             let body_hash_bytes = sp_io::hashing::sha2_256(signed.body.as_slice());
 
-            // (8) Commit state.
+            // (9) Commit state.
             LastLiveAttestation::<T>::insert(
                 vm_id_hash,
                 LiveAttestationRecord {

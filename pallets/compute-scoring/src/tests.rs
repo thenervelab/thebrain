@@ -75,9 +75,15 @@ fn make_view(
     }
 }
 
-/// Build a signed wire envelope: the body is an arbitrary
-/// placeholder (the on-chain pallet treats it as opaque) and the
-/// signature is produced by the given `pair` over those bytes.
+/// Build a signed wire envelope: the signature is produced by the
+/// given `pair` over the body bytes.
+///
+/// The body used to be "an arbitrary placeholder (the on-chain
+/// pallet treats it as opaque)". That opacity WAS the bug this file
+/// now pins: nothing bound the signed bytes to the `view` the pallet
+/// acts on, so one honestly-signed body could be replayed under any
+/// view. Happy-path tests must now pass the REAL canonical body —
+/// see [`canonical_aggregate_body`].
 fn make_signed(
     pair: &ed25519::Pair,
     body: Vec<u8>,
@@ -87,6 +93,36 @@ fn make_signed(
         body: BoundedVec::try_from(body).unwrap(),
         sig: sig.0,
     }
+}
+
+/// The canonical-CBOR `ServedDeliveryAggregate` body for a view —
+/// what the audit-VM actually signs, and (post-bind) the ONLY body
+/// `submit_audit_stats` accepts for that view.
+fn canonical_aggregate_body(
+    view: &AggregateView<
+        <TestRuntime as crate::pallet::Config>::MaxValidatorIdLen,
+        <TestRuntime as crate::pallet::Config>::MaxFamilyIdLen,
+        <TestRuntime as crate::pallet::Config>::MaxAuditVmKeyIdLen,
+    >,
+) -> Vec<u8> {
+    hippius_types::audit_vm::ServedDeliveryAggregate {
+        chain_genesis: &view.chain_genesis,
+        pallet_instance: &view.pallet_instance,
+        validator_id: view.validator_id.as_slice(),
+        family_id: view.family_id.as_slice(),
+        node_id: &view.node_id,
+        audit_vm_key_id: view.audit_vm_key_id.as_slice(),
+        epoch: view.epoch,
+        challenge_nonce: &view.challenge_nonce,
+        interval_start: view.interval_start,
+        interval_end: view.interval_end,
+        map_root: &view.map_root,
+        totals_root: &view.totals_root,
+        prev_aggregate_hash: &view.prev_aggregate_hash,
+        expiry: view.expiry,
+    }
+    .canonical()
+    .expect("test view is well-formed")
 }
 
 // ================================================================
@@ -105,7 +141,7 @@ fn submit_audit_stats_happy_path() {
         ));
 
         let view = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let body = view.encode();
+        let body = canonical_aggregate_body(&view);
         let signed = make_signed(&pair, body.clone());
 
         assert_ok!(ComputeScoring::submit_audit_stats(
@@ -147,7 +183,7 @@ fn submit_audit_stats_rejects_tampered_signature() {
             pair.public().0,
         ));
         let view = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let body = view.encode();
+        let body = canonical_aggregate_body(&view);
         let mut signed = make_signed(&pair, body);
         signed.sig[0] ^= 0xFF;
         assert_noop!(
@@ -168,7 +204,7 @@ fn submit_audit_stats_rejects_signature_from_wrong_key() {
             registered.public().0,
         ));
         let view = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let body = view.encode();
+        let body = canonical_aggregate_body(&view);
         let signed = make_signed(&attacker, body);
         assert_noop!(
             ComputeScoring::submit_audit_stats(RuntimeOrigin::root(), view, signed),
@@ -221,7 +257,7 @@ fn submit_audit_stats_rejects_unknown_pubkey() {
     new_test_ext().execute_with(|| {
         let pair = ed25519::Pair::from_seed(&[42u8; 32]);
         let view = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let body = view.encode();
+        let body = canonical_aggregate_body(&view);
         let signed = make_signed(&pair, body);
         assert_noop!(
             ComputeScoring::submit_audit_stats(RuntimeOrigin::root(), view, signed),
@@ -322,7 +358,7 @@ fn submit_audit_stats_rejects_prev_hash_mismatch() {
         ));
         // First aggregate sets LastAggregateHashByNode.
         let first = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let first_body = first.encode();
+        let first_body = canonical_aggregate_body(&first);
         let first_signed = make_signed(&pair, first_body);
         assert_ok!(ComputeScoring::submit_audit_stats(
             RuntimeOrigin::root(),
@@ -350,7 +386,7 @@ fn submit_audit_stats_chains_consecutive_aggregates() {
             pair.public().0,
         ));
         let first = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let first_body = first.encode();
+        let first_body = canonical_aggregate_body(&first);
         let first_hash = sp_io::hashing::sha2_256(&first_body);
         let first_signed = make_signed(&pair, first_body);
         assert_ok!(ComputeScoring::submit_audit_stats(
@@ -363,7 +399,7 @@ fn submit_audit_stats_chains_consecutive_aggregates() {
         second.interval_start = 1_700_001_000;
         second.interval_end = 1_700_001_900;
         second.served_units = 7_777;
-        let second_body = second.encode();
+        let second_body = canonical_aggregate_body(&second);
         let second_signed = make_signed(&pair, second_body);
         assert_ok!(ComputeScoring::submit_audit_stats(
             RuntimeOrigin::root(),
@@ -409,6 +445,36 @@ fn submit_audit_stats_rejects_empty_body() {
         assert_noop!(
             ComputeScoring::submit_audit_stats(RuntimeOrigin::root(), view, signed),
             Error::<TestRuntime>::EmptyAggregateBody
+        );
+    });
+}
+
+/// Same class as the live-attestation finding (thebrain#49): an
+/// honestly-signed aggregate body submitted under a view whose acted-
+/// on fields differ. `map_root` is committed nowhere else, so before
+/// the bind a mismatch passed every gate.
+#[test]
+fn submit_audit_stats_rejects_honest_body_under_forged_view() {
+    new_test_ext().execute_with(|| {
+        let pair = ed25519::Pair::from_seed(&[42u8; 32]);
+        assert_ok!(ComputeScoring::set_audit_vm_pubkey(
+            RuntimeOrigin::root(),
+            NODE_ID,
+            pair.public().0,
+        ));
+
+        // Honest body for the true view.
+        let honest = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
+        let signed = make_signed(&pair, canonical_aggregate_body(&honest));
+
+        // Forged view — different map_root, every pre-bind gate
+        // (genesis, instance, epoch, prev, expiry) still passes.
+        let mut forged = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
+        forged.map_root = [0xEE; 32];
+
+        assert_noop!(
+            ComputeScoring::submit_audit_stats(RuntimeOrigin::root(), forged, signed),
+            Error::<TestRuntime>::AggregateBodyViewMismatch,
         );
     });
 }
@@ -463,7 +529,7 @@ fn submit_audit_stats_requires_audit_authority_origin() {
             pair.public().0,
         ));
         let view = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let body = view.encode();
+        let body = canonical_aggregate_body(&view);
         let signed = make_signed(&pair, body);
         assert_noop!(
             ComputeScoring::submit_audit_stats(RuntimeOrigin::signed(7u64), view, signed),
@@ -991,7 +1057,7 @@ fn submit_audit_stats_uses_current_epoch_advanced_by_epoch_close() {
 
         // Epoch 0 → submit OK.
         let view = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let body = view.encode();
+        let body = canonical_aggregate_body(&view);
         let signed = make_signed(&pair, body);
         assert_ok!(ComputeScoring::submit_audit_stats(
             RuntimeOrigin::root(),
@@ -1189,7 +1255,7 @@ fn full_bridge_flow_register_audit_close_push() {
         //     registration gate from PR-I5 is already passed
         //     because `new_test_ext` pre-registered NODE_ID).
         let view = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
-        let body = view.encode();
+        let body = canonical_aggregate_body(&view);
         let signed = make_signed(&pair, body);
         assert_ok!(ComputeScoring::submit_audit_stats(
             RuntimeOrigin::root(),
@@ -1286,6 +1352,38 @@ fn make_la_view(
         expiry_unix: 1_700_010_000,
         signer_pubkey,
     }
+}
+
+/// The canonical-CBOR `LiveAttestation` body for a view — what the
+/// KBS actually signs, and (post-bind) the ONLY body
+/// `submit_live_attestation` accepts for that view. The body-only
+/// fields the view does not carry (report digests, measurement) are
+/// fixed dummies: the pallet binds the SHARED fields and treats the
+/// rest as opaque KBS evidence.
+fn canonical_la_body(
+    view: &LiveAttestationView<<TestRuntime as crate::pallet::Config>::MaxVmIdLen>,
+) -> Vec<u8> {
+    hippius_types::live_attestation::LiveAttestation {
+        schema_version: hippius_types::live_attestation::LIVE_ATTESTATION_SCHEMA_VERSION,
+        chain_genesis: view.chain_genesis,
+        pallet_instance: view.pallet_instance,
+        vm_id: core::str::from_utf8(view.vm_id.as_slice())
+            .expect("test vm_id is utf8")
+            .into(),
+        node_id: view.node_id,
+        attestation_seq: view.attestation_seq,
+        epoch: view.epoch,
+        observed_at_unix: view.observed_at_unix,
+        verified_at_unix: view.verified_at_unix,
+        snp_report_digest: [0x51; 32],
+        vcek_chain_digest: [0x52; 32],
+        measurement: [0x53; 48],
+        prev_attestation_hash: view.prev_attestation_hash,
+        expiry_unix: view.expiry_unix,
+        signer_pubkey: view.signer_pubkey,
+    }
+    .canonical()
+    .expect("test view is well-formed")
 }
 
 /// Sign an arbitrary `body` with `pair` and wrap into the wire
@@ -1391,7 +1489,7 @@ fn submit_live_attestation_happy_path() {
         ));
 
         let view = make_la_view(pubkey);
-        let body = view.encode();
+        let body = canonical_la_body(&view);
         let signed = make_la_signed(&pair, body.clone());
 
         assert_ok!(ComputeScoring::submit_live_attestation(
@@ -1438,7 +1536,7 @@ fn submit_live_attestation_chains_two_aggregates() {
 
         // First attestation (seq=1, prev=0).
         let v1 = make_la_view(pubkey);
-        let body1 = v1.encode();
+        let body1 = canonical_la_body(&v1);
         let body1_hash = sp_io::hashing::sha2_256(&body1);
         assert_ok!(ComputeScoring::submit_live_attestation(
             RuntimeOrigin::root(),
@@ -1452,7 +1550,7 @@ fn submit_live_attestation_chains_two_aggregates() {
         v2.prev_attestation_hash = body1_hash;
         v2.observed_at_unix += 300;
         v2.verified_at_unix += 300;
-        let body2 = v2.encode();
+        let body2 = canonical_la_body(&v2);
         assert_ok!(ComputeScoring::submit_live_attestation(
             RuntimeOrigin::root(),
             v2.clone(),
@@ -1677,12 +1775,68 @@ fn submit_live_attestation_rejects_bad_signature() {
             pubkey,
         ));
         let view = make_la_view(pubkey);
-        let body = view.encode();
+        let body = canonical_la_body(&view);
         // Sig by `other`, but view.signer_pubkey == pair.public().
         let signed = make_la_signed(&other, body);
         assert_noop!(
             ComputeScoring::submit_live_attestation(RuntimeOrigin::root(), view, signed),
             Error::<TestRuntime>::InvalidLiveAttestationSignature,
+        );
+    });
+}
+
+/// THE review finding (thebrain#49): one honestly-KBS-signed body,
+/// replayed under a forged view. Before the body↔view bind, every
+/// gate passed — the signature was valid over the body, and every
+/// gated field was read from the attacker-controlled view — so
+/// `LiveAttestationCount` could be inflated for ANY vm/node. The
+/// bind must kill exactly this.
+#[test]
+fn submit_live_attestation_rejects_honest_body_under_forged_view() {
+    new_test_ext().execute_with(|| {
+        let pair = ed25519::Pair::from_seed(&[0x42; 32]);
+        let pubkey = pair.public().0;
+        assert_ok!(ComputeScoring::set_kbs_attestation_pubkey(
+            RuntimeOrigin::root(),
+            pubkey,
+        ));
+
+        // The KBS honestly signs an attestation for TEST_VM_ID.
+        let honest = make_la_view(pubkey);
+        let honest_body = canonical_la_body(&honest);
+        let signed = make_la_signed(&pair, honest_body);
+
+        // The submitter forges a view crediting a DIFFERENT vm —
+        // fresh replay chain (seq=1, prev=0), same registered node,
+        // same epoch: every pre-bind gate passes.
+        let mut forged = make_la_view(pubkey);
+        forged.vm_id = BoundedVec::try_from(b"vm-stolen".to_vec()).unwrap();
+
+        assert_noop!(
+            ComputeScoring::submit_live_attestation(RuntimeOrigin::root(), forged, signed),
+            Error::<TestRuntime>::LiveAttestationBodyViewMismatch,
+        );
+    });
+}
+
+/// A body that is not canonical-CBOR `LiveAttestation` — e.g. the
+/// SCALE-encoded view, which is exactly what this test file used to
+/// submit everywhere — must be rejected before signature work.
+#[test]
+fn submit_live_attestation_rejects_non_cbor_body() {
+    new_test_ext().execute_with(|| {
+        let pair = ed25519::Pair::from_seed(&[0x42; 32]);
+        let pubkey = pair.public().0;
+        assert_ok!(ComputeScoring::set_kbs_attestation_pubkey(
+            RuntimeOrigin::root(),
+            pubkey,
+        ));
+        let view = make_la_view(pubkey);
+        let body = view.encode(); // SCALE, not canonical CBOR
+        let signed = make_la_signed(&pair, body);
+        assert_noop!(
+            ComputeScoring::submit_live_attestation(RuntimeOrigin::root(), view, signed),
+            Error::<TestRuntime>::MalformedLiveAttestationBody,
         );
     });
 }
