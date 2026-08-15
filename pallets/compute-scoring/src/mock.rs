@@ -45,6 +45,10 @@ impl pallet_balances::Config for TestRuntime {
     type Balance = Balance;
     type ExistentialDeposit = ConstU128<1>;
     type AccountStore = System;
+    // Named reserves (R9): the pallet requires
+    // `ReserveIdentifier = [u8; 8]` — the prelude default is `()`.
+    type ReserveIdentifier = [u8; 8];
+    type MaxReserves = ConstU32<8>;
 }
 
 impl pallet_timestamp::Config for TestRuntime {

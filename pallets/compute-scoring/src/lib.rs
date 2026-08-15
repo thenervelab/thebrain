@@ -75,7 +75,7 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
     dispatch::DispatchResult,
     pallet_prelude::*,
-    traits::{Currency, EnsureOrigin, Get, ReservableCurrency},
+    traits::{Currency, EnsureOrigin, Get, NamedReservableCurrency},
     BoundedVec,
 };
 use frame_system::pallet_prelude::*;
@@ -740,7 +740,14 @@ pub mod pallet {
         type ComputeScoringAdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
         /// Currency used to reserve deposits for child registrations.
-        type DepositCurrency: ReservableCurrency<Self::AccountId>;
+        /// NAMED reserves (review finding, thebrain#49 R9): stake and
+        /// child deposits used to share one untagged reserve pool, so
+        /// `slash_reserved` could eat a family's registration deposit
+        /// and permanently brick `claim_unbonded` (its
+        /// `ensure!(unreleased.is_zero())` reverts forever on a short
+        /// reserve). With named reserves the slash path draws from the
+        /// STAKE reserve only, by construction.
+        type DepositCurrency: NamedReservableCurrency<Self::AccountId, ReserveIdentifier = [u8; 8]>;
 
         /// Family registry hook — production runtime binds this to
         /// `pallet_registration::Pallet<Self>`; tests use `()` (fail-
@@ -1515,6 +1522,14 @@ pub mod pallet {
         },
     }
 
+    /// Named-reserve id for family CHILD DEPOSITS. Distinct from
+    /// [`STAKE_RESERVE_ID`] so slashing (stake-only) can never draw
+    /// from registration deposits — thebrain#49 R9.
+    pub const DEPOSIT_RESERVE_ID: [u8; 8] = *b"cmps/dep";
+    /// Named-reserve id for operator STAKE collateral. The ONLY
+    /// reserve `do_slash` touches.
+    pub const STAKE_RESERVE_ID: [u8; 8] = *b"cmps/stk";
+
     #[pallet::error]
     pub enum Error<T> {
         // --- §13 anti-Sybil registration ---
@@ -1838,7 +1853,8 @@ pub mod pallet {
             // back to a burn; both report the un-moved remainder.
             let slashed = match SlashBeneficiary::<T>::get() {
                 Some(beneficiary) => {
-                    let not_repatriated = T::DepositCurrency::repatriate_reserved(
+                    let not_repatriated = T::DepositCurrency::repatriate_reserved_named(
+                        &STAKE_RESERVE_ID,
                         owner,
                         &beneficiary,
                         amount,
@@ -1847,12 +1863,16 @@ pub mod pallet {
                     .unwrap_or(amount);
                     let repatriated = amount.saturating_sub(not_repatriated);
                     // Burn whatever couldn't be repatriated.
-                    let (_imbalance, burn_remainder) =
-                        T::DepositCurrency::slash_reserved(owner, not_repatriated);
+                    let (_imbalance, burn_remainder) = T::DepositCurrency::slash_reserved_named(
+                        &STAKE_RESERVE_ID,
+                        owner,
+                        not_repatriated,
+                    );
                     repatriated.saturating_add(not_repatriated.saturating_sub(burn_remainder))
                 }
                 None => {
-                    let (_imbalance, remainder) = T::DepositCurrency::slash_reserved(owner, amount);
+                    let (_imbalance, remainder) =
+                        T::DepositCurrency::slash_reserved_named(&STAKE_RESERVE_ID, owner, amount);
                     amount.saturating_sub(remainder)
                 }
             };
@@ -2174,7 +2194,7 @@ pub mod pallet {
             };
 
             if lockup_enabled && !deposit.is_zero() {
-                T::DepositCurrency::reserve(&family, deposit)
+                T::DepositCurrency::reserve_named(&DEPOSIT_RESERVE_ID, &family, deposit)
                     .map_err(|_| Error::<T>::InsufficientDeposit)?;
             }
 
@@ -2304,7 +2324,8 @@ pub mod pallet {
 
             let amount = reg.deposit;
             if LockupEnabled::<T>::get() && !amount.is_zero() {
-                let unreleased = T::DepositCurrency::unreserve(&reg.family, amount);
+                let unreleased =
+                    T::DepositCurrency::unreserve_named(&DEPOSIT_RESERVE_ID, &reg.family, amount);
                 ensure!(unreleased.is_zero(), Error::<T>::PartialUnreserve);
             }
 
@@ -2912,7 +2933,7 @@ pub mod pallet {
         pub fn top_up_stake(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(!amount.is_zero(), Error::<T>::ZeroStake);
-            T::DepositCurrency::reserve(&who, amount)
+            T::DepositCurrency::reserve_named(&STAKE_RESERVE_ID, &who, amount)
                 .map_err(|_| Error::<T>::InsufficientBalanceForStake)?;
             StakedAmount::<T>::mutate(&who, |s| *s = s.saturating_add(amount));
             Self::deposit_event(Event::StakeToppedUp {
@@ -3003,7 +3024,7 @@ pub mod pallet {
             let (amount, end) =
                 StakeUnbonding::<T>::get(&who).ok_or(Error::<T>::NoStakeUnbonding)?;
             ensure!(Self::now() >= end, Error::<T>::UnbondingNotReady);
-            let unreleased = T::DepositCurrency::unreserve(&who, amount);
+            let unreleased = T::DepositCurrency::unreserve_named(&STAKE_RESERVE_ID, &who, amount);
             ensure!(unreleased.is_zero(), Error::<T>::PartialUnreserve);
             StakeUnbonding::<T>::remove(&who);
             Self::deposit_event(Event::StakeReleased { who, amount });

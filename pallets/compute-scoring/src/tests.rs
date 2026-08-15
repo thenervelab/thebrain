@@ -2084,7 +2084,7 @@ mod stake {
 mod slashing {
     use super::*;
     use crate::pallet::{SlashReason, SlashRecord, SlashingEnabled, StakeUnbonding, StakedAmount};
-    use frame_support::traits::{Currency, ReservableCurrency};
+    use frame_support::traits::{Currency, NamedReservableCurrency, ReservableCurrency};
 
     fn staked(acct: AccountId, amount: Balance) {
         let _ = Balances::make_free_balance_be(&acct, amount * 2);
@@ -2273,6 +2273,106 @@ mod slashing {
                 ComputeScoring::slash_stake(RuntimeOrigin::root(), 1, 0, SlashReason::Manual),
                 Error::<TestRuntime>::ZeroStake
             );
+        });
+    }
+
+    /// R9 (thebrain#49): before named reserves, stake and child
+    /// deposits shared ONE untagged pool. A slash could eat the
+    /// family's registration deposit, and the post-slash shortfall
+    /// made `claim_unbonded`'s `ensure!(unreleased.is_zero())` revert
+    /// forever — deposit permanently unclaimable. This is that exact
+    /// scenario, on one account wearing both hats.
+    #[test]
+    fn slash_cannot_touch_child_deposits_and_unbond_survives() {
+        new_test_ext().execute_with(|| {
+            use sp_core::{ed25519, Pair};
+            const FAM: AccountId = 1;
+            const CHILD: AccountId = 7;
+            let _ = Balances::make_free_balance_be(&FAM, 10_000);
+
+            // Arm the deposit layer: lockup ON, no free slots, base 100.
+            assert_ok!(ComputeScoring::set_lockup_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_free_child_slots_per_family(
+                RuntimeOrigin::root(),
+                0
+            ));
+            assert_ok!(ComputeScoring::set_base_child_deposit(
+                RuntimeOrigin::root(),
+                100
+            ));
+
+            // Register a child — reserves the 100 deposit under the
+            // DEPOSIT reserve id.
+            let pair = ed25519::Pair::from_seed(&[0xD9; 32]);
+            let node_id = pair.public().0;
+            let msg = (b"HIPPIUS_COMPUTE_NODE_REG_V1", &FAM, &CHILD, &node_id, 0u64).encode();
+            let sig = pair.sign(&msg);
+            assert_ok!(ComputeScoring::register_child(
+                RuntimeOrigin::signed(FAM),
+                FAM,
+                CHILD,
+                node_id,
+                sig.0,
+            ));
+            assert_eq!(Balances::reserved_balance(FAM), 100);
+
+            // Same account also stakes 500 — STAKE reserve id.
+            assert_ok!(ComputeScoring::top_up_stake(
+                RuntimeOrigin::signed(FAM),
+                500
+            ));
+            assert_eq!(Balances::reserved_balance(FAM), 600);
+
+            // The bite condition: the STAKE reserve drifts SHORT of
+            // the logical stake (out-of-band unreserve, exactly like
+            // `slash_records_actual_amount_when_reserved_is_short`).
+            // Logical stake 500, physical stake reserve 300, deposit
+            // 100. do_slash caps the request at the LOGICAL 500 — so
+            // an untagged `slash_reserved(500)` draws from the whole
+            // 400-pool and eats the deposit; the named slash is
+            // capped at the 300 the stake reserve actually holds.
+            assert_eq!(
+                Balances::unreserve_named(&crate::pallet::STAKE_RESERVE_ID, &FAM, 200),
+                0
+            );
+            assert_eq!(Balances::reserved_balance(FAM), 400);
+
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::slash_stake(
+                RuntimeOrigin::root(),
+                FAM,
+                10_000,
+                SlashReason::Liveness
+            ));
+
+            // Only what the STAKE reserve physically held (300) was
+            // slashed; the DEPOSIT (100) is untouched. The logical
+            // stake decrements by the ACTUAL slash (500 - 300 = 200),
+            // same record-reality semantics as
+            // `slash_records_actual_amount_when_reserved_is_short`.
+            assert_eq!(SlashRecord::<TestRuntime>::get(FAM), 300);
+            assert_eq!(Balances::reserved_balance(FAM), 100);
+            assert_eq!(StakedAmount::<TestRuntime>::get(FAM), 200);
+
+            // And the deposit is still CLAIMABLE: deregister, wait out
+            // the unbonding window, claim — the pre-fix brick point.
+            assert_ok!(ComputeScoring::deregister_child(
+                RuntimeOrigin::signed(FAM),
+                CHILD
+            ));
+            let reg = crate::pallet::ChildRegistrations::<TestRuntime>::get(CHILD).unwrap();
+            System::set_block_number(reg.unbonding_end);
+            assert_ok!(ComputeScoring::claim_unbonded(
+                RuntimeOrigin::signed(FAM),
+                CHILD
+            ));
+            assert_eq!(Balances::reserved_balance(FAM), 0);
         });
     }
 
