@@ -1879,6 +1879,14 @@ mod stake {
     #[test]
     fn ema_bootstraps_then_reacts_fast_on_dump_slow_on_pump() {
         new_test_ext().execute_with(|| {
+            // R3 added a deviation band (default 500‰); this test's
+            // ×2 dump is a deliberate 100% move, so widen the band —
+            // the band itself is pinned by its own R3 test.
+            assert_ok!(ComputeScoring::set_oracle_guards(
+                RuntimeOrigin::root(),
+                1_000,
+                1_000_000
+            ));
             // First post bootstraps the EMA to spot.
             assert_ok!(ComputeScoring::set_alpha_per_usd(
                 RuntimeOrigin::root(),
@@ -3322,23 +3330,31 @@ mod review_b3 {
     #[test]
     fn ema_step_is_exact_for_huge_deltas() {
         new_test_ext().execute_with(|| {
+            use crate::pallet::EmaUpPermille;
+            // Bootstrap the EMA at an astronomical value — the R3
+            // band does not apply to the FIRST post (the first post
+            // IS the reference), which is also the only way a delta
+            // large enough to overflow `delta * perm` can now arise:
+            // per-post moves are band-limited afterwards.
+            let ema = u128::MAX;
             assert_ok!(ComputeScoring::set_alpha_per_usd(
                 RuntimeOrigin::root(),
-                1_000_000
+                ema
             ));
-            let ema = AlphaPerUsdEma::<TestRuntime>::get();
-            let spot = u128::MAX;
+            // Drop within the 500‰ band, but with delta = 0.4*MAX —
+            // far past the u128::MAX/perm overflow line.
+            let spot = ema - ema / 5 * 2;
             assert_ok!(ComputeScoring::set_alpha_per_usd(
                 RuntimeOrigin::root(),
                 spot
             ));
-            let delta = spot - ema;
-            let perm = EmaDownPermille::<TestRuntime>::get() as u128;
+            let delta = ema - spot;
+            let perm = EmaUpPermille::<TestRuntime>::get() as u128;
             let expected_step = (delta / 1000) * perm + (delta % 1000) * perm / 1000;
             assert_eq!(
                 AlphaPerUsdEma::<TestRuntime>::get(),
-                ema + expected_step,
-                "saturate-then-divide would understate this step ~{perm}x"
+                ema - expected_step.max(1),
+                "saturate-then-divide would garble this step"
             );
         });
     }
@@ -3390,6 +3406,165 @@ mod review_b3 {
                 NODE,
                 huge
             ));
+        });
+    }
+}
+
+// =====================================================================
+// thebrain#49 review batch B4 — oracle guard rails + stake wiring
+// =====================================================================
+
+mod review_b4 {
+    use super::*;
+    use crate::pallet::{AlphaPerUsdEma, StakeUsdPerChild};
+    use frame_support::traits::Currency;
+
+    /// R3: a post outside the deviation band is refused whole — the
+    /// EMA is untouched. One bad oracle post can no longer move the
+    /// EMA 30% in a step.
+    #[test]
+    fn oracle_rejects_posts_outside_the_deviation_band() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            // +60% deviates past the default 500‰ band.
+            assert_noop!(
+                ComputeScoring::set_alpha_per_usd(RuntimeOrigin::root(), 1_600_000),
+                Error::<TestRuntime>::OracleDeviationTooLarge,
+            );
+            assert_eq!(AlphaPerUsdEma::<TestRuntime>::get(), 1_000_000);
+            // +40% is within the band.
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_400_000
+            ));
+        });
+    }
+
+    /// R3: a price nobody refreshed is not a price — past the max
+    /// age the stake gate fails CLOSED until the oracle posts again.
+    #[test]
+    fn stale_oracle_fails_the_stake_gate() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            let _ = Balances::make_free_balance_be(&71, 1_000_000);
+            assert_ok!(ComputeScoring::top_up_stake(
+                RuntimeOrigin::signed(71),
+                1_000
+            ));
+            assert!(ComputeScoring::is_stake_sufficient(&71, 100));
+
+            // Age the price one block past the max.
+            System::set_block_number(System::block_number() + 28_800 + 1);
+            assert!(
+                !ComputeScoring::is_stake_sufficient(&71, 100),
+                "a stale price must fail the gate closed"
+            );
+
+            // A fresh post re-arms it.
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            assert!(ComputeScoring::is_stake_sufficient(&71, 100));
+        });
+    }
+
+    /// R2: the stake layer is WIRED — while enabled, register_child
+    /// demands collateral for every child the family will have.
+    /// The layer had zero callers before; nothing enforced stake.
+    #[test]
+    fn registration_demands_stake_when_armed() {
+        new_test_ext().execute_with(|| {
+            use sp_core::{ed25519, Pair};
+            const FAM: AccountId = 72;
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            assert_ok!(ComputeScoring::set_stake_usd_per_child(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            assert_eq!(StakeUsdPerChild::<TestRuntime>::get(), 1_000_000);
+
+            let _ = Balances::make_free_balance_be(&FAM, 100_000_000);
+            let pair = ed25519::Pair::from_seed(&[0xE1; 32]);
+            let node_id = pair.public().0;
+            let msg = (
+                b"HIPPIUS_COMPUTE_NODE_REG_V1",
+                &FAM,
+                &(300 as AccountId),
+                &node_id,
+                0u64,
+            )
+                .encode();
+            let sig = pair.sign(&msg);
+
+            // No stake: refused.
+            assert_noop!(
+                ComputeScoring::register_child(
+                    RuntimeOrigin::signed(FAM),
+                    FAM,
+                    300,
+                    node_id,
+                    sig.0,
+                ),
+                Error::<TestRuntime>::InsufficientStakeForRegistration,
+            );
+
+            // required = 1 child × 1e6 USD × ema(1e6)/1e6 = 1e6 planck.
+            assert_ok!(ComputeScoring::top_up_stake(
+                RuntimeOrigin::signed(FAM),
+                1_000_000
+            ));
+            assert_ok!(ComputeScoring::register_child(
+                RuntimeOrigin::signed(FAM),
+                FAM,
+                300,
+                node_id,
+                sig.0,
+            ));
+        });
+    }
+
+    /// R8: the asymmetry is pinned — unbonding stake stays SLASHABLE
+    /// (covered elsewhere) but does NOT count toward eligibility.
+    #[test]
+    fn unbonding_stake_does_not_count_for_eligibility() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            let _ = Balances::make_free_balance_be(&73, 1_000_000);
+            assert_ok!(ComputeScoring::top_up_stake(RuntimeOrigin::signed(73), 500));
+            assert!(ComputeScoring::is_stake_sufficient(&73, 300));
+
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(73),
+                300
+            ));
+            // active 200, unbonding 300: 300 required must now FAIL —
+            // stake being withdrawn is not collateral you can point to.
+            assert!(!ComputeScoring::is_stake_sufficient(&73, 300));
         });
     }
 }

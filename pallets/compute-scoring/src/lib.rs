@@ -1116,6 +1116,44 @@ pub mod pallet {
         50
     }
 
+    /// R3 (thebrain#49) — oracle guard rails.
+    ///
+    /// Max deviation of a posted spot from the current EMA, in
+    /// per-mille. One bad oracle post used to be able to move the EMA
+    /// 30% in a single step; a post outside the band is now refused
+    /// outright (the EMA is untouched, the poster gets an error to
+    /// investigate). No band applies on bootstrap (EMA = 0).
+    #[pallet::type_value]
+    pub fn DefaultMaxOracleDeviationPermille() -> u32 {
+        500
+    }
+    #[pallet::storage]
+    pub type MaxOracleDeviationPermille<T> =
+        StorageValue<_, u32, ValueQuery, DefaultMaxOracleDeviationPermille>;
+
+    /// Block number of the last accepted oracle post. Consumed by the
+    /// staleness gate in [`Pallet::is_stake_sufficient`].
+    #[pallet::storage]
+    pub type AlphaPerUsdLastPostBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, OptionQuery>;
+
+    /// Max age (blocks) of the last oracle post before the stake gate
+    /// fails CLOSED. ~2 days at 6 s blocks. A stale price is not a
+    /// price — collateral sized off it is fiction.
+    #[pallet::type_value]
+    pub fn DefaultMaxOracleAgeBlocks() -> u32 {
+        28_800
+    }
+    #[pallet::storage]
+    pub type MaxOracleAgeBlocks<T> = StorageValue<_, u32, ValueQuery, DefaultMaxOracleAgeBlocks>;
+
+    /// R2 (thebrain#49) — the USD value-at-risk a family underwrites
+    /// PER ACTIVE CHILD. `required_alpha(children * this)` is the
+    /// stake `register_child` demands while [`StakeEnabled`]. Zero
+    /// (default) means only the [`StakeFloor`] applies — arming the
+    /// layer without setting it is explicit, not accidental.
+    #[pallet::storage]
+    pub type StakeUsdPerChild<T> = StorageValue<_, u128, ValueQuery>;
+
     /// Master switch for the stake-eligibility layer. While `false` the
     /// oracle/EMA still track and staking still works, but
     /// [`Pallet::is_stake_sufficient`] always returns `true` — the layer is
@@ -1460,6 +1498,13 @@ pub mod pallet {
         // --- PR-1 stake ---
         /// The stake-eligibility layer was enabled/disabled by admin.
         StakeEnabledSet { enabled: bool },
+        /// USD value-at-risk per child updated (R2).
+        StakeUsdPerChildSet { usd: u128 },
+        /// Oracle guard rails updated (R3).
+        OracleGuardsSet {
+            max_deviation_permille: u32,
+            max_age_blocks: u32,
+        },
         /// The native-coin USD price was posted; `ema` is the new
         /// asymmetric-EMA value the stake math now uses.
         AlphaPerUsdUpdated { spot: u128, ema: u128 },
@@ -1694,6 +1739,12 @@ pub mod pallet {
         // --- PR-1 stake ---
         /// `set_alpha_per_usd` was called with a zero price.
         InvalidPrice,
+        /// The posted spot deviates from the current EMA by more than
+        /// [`MaxOracleDeviationPermille`] (R3).
+        OracleDeviationTooLarge,
+        /// Registration requires more staked collateral than the
+        /// family holds (`StakeEnabled` + [`StakeUsdPerChild`], R2).
+        InsufficientStakeForRegistration,
         /// An EMA per-mille factor was 0 or > 1000.
         InvalidEmaFactor,
         /// A stake amount was zero.
@@ -1875,6 +1926,24 @@ pub mod pallet {
             if AlphaPerUsdEma::<T>::get() == 0 {
                 return false;
             }
+            // R3: a price nobody has refreshed within the max age is
+            // not a price — fail closed until the oracle posts again.
+            match AlphaPerUsdLastPostBlock::<T>::get() {
+                None => return false,
+                Some(at) => {
+                    let age = Self::now().saturating_sub(at);
+                    if age > MaxOracleAgeBlocks::<T>::get().into() {
+                        return false;
+                    }
+                }
+            }
+            // R8 (thebrain#49): eligibility counts ACTIVE stake only,
+            // while `do_slash` draws from active + unbonding. This
+            // asymmetry is DELIBERATE and strict on both sides:
+            // unbonding tokens stay slashable (misbehaviour during the
+            // exit window still costs) but no longer qualify you (a
+            // stake being withdrawn is not collateral you can point
+            // to). Unifying either way would weaken one side.
             StakedAmount::<T>::get(owner) >= required.max(StakeFloor::<T>::get())
         }
 
@@ -2264,6 +2333,22 @@ pub mod pallet {
             // nothing. Count and cap now both mean the same thing:
             // families with >= 1 active child, symmetric on both
             // edges.
+            // R2 (thebrain#49): the stake layer had ZERO callers —
+            // `is_stake_sufficient` and `required_alpha` were dead
+            // code and nothing enforced stake anywhere. This is the
+            // enforcement point: while `StakeEnabled`, a family must
+            // hold collateral for the risk of EVERY child it will
+            // have after this registration. Inert while the switch is
+            // off (default), so the live vali path is unchanged.
+            let usd_per_child = StakeUsdPerChild::<T>::get();
+            let value_at_risk = usd_per_child
+                .checked_mul((fam_count as u128).saturating_add(1))
+                .unwrap_or(u128::MAX);
+            ensure!(
+                Self::is_stake_sufficient(&family, Self::required_alpha(value_at_risk)),
+                Error::<T>::InsufficientStakeForRegistration
+            );
+
             let slots_used = Self::family_free_slots_used(&family);
             let free_slots_limit = Self::free_child_slots_per_family();
             if fam_count == 0 {
@@ -2991,10 +3076,62 @@ pub mod pallet {
         pub fn set_alpha_per_usd(origin: OriginFor<T>, spot: u128) -> DispatchResult {
             T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
             ensure!(spot > 0, Error::<T>::InvalidPrice);
+            // R3: sanity band vs the current EMA. A fat-fingered or
+            // compromised post outside the band is refused whole —
+            // better a stalled oracle (which the staleness gate turns
+            // into fail-closed) than a poisoned EMA. No band on
+            // bootstrap: the first post IS the reference.
+            let ema = AlphaPerUsdEma::<T>::get();
+            if ema != 0 {
+                let band = MaxOracleDeviationPermille::<T>::get() as u128;
+                let delta = if spot >= ema { spot - ema } else { ema - spot };
+                // delta/ema <= band/1000, computed divide-first to
+                // stay overflow-free (R7 discipline).
+                let allowed =
+                    (ema / 1000).saturating_mul(band) + (ema % 1000).saturating_mul(band) / 1000;
+                ensure!(delta <= allowed, Error::<T>::OracleDeviationTooLarge);
+            }
             AlphaPerUsdSpot::<T>::put(spot);
-            let new_ema = Self::ema_step(spot, AlphaPerUsdEma::<T>::get());
+            let new_ema = Self::ema_step(spot, ema);
             AlphaPerUsdEma::<T>::put(new_ema);
+            AlphaPerUsdLastPostBlock::<T>::put(Self::now());
             Self::deposit_event(Event::AlphaPerUsdUpdated { spot, ema: new_ema });
+            Ok(())
+        }
+
+        /// Admin: set the USD value-at-risk per active child that
+        /// `register_child` demands collateral for while the stake
+        /// layer is enabled (R2).
+        #[pallet::call_index(54)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::set_base_child_deposit(), Pays::No))]
+        pub fn set_stake_usd_per_child(origin: OriginFor<T>, usd: u128) -> DispatchResult {
+            T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
+            StakeUsdPerChild::<T>::put(usd);
+            Self::deposit_event(Event::StakeUsdPerChildSet { usd });
+            Ok(())
+        }
+
+        /// Admin: tune the oracle guard rails (R3) — the max spot
+        /// deviation from the EMA (per-mille) and the max age of the
+        /// last post before the stake gate fails closed.
+        #[pallet::call_index(55)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::set_base_child_deposit(), Pays::No))]
+        pub fn set_oracle_guards(
+            origin: OriginFor<T>,
+            max_deviation_permille: u32,
+            max_age_blocks: u32,
+        ) -> DispatchResult {
+            T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
+            ensure!(
+                max_deviation_permille > 0 && max_age_blocks > 0,
+                Error::<T>::InvalidPrice
+            );
+            MaxOracleDeviationPermille::<T>::put(max_deviation_permille);
+            MaxOracleAgeBlocks::<T>::put(max_age_blocks);
+            Self::deposit_event(Event::OracleGuardsSet {
+                max_deviation_permille,
+                max_age_blocks,
+            });
             Ok(())
         }
 
