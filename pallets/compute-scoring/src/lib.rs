@@ -3202,11 +3202,26 @@ pub mod pallet {
         /// same status as the stored row stays silent so the on-
         /// chain event log doesn't pollute with no-op signals.
         ///
-        /// **Root-only** (locked Q13 single-operator v1 per
-        /// `#40` 2026-05-20 plan révisé). A future PR may relax
-        /// this to a multi-vali origin once the trust posture
-        /// changes; today the §G "single authoritative submitter"
-        /// invariant is structurally pinned by `ensure_root`.
+        /// Gated on [`Config::AuditAuthorityOrigin`] — the SAME
+        /// origin that guards [`Pallet::submit_audit_stats`] and
+        /// [`Pallet::submit_live_attestation`].
+        ///
+        /// This was `ensure_root` under the Q13 single-operator v1
+        /// posture (`#40` 2026-05-20), which the doc already flagged
+        /// as relaxable. `ensure_root` binds the submitter to
+        /// whoever holds *sudo on the chain*, which is not
+        /// necessarily the vali that produced the weights: on a
+        /// chain where sudo belongs to the chain operators rather
+        /// than to the compute cluster, the closer cannot submit at
+        /// all. Admitting the audit authority widens no trust
+        /// boundary — that key already signs the audit aggregates
+        /// and live attestations which *produce* the weights this
+        /// call merely seals. The §G "single authoritative
+        /// submitter" invariant is preserved: it is now pinned by
+        /// the runtime's `AuditAuthorityOrigin` binding, which a
+        /// runtime is free to declare as
+        /// `EitherOfDiverse<EnsureRoot, EnsureSignedBy<..>>` to keep
+        /// accepting root.
         ///
         /// `epoch` MUST be strictly greater than the stored
         /// `CurrentEpoch` — replaying an old close is an
@@ -3225,7 +3240,7 @@ pub mod pallet {
             epoch: u64,
             status_updates: BoundedVec<MinerStatusUpdate, T::MaxMinerStatusUpdatesPerCall>,
         ) -> DispatchResultWithPostInfo {
-            ensure_root(origin)?;
+            T::AuditAuthorityOrigin::ensure_origin(origin)?;
 
             let cur = CurrentEpoch::<T>::get();
             ensure!(epoch > cur, Error::<T>::EpochRegression);
@@ -3322,12 +3337,10 @@ pub mod pallet {
             // above and post-dispatch cannot upgrade it back to
             // `Pays::Yes`, so this only ever gives block weight back.
             Ok(frame_support::dispatch::PostDispatchInfo {
-                actual_weight: Some(
-                    <T as pallet::Config>::WeightInfo::vali_submit_epoch_close(
-                        updates_len,
-                        swept,
-                    ),
-                ),
+                actual_weight: Some(<T as pallet::Config>::WeightInfo::vali_submit_epoch_close(
+                    updates_len,
+                    swept,
+                )),
                 pays_fee: Pays::No,
             })
         }
@@ -3564,8 +3577,7 @@ pub mod pallet {
             // obligation we cannot certify the operator, and `register_child`
             // is refused in that same state. Quarantine is recoverable at the
             // next epoch close; a stranded reward is not a stranded fund.
-            let value_at_risk =
-                StakeUsdPerChild::<T>::get().saturating_mul(children.len() as u128);
+            let value_at_risk = StakeUsdPerChild::<T>::get().saturating_mul(children.len() as u128);
             let exiting = remaining.is_zero()
                 || !Self::is_stake_sufficient(&who, Self::required_alpha(value_at_risk));
             if exiting {

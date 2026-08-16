@@ -780,10 +780,12 @@ fn vali_submit_epoch_close_silent_heartbeat() {
 }
 
 #[test]
-fn vali_submit_epoch_close_rejects_non_root_origin() {
+fn vali_submit_epoch_close_rejects_unprivileged_origin() {
     new_test_ext().execute_with(|| {
         let updates: BoundedVec<_, _> =
             BoundedVec::try_from(vec![upd(NODE_A, MinerStatus::Active, 100)]).unwrap();
+        // 7 is neither root nor the audit authority.
+        assert_ne!(7u64, AUDIT_AUTHORITY);
         assert_noop!(
             ComputeScoring::vali_submit_epoch_close(RuntimeOrigin::signed(7u64), 1, updates),
             sp_runtime::DispatchError::BadOrigin
@@ -791,6 +793,56 @@ fn vali_submit_epoch_close_rejects_non_root_origin() {
         // Storage untouched.
         assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_A), None);
         assert_eq!(CurrentEpoch::<TestRuntime>::get(), 0);
+    });
+}
+
+/// The epoch close is reachable by the SAME authority that signs the
+/// audit aggregates and live attestations feeding it.
+///
+/// Regression guard for the mainnet cutover: `vali_submit_epoch_close`
+/// used to hardcode `ensure_root`, which binds the submitter to
+/// whoever holds sudo *on the chain*. On a chain whose sudo is not the
+/// compute cluster's key, the closer could not submit at all — the
+/// weights were produced, signed, and then unlandable.
+#[test]
+fn vali_submit_epoch_close_accepts_the_audit_authority() {
+    new_test_ext().execute_with(|| {
+        let updates: BoundedVec<_, _> = BoundedVec::try_from(vec![
+            upd(NODE_A, MinerStatus::Active, 1_000),
+            upd(NODE_B, MinerStatus::Quarantined, 0),
+        ])
+        .unwrap();
+
+        assert_ok!(ComputeScoring::vali_submit_epoch_close(
+            RuntimeOrigin::signed(AUDIT_AUTHORITY),
+            1,
+            updates,
+        ));
+
+        // The close did real work, not just pass the origin gate.
+        assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_A), Some(1_000));
+        assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_B), Some(0));
+        assert_eq!(CurrentEpoch::<TestRuntime>::get(), 1);
+    });
+}
+
+/// Root MUST keep working across the origin relax, so a runtime that
+/// binds `AuditAuthorityOrigin` to `EitherOfDiverse<EnsureRoot, ..>`
+/// does not strand an existing sudo-wrapped submitter mid-upgrade.
+#[test]
+fn vali_submit_epoch_close_still_accepts_root() {
+    new_test_ext().execute_with(|| {
+        let updates: BoundedVec<_, _> =
+            BoundedVec::try_from(vec![upd(NODE_A, MinerStatus::Active, 500)]).unwrap();
+
+        assert_ok!(ComputeScoring::vali_submit_epoch_close(
+            RuntimeOrigin::root(),
+            1,
+            updates,
+        ));
+
+        assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_A), Some(500));
+        assert_eq!(CurrentEpoch::<TestRuntime>::get(), 1);
     });
 }
 
@@ -4129,12 +4181,16 @@ mod review_b6 {
                     epoch,
                     one(NODE, 1),
                 ));
-                let backlog = frame_system::Pallet::<TestRuntime>::events().iter().any(|e| {
-                    matches!(
-                        &e.event,
-                        RuntimeEvent::ComputeScoring(ComputeEvent::EpochHistoryPruneBacklog { .. })
-                    )
-                });
+                let backlog = frame_system::Pallet::<TestRuntime>::events()
+                    .iter()
+                    .any(|e| {
+                        matches!(
+                            &e.event,
+                            RuntimeEvent::ComputeScoring(
+                                ComputeEvent::EpochHistoryPruneBacklog { .. }
+                            )
+                        )
+                    });
                 (
                     LiveAttestationCount::<TestRuntime>::iter_prefix(1u64).count(),
                     EpochPruneWatermark::<TestRuntime>::get(),
