@@ -3713,3 +3713,166 @@ mod review_b5 {
         });
     }
 }
+
+// =====================================================================
+// thebrain#49 review batch B6 — epoch/weights caps, duration, retention
+// =====================================================================
+
+mod review_b6 {
+    use super::*;
+    use crate::pallet::{
+        CurrentEpoch, EpochCloseBlock, EpochWeights, LiveAttestationCount, MaxEpochWeightPerNode,
+    };
+
+    fn one(
+        node: [u8; 32],
+        weight: u128,
+    ) -> BoundedVec<
+        MinerStatusUpdate,
+        <TestRuntime as crate::pallet::Config>::MaxMinerStatusUpdatesPerCall,
+    > {
+        BoundedVec::try_from(vec![upd(node, MinerStatus::Active, weight)]).unwrap()
+    }
+
+    /// R20: an oversized weight refuses the WHOLE batch before any
+    /// write — one u128::MAX entry must never reach storage.
+    #[test]
+    fn oversized_epoch_weight_refuses_the_batch() {
+        new_test_ext().execute_with(|| {
+            const NODE: [u8; 32] = [0xF1; 32];
+            assert_noop!(
+                ComputeScoring::vali_submit_epoch_close(
+                    RuntimeOrigin::root(),
+                    1,
+                    one(NODE, u128::MAX),
+                ),
+                Error::<TestRuntime>::EpochWeightTooLarge,
+            );
+            assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE), None);
+            assert_eq!(CurrentEpoch::<TestRuntime>::get(), 0);
+
+            // At the cap: accepted.
+            let cap = MaxEpochWeightPerNode::<TestRuntime>::get();
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                1,
+                one(NODE, cap),
+            ));
+            assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE), Some(cap));
+        });
+    }
+
+    /// R19: after an astronomically long inactivity gap the halving
+    /// step count SATURATES. The old `as u32` wrapped — an elapsed of
+    /// (2^32 + 4) periods computed FOUR halvings instead of the
+    /// capped 128, leaving the paid-deposit curve absurdly high.
+    #[test]
+    fn halving_period_count_saturates_instead_of_wrapping() {
+        new_test_ext().execute_with(|| {
+            use crate::pallet::{GlobalLastPaidRegistrationBlock, GlobalNextDeposit};
+            use frame_support::traits::Currency;
+            use sp_core::{ed25519, Pair};
+            const FAM: AccountId = 91;
+            assert_ok!(ComputeScoring::set_lockup_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_free_child_slots_per_family(
+                RuntimeOrigin::root(),
+                0
+            ));
+            assert_ok!(ComputeScoring::set_base_child_deposit(
+                RuntimeOrigin::root(),
+                1_024
+            ));
+            // A high paid-curve value, last paid at block 0, and an
+            // elapsed of (2^32 + 4) periods (period = 1024).
+            GlobalNextDeposit::<TestRuntime>::put(1u128 << 40);
+            GlobalLastPaidRegistrationBlock::<TestRuntime>::put(0u64);
+            System::set_block_number(((1u64 << 32) + 4) * 1024);
+
+            let _ = Balances::make_free_balance_be(&FAM, u128::MAX / 2);
+            let pair = ed25519::Pair::from_seed(&[0xF5; 32]);
+            let node_id = pair.public().0;
+            let msg = (
+                b"HIPPIUS_COMPUTE_NODE_REG_V1",
+                &FAM,
+                &(400 as AccountId),
+                &node_id,
+                0u64,
+            )
+                .encode();
+            let sig = pair.sign(&msg);
+            assert_ok!(ComputeScoring::register_child(
+                RuntimeOrigin::signed(FAM),
+                FAM,
+                400,
+                node_id,
+                sig.0,
+            ));
+            // Saturated: >= 128 halvings collapse 2^40 to the base
+            // floor (1 024). Wrapped, only 4 halvings would have run
+            // and the deposit would be 2^36.
+            assert_eq!(
+                Balances::reserved_balance(FAM),
+                1_024,
+                "the halving count must saturate, not wrap"
+            );
+        });
+    }
+
+    /// R21: every close records its block — the on-chain denominator
+    /// a per-epoch rate needs.
+    #[test]
+    fn epoch_close_records_its_block() {
+        new_test_ext().execute_with(|| {
+            const NODE: [u8; 32] = [0xF2; 32];
+            System::set_block_number(100);
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                1,
+                one(NODE, 10),
+            ));
+            System::set_block_number(160);
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                2,
+                one(NODE, 10),
+            ));
+            assert_eq!(EpochCloseBlock::<TestRuntime>::get(1), Some(100));
+            assert_eq!(EpochCloseBlock::<TestRuntime>::get(2), Some(160));
+            // The duration of epoch 2 is derivable on-chain: 60.
+        });
+    }
+
+    /// R27: history older than the retention window is pruned at
+    /// close — weights, attestation counts and close blocks.
+    #[test]
+    fn stale_epoch_history_is_pruned() {
+        new_test_ext().execute_with(|| {
+            const NODE: [u8; 32] = [0xF3; 32];
+            let vm_hash = [0xF4; 32];
+            // Seed epoch-1 history by closing it for real, plus an
+            // attestation count row.
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                1,
+                one(NODE, 10),
+            ));
+            LiveAttestationCount::<TestRuntime>::insert(1, vm_hash, 7u32);
+
+            // Close an epoch far past the retention window (64):
+            // 1 + 64 + 1 = 66 prunes epoch 1's prefixes.
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                66,
+                one(NODE, 10),
+            ));
+            assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE), None);
+            assert_eq!(LiveAttestationCount::<TestRuntime>::get(1, vm_hash), 0);
+            assert_eq!(EpochCloseBlock::<TestRuntime>::get(1), None);
+            // Fresh history intact.
+            assert_eq!(EpochWeights::<TestRuntime>::get(66, NODE), Some(10));
+        });
+    }
+}

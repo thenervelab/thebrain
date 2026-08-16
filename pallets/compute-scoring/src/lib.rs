@@ -939,6 +939,41 @@ pub mod pallet {
     pub type EpochWeights<T> =
         StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, [u8; 32], u128, OptionQuery>;
 
+    /// R20 (thebrain#49): per-entry ceiling on a submitted epoch
+    /// weight. Root-only submitter or not, this is the most
+    /// reward-critical number stored — one `u128::MAX` entry breaks
+    /// every downstream normalisation. The default (`u64::MAX`)
+    /// guarantees that even a full `MaxMinerStatusUpdatesPerCall`
+    /// batch sums far inside u128. Admin-tunable downward.
+    #[pallet::type_value]
+    pub fn DefaultMaxEpochWeightPerNode() -> u128 {
+        u64::MAX as u128
+    }
+    #[pallet::storage]
+    pub type MaxEpochWeightPerNode<T> =
+        StorageValue<_, u128, ValueQuery, DefaultMaxEpochWeightPerNode>;
+
+    /// R21 (thebrain#49): the block at which each epoch was closed —
+    /// the on-chain denominator `CurrentEpoch` alone never provided.
+    /// `duration(e) = close_block(e) - close_block(prev_close)`; a
+    /// consumer computing `LiveAttestationCount / expected` finally
+    /// has an on-chain basis for `expected`, and anything it derives
+    /// should clamp to <= 1.
+    #[pallet::storage]
+    pub type EpochCloseBlock<T: Config> =
+        StorageMap<_, Blake2_128Concat, u64, BlockNumberFor<T>, OptionQuery>;
+
+    /// R27 (thebrain#49): epochs of per-epoch history retained
+    /// (`EpochWeights`, `LiveAttestationCount`, `EpochCloseBlock`).
+    /// Older prefixes are pruned at epoch close, bounded per call.
+    #[pallet::type_value]
+    pub fn DefaultEpochHistoryRetention() -> u64 {
+        64
+    }
+    #[pallet::storage]
+    pub type EpochHistoryRetention<T> =
+        StorageValue<_, u64, ValueQuery, DefaultEpochHistoryRetention>;
+
     // --- PR-I3 (kept) ---
 
     /// Registered audit-VM Ed25519 public key for each node. Set
@@ -1739,6 +1774,9 @@ pub mod pallet {
         /// `epoch` is not strictly increasing relative to the
         /// stored `CurrentEpoch`.
         EpochRegression,
+        /// A submitted epoch weight exceeds [`MaxEpochWeightPerNode`]
+        /// (R20).
+        EpochWeightTooLarge,
         /// Duplicate `node_id` inside a single
         /// `vali_submit_epoch_close` batch — the validator MUST
         /// dedupe before submission so a single transaction can't
@@ -2228,7 +2266,10 @@ pub mod pallet {
                 if p == 0 {
                     0
                 } else {
-                    (e / p) as u32
+                    // R19 (thebrain#49): saturate, never wrap — a
+                    // pathological elapsed/period would otherwise
+                    // alias to a small step count.
+                    u32::try_from(e / p).unwrap_or(u32::MAX)
                 }
             };
 
@@ -3017,8 +3058,13 @@ pub mod pallet {
             // CONVERGENT HIGH). `n` is still bounded by
             // `T::MaxMinerStatusUpdatesPerCall`.
             let mut seen: BTreeSet<[u8; 32]> = BTreeSet::new();
+            let max_weight = MaxEpochWeightPerNode::<T>::get();
             for u in status_updates.iter() {
                 ensure!(seen.insert(u.node_id), Error::<T>::DuplicateNodeInBatch);
+                // R20: refuse the whole batch on an oversized weight —
+                // this is the submitter's bug, and half-written epochs
+                // are worse than loud ones. Checked BEFORE any write.
+                ensure!(u.weight <= max_weight, Error::<T>::EpochWeightTooLarge);
             }
 
             let now = Self::now();
@@ -3064,6 +3110,22 @@ pub mod pallet {
             }
 
             CurrentEpoch::<T>::put(epoch);
+            // R21: record WHEN this epoch closed — the on-chain
+            // denominator for any per-epoch rate.
+            EpochCloseBlock::<T>::insert(epoch, now);
+
+            // R27: prune per-epoch history older than the retention
+            // window. Bounded: at most one stale epoch prefix per
+            // close, each `clear_prefix` capped. Skipped epochs leave
+            // gaps; sweeping one candidate per close catches up at
+            // one epoch per close, which is fine — the maps are
+            // written at most once per epoch too.
+            let retention = EpochHistoryRetention::<T>::get();
+            if let Some(stale) = epoch.checked_sub(retention.saturating_add(1)) {
+                let _ = EpochWeights::<T>::clear_prefix(stale, 4_096, None);
+                let _ = LiveAttestationCount::<T>::clear_prefix(stale, 8_192, None);
+                EpochCloseBlock::<T>::remove(stale);
+            }
 
             // PR-I6: push the closed epoch's full weight snapshot
             // to the runtime-bound `RankingsSink`. Production
