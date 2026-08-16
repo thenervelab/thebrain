@@ -8202,6 +8202,7 @@ dependencies = [
 name = "pallet-compute-scoring"
 version = "0.0.1"
 dependencies = [
+ "frame-benchmarking 37.0.0",
  "frame-support 37.1.0",
  "frame-system 37.1.0",
  "hippius-types",

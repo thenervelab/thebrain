@@ -3876,3 +3876,70 @@ mod review_b6 {
         });
     }
 }
+
+// =====================================================================
+// thebrain#49 review batch B7 — R28 coverage sweep (deposit doubling)
+// =====================================================================
+
+mod review_b7 {
+    use super::*;
+    use crate::pallet::GlobalNextDeposit;
+    use frame_support::traits::Currency;
+    use sp_core::{ed25519, Pair};
+
+    fn register(family: AccountId, child: AccountId, node_seed: u8) {
+        let pair = ed25519::Pair::from_seed(&[node_seed; 32]);
+        let node_id = pair.public().0;
+        let msg = (
+            b"HIPPIUS_COMPUTE_NODE_REG_V1",
+            &family,
+            &child,
+            &node_id,
+            0u64,
+        )
+            .encode();
+        let sig = pair.sign(&msg);
+        assert_ok!(ComputeScoring::register_child(
+            RuntimeOrigin::signed(family),
+            family,
+            child,
+            node_id,
+            sig.0,
+        ));
+    }
+
+    /// R28: the paid-registration deposit DOUBLES per paid slot — the
+    /// anti-Sybil cost curve — and each registration reserves the
+    /// pre-doubling value. Never covered before this review.
+    #[test]
+    fn paid_deposit_doubles_per_registration() {
+        new_test_ext().execute_with(|| {
+            const FAM: AccountId = 95;
+            assert_ok!(ComputeScoring::set_lockup_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_free_child_slots_per_family(
+                RuntimeOrigin::root(),
+                0
+            ));
+            assert_ok!(ComputeScoring::set_base_child_deposit(
+                RuntimeOrigin::root(),
+                100
+            ));
+            let _ = Balances::make_free_balance_be(&FAM, 10_000);
+
+            register(FAM, 500, 0xB1);
+            assert_eq!(Balances::reserved_balance(FAM), 100);
+            assert_eq!(GlobalNextDeposit::<TestRuntime>::get(), 200);
+
+            register(FAM, 501, 0xB2);
+            assert_eq!(Balances::reserved_balance(FAM), 300); // +200
+            assert_eq!(GlobalNextDeposit::<TestRuntime>::get(), 400);
+
+            register(FAM, 502, 0xB3);
+            assert_eq!(Balances::reserved_balance(FAM), 700); // +400
+            assert_eq!(GlobalNextDeposit::<TestRuntime>::get(), 800);
+        });
+    }
+}

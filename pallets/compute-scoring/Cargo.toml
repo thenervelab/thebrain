@@ -9,6 +9,7 @@ description = "Hippius DePIN compute scoring pallet — mirrors `thenervelab/the
 [dependencies]
 codec = { workspace = true, default-features = false, features = ["derive"] }
 scale-info = { workspace = true, default-features = false, features = ["derive"] }
+frame-benchmarking = { workspace = true, default-features = false, optional = true }
 frame-support = { workspace = true, default-features = false }
 frame-system = { workspace = true, default-features = false }
 sp-runtime = { workspace = true, default-features = false }
@@ -67,6 +68,7 @@ default = ["std"]
 std = [
     "codec/std",
     "scale-info/std",
+    "frame-benchmarking?/std",
     "frame-support/std",
     "frame-system/std",
     "sp-runtime/std",
@@ -78,3 +80,8 @@ std = [
     "pallet-proxy/std",
 ]
 try-runtime = ["frame-support/try-runtime", "frame-system/try-runtime"]
+runtime-benchmarks = [
+    "frame-benchmarking/runtime-benchmarks",
+    "frame-support/runtime-benchmarks",
+    "frame-system/runtime-benchmarks",
+]

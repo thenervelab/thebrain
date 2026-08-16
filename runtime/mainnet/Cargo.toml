@@ -193,6 +193,7 @@ runtime-benchmarks = [
     "pallet-assets/runtime-benchmarks",
     "pallet-vesting/runtime-benchmarks",
     "pallet-staking/runtime-benchmarks",
+    "pallet-compute-scoring/runtime-benchmarks",
     "pallet-collective/runtime-benchmarks",
     "pallet-timestamp/runtime-benchmarks",
     "pallet-tx-pause/runtime-benchmarks",
