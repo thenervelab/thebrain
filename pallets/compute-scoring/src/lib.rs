@@ -3546,16 +3546,26 @@ pub mod pallet {
             // R13: bounds were checked at ANNOUNCEMENT only, so a
             // change announced before an admin tightened the bounds
             // materialised outside them. Re-check here; a pending
-            // that no longer fits is DISCARDED (kept, it would block
-            // the node forever) and said so — the miner re-announces
-            // within the new bounds.
+            // that no longer fits is DISCARDED (kept, it would be a
+            // dormant ratchet: unpurgeable, invisible — the read path
+            // filters it — and instantly effective with ZERO notice
+            // the moment an admin restores the ceiling) and said so —
+            // the miner re-announces within the new bounds.
+            //
+            // This MUST return Ok. Every dispatchable runs inside a
+            // transactional storage layer, so an Err would roll back
+            // BOTH the removal and the event — the first version of
+            // this fix did exactly that, and its `assert_noop!` test
+            // pinned the rollback while claiming discard (found in
+            // the branch's own security review). Discarding IS this
+            // call succeeding at its job of resolving the pending.
             if !Self::within_price_bounds(pending.new_price) {
                 PendingPriceChange::<T>::remove(node_id);
                 Self::deposit_event(Event::PendingPriceDiscarded {
                     node_id,
                     new_price: pending.new_price,
                 });
-                return Err(Error::<T>::PriceOutOfBounds.into());
+                return Ok(());
             }
             MinerPrice::<T>::insert(node_id, pending.new_price);
             PendingPriceChange::<T>::remove(node_id);

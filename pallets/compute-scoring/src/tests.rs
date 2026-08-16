@@ -3675,10 +3675,33 @@ mod review_b5 {
             System::set_block_number(System::block_number() + 6);
             // …the read path must NOT serve the escaped pending…
             assert_eq!(ComputeScoring::effective_price(&NODE), None);
-            // …and applying it discards it with an explicit error.
+            // …and applying it DISCARDS it — for real. The first
+            // version returned Err after the remove+event, and the
+            // transactional layer rolled both back: the pending
+            // survived as a dormant ratchet (instantly effective,
+            // zero notice, the moment an admin restored the ceiling)
+            // while an `assert_noop!` here pinned the rollback and
+            // stayed green. Ok is the only way the discard persists.
+            assert_ok!(ComputeScoring::apply_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE
+            ));
+            assert_eq!(
+                PendingPriceChange::<TestRuntime>::get(NODE),
+                None,
+                "the escaped pending must actually be gone"
+            );
+            let events = frame_system::Pallet::<TestRuntime>::events();
+            assert!(events.iter().any(|e| matches!(
+                &e.event,
+                RuntimeEvent::ComputeScoring(
+                    ComputeEvent::PendingPriceDiscarded { node_id, new_price }
+                ) if *node_id == NODE && *new_price == 500_000
+            )));
+            // Nothing left to apply.
             assert_noop!(
                 ComputeScoring::apply_price_change(RuntimeOrigin::signed(OP), NODE),
-                Error::<TestRuntime>::PriceOutOfBounds,
+                Error::<TestRuntime>::NoPriceChangeDue,
             );
         });
     }
