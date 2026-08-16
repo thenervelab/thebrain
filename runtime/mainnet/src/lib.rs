@@ -281,6 +281,13 @@ impl pallet_compute_scoring::Config for Runtime {
 	type NowUnix = Timestamp;
 
 	type MaxMinerStatusUpdatesPerCall = ConstU32<128>;
+	/// R27 history-sweep drain rate, in storage keys per epoch close.
+	/// Must stay ABOVE the accrual rate — `MaxMinerStatusUpdatesPerCall`
+	/// (128) plus one `LiveAttestationCount` key per VM attesting that
+	/// epoch — or the retained window grows past `EpochHistoryRetention`.
+	/// 2048 covers the current fleet with headroom; watch
+	/// `EpochHistoryPruneBacklog` and raise it if that event appears.
+	type MaxEpochPruneKeysPerCall = ConstU32<2048>;
 
 	type MaxLiveAttestationBody = ConstU32<1024>;
 	type MaxVmIdLen = ConstU32<64>;

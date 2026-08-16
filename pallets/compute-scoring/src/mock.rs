@@ -202,6 +202,9 @@ impl pallet_compute_scoring::Config for TestRuntime {
     // PR-I4.1 follow-up if the network grows past one batch per
     // epoch — see CHANGES.md PR-I4).
     type MaxMinerStatusUpdatesPerCall = ConstU32<128>;
+    // Deliberately small so the budget-exhaustion / resume path is
+    // reachable in tests without seeding thousands of keys.
+    type MaxEpochPruneKeysPerCall = ConstU32<16>;
 
     // #322 live attestation. Body bound ≥ canonical 360 B + slack;
     // vm_id bound matches the production format (`tnXxxxxx…`);

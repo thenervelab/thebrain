@@ -35,7 +35,10 @@ pub trait WeightInfo {
     fn set_audit_vm_pubkey() -> Weight;
 
     // --- PR-I4 epoch close ---
-    fn vali_submit_epoch_close(n: u32) -> Weight;
+    /// `n` = status updates in the batch; `p` =
+    /// `Config::MaxEpochPruneKeysPerCall`, the R27 history sweep's
+    /// per-call key budget.
+    fn vali_submit_epoch_close(n: u32, p: u32) -> Weight;
 
     // --- #322 live attestation ---
     fn set_kbs_attestation_pubkey() -> Weight;
@@ -120,17 +123,34 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     ///   done in-memory (O(n) CPU). Dedupe uses a `BTreeSet`:
     ///   O(n log n) — the per-element coefficient below absorbs
     ///   the worst-case log-factor at typical bounds (≤ 256).
-    fn vali_submit_epoch_close(n: u32) -> Weight {
+    ///   The R27 history sweep at the end of the call is charged
+    ///   separately via `p` — see below.
+    fn vali_submit_epoch_close(n: u32, p: u32) -> Weight {
         // Per-element cost (4_500_000 ps) is set higher than a
         // pure linear cost to absorb the O(n log n) dedupe inside
         // the BTreeSet — at n = 256, log2(n) ≈ 8, so a 4.5x base
         // per element is conservative.
+        //
+        // The `p` term prices the R27 sweep, which previously cost
+        // NOTHING here while deleting up to ~12 k keys
+        // (thebrain#49 re-review). `Pallet::sweep_epoch_history` is
+        // bounded by construction at `p + 1` deletions and at most
+        // `p` loop iterations, each iteration probing two prefixes
+        // — so 2p reads and p+1 writes is a true upper bound, and
+        // the epoch-jump case (a long run of empty epochs) is
+        // covered by the same bound because each empty epoch still
+        // costs one budget unit.
         Weight::from_parts(20_000_000, 0)
             .saturating_add(Weight::from_parts(4_500_000, 0).saturating_mul(n.into()))
             .saturating_add(T::DbWeight::get().reads(1))
             .saturating_add(T::DbWeight::get().reads(n.into()))
             .saturating_add(T::DbWeight::get().writes(1))
             .saturating_add(T::DbWeight::get().writes((2u64).saturating_mul(n.into())))
+            // R27 sweep: watermark + retention reads, watermark write.
+            .saturating_add(T::DbWeight::get().reads(2))
+            .saturating_add(T::DbWeight::get().writes(1))
+            .saturating_add(T::DbWeight::get().reads((2u64).saturating_mul(p.into())))
+            .saturating_add(T::DbWeight::get().writes((p as u64).saturating_add(1)))
     }
 
     fn set_kbs_attestation_pubkey() -> Weight {
@@ -187,7 +207,7 @@ impl WeightInfo for () {
     fn set_audit_vm_pubkey() -> Weight {
         Weight::zero()
     }
-    fn vali_submit_epoch_close(_n: u32) -> Weight {
+    fn vali_submit_epoch_close(_n: u32, _p: u32) -> Weight {
         Weight::zero()
     }
     fn set_kbs_attestation_pubkey() -> Weight {

@@ -55,6 +55,13 @@
     // client interfaces off-chain submitters rely on) for no real
     // saving; SCALE wire bytes are unaffected either way.
     clippy::large_enum_variant,
+    // `vali_submit_epoch_close` returns `DispatchResultWithPostInfo`
+    // so it can refund the unspent R27 sweep budget. The `#[pallet::call]`
+    // expansion wraps every dispatchable's return in a conversion that
+    // is a no-op for that type, and the resulting `useless_conversion`
+    // fires on the macro's code while being attributed to the function's
+    // own span — so it cannot be silenced any closer than here.
+    clippy::useless_conversion,
 )]
 
 extern crate alloc;
@@ -871,6 +878,29 @@ pub mod pallet {
         #[pallet::constant]
         type MaxMinerStatusUpdatesPerCall: Get<u32>;
 
+        /// Per-call key budget for the R27 history sweep that runs at
+        /// the end of [`Pallet::vali_submit_epoch_close`].
+        ///
+        /// The sweep used to be `clear_prefix(stale, 4_096) +
+        /// clear_prefix(stale, 8_192)` with NOTHING in
+        /// [`WeightInfo::vali_submit_epoch_close`] paying for it —
+        /// up to ~12 k unpriced deletions on a `Pays::No` call, and
+        /// [`LiveAttestationCount`] has one key per VM per epoch, so
+        /// the overrun scaled with fleet size (thebrain#49
+        /// re-review). The budget is now explicit, charged in the
+        /// weight, and resumable across calls via
+        /// [`EpochPruneWatermark`].
+        ///
+        /// **Sizing**: this is a drain rate. History accrues at
+        /// roughly `MaxMinerStatusUpdatesPerCall + (VMs attesting)`
+        /// keys per epoch and drains at most this many per epoch, so
+        /// a value BELOW the accrual rate lets the retained window
+        /// grow past [`EpochHistoryRetention`] instead of losing
+        /// data. Size it above the expected fleet and alert on
+        /// [`Event::EpochHistoryPruneBacklog`].
+        #[pallet::constant]
+        type MaxEpochPruneKeysPerCall: Get<u32>;
+
         // --- #322 live attestation config ---
 
         /// Max byte length of the canonical-CBOR `body` carried in
@@ -976,6 +1006,31 @@ pub mod pallet {
     #[pallet::storage]
     pub type EpochHistoryRetention<T> =
         StorageValue<_, u64, ValueQuery, DefaultEpochHistoryRetention>;
+
+    /// The next epoch whose per-epoch history is a candidate for the
+    /// R27 sweep. Monotonic: it advances only once an epoch has been
+    /// swept COMPLETELY, so a sweep that runs out of
+    /// [`Config::MaxEpochPruneKeysPerCall`] budget resumes from the
+    /// same epoch on the next close instead of abandoning it.
+    ///
+    /// This is what makes the bounded sweep correct rather than
+    /// merely cheap (thebrain#49 re-review). The first cut recomputed
+    /// `stale = epoch - retention - 1` from scratch every close, so it
+    /// only ever targeted ONE epoch number: closing 1, then 2, then
+    /// 500 left epochs 1 and 2 fully populated forever, hundreds of
+    /// epochs past the window, because nothing ever looked at them
+    /// again. `vali_submit_epoch_close` accepts any `epoch > cur`, so
+    /// a single skipped or jumped epoch number orphaned everything
+    /// behind it. A watermark walks the epoch line instead of
+    /// sampling it.
+    ///
+    /// Starts at 0, which is correct for a chain introducing this
+    /// pallet (`CurrentEpoch` also starts at 0, so there is no
+    /// pre-watermark history to miss). A chain that ever carries this
+    /// pallet across a re-genesis of the epoch counter would need to
+    /// seed this.
+    #[pallet::storage]
+    pub type EpochPruneWatermark<T> = StorageValue<_, u64, ValueQuery>;
 
     // --- PR-I3 (kept) ---
 
@@ -1533,6 +1588,19 @@ pub mod pallet {
         EpochClosed {
             epoch: u64,
             updates: u32,
+        },
+        /// The R27 history sweep hit its
+        /// [`Config::MaxEpochPruneKeysPerCall`] budget with epochs
+        /// still outside the retention window. Not an error — the
+        /// sweep resumes from `watermark` at the next close — but it
+        /// means history is accruing faster than it drains, so the
+        /// retained window will grow past
+        /// [`EpochHistoryRetention`] until the budget is raised.
+        EpochHistoryPruneBacklog {
+            /// Oldest epoch still holding per-epoch history.
+            watermark: u64,
+            /// Exclusive upper bound of what should have been pruned.
+            horizon: u64,
         },
 
         // --- #322 live attestation ---
@@ -2357,6 +2425,83 @@ pub mod pallet {
                 .map(|(node_id, weight)| EpochWeightEntry { node_id, weight })
                 .collect()
         }
+
+        /// R27 sweep: delete per-epoch history older than the
+        /// retention window, spending at most
+        /// [`Config::MaxEpochPruneKeysPerCall`] storage deletions and
+        /// advancing [`EpochPruneWatermark`] only across epochs swept
+        /// COMPLETELY.
+        ///
+        /// **Bounded by construction.** Every iteration either breaks
+        /// or spends at least one unit of budget (the
+        /// [`EpochCloseBlock`] removal), so the loop runs at most
+        /// `budget` times and deletes at most `budget + 1` keys. That
+        /// covers the degenerate case too: if the submitter jumps the
+        /// epoch counter far ahead, the sweep walks the long run of
+        /// empty epochs one budget-unit at a time rather than
+        /// spinning over all of them in a single call.
+        ///
+        /// Emits [`Event::EpochHistoryPruneBacklog`] when the budget
+        /// ran out with work still pending — the drain rate is
+        /// under-sized for the fleet and the retained window will
+        /// grow past [`EpochHistoryRetention`] until ops raises
+        /// `MaxEpochPruneKeysPerCall`. Nothing is lost; it is a rate
+        /// signal, not an error, so it must not fail the close.
+        ///
+        /// Returns the number of budget units actually spent, so the
+        /// caller can refund the difference post-dispatch.
+        fn sweep_epoch_history(closed_epoch: u64) -> u32 {
+            let retention = EpochHistoryRetention::<T>::get();
+            // Everything strictly below `horizon` is outside the window.
+            let horizon = closed_epoch.saturating_sub(retention);
+            let budget = T::MaxEpochPruneKeysPerCall::get();
+            if budget == 0 {
+                return 0;
+            }
+
+            let start = EpochPruneWatermark::<T>::get();
+            let mut wm = start;
+            let mut spent: u32 = 0;
+
+            while wm < horizon && spent < budget {
+                // `limit` is always >= 1 here: the loop guard proves
+                // `spent < budget`, and each `clear_prefix` removes at
+                // most `limit`, so `spent` can never pass `budget`.
+                let weights = EpochWeights::<T>::clear_prefix(wm, budget - spent, None);
+                spent = spent.saturating_add(weights.unique);
+                if weights.maybe_cursor.is_some() || spent >= budget {
+                    break;
+                }
+                let counts = LiveAttestationCount::<T>::clear_prefix(wm, budget - spent, None);
+                spent = spent.saturating_add(counts.unique);
+                if counts.maybe_cursor.is_some() {
+                    break;
+                }
+                // Both prefixes for `wm` are drained — only now is it
+                // safe to advance past it.
+                EpochCloseBlock::<T>::remove(wm);
+                spent = spent.saturating_add(1);
+                wm = wm.saturating_add(1);
+            }
+
+            if wm != start {
+                EpochPruneWatermark::<T>::put(wm);
+            }
+            if wm < horizon {
+                Self::deposit_event(Event::EpochHistoryPruneBacklog {
+                    watermark: wm,
+                    horizon,
+                });
+            }
+            // The final `EpochCloseBlock` removal of an iteration can
+            // carry `spent` one unit past `budget`. Clamp it so the
+            // post-dispatch refund can never compute an ACTUAL weight
+            // above the DECLARED one; the stray unit is already inside
+            // the `writes(p + 1)` term of the weight formula. (FRAME
+            // clamps too, but a refund path that relies on being
+            // clamped is a refund path nobody can read.)
+            spent.min(budget)
+        }
     }
 
     // =====================================================================
@@ -3069,14 +3214,17 @@ pub mod pallet {
         /// single batch are rejected with `DuplicateNodeInBatch`.
         #[pallet::call_index(50)]
         #[pallet::weight((
-            <T as pallet::Config>::WeightInfo::vali_submit_epoch_close(status_updates.len() as u32),
+            <T as pallet::Config>::WeightInfo::vali_submit_epoch_close(
+                status_updates.len() as u32,
+                T::MaxEpochPruneKeysPerCall::get(),
+            ),
             Pays::No
         ))]
         pub fn vali_submit_epoch_close(
             origin: OriginFor<T>,
             epoch: u64,
             status_updates: BoundedVec<MinerStatusUpdate, T::MaxMinerStatusUpdatesPerCall>,
-        ) -> DispatchResult {
+        ) -> DispatchResultWithPostInfo {
             ensure_root(origin)?;
 
             let cur = CurrentEpoch::<T>::get();
@@ -3145,17 +3293,13 @@ pub mod pallet {
             EpochCloseBlock::<T>::insert(epoch, now);
 
             // R27: prune per-epoch history older than the retention
-            // window. Bounded: at most one stale epoch prefix per
-            // close, each `clear_prefix` capped. Skipped epochs leave
-            // gaps; sweeping one candidate per close catches up at
-            // one epoch per close, which is fine — the maps are
-            // written at most once per epoch too.
-            let retention = EpochHistoryRetention::<T>::get();
-            if let Some(stale) = epoch.checked_sub(retention.saturating_add(1)) {
-                let _ = EpochWeights::<T>::clear_prefix(stale, 4_096, None);
-                let _ = LiveAttestationCount::<T>::clear_prefix(stale, 8_192, None);
-                EpochCloseBlock::<T>::remove(stale);
-            }
+            // window, under a per-call key budget the weight actually
+            // pays for (see `Config::MaxEpochPruneKeysPerCall`). The
+            // declared weight reserves the FULL budget — it has to,
+            // or the sweep could overrun the block — and the
+            // post-dispatch refund below hands back what a quiet
+            // close did not spend.
+            let swept = Self::sweep_epoch_history(epoch);
 
             // PR-I6: push the closed epoch's full weight snapshot
             // to the runtime-bound `RankingsSink`. Production
@@ -3174,7 +3318,18 @@ pub mod pallet {
                 epoch,
                 updates: updates_len,
             });
-            Ok(())
+            // Refund the unspent sweep budget. `Pays::No` is declared
+            // above and post-dispatch cannot upgrade it back to
+            // `Pays::Yes`, so this only ever gives block weight back.
+            Ok(frame_support::dispatch::PostDispatchInfo {
+                actual_weight: Some(
+                    <T as pallet::Config>::WeightInfo::vali_submit_epoch_close(
+                        updates_len,
+                        swept,
+                    ),
+                ),
+                pays_fee: Pays::No,
+            })
         }
 
         // --- Admin -------------------------------------------------------
@@ -3380,16 +3535,42 @@ pub mod pallet {
             // read `remaining`, and so the `StakeUnbondRequested` event
             // precedes the quarantine event in the log.
             let remaining = StakedAmount::<T>::get(&who);
+            let children = FamilyChildren::<T>::get(&who);
             // Exit signal: unstaking EVERYTHING is unambiguous (works even
             // when staking is disabled, so it's testable); OR, when the stake
-            // layer is live, dropping below the eligibility floor. A partial
-            // unstake that stays sufficiently collateralised is NOT an exit.
+            // layer is live, the remaining stake no longer satisfies the
+            // eligibility predicate. A partial unstake that stays
+            // sufficiently collateralised is NOT an exit.
+            //
+            // R2 follow-up (thebrain#49 re-review): this used to compare
+            // `remaining` against `StakeFloor` ALONE, which ignores
+            // `required_alpha` and the child count entirely — so
+            // `is_stake_sufficient` had exactly one caller
+            // (`register_child`) and the layer was enforced at the door and
+            // never again. With the default `StakeFloor = 0` an owner could
+            // register N children fully collateralised, then unbond
+            // everything but one planck: `remaining` is non-zero and not
+            // below a zero floor, no quarantine fired, and every child
+            // stayed Active and reward-eligible at ~zero collateral.
+            //
+            // Both edges now read the SAME predicate over the SAME
+            // value-at-risk (`StakeUsdPerChild × active children`, exactly
+            // what `register_child` sizes against), so the hosting-
+            // proportional obligation is continuous rather than one-shot.
+            // `is_stake_sufficient` returns `true` whenever `StakeEnabled` is
+            // off, so the disabled-layer behaviour is unchanged: only the
+            // `remaining == 0` arm can fire. It also fails CLOSED on a
+            // zero/stale oracle (R3/R4) — deliberately: if we cannot size the
+            // obligation we cannot certify the operator, and `register_child`
+            // is refused in that same state. Quarantine is recoverable at the
+            // next epoch close; a stranded reward is not a stranded fund.
+            let value_at_risk =
+                StakeUsdPerChild::<T>::get().saturating_mul(children.len() as u128);
             let exiting = remaining.is_zero()
-                || (StakeEnabled::<T>::get() && remaining < StakeFloor::<T>::get());
+                || !Self::is_stake_sufficient(&who, Self::required_alpha(value_at_risk));
             if exiting {
                 let now = Self::now();
                 let epoch = CurrentEpoch::<T>::get();
-                let children = FamilyChildren::<T>::get(&who);
                 let mut quarantined: u32 = 0;
                 for child in children.iter() {
                     if let Some(reg) = ChildRegistrations::<T>::get(child) {

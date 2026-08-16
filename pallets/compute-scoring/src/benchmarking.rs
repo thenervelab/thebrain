@@ -69,8 +69,26 @@ mod benches {
         _(RawOrigin::Signed(who), 500u128.into());
     }
 
+    /// The `p` half of the weight — the R27 history sweep — is priced
+    /// analytically from `Config::MaxEpochPruneKeysPerCall` rather than
+    /// measured here, because `Pallet::sweep_epoch_history` does
+    /// nothing but `clear_prefix` / `remove`: it is a pure storage-
+    /// deletion count, which is exactly what `DbWeight` prices. What
+    /// this benchmark DOES do is close an epoch past the retention
+    /// window with real history behind it, so the sweep path executes
+    /// (and, via `impl_benchmark_test_suite!`, executes in CI) instead
+    /// of being skipped by a close that has nothing to prune.
     #[benchmark]
     fn vali_submit_epoch_close(n: Linear<1, 128>) {
+        // Seed prunable history so the sweep is exercised, not skipped.
+        let retention = crate::pallet::EpochHistoryRetention::<T>::get();
+        for i in 0..32u32 {
+            let mut vm = [0u8; 32];
+            vm[..4].copy_from_slice(&i.to_le_bytes());
+            crate::pallet::LiveAttestationCount::<T>::insert(1u64, vm, 1u32);
+        }
+        crate::pallet::CurrentEpoch::<T>::put(retention + 1);
+
         let mut updates: Vec<MinerStatusUpdate> = Vec::new();
         for i in 0..n {
             let mut node_id = [0u8; 32];
@@ -84,7 +102,7 @@ mod benches {
         let bounded: BoundedVec<_, T::MaxMinerStatusUpdatesPerCall> =
             updates.try_into().unwrap();
         #[extrinsic_call]
-        _(RawOrigin::Root, 1u64, bounded);
+        _(RawOrigin::Root, retention + 2, bounded);
     }
 
     // Runs every benchmark above as an ordinary test against the

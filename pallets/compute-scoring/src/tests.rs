@@ -2667,8 +2667,8 @@ fn deregister_clears_marketplace_price_state() {
 mod graceful_exit {
     use super::*;
     use crate::pallet::{
-        ChildRegistration, ChildRegistrations, ChildStatus, FamilyChildren, MinerStatusUpdate,
-        StakeEnabled, StakedAmount,
+        AlphaPerUsdEma, ChildRegistration, ChildRegistrations, ChildStatus, FamilyChildren,
+        MinerStatusUpdate, StakeEnabled, StakeFloor, StakedAmount,
     };
     use frame_support::traits::Currency;
 
@@ -2788,6 +2788,15 @@ mod graceful_exit {
                 true
             ));
             assert_ok!(ComputeScoring::set_stake_floor(RuntimeOrigin::root(), 100));
+            // The exit test is now the SAME predicate `register_child`
+            // gates on, which fails closed on an unposted oracle (R4).
+            // "Sufficient" therefore requires a live price — without one
+            // this owner is not eligible at all, which is the point of
+            // `unstake_with_no_oracle_price_quarantines` below.
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
             attach_child(OWNER, CHILD_1, G_NODE_A);
             stake_owner(500);
 
@@ -2804,6 +2813,129 @@ mod graceful_exit {
         });
     }
 
+    /// R2 follow-up (thebrain#49 re-review): the exit path must use the
+    /// SAME predicate `register_child` gates on, sized off the SAME
+    /// value-at-risk. Before the fix it compared `remaining` against
+    /// `StakeFloor` alone — so with the DEFAULT floor of 0 an owner could
+    /// register children fully collateralised and then unbond everything
+    /// but one planck: `remaining` is non-zero and not below a zero floor,
+    /// no quarantine fired, and every child stayed Active and
+    /// reward-eligible at ~zero collateral.
+    ///
+    /// Mutation check: restore
+    /// `remaining < StakeFloor::<T>::get()` in place of the
+    /// `!is_stake_sufficient(..)` arm and ONLY this test fails.
+    #[test]
+    fn near_total_unstake_quarantines_even_with_a_zero_floor() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            // The default floor — the state the old predicate collapsed in.
+            assert_eq!(StakeFloor::<TestRuntime>::get(), 0);
+            // 1 alpha per USD, and $10 of value at risk per child.
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            assert_ok!(ComputeScoring::set_stake_usd_per_child(
+                RuntimeOrigin::root(),
+                10
+            ));
+
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            attach_child(OWNER, CHILD_2, G_NODE_B);
+            // 2 children × $10 × 1 alpha/USD ⇒ 20 required.
+            assert_eq!(ComputeScoring::required_alpha(20), 20);
+            stake_owner(500);
+
+            // Unbond everything but one unit. Non-zero remaining, and not
+            // below the zero floor — the old rule saw no exit here.
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                499
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 1);
+
+            // 1 < 20 required ⇒ exit ⇒ both children quarantined.
+            assert_eq!(status_of(G_NODE_A), Some(MinerStatus::Quarantined));
+            assert_eq!(status_of(G_NODE_B), Some(MinerStatus::Quarantined));
+            assert_eq!(quarantine_events(), vec![2]);
+        });
+    }
+
+    /// The obligation is hosting-proportional on BOTH edges: the same
+    /// remaining stake is sufficient for one child and deficient for
+    /// four, because `value_at_risk` scales with the active child count
+    /// exactly as `register_child` sizes it.
+    #[test]
+    fn exit_predicate_scales_with_the_child_count() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
+            ));
+            assert_ok!(ComputeScoring::set_stake_usd_per_child(
+                RuntimeOrigin::root(),
+                100
+            ));
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            stake_owner(500);
+
+            // One child ⇒ 100 required; 400 remaining is plenty.
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                100
+            ));
+            assert_eq!(status_of(G_NODE_A), None);
+            assert!(quarantine_events().is_empty());
+
+            // Attach three more children — same stake, 4× the obligation
+            // (400 required vs 300 remaining after the next unbond).
+            attach_child(OWNER, CHILD_2, G_NODE_B);
+            attach_child(OWNER, 73, [0xC3; 32]);
+            attach_child(OWNER, 74, [0xD4; 32]);
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                100
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 300);
+            assert_eq!(status_of(G_NODE_A), Some(MinerStatus::Quarantined));
+            assert_eq!(status_of(G_NODE_B), Some(MinerStatus::Quarantined));
+            assert_eq!(quarantine_events(), vec![4]);
+        });
+    }
+
+    /// Fail-closed is deliberate and shared with `register_child`: with
+    /// the layer armed and no usable oracle price, we cannot SIZE the
+    /// obligation, so we cannot certify the operator. Quarantine is
+    /// recoverable at the next epoch close; mis-certifying is not.
+    #[test]
+    fn unstake_with_no_oracle_price_quarantines() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_stake_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            // No `set_alpha_per_usd` ⇒ zero EMA ⇒ R4 fail-closed.
+            assert_eq!(AlphaPerUsdEma::<TestRuntime>::get(), 0);
+            attach_child(OWNER, CHILD_1, G_NODE_A);
+            stake_owner(500);
+
+            assert_ok!(ComputeScoring::request_unstake(
+                RuntimeOrigin::signed(OWNER),
+                1
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(OWNER), 499);
+            assert_eq!(status_of(G_NODE_A), Some(MinerStatus::Quarantined));
+        });
+    }
+
     /// 3. Partial-deficient (StakeEnabled = true, 0 < remaining < floor): drops
     ///    below the eligibility floor ⇒ exit ⇒ quarantine fires.
     #[test]
@@ -2812,6 +2944,10 @@ mod graceful_exit {
             assert_ok!(ComputeScoring::set_stake_enabled(
                 RuntimeOrigin::root(),
                 true
+            ));
+            assert_ok!(ComputeScoring::set_alpha_per_usd(
+                RuntimeOrigin::root(),
+                1_000_000
             ));
             assert_ok!(ComputeScoring::set_stake_floor(RuntimeOrigin::root(), 300));
             attach_child(OWNER, CHILD_1, G_NODE_A);
@@ -3744,7 +3880,8 @@ mod review_b5 {
 mod review_b6 {
     use super::*;
     use crate::pallet::{
-        CurrentEpoch, EpochCloseBlock, EpochWeights, LiveAttestationCount, MaxEpochWeightPerNode,
+        CurrentEpoch, EpochCloseBlock, EpochHistoryRetention, EpochPruneWatermark, EpochWeights,
+        LiveAttestationCount, MaxEpochWeightPerNode,
     };
 
     fn one(
@@ -3896,6 +4033,163 @@ mod review_b6 {
             assert_eq!(EpochCloseBlock::<TestRuntime>::get(1), None);
             // Fresh history intact.
             assert_eq!(EpochWeights::<TestRuntime>::get(66, NODE), Some(10));
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // thebrain#49 re-review — the R27 sweep was neither bounded nor
+    // complete. These pin both halves.
+    // -----------------------------------------------------------------
+
+    /// The first cut recomputed `stale = epoch - retention - 1` fresh
+    /// every close, so it only ever looked at ONE epoch number. Closing
+    /// 1, then 2, then 500 left epochs 1 and 2 fully populated forever —
+    /// hundreds of epochs past a 64-epoch window — because nothing ever
+    /// revisited them. `vali_submit_epoch_close` accepts any
+    /// `epoch > cur`, so one jumped epoch orphaned everything behind it.
+    ///
+    /// Mutation check: replace the watermark walk with
+    /// `epoch.checked_sub(retention + 1)` and only this test fails.
+    #[test]
+    fn epoch_jump_does_not_orphan_history() {
+        new_test_ext().execute_with(|| {
+            const NODE: [u8; 32] = [0xF5; 32];
+            let vm = [0xF6; 32];
+
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                1,
+                one(NODE, 10),
+            ));
+            LiveAttestationCount::<TestRuntime>::insert(1, vm, 7u32);
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                2,
+                one(NODE, 11),
+            ));
+
+            // Jump far past the retention window, skipping 3..=499.
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                500,
+                one(NODE, 12),
+            ));
+
+            // Epochs 1 and 2 are hundreds of epochs stale — both gone.
+            assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE), None);
+            assert_eq!(EpochWeights::<TestRuntime>::get(2, NODE), None);
+            assert_eq!(LiveAttestationCount::<TestRuntime>::get(1, vm), 0);
+            assert_eq!(EpochCloseBlock::<TestRuntime>::get(1), None);
+            assert_eq!(EpochCloseBlock::<TestRuntime>::get(2), None);
+            // The current epoch is untouched.
+            assert_eq!(EpochWeights::<TestRuntime>::get(500, NODE), Some(12));
+        });
+    }
+
+    /// The sweep spends at most `MaxEpochPruneKeysPerCall` (16 in the
+    /// mock) and RESUMES: a budget-exhausted epoch is retried at the
+    /// next close rather than abandoned, and the watermark only
+    /// advances past epochs swept completely. Without the watermark a
+    /// bounded sweep would silently leak the remainder — worse than the
+    /// unbounded version it replaced.
+    ///
+    /// NOTE the `commit_all` between closes: `clear_prefix`'s limit
+    /// applies to keys in the BACKEND, and keys deleted earlier in the
+    /// SAME block are still visited from the backend and still counted
+    /// against the limit. Running every close inside one `execute_with`
+    /// would therefore (a) delete all 40 at once while they are only in
+    /// the overlay, then (b) make zero further progress — neither of
+    /// which is how this runs on-chain. One committed block per close
+    /// is the faithful model, and it is what the stale epoch always
+    /// looks like in production: `LiveAttestationCount` is only ever
+    /// written for `CurrentEpoch`, and the sweep only ever touches
+    /// epochs at least `EpochHistoryRetention` behind it, so its keys
+    /// were committed many blocks ago.
+    #[test]
+    fn sweep_is_budget_bounded_and_resumes() {
+        const NODE: [u8; 32] = [0xF7; 32];
+        let mut ext = new_test_ext();
+
+        ext.execute_with(|| {
+            // 40 prunable keys in epoch 1 vs a budget of 16 per close.
+            for i in 0..40u32 {
+                let mut vm = [0u8; 32];
+                vm[..4].copy_from_slice(&i.to_le_bytes());
+                LiveAttestationCount::<TestRuntime>::insert(1u64, vm, 1u32);
+            }
+        });
+        ext.commit_all().expect("overlay commits to the backend");
+
+        let retention = 64u64; // `DefaultEpochHistoryRetention`
+        let close = |ext: &mut sp_io::TestExternalities, epoch: u64| -> (usize, u64, bool) {
+            let out = ext.execute_with(|| {
+                assert_eq!(EpochHistoryRetention::<TestRuntime>::get(), retention);
+                assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                    RuntimeOrigin::root(),
+                    epoch,
+                    one(NODE, 1),
+                ));
+                let backlog = frame_system::Pallet::<TestRuntime>::events().iter().any(|e| {
+                    matches!(
+                        &e.event,
+                        RuntimeEvent::ComputeScoring(ComputeEvent::EpochHistoryPruneBacklog { .. })
+                    )
+                });
+                (
+                    LiveAttestationCount::<TestRuntime>::iter_prefix(1u64).count(),
+                    EpochPruneWatermark::<TestRuntime>::get(),
+                    backlog,
+                )
+            });
+            ext.commit_all().expect("block commits");
+            out
+        };
+
+        // horizon = 66 - 64 = 2, so epoch 1 is stale.
+        let (left, wm, backlog) = close(&mut ext, retention + 2);
+        // Budget-bounded: nowhere near all 40 went in one call, and the
+        // watermark did NOT advance past the unfinished epoch.
+        assert!(
+            left >= 40 - 17,
+            "one close must not exceed its budget, {left} left"
+        );
+        assert!(left < 40, "but it must make progress");
+        assert!(wm <= 1, "watermark must not pass an unswept epoch");
+        // The backlog is announced, not silently absorbed.
+        assert!(backlog, "an over-budget sweep must say so");
+
+        // Successive closes drain the rest, then the watermark advances
+        // past the epoch it had been stuck on.
+        let mut last = (left, wm);
+        for i in 1..=6u64 {
+            last = {
+                let (l, w, _) = close(&mut ext, retention + 2 + i);
+                (l, w)
+            };
+        }
+        assert_eq!(last.0, 0, "the sweep eventually drains the epoch");
+        assert!(last.1 > 1, "and then advances past it");
+    }
+
+    /// A long run of EMPTY epochs (the submitter jumps the counter) must
+    /// not spin the sweep over all of them in one call: each visited
+    /// epoch costs one budget unit, so the loop is bounded by the budget
+    /// whether or not there is anything to delete. The watermark
+    /// therefore advances by at most the budget per close.
+    #[test]
+    fn sweeping_empty_epochs_is_still_budget_bounded() {
+        new_test_ext().execute_with(|| {
+            const NODE: [u8; 32] = [0xF8; 32];
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                100_000,
+                one(NODE, 1),
+            ));
+            // Budget is 16 in the mock; the watermark walked at most that
+            // far even though ~99_936 epochs are outside the window.
+            let wm = EpochPruneWatermark::<TestRuntime>::get();
+            assert!(wm > 0, "the sweep made progress");
+            assert!(wm <= 16, "but it stayed inside its budget, got {wm}");
         });
     }
 }
