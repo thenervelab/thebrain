@@ -3966,3 +3966,167 @@ mod review_b7 {
         });
     }
 }
+
+// =====================================================================
+// Security review (full-pallet audit) — the deposit reserve invariant
+// =====================================================================
+
+mod deposit_invariant {
+    use super::*;
+    use crate::pallet::{ChildRegistrations, PriceMagnitudeAnchor};
+    use frame_support::traits::Currency;
+    use sp_core::{ed25519, Pair};
+
+    const FAM: AccountId = 96;
+    const CHILD: AccountId = 600;
+
+    fn register_paid() -> [u8; 32] {
+        let pair = ed25519::Pair::from_seed(&[0xE7; 32]);
+        let node_id = pair.public().0;
+        let msg = (b"HIPPIUS_COMPUTE_NODE_REG_V1", &FAM, &CHILD, &node_id, 0u64).encode();
+        let sig = pair.sign(&msg);
+        assert_ok!(ComputeScoring::register_child(
+            RuntimeOrigin::signed(FAM),
+            FAM,
+            CHILD,
+            node_id,
+            sig.0,
+        ));
+        node_id
+    }
+
+    /// The reserve is created on `deposit != 0` and must be released on
+    /// the SAME fact — never on the live `LockupEnabled` switch.
+    ///
+    /// This is the exact interleaving the audit found and that the
+    /// suite never exercised: register while lockup is ON, admin flips
+    /// the (legitimate, documented) kill-switch OFF, family claims.
+    /// The old code skipped the unreserve, deleted the only record of
+    /// `(family, deposit)`, and emitted `ChildUnbonded { amount }` —
+    /// stranding the user's balance permanently under a named reserve
+    /// nothing else in the pallet ever touches.
+    #[test]
+    fn deposit_is_released_even_if_lockup_is_disabled_before_the_claim() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_lockup_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_free_child_slots_per_family(
+                RuntimeOrigin::root(),
+                0
+            ));
+            assert_ok!(ComputeScoring::set_base_child_deposit(
+                RuntimeOrigin::root(),
+                250
+            ));
+            let _ = Balances::make_free_balance_be(&FAM, 10_000);
+
+            register_paid();
+            assert_eq!(
+                Balances::reserved_balance(FAM),
+                250,
+                "the paid registration must reserve the deposit"
+            );
+
+            // The admin toggle that used to strand the funds.
+            assert_ok!(ComputeScoring::set_lockup_enabled(
+                RuntimeOrigin::root(),
+                false
+            ));
+
+            assert_ok!(ComputeScoring::deregister_child(
+                RuntimeOrigin::signed(FAM),
+                CHILD
+            ));
+            let reg = ChildRegistrations::<TestRuntime>::get(CHILD).unwrap();
+            assert_eq!(reg.deposit, 250, "the stored fact survives the toggle");
+            System::set_block_number(reg.unbonding_end);
+            assert_ok!(ComputeScoring::claim_unbonded(
+                RuntimeOrigin::signed(FAM),
+                CHILD
+            ));
+
+            // The event says the deposit came back — the balance must
+            // agree. Under the old code this was 250, silently, forever.
+            assert_eq!(
+                Balances::reserved_balance(FAM),
+                0,
+                "a ChildUnbonded event must never outlive the funds it reports"
+            );
+            assert_eq!(Balances::free_balance(FAM), 10_000);
+            let _ = PriceMagnitudeAnchor::<TestRuntime>::get([0u8; 32]);
+        });
+    }
+
+    /// The mirror case: lockup stays ON throughout. Pins that the fix
+    /// did not simply delete the guard's effect in the normal path.
+    #[test]
+    fn deposit_is_released_when_lockup_stays_enabled() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_lockup_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_free_child_slots_per_family(
+                RuntimeOrigin::root(),
+                0
+            ));
+            assert_ok!(ComputeScoring::set_base_child_deposit(
+                RuntimeOrigin::root(),
+                250
+            ));
+            let _ = Balances::make_free_balance_be(&FAM, 10_000);
+
+            register_paid();
+            assert_eq!(Balances::reserved_balance(FAM), 250);
+
+            assert_ok!(ComputeScoring::deregister_child(
+                RuntimeOrigin::signed(FAM),
+                CHILD
+            ));
+            let reg = ChildRegistrations::<TestRuntime>::get(CHILD).unwrap();
+            System::set_block_number(reg.unbonding_end);
+            assert_ok!(ComputeScoring::claim_unbonded(
+                RuntimeOrigin::signed(FAM),
+                CHILD
+            ));
+            assert_eq!(Balances::reserved_balance(FAM), 0);
+        });
+    }
+
+    /// And a free-slot registration reserves nothing, so its claim must
+    /// release nothing — the `deposit != 0` guard still carries weight.
+    #[test]
+    fn free_slot_registration_reserves_and_releases_nothing() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_lockup_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::set_free_child_slots_per_family(
+                RuntimeOrigin::root(),
+                1
+            ));
+            let _ = Balances::make_free_balance_be(&FAM, 10_000);
+
+            register_paid();
+            assert_eq!(Balances::reserved_balance(FAM), 0);
+            let reg = ChildRegistrations::<TestRuntime>::get(CHILD).unwrap();
+            assert_eq!(reg.deposit, 0);
+
+            assert_ok!(ComputeScoring::deregister_child(
+                RuntimeOrigin::signed(FAM),
+                CHILD
+            ));
+            let reg = ChildRegistrations::<TestRuntime>::get(CHILD).unwrap();
+            System::set_block_number(reg.unbonding_end);
+            assert_ok!(ComputeScoring::claim_unbonded(
+                RuntimeOrigin::signed(FAM),
+                CHILD
+            ));
+            assert_eq!(Balances::reserved_balance(FAM), 0);
+            assert_eq!(Balances::free_balance(FAM), 10_000);
+        });
+    }
+}

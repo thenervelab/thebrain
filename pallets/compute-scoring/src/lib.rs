@@ -2487,7 +2487,17 @@ pub mod pallet {
                 Self::apply_lazy_global_halving()
             };
 
-            if lockup_enabled && !deposit.is_zero() {
+            // THE DEPOSIT INVARIANT, and it is load-bearing:
+            //
+            //     reg.deposit != 0  <=>  reg.deposit is reserved under
+            //                            DEPOSIT_RESERVE_ID for reg.family
+            //
+            // `deposit` is already zero whenever lockup is off (see the
+            // branch above), so the switch adds NOTHING here — and the
+            // release side must not consult it either. Both sides now
+            // read the same single fact, `deposit != 0`, which is what
+            // makes the invariant checkable by looking at two lines.
+            if !deposit.is_zero() {
                 T::DepositCurrency::reserve_named(&DEPOSIT_RESERVE_ID, &family, deposit)
                     .map_err(|_| Error::<T>::InsufficientDeposit)?;
             }
@@ -2617,8 +2627,27 @@ pub mod pallet {
                 Error::<T>::UnbondingNotReady
             );
 
+            // Release on the STORED fact (`reg.deposit`), never on the
+            // live `LockupEnabled` switch. This line used to read
+            //
+            //     if LockupEnabled::<T>::get() && !amount.is_zero()
+            //
+            // which silently stranded funds: an admin flipping
+            // `set_lockup_enabled(false)` — a documented, legitimate
+            // kill-switch — between a family's registration and its
+            // claim made this skip the unreserve while the code below
+            // still removed `ChildRegistrations` (the ONLY record of
+            // `(family, deposit)`) and emitted `ChildUnbonded { amount }`
+            // reporting a release that never happened. Since
+            // `unreserve_named(DEPOSIT_RESERVE_ID, ..)` here is the only
+            // release of that reserve anywhere in the pallet, and the
+            // record was gone, the user's balance was orphaned FOREVER —
+            // re-enabling the switch could not recover it.
+            //
+            // `claim_unstaked` had it right all along: reserve
+            // unconditionally, release unconditionally.
             let amount = reg.deposit;
-            if LockupEnabled::<T>::get() && !amount.is_zero() {
+            if !amount.is_zero() {
                 let unreleased =
                     T::DepositCurrency::unreserve_named(&DEPOSIT_RESERVE_ID, &reg.family, amount);
                 ensure!(unreleased.is_zero(), Error::<T>::PartialUnreserve);
