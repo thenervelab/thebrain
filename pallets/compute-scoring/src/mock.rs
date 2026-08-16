@@ -169,6 +169,11 @@ parameter_types! {
 }
 
 ord_parameter_types! {
+    /// Signed account satisfying `ComputeScoringAdminOrigin` in tests —
+    /// distinct from [`AUDIT_AUTHORITY`] so the two surfaces can never be
+    /// confused for one another.
+    pub const AdminAuthority: AccountId = ADMIN_AUTHORITY;
+
     /// The single account the production runtime pins as
     /// `ComputeScoringAuthorityMembers` — the vali that signs audit
     /// aggregates, live attestations, and (since the epoch-close
@@ -179,9 +184,18 @@ ord_parameter_types! {
 /// Signed account that satisfies `AuditAuthorityOrigin` in tests.
 pub const AUDIT_AUTHORITY: AccountId = 4242;
 
+/// Signed account that satisfies `ComputeScoringAdminOrigin` in tests.
+pub const ADMIN_AUTHORITY: AccountId = 4343;
+
 impl pallet_compute_scoring::Config for TestRuntime {
     type RuntimeEvent = RuntimeEvent;
-    type ComputeScoringAdminOrigin = frame_system::EnsureRoot<AccountId>;
+    // Mirrors production, which binds this to a SIGNED pinned account, not
+    // to root. Binding the mock to `EnsureRoot` alone makes "root-only" and
+    // "admin-only" indistinguishable, which silently vacuates any test
+    // asserting that a call is root-ONLY — proven by mutation: swapping
+    // `set_vali_submitter`'s `ensure_root` for this origin passed 135/135.
+    type ComputeScoringAdminOrigin =
+        EitherOfDiverse<EnsureRoot<AccountId>, EnsureSignedBy<AdminAuthority, AccountId>>;
     // Mirrors the production binding shape: the real runtime gates this
     // on a hardcoded authority account, NOT on root. Binding it to
     // `EnsureRoot` alone would make the two branches indistinguishable
