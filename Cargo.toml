@@ -22,6 +22,7 @@ members = [
     "node",
     "runtime/mainnet",
     "pallets/*",
+    "hippius-types",
     "precompiles/pallet-democracy",
     "precompiles/batch",
     "precompiles/call-permit",
@@ -374,6 +375,7 @@ pallet-subaccount  = { path = "pallets/subAccounts", default-features = false }
 #pallet-backup = { path = "pallets/backup", default-features = false }
 pallet-credits = { path = "pallets/credits", default-features = false }
 pallet-compute = { path = "pallets/compute", default-features = false }
+pallet-compute-scoring = { path = "pallets/compute-scoring", default-features = false }
 pallet-container-registry = { path = "pallets/containerRegistry", default-features = false }
 lite-json = { version = "0.2.0", default-features = false }
 

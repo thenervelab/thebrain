@@ -202,6 +202,98 @@ impl frame_support::traits::Get<u128> for AlphaTokenPriceUsd {
 }
 
 // Implement Arion pallet configuration
+// ── compute-scoring (§13 status / §23 reward-weights / §I registration) ──
+// The pallet's source of truth is `hippius-compute/pallets/compute-scoring`;
+// this tree vendors it. The runtime name MUST stay exactly `ComputeScoring`:
+// `hippius-compute/binaries/ticket-validator` reads storage by
+// twox_128("ComputeScoring"), so renaming it silently breaks every reader.
+pub struct ComputeScoringAuthorityMembers;
+impl frame_support::traits::SortedMembers<AccountId> for ComputeScoringAuthorityMembers {
+	fn sorted_members() -> Vec<AccountId> {
+		let account =
+			AccountId32::from_ss58check("5CP9wzk9G3kMdJmNyAsWGWVWDQE7Goe1dUvKtMv51EoXs563")
+				.expect("Invalid SS58 address");
+		vec![account]
+	}
+}
+
+parameter_types! {
+	/// Domain separator for signatures scoped to this pallet instance.
+	pub const ComputePalletInstance: [u8; 32] = hex_literal::hex!(
+		"01d4edff0d4d62f0735960662a177fd5f804c9611b413ee1abac8ecad732fb41"
+	);
+	/// Genesis hash of the chain this runtime serves — NOT `block_hash(0)`,
+	/// which prunes after `BlockHashCount`.
+	///
+	/// Read from the running chain:
+	///   curl -s -X POST https://rpc.hippius.network \
+	///     -H 'Content-Type: application/json' \
+	///     -d '{"jsonrpc":"2.0","id":1,"method":"chain_getBlockHash","params":[0]}'
+	///   -> 0x28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9
+	///      system_chain = "Hippius Mainnet", specVersion = 92003
+	///
+	/// Matches `LocalDefaultGenesisHash` further down this file, which
+	/// `pallet-execution-unit` already pins to the same chain.
+	///
+	/// ⚠️ THIS CRATE IS DEPLOYED TO TWO CHAINS. It builds both
+	/// `chainspecs/mainnet/hippius-mainnet.json` ("Hippius Mainnet") and the
+	/// "Hippius Testnet" spec in `node/src/chainspec/mainnet.rs`. Both report
+	/// specVersion 92003, so a specVersion match does NOT tell them apart —
+	/// only the genesis hash does. A compile-time constant can therefore only
+	/// ever be right for one of them; on testnet every `submit_audit_stats` /
+	/// `submit_live_attestation` will fail the genesis check with this value.
+	///
+	/// TODO: move this out of `parameter_types!` into a storage value set by an
+	/// admin extrinsic at post-upgrade init, so one runtime can serve both
+	/// chains. Until then, this constant tracks MAINNET.
+	pub const ComputeChainGenesis: [u8; 32] = hex_literal::hex!(
+		"28a6b54823f786c5dd8520ef7bdb0ee2639173815bfbb7719bcf58ef9eb5e1f9"
+	);
+}
+
+impl pallet_compute_scoring::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type ComputeScoringAdminOrigin =
+		frame_system::EnsureSignedBy<ComputeScoringAuthorityMembers, AccountId>;
+	type AuditAuthorityOrigin =
+		frame_system::EnsureSignedBy<ComputeScoringAuthorityMembers, AccountId>;
+	type DepositCurrency = Balances;
+	type FamilyRegistry = pallet_registration::Pallet<Runtime>;
+	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
+	type Registration = pallet_registration::Pallet<Runtime>;
+	type RankingsSink = ();
+
+	type MaxFamilies = ConstU32<600>;
+	type MaxChildrenTotal = ConstU32<1000>;
+	type MaxChildrenPerFamily = ConstU32<35>;
+	type BaseChildDeposit = BaseChildDeposit;
+	type GlobalDepositHalvingPeriodBlocks = GlobalDepositHalvingPeriodBlocks;
+	type UnregisterCooldownBlocks = UnregisterCooldownBlocks;
+	type UnbondingPeriodBlocks = UnbondingPeriodBlocks;
+	type WeightInfo = pallet_compute_scoring::weights::SubstrateWeight<Runtime>;
+
+	type MaxAggregateBody = ConstU32<8192>;
+	type MaxValidatorIdLen = ConstU32<64>;
+	type MaxFamilyIdLen = ConstU32<64>;
+	type MaxAuditVmKeyIdLen = ConstU32<64>;
+	type ComputePalletInstance = ComputePalletInstance;
+	type ComputeChainGenesis = ComputeChainGenesis;
+	type NowUnix = Timestamp;
+
+	type MaxMinerStatusUpdatesPerCall = ConstU32<128>;
+	/// R27 history-sweep drain rate, in storage keys per epoch close.
+	/// Must stay ABOVE the accrual rate — `MaxMinerStatusUpdatesPerCall`
+	/// (128) plus one `LiveAttestationCount` key per VM attesting that
+	/// epoch — or the retained window grows past `EpochHistoryRetention`.
+	/// 2048 covers the current fleet with headroom; watch
+	/// `EpochHistoryPruneBacklog` and raise it if that event appears.
+	type MaxEpochPruneKeysPerCall = ConstU32<2048>;
+
+	type MaxLiveAttestationBody = ConstU32<1024>;
+	type MaxVmIdLen = ConstU32<64>;
+	type MaxKbsAttestationPubkeys = ConstU32<8>;
+}
+
 impl pallet_arion::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type ArionAdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
@@ -369,7 +461,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92003,
+	spec_version: 92004,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
@@ -2028,6 +2120,7 @@ construct_runtime!(
 		// IpfsPallet: ipfs_pallet = 75,
 		Arion: pallet_arion = 76,
 		PalletCalendar: pallet_calendar = 78,
+		ComputeScoring: pallet_compute_scoring = 79,
 		Hippocampus: pallet_hippocampus = 80,
 	}
 );
@@ -2646,6 +2739,7 @@ mod benches {
 		[pallet_balances, Balances]
 		[pallet_timestamp, Timestamp]
 		[pallet_alpha_bridge, AlphaBridge]
+		[pallet_compute_scoring, ComputeScoring]
 	);
 }
 

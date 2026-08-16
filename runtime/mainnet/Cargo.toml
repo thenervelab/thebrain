@@ -100,6 +100,7 @@ pallet-hippocampus = { workspace = true }
 pallet-utils = { workspace = true }
 pallet-registration = { workspace = true }
 pallet-arion = { workspace = true }
+pallet-compute-scoring = { workspace = true }
 pallet-execution-unit = { workspace = true }
 pallet-metagraph = { workspace = true }
 pallet-bittensor = { workspace = true }
@@ -192,6 +193,7 @@ runtime-benchmarks = [
     "pallet-assets/runtime-benchmarks",
     "pallet-vesting/runtime-benchmarks",
     "pallet-staking/runtime-benchmarks",
+    "pallet-compute-scoring/runtime-benchmarks",
     "pallet-collective/runtime-benchmarks",
     "pallet-timestamp/runtime-benchmarks",
     "pallet-tx-pause/runtime-benchmarks",
@@ -297,6 +299,7 @@ std = [
     "pallet-notifications/std",
     "pallet-account-profile/std",
     "pallet-utils/std",
+    "pallet-compute-scoring/std",
     "pallet-rankings/std",
     #"pallet-backup/std",
     "pallet-credits/std",

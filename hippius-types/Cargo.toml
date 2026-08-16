@@ -1,0 +1,41 @@
+[package]
+name = "hippius-types"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "Canonical, cross-impl shared types for the Hippius Confidential Compute control plane (ARCHITECTURE.md §6/§20/§22). L1 mints, KBS verifies, the guest re-derives — all from this one crate."
+
+[dependencies]
+ciborium = { version = "0.2", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_bytes = { version = "0.11", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+subtle = { version = "2.6", default-features = false }
+# `thiserror` 2.x ships a no_std implementation by default; the `std`
+# feature only adds `std::error::Error` impl on the generated error
+# enum (which we don't need under no_std).
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+# The heartbeat KAT (`tests/heartbeat_kat.rs`) mints a REAL signed
+# `SignedMinerHeartbeat` under a fixed test Ed25519 key — Ed25519 is
+# deterministic, so a fixed key + fixed body yields a byte-exact
+# signed envelope. `hippius-types` itself stays crypto-free; the
+# signer lives in the test only. `from_bytes` ⇒ no `rand_core`.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
+hex = "0.4"
+
+[features]
+default = ["std"]
+# Enables `std::error::Error` impl + the upstream `std` features on
+# every transitive dep (notably `ciborium`'s std::io adapters and
+# `sha2`'s std-only fast paths). Substrate runtime consumers (e.g.
+# `pallet-compute-scoring`) build with `default-features = false`.
+std = [
+    "ciborium/std",
+    "serde/std",
+    "serde_bytes/std",
+    "sha2/std",
+    "subtle/std",
+    "thiserror/std",
+]
