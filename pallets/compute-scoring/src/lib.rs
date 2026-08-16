@@ -2455,9 +2455,7 @@ pub mod pallet {
             // have after this registration. Inert while the switch is
             // off (default), so the live vali path is unchanged.
             let usd_per_child = StakeUsdPerChild::<T>::get();
-            let value_at_risk = usd_per_child
-                .checked_mul((fam_count as u128).saturating_add(1))
-                .unwrap_or(u128::MAX);
+            let value_at_risk = usd_per_child.saturating_mul((fam_count as u128).saturating_add(1));
             ensure!(
                 Self::is_stake_sufficient(&family, Self::required_alpha(value_at_risk)),
                 Error::<T>::InsufficientStakeForRegistration
@@ -3219,7 +3217,7 @@ pub mod pallet {
             let ema = AlphaPerUsdEma::<T>::get();
             if ema != 0 {
                 let band = MaxOracleDeviationPermille::<T>::get() as u128;
-                let delta = if spot >= ema { spot - ema } else { ema - spot };
+                let delta = spot.abs_diff(ema);
                 // delta/ema <= band/1000, computed divide-first to
                 // stay overflow-free (R7 discipline).
                 let allowed =

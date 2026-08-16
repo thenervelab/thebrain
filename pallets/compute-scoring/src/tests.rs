@@ -3295,7 +3295,7 @@ mod review_b2 {
 
 mod review_b3 {
     use super::*;
-    use crate::pallet::{AlphaPerUsdEma, EmaDownPermille, MinerPrice, NodeIdToChild};
+    use crate::pallet::{AlphaPerUsdEma, MinerPrice, NodeIdToChild};
 
     /// R6: a small gap must still converge. With down = 300‰ a gap of
     /// 3 computed a ZERO step (3×300/1000 truncates), so the EMA
