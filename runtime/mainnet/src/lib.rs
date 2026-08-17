@@ -150,14 +150,16 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	fn available() -> Balance {
 		// Compartmentalization: the alpha backing still owed to the ranking /
 		// marketplace pots — and chargeback refunds still owed back to the
-		// sudo account — and the emission compartment reserved for ranking-based
-		// `pay_storage_miners` — is not spendable by the miner settlement: a runaway
+		// sudo account — and the emission compartments reserved for ranking-based
+		// `pay_storage_miners` and weight-based `pay_compute_miners` — is not
+		// spendable by the miner settlement: a runaway
 		// miner due (bad stats, bad price, compromised authority key) can at
 		// worst drain the miner budget, never funds owed to someone else.
 		pallet_hippocampus::Pallet::<Runtime>::available_for_payout()
 			.saturating_sub(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get())
 			.saturating_sub(pallet_marketplace::PendingSudoRefunds::<Runtime>::get())
 			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::emission_available())
+			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::compute_emission_available())
 	}
 }
 
@@ -189,6 +191,59 @@ impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingS
 				}
 			})
 			.collect()
+	}
+}
+
+/// Adapter: `pay_compute_miners` reads the compute-scoring pallet's §23
+/// reward weights for the most recently closed epoch and pays each node's
+/// **family** account (the operator that put up the child deposit).
+///
+/// `CurrentEpoch` holds the epoch id of the last `vali_submit_epoch_close`
+/// (the close writes `EpochWeights[epoch][*]` and then sets `CurrentEpoch =
+/// epoch`), so it *is* the last closed epoch — not `epoch - 1`. Before the
+/// first close it is `0` and the weight map is empty, which the bank rejects
+/// with `NoEligibleComputeMiners`.
+///
+/// No status filter is applied on top of the weights: the validator already
+/// encodes its verdict in the weight itself (a Quarantined node is reported
+/// as `Some(0)`), and a node the validator did not report at all has no
+/// `EpochWeights` entry. Nodes whose child registration has since gone
+/// `Unbonding`, or whose `node_id` no longer maps to a child, are dropped —
+/// they are no longer operating.
+///
+/// Weights of every child belonging to the same family are summed so a family
+/// receives one transfer and consumes one `MaxComputeMinersPerPayout` slot,
+/// however many nodes it runs.
+pub struct ComputeMinerWeightsSource;
+impl pallet_hippocampus::ComputeMinerWeights<AccountId> for ComputeMinerWeightsSource {
+	fn active_compute_miners() -> Vec<(AccountId, u128)> {
+		use sp_std::collections::btree_map::BTreeMap;
+
+		let epoch = pallet_compute_scoring::CurrentEpoch::<Runtime>::get();
+
+		let mut by_family: BTreeMap<AccountId, u128> = BTreeMap::new();
+		for entry in pallet_compute_scoring::Pallet::<Runtime>::epoch_weights_for(epoch) {
+			if entry.weight == 0 {
+				continue;
+			}
+			let Some(child) = pallet_compute_scoring::NodeIdToChild::<Runtime>::get(entry.node_id)
+			else {
+				continue;
+			};
+			let Some(reg) = pallet_compute_scoring::ChildRegistrations::<Runtime>::get(&child)
+			else {
+				continue;
+			};
+			if reg.status != pallet_compute_scoring::ChildStatus::Active {
+				continue;
+			}
+			by_family
+				.entry(reg.family)
+				.and_modify(|w| *w = w.saturating_add(entry.weight))
+				.or_insert(entry.weight);
+		}
+
+		by_family.into_iter().collect()
 	}
 }
 
@@ -368,6 +423,9 @@ parameter_types! {
 	/// Miner payment settlement interval (~24h at 6s/block). `0` = disabled.
 	pub const ArionSettlementInterval: BlockNumber = 14_400;
 	pub const BlocksPer24Hours: BlockNumber = 14_400; // ~24 hours at 6-second blocks
+	/// Total emission the bank may release to miners per 24 hours, across
+	/// `pay_storage_miners` AND `pay_compute_miners` together — one shared
+	/// counter, not one each.
 	pub const Max24HourMinerPayout: Balance = 3_500_000_000_000_000_000_000; // 3500 alpha (18 decimals)
 }
 
@@ -380,6 +438,10 @@ impl pallet_hippocampus::Config for Runtime {
 	type MaxMinersPerPayout = ConstU32<512>;
 	type BlocksPer24Hours = BlocksPer24Hours;
 	type Max24HourMinerPayout = Max24HourMinerPayout;
+	type ComputeMinerWeights = ComputeMinerWeightsSource;
+	// Payees are families, not nodes: `pallet_compute_scoring::MaxFamilies`
+	// (600) bounds the list regardless of how many children each one runs.
+	type MaxComputeMinersPerPayout = ConstU32<640>;
 	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
 }
 #[cfg(feature = "std")]
@@ -468,7 +530,10 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92005,
+	// 92006: `hippocampus.pay_compute_miners` (call index 8 → 9) plus the
+	// `DepositType::ComputeEmission` compartment and its `ComputeEmissionPaidOut`
+	// ledger.
+	spec_version: 92006,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`

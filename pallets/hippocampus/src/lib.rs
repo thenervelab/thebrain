@@ -14,6 +14,13 @@
 //!   `DistributionDisabled` while the global switch is off.
 //! - `pay_storage_miners(amount)`: admin-gated; distributes `amount` from the
 //!   emission compartment to ranked storage miners pro-rata by ranking weight.
+//! - `pay_compute_miners(amount)`: admin-gated; distributes `amount` from the
+//!   *compute* emission compartment to compute miners pro-rata by their
+//!   epoch reward weight. Its compartment (`DepositType::ComputeEmission`)
+//!   and its ledger (`ComputeEmissionPaidOut`) are separate from the storage
+//!   ones — neither payout can spend the other's funds — but the two share a
+//!   single 24-hour rate limit (`Max24HourMinerPayout`), so total emission
+//!   leaving the bank per day is capped once across both.
 //! - `add_requester` / `remove_requester`: admin-gated whitelist management.
 //! - `set_distribution_enabled`: admin-gated global switch. While off, every
 //!   `request_payment` is rejected and no funds leave the bank; deposits are
@@ -56,6 +63,26 @@ pub mod pallet {
 		fn active_storage_miners() -> Vec<(AccountId, u16)>;
 	}
 
+	/// Compute miners the bank distributes the compute emission compartment to.
+	///
+	/// Implemented by the runtime against the compute-scoring pallet's
+	/// per-epoch reward weights so the bank stays decoupled from where those
+	/// weights come from.
+	pub trait ComputeMinerWeights<AccountId> {
+		/// Payout account and reward weight of every compute miner eligible
+		/// for the current payout window. Zero-weight entries receive nothing.
+		///
+		/// Weights are `u128` (the compute-scoring `EpochWeights` width, not
+		/// the `u16` the storage ranking uses).
+		///
+		/// **Caller contract**: each payout account MUST appear at most once —
+		/// the implementation is responsible for aggregating the weights of
+		/// every node belonging to the same payee. A repeated account is not
+		/// unsound (it just receives several transfers), but it burns one of
+		/// the `MaxComputeMinersPerPayout` slots per node instead of per payee.
+		fn active_compute_miners() -> Vec<(AccountId, u128)>;
+	}
+
 	/// Version 1 is "activated": requesters whitelisted and pre-upgrade backing
 	/// seeded by `ActivateMinerPaymentBank`. That migration seeds real funds
 	/// from sudo, so it keys its one-shot guard on this rather than on
@@ -93,9 +120,18 @@ pub mod pallet {
 		#[pallet::constant]
 		type BlocksPer24Hours: Get<BlockNumberFor<Self>>;
 
-		/// Maximum emission to distribute to miners per 24-hour period (in planck).
+		/// Maximum emission to distribute to miners per 24-hour period (in
+		/// planck). A single budget shared by `pay_storage_miners` and
+		/// `pay_compute_miners`: what one spends the other cannot.
 		#[pallet::constant]
 		type Max24HourMinerPayout: Get<BalanceOf<Self>>;
+
+		/// Weighted compute miners paid by `pay_compute_miners`.
+		type ComputeMinerWeights: ComputeMinerWeights<Self::AccountId>;
+
+		/// Most compute miners a single `pay_compute_miners` call will pay.
+		#[pallet::constant]
+		type MaxComputeMinersPerPayout: Get<u32>;
 
 		type WeightInfo: WeightInfo;
 	}
@@ -114,6 +150,13 @@ pub mod pallet {
 		Fees,
 		/// Anything else.
 		Other,
+		/// Protocol emissions earmarked for compute miners. A separate
+		/// compartment from [`DepositType::Emission`] (which backs
+		/// `pay_storage_miners`): each is spendable only by its own payout.
+		///
+		/// Appended last on purpose — `DepositType` is a storage key, and the
+		/// existing variants must keep their SCALE discriminants.
+		ComputeEmission,
 	}
 
 	/// Global payout switch (defaults to enabled). While `false`,
@@ -149,14 +192,22 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type EmissionPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
-	/// Amount distributed to storage miners in the current 24-hour period.
-	/// Resets every 24 hours. Max: 2952 alpha (emission per 24h).
+	/// Amount distributed to miners in the current 24-hour period — storage and
+	/// compute payouts draw on this **one** counter, bounded by
+	/// `Max24HourMinerPayout`. Resets every 24 hours.
 	#[pallet::storage]
 	pub type MinerPayoutPeriodAmount<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
 	/// Block number when the current 24-hour payout period started.
 	#[pallet::storage]
 	pub type MinerPayoutPeriodStart<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+	/// Lifetime total distributed to compute miners out of the compute
+	/// emission compartment. `TotalDeposited[ComputeEmission] -
+	/// ComputeEmissionPaidOut` is the compartment balance still reserved for
+	/// `pay_compute_miners`.
+	#[pallet::storage]
+	pub type ComputeEmissionPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
 	/// Lifetime total released per requester (e.g. arion vs compute escrow).
 	#[pallet::storage]
@@ -242,6 +293,17 @@ pub mod pallet {
 		MinerPaymentCallerAdded { who: T::AccountId },
 		/// An account was removed from the miner payment whitelist.
 		MinerPaymentCallerRemoved { who: T::AccountId },
+		/// `pay_compute_miners` distributed compute emission pro-rata by epoch
+		/// reward weight. `paid < requested` when shares rounded to zero or a
+		/// transfer was skipped; the difference stays in the compartment.
+		ComputeMinersPaid {
+			requested: BalanceOf<T>,
+			paid: BalanceOf<T>,
+			miners_paid: u32,
+			miners_skipped: u32,
+		},
+		/// Individual compute miner payment detail for indexing.
+		ComputeMinerPaymentPaid { miner: T::AccountId, amount: BalanceOf<T> },
 	}
 
 	#[pallet::error]
@@ -266,8 +328,16 @@ pub mod pallet {
 		NoEligibleMiners,
 		/// Caller is not whitelisted to call `pay_storage_miners`.
 		PaymentCallerNotWhitelisted,
-		/// 24-hour miner payout limit would be exceeded.
+		/// The shared 24-hour miner payout limit would be exceeded. Raised by
+		/// both `pay_storage_miners` and `pay_compute_miners`.
 		ExceedsDaily24HourMinerPayoutLimit,
+		/// `pay_compute_miners` asked for more than the compute emission
+		/// compartment holds.
+		InsufficientComputeEmissionFunds,
+		/// The weighted compute-miner list exceeds `MaxComputeMinersPerPayout`.
+		TooManyComputeMiners,
+		/// No compute miner carries a non-zero weight this window.
+		NoEligibleComputeMiners,
 	}
 
 	#[pallet::call]
@@ -469,6 +539,116 @@ pub mod pallet {
 			});
 			Ok(())
 		}
+
+		/// Distribute `amount` from the bank's **compute** emission compartment
+		/// to compute miners, pro-rata to their epoch reward weight.
+		///
+		/// Callable only by whitelisted miner-payment callers — the same
+		/// whitelist that gates `pay_storage_miners`, since both are driven by
+		/// the same admin-run payout key. The runtime's `ComputeMinerWeights`
+		/// implementation decides which nodes are eligible and which account
+		/// each node pays out to. Floor-division dust and skipped shares stay
+		/// in the compartment.
+		///
+		/// Shares the 24-hour `Max24HourMinerPayout` budget with
+		/// `pay_storage_miners` — the two compartments are separate pots, but
+		/// the daily drain rate is capped once across both.
+		#[pallet::call_index(9)]
+		#[pallet::weight(<T as Config>::WeightInfo::pay_compute_miners(T::MaxComputeMinersPerPayout::get()))]
+		pub fn pay_compute_miners(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			ensure!(
+				MinerPaymentWhitelist::<T>::contains_key(&who),
+				Error::<T>::PaymentCallerNotWhitelisted
+			);
+			ensure!(DistributionEnabled::<T>::get(), Error::<T>::DistributionDisabled);
+			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
+
+			// 24-hour rate limit — the SAME counter `pay_storage_miners` uses.
+			// `Max24HourMinerPayout` bounds total emission leaving the bank per
+			// day across both payouts, so what storage spends compute cannot,
+			// and vice versa. (The compartments below stay separate: a shared
+			// rate limit governs the pace, not the entitlement.)
+			let current_block = <frame_system::Pallet<T>>::block_number();
+			let period_start = MinerPayoutPeriodStart::<T>::get();
+			let blocks_per_24h = T::BlocksPer24Hours::get();
+			if current_block.saturating_sub(period_start) >= blocks_per_24h {
+				MinerPayoutPeriodStart::<T>::put(current_block);
+				MinerPayoutPeriodAmount::<T>::put(BalanceOf::<T>::zero());
+			}
+
+			let current_period_amount = MinerPayoutPeriodAmount::<T>::get();
+			let max_per_24h = T::Max24HourMinerPayout::get();
+			let new_period_amount = current_period_amount.saturating_add(amount);
+			ensure!(
+				new_period_amount <= max_per_24h,
+				Error::<T>::ExceedsDaily24HourMinerPayoutLimit
+			);
+
+			// Compartment wall: only funds deposited as `ComputeEmission` pay
+			// compute miners — never storage emission, marketplace backing,
+			// fees, or grants.
+			ensure!(
+				amount <= Self::compute_emission_available(),
+				Error::<T>::InsufficientComputeEmissionFunds
+			);
+			// The compartment ledger can exceed what is physically free (another
+			// consumer overdrew, or the ED cushion); never overdraw the account.
+			ensure!(amount <= Self::available_for_payout(), Error::<T>::InsufficientBankBalance);
+
+			let miners = T::ComputeMinerWeights::active_compute_miners();
+			ensure!(
+				u32::try_from(miners.len()).unwrap_or(u32::MAX)
+					<= T::MaxComputeMinersPerPayout::get(),
+				Error::<T>::TooManyComputeMiners
+			);
+			// Saturating: a saturated total is still >= every individual weight,
+			// so `weight_share`'s `weight <= total_weight` contract holds and
+			// the only consequence is shares rounding down.
+			let total_weight: u128 =
+				miners.iter().fold(0u128, |acc, (_, w)| acc.saturating_add(*w));
+			ensure!(total_weight > 0, Error::<T>::NoEligibleComputeMiners);
+
+			let bank = Self::account_id();
+			let pool = payment_math::Tokens::new(amount.saturated_into());
+			let mut paid: BalanceOf<T> = Zero::zero();
+			let mut miners_paid: u32 = 0;
+			let mut miners_skipped: u32 = 0;
+
+			for (owner, weight) in miners {
+				let share: BalanceOf<T> =
+					payment_math::weight_share(pool, weight, total_weight).get().saturated_into();
+				// Zero shares (weight rounds below one planck) and failed
+				// transfers (e.g. a reaped owner account below its ED) are
+				// skipped, not fatal: their share stays in the compartment.
+				if share.is_zero() {
+					miners_skipped = miners_skipped.saturating_add(1);
+					continue;
+				}
+				match T::Currency::transfer(&bank, &owner, share, ExistenceRequirement::KeepAlive) {
+					Ok(()) => {
+						paid = paid.saturating_add(share);
+						miners_paid = miners_paid.saturating_add(1);
+						Self::deposit_event(Event::ComputeMinerPaymentPaid {
+							miner: owner.clone(),
+							amount: share,
+						});
+					},
+					Err(_) => miners_skipped = miners_skipped.saturating_add(1),
+				}
+			}
+
+			ComputeEmissionPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
+			TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
+			MinerPayoutPeriodAmount::<T>::mutate(|t| *t = t.saturating_add(paid));
+			Self::deposit_event(Event::ComputeMinersPaid {
+				requested: amount,
+				paid,
+				miners_paid,
+				miners_skipped,
+			});
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -509,6 +689,17 @@ pub mod pallet {
 		pub fn emission_available() -> BalanceOf<T> {
 			TotalDeposited::<T>::get(DepositType::Emission)
 				.saturating_sub(EmissionPaidOut::<T>::get())
+		}
+
+		/// Compute emission deposited but not yet distributed to compute
+		/// miners.
+		///
+		/// Like [`Self::emission_available`], other bank consumers must
+		/// subtract this from their spendable headroom — the compartment is
+		/// reserved for `pay_compute_miners`.
+		pub fn compute_emission_available() -> BalanceOf<T> {
+			TotalDeposited::<T>::get(DepositType::ComputeEmission)
+				.saturating_sub(ComputeEmissionPaidOut::<T>::get())
 		}
 
 		/// Transfer `amount` from `who` into the bank and record it. Shared by
