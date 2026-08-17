@@ -92,6 +92,18 @@ pub struct Unpaused {
 	pub unpaused_by: ink::primitives::AccountId,
 }
 
+/// Emitted when an account is granted the pauser role
+#[ink::event]
+pub struct PauserAdded {
+	pub account: ink::primitives::AccountId,
+}
+
+/// Emitted when an account loses the pauser role
+#[ink::event]
+pub struct PauserRemoved {
+	pub account: ink::primitives::AccountId,
+}
+
 /// Emitted when owner is updated
 #[ink::event]
 pub struct OwnerUpdated {
