@@ -91,6 +91,19 @@ pub mod pallet {
 		/// implementation without an equivalent per-entry bound must impose
 		/// one itself.
 		fn active_compute_miners() -> Vec<(AccountId, u128)>;
+
+		/// Identifier of the settlement period the weights above belong to,
+		/// used by the bank as an idempotency key.
+		///
+		/// Unlike the storage ranking — a rolling "current standing" that can
+		/// legitimately be paid any number of times — compute weights are a
+		/// *per-epoch entitlement*: `EpochWeights[epoch]` is written once and
+		/// never changes, so paying the same epoch twice pays the same work
+		/// twice. The bank refuses to settle an epoch it has already settled.
+		///
+		/// Return `None` if the source has no settlement period, which opts out
+		/// of the replay check entirely.
+		fn current_weight_epoch() -> Option<u64>;
 	}
 
 	/// Version 1 is "activated": requesters whitelisted and pre-upgrade backing
@@ -218,6 +231,15 @@ pub mod pallet {
 	/// `pay_compute_miners`.
 	#[pallet::storage]
 	pub type ComputeEmissionPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+	/// Last compute epoch settled by `pay_compute_miners`, the idempotency key
+	/// that stops one epoch's weights being paid twice.
+	///
+	/// `OptionQuery`: `None` means nothing has ever been settled, which is
+	/// distinct from having settled epoch `0`. With `ValueQuery` those two
+	/// states collide and a genuine epoch-0 payout could be replayed.
+	#[pallet::storage]
+	pub type LastPaidComputeEpoch<T: Config> = StorageValue<_, u64, OptionQuery>;
 
 	/// Lifetime total released per requester (e.g. arion vs compute escrow).
 	#[pallet::storage]
@@ -348,6 +370,9 @@ pub mod pallet {
 		TooManyComputeMiners,
 		/// No compute miner carries a non-zero weight this window.
 		NoEligibleComputeMiners,
+		/// This compute epoch has already been settled. Re-paying it would
+		/// pay the same epoch's work twice; wait for the next epoch close.
+		ComputeEpochAlreadyPaid,
 	}
 
 	#[pallet::call]
@@ -606,6 +631,18 @@ pub mod pallet {
 			// consumer overdrew, or the ED cushion); never overdraw the account.
 			ensure!(amount <= Self::available_for_payout(), Error::<T>::InsufficientBankBalance);
 
+			// Replay guard. `EpochWeights[epoch]` is written once by the epoch
+			// close and never mutates, so re-running this call against the same
+			// epoch pays the same work a second time — a retried transaction
+			// (submitter didn't see the receipt) silently double-spends the
+			// compartment. Settle each epoch at most once, strictly forward.
+			let weight_epoch = T::ComputeMinerWeights::current_weight_epoch();
+			if let Some(epoch) = weight_epoch {
+				if let Some(last_paid) = LastPaidComputeEpoch::<T>::get() {
+					ensure!(epoch > last_paid, Error::<T>::ComputeEpochAlreadyPaid);
+				}
+			}
+
 			let miners = T::ComputeMinerWeights::active_compute_miners();
 			ensure!(
 				u32::try_from(miners.len()).unwrap_or(u32::MAX)
@@ -665,6 +702,18 @@ pub mod pallet {
 			ComputeEmissionPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
 			TotalPaidOut::<T>::mutate(|t| *t = t.saturating_add(paid));
 			MinerPayoutPeriodAmount::<T>::mutate(|t| *t = t.saturating_add(paid));
+			// Advance the cursor only once something actually moved. A call
+			// where every transfer was skipped (e.g. all owners sat below their
+			// ED) paid nobody, and burning the epoch here would strand it
+			// permanently — the operator could never retry after fixing the
+			// cause. A PARTIAL payout does consume the epoch, matching the
+			// existing rule that skipped shares and floor-division dust stay in
+			// the compartment rather than being re-paid.
+			if !paid.is_zero() {
+				if let Some(epoch) = weight_epoch {
+					LastPaidComputeEpoch::<T>::put(epoch);
+				}
+			}
 			Self::deposit_event(Event::ComputeMinersPaid {
 				requested: amount,
 				paid,

@@ -204,12 +204,28 @@ impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingS
 /// first close it is `0` and the weight map is empty, which the bank rejects
 /// with `NoEligibleComputeMiners`.
 ///
-/// No status filter is applied on top of the weights: the validator already
-/// encodes its verdict in the weight itself (a Quarantined node is reported
-/// as `Some(0)`), and a node the validator did not report at all has no
-/// `EpochWeights` entry. Nodes whose child registration has since gone
-/// `Unbonding`, or whose `node_id` no longer maps to a child, are dropped —
-/// they are no longer operating.
+/// TWO status fields are checked, because compute-scoring keeps two and they
+/// move independently:
+///
+/// * `ChildRegistrations[child].status` (`ChildStatus`) is the *registration*
+///   lifecycle — `Unbonding`, or a `node_id` that no longer maps to a child,
+///   means the operator is gone.
+/// * `MinerStatuses[node_id]` (`MinerStatus`) is the *operational* verdict —
+///   `Quarantined` / `Decommissioned`.
+///
+/// Filtering on the registration alone is not enough. `request_unstake`
+/// quarantines every child of an exiting family via `transition_node_status`
+/// but leaves `ChildStatus::Active` untouched, so a family that pulled its
+/// entire collateral *after* an epoch closed would otherwise still collect its
+/// full pro-rata share of that epoch's stale weights with nothing at risk —
+/// the opposite of compute-scoring's "a stranded reward is not a stranded
+/// fund" intent. The weight alone cannot be relied on to encode the verdict:
+/// `vali_submit_epoch_close` always writes the submitted weight and transitions
+/// status separately, so a batch entry may carry `Quarantined` *and* a non-zero
+/// weight.
+///
+/// `MinerStatuses` is `OptionQuery` and a node recovering to `Active` has its
+/// row REMOVED, so an absent row means Active and must NOT be filtered out.
 ///
 /// Weights of every child belonging to the same family are summed so a family
 /// receives one transfer and consumes one `MaxComputeMinersPerPayout` slot,
@@ -237,6 +253,13 @@ impl pallet_hippocampus::ComputeMinerWeights<AccountId> for ComputeMinerWeightsS
 			if reg.status != pallet_compute_scoring::ChildStatus::Active {
 				continue;
 			}
+			// Absent row == Active (see above); only an explicit non-Active
+			// operational status is disqualifying.
+			if let Some(op) = pallet_compute_scoring::MinerStatuses::<Runtime>::get(entry.node_id) {
+				if op.status != pallet_compute_scoring::MinerStatus::Active {
+					continue;
+				}
+			}
 			by_family
 				.entry(reg.family)
 				.and_modify(|w| *w = w.saturating_add(entry.weight))
@@ -244,6 +267,12 @@ impl pallet_hippocampus::ComputeMinerWeights<AccountId> for ComputeMinerWeightsS
 		}
 
 		by_family.into_iter().collect()
+	}
+
+	fn current_weight_epoch() -> Option<u64> {
+		// Same value `active_compute_miners` reads its weights from, so the
+		// bank's replay guard keys on exactly the epoch it is settling.
+		Some(pallet_compute_scoring::CurrentEpoch::<Runtime>::get())
 	}
 }
 
@@ -426,6 +455,19 @@ parameter_types! {
 	/// Total emission the bank may release to miners per 24 hours, across
 	/// `pay_storage_miners` AND `pay_compute_miners` together — one shared
 	/// counter, not one each.
+	///
+	/// 3500 is deliberately the COMBINED ceiling, not a per-payout allowance,
+	/// and is NOT to be scaled up because a second consumer was added. The two
+	/// payouts compete for one daily budget by design: whatever storage draws
+	/// is unavailable to compute for the rest of the period, and vice versa.
+	/// A day where storage draws heavily and compute then hits
+	/// `ExceedsDaily24HourMinerPayoutLimit` is the cap working as intended —
+	/// no funds are lost, the compute compartment is cumulative and the
+	/// remainder settles in a later period.
+	///
+	/// Do not "fix" that contention by raising this to cover both consumers
+	/// separately; sizing it against the sum of both emission schedules would
+	/// double the maximum daily drain this constant exists to bound.
 	pub const Max24HourMinerPayout: Balance = 3_500_000_000_000_000_000_000; // 3500 alpha (18 decimals)
 }
 
@@ -534,14 +576,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	// 92006: `hippocampus.pay_compute_miners` (call index 8 → 9) plus the
-	// `DepositType::ComputeEmission` compartment and its `ComputeEmissionPaidOut`
-	// ledger.
 	spec_version: 92006,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
-	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
-	// argument, so previously-encoded calls no longer decode.
 	transaction_version: 1,
 	state_version: 0,
 };

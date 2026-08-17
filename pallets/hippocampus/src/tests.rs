@@ -1,5 +1,5 @@
 use crate::{
-	mock::*, ComputeEmissionPaidOut, DepositType, EmissionPaidOut, Error, Event,
+	mock::*, ComputeEmissionPaidOut, DepositType, EmissionPaidOut, Error, Event, LastPaidComputeEpoch,
 	MinerPaymentWhitelist, TotalDeposited, TotalPaidByRequester, TotalPaidOut,
 };
 use frame_support::{assert_noop, assert_ok};
@@ -1284,5 +1284,90 @@ fn removed_miner_payment_caller_cannot_pay_compute_miners() {
 			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(caller), 100),
 			Error::<Test>::PaymentCallerNotWhitelisted
 		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_refuses_to_settle_an_epoch_twice() {
+	// The replay guard keys on the weight source's epoch. A source that reports
+	// one keeps its epoch settleable exactly once.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		set_compute_epoch(Some(4));
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500));
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), Some(4));
+
+		// Compartment still holds 500, so only the guard can reject this.
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500),
+			Error::<Test>::ComputeEpochAlreadyPaid
+		);
+		// An older epoch is refused too — settlement only moves forward.
+		set_compute_epoch(Some(3));
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500),
+			Error::<Test>::ComputeEpochAlreadyPaid
+		);
+
+		set_compute_epoch(Some(5));
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500));
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), Some(5));
+		assert_eq!(Balances::free_balance(charlie()), 1_000);
+	});
+}
+
+#[test]
+fn a_payout_that_paid_nobody_leaves_the_epoch_settleable() {
+	// Every transfer skipped => nothing moved => burning the epoch would strand
+	// it forever. The cursor must not advance until something is actually paid.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		// Weight so small its share floors to zero => skipped, nothing paid.
+		set_compute_miners(vec![(charlie(), 1), (dave(), u64::MAX as u128)]);
+		set_compute_epoch(Some(7));
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1));
+		assert_eq!(Balances::free_balance(charlie()), 0, "share floored to zero");
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), None, "nothing paid, epoch not consumed");
+
+		// The same epoch can still be settled once the amount is workable.
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 999));
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), Some(7));
+	});
+}
+
+#[test]
+fn a_source_without_an_epoch_is_not_replay_guarded() {
+	// `current_weight_epoch() == None` opts out entirely, preserving the
+	// storage-ranking style semantics for any such source.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		set_compute_epoch(None);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500));
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500));
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), None);
+		assert_eq!(Balances::free_balance(charlie()), 1_000);
 	});
 }

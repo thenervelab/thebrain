@@ -62,6 +62,110 @@ fn seed_compute_child(
 	pallet_compute_scoring::EpochWeights::<Runtime>::insert(epoch, node_id, weight);
 }
 
+/// Set the *operational* status of a seeded node — the `MinerStatuses` row
+/// that `request_unstake` and `vali_submit_epoch_close` transition, which is
+/// independent of the `ChildStatus` in the registration.
+fn set_operational_status(node_seed: u8, status: pallet_compute_scoring::MinerStatus) {
+	pallet_compute_scoring::MinerStatuses::<Runtime>::insert(
+		[node_seed; 32],
+		pallet_compute_scoring::MinerStatusEntry {
+			status,
+			last_transition_block: 0u32.into(),
+			last_transition_epoch: 0u64,
+		},
+	);
+}
+
+#[test]
+fn a_quarantined_node_is_not_paid_even_while_its_registration_is_active() {
+	// `request_unstake` quarantines every child of an exiting family but leaves
+	// `ChildStatus::Active` alone, so a family that pulled its whole collateral
+	// after the epoch closed would still hold a live registration against a
+	// stale weight. Paying it would hand out rewards with nothing at risk.
+	new_test_ext().execute_with(|| {
+		let (honest, exiting) = (account(2), account(3));
+		fund_bank_and_whitelist_admin(100_000);
+
+		seed_compute_child(10, &honest, &account(20), 7, 100, ChildStatus::Active);
+		seed_compute_child(11, &exiting, &account(21), 7, 100, ChildStatus::Active);
+		// Registration still Active — only the operational status moved.
+		set_operational_status(11, pallet_compute_scoring::MinerStatus::Quarantined);
+		close_epoch(7);
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(admin()), 100_000));
+
+		// Equal weights, so a missed filter would split 50/50 and pay 50_000.
+		assert_eq!(Balances::free_balance(&honest), 100_000);
+		assert_eq!(Balances::free_balance(&exiting), 0, "a quarantined node must not be paid");
+	});
+}
+
+#[test]
+fn a_decommissioned_node_is_not_paid() {
+	new_test_ext().execute_with(|| {
+		let (honest, retired) = (account(2), account(3));
+		fund_bank_and_whitelist_admin(100_000);
+
+		seed_compute_child(10, &honest, &account(20), 7, 100, ChildStatus::Active);
+		seed_compute_child(11, &retired, &account(21), 7, 100, ChildStatus::Active);
+		set_operational_status(11, pallet_compute_scoring::MinerStatus::Decommissioned);
+		close_epoch(7);
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(admin()), 100_000));
+
+		assert_eq!(Balances::free_balance(&honest), 100_000);
+		assert_eq!(Balances::free_balance(&retired), 0);
+	});
+}
+
+#[test]
+fn an_absent_status_row_counts_as_active_and_is_paid() {
+	// `MinerStatuses` is OptionQuery and recovery to Active REMOVES the row, so
+	// "no row" is the normal state for a healthy node. Filtering it out would
+	// pay nobody at all — the failure mode this pins is the over-strict fix.
+	new_test_ext().execute_with(|| {
+		let family = account(2);
+		fund_bank_and_whitelist_admin(100_000);
+
+		seed_compute_child(10, &family, &account(20), 7, 100, ChildStatus::Active);
+		assert!(pallet_compute_scoring::MinerStatuses::<Runtime>::get([10u8; 32]).is_none());
+		close_epoch(7);
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(admin()), 100_000));
+
+		assert_eq!(Balances::free_balance(&family), 100_000);
+	});
+}
+
+#[test]
+fn the_same_epoch_cannot_be_paid_twice() {
+	// A retried transaction (submitter never saw the receipt) must not pay one
+	// epoch's weights a second time out of the compartment.
+	new_test_ext().execute_with(|| {
+		let family = account(2);
+		fund_bank_and_whitelist_admin(100_000);
+
+		seed_compute_child(10, &family, &account(20), 7, 100, ChildStatus::Active);
+		close_epoch(7);
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(admin()), 50_000));
+		assert_eq!(Balances::free_balance(&family), 50_000);
+
+		// Funds and daily budget both remain — only the replay guard stops this.
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(admin()), 50_000),
+			pallet_hippocampus::Error::<Runtime>::ComputeEpochAlreadyPaid
+		);
+		assert_eq!(Balances::free_balance(&family), 50_000);
+
+		// The next close settles normally — the guard blocks replay, not progress.
+		seed_compute_child(10, &family, &account(20), 8, 100, ChildStatus::Active);
+		close_epoch(8);
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(admin()), 50_000));
+		assert_eq!(Balances::free_balance(&family), 100_000);
+	});
+}
+
 /// Register a storage-miner node and append it to the ranked list — needed
 /// only to prove the shared 24-hour budget spans both payouts.
 fn seed_ranked_storage_miner(node_seed: u8, owner: &AccountId, weight: u16, is_active: bool) {
@@ -278,8 +382,8 @@ fn the_two_emission_compartments_do_not_mix() {
 }
 
 #[test]
-fn the_3500_alpha_daily_cap_is_shared_with_storage_payouts() {
-	// The 3500 alpha/24h budget is a TOTAL across both payouts, not one each:
+fn the_daily_cap_is_shared_with_storage_payouts() {
+	// The daily budget is a TOTAL across both payouts, not one each:
 	// spending it on storage miners leaves nothing for compute miners in the
 	// same period, however full the compute compartment is.
 	new_test_ext().execute_with(|| {
