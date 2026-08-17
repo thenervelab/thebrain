@@ -332,16 +332,148 @@ fn the_3500_alpha_daily_cap_is_shared_with_storage_payouts() {
 }
 
 #[test]
-fn compute_payout_slot_bound_covers_every_family() {
-	// The payee is a family, so the bank's per-call bound only has to cover
-	// `MaxFamilies` — this pins that relationship so raising MaxFamilies
-	// without raising the bound fails loudly here rather than as a runtime
-	// `TooManyComputeMiners` in production.
-	let max_families: u32 = <Runtime as pallet_compute_scoring::Config>::MaxFamilies::get();
+fn compute_payout_slot_bound_covers_an_epoch_close_batch() {
+	// The binding constraint on the bank's per-call bound is
+	// `MaxMinerStatusUpdatesPerCall`, NOT `MaxFamilies`.
+	//
+	// `vali_submit_epoch_close` requires `epoch > CurrentEpoch` and then sets
+	// `CurrentEpoch = epoch`, so exactly one close call can ever write a given
+	// epoch's `EpochWeights`. The adapter reads that single epoch and folds it
+	// by family, so the payee count is capped by the size of one close batch —
+	// at most `MaxMinerStatusUpdatesPerCall` entries, hence at most that many
+	// distinct families, however many families are registered chain-wide.
+	//
+	// This pins the invariant stated at `MaxComputeMinersPerPayout` in the
+	// runtime: raising the batch size past the bound fails loudly here rather
+	// than as a `TooManyComputeMiners` that bricks every payout in production.
+	let max_batch: u32 =
+		<Runtime as pallet_compute_scoring::Config>::MaxMinerStatusUpdatesPerCall::get();
 	let max_payees: u32 =
 		<Runtime as pallet_hippocampus::Config>::MaxComputeMinersPerPayout::get();
 	assert!(
-		max_payees >= max_families,
-		"MaxComputeMinersPerPayout ({max_payees}) must cover MaxFamilies ({max_families})"
+		max_payees >= max_batch,
+		"MaxComputeMinersPerPayout ({max_payees}) must cover \
+		 MaxMinerStatusUpdatesPerCall ({max_batch})"
 	);
+
+	// `MaxFamilies` is a second, looser ceiling on distinct payees. It is not
+	// asserted as a requirement: it can only bind after the batch bound does,
+	// so requiring `max_payees >= MaxFamilies` would fail spuriously if
+	// MaxFamilies were raised. Recorded here so the ordering is deliberate.
+	let max_families: u32 = <Runtime as pallet_compute_scoring::Config>::MaxFamilies::get();
+	assert!(
+		max_batch <= max_families,
+		"a close batch ({max_batch}) cannot name more families than exist ({max_families})"
+	);
+}
+
+/// `account()` derives from a single `u8` and so yields only 256 distinct ids —
+/// not enough for a full-batch test that needs a family *and* a child per entry.
+/// Tag-plus-index keeps every account and node id distinct.
+fn indexed_account(tag: u8, i: u32) -> AccountId {
+	let mut raw = [0u8; 32];
+	raw[0] = tag;
+	raw[1..5].copy_from_slice(&i.to_le_bytes());
+	AccountId32::new(raw)
+}
+
+fn indexed_node_id(i: u32) -> [u8; 32] {
+	let mut raw = [0xAAu8; 32];
+	raw[1..5].copy_from_slice(&i.to_le_bytes());
+	raw
+}
+
+#[test]
+fn a_full_close_batch_of_families_is_actually_paid() {
+	// The behavioural counterpart to the two constant assertions below: seed a
+	// full `MaxMinerStatusUpdatesPerCall` batch of distinct families, every one
+	// carrying the maximum permitted weight, and run the real payout.
+	//
+	// This is what proves the bound holds in practice — it exercises the
+	// BoundedVec construction that would raise `TooManyComputeMiners`, and the
+	// widest denominator the runtime can actually produce.
+	new_test_ext().execute_with(|| {
+		let batch: u32 =
+			<Runtime as pallet_compute_scoring::Config>::MaxMinerStatusUpdatesPerCall::get();
+		let max_weight = pallet_compute_scoring::MaxEpochWeightPerNode::<Runtime>::get();
+
+		// Per-family share must clear the existential deposit, or the transfers
+		// would fail and be silently skipped — which would make this test pass
+		// while proving nothing.
+		let per_family = ED * 2;
+		let amount = per_family * u128::from(batch);
+		fund_bank_and_whitelist_admin(amount);
+
+		let families: Vec<AccountId> = (0..batch).map(|i| indexed_account(0x11, i)).collect();
+		for (i, family) in families.iter().enumerate() {
+			let i = i as u32;
+			let child = indexed_account(0x22, i);
+			let node_id = indexed_node_id(i);
+			pallet_compute_scoring::NodeIdToChild::<Runtime>::insert(node_id, child.clone());
+			pallet_compute_scoring::ChildRegistrations::<Runtime>::insert(
+				child,
+				ChildRegistration {
+					family: family.clone(),
+					node_id,
+					status: ChildStatus::Active,
+					deposit: 0u128,
+					unbonding_end: 0u64,
+				},
+			);
+			pallet_compute_scoring::EpochWeights::<Runtime>::insert(9, node_id, max_weight);
+		}
+		close_epoch(9);
+
+		// The adapter must surface every family — if it collapsed or dropped
+		// entries the payout assertions below would still pass vacuously.
+		assert_eq!(ComputeMinerWeightsSource::active_compute_miners().len(), batch as usize);
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(admin()), amount));
+
+		for family in &families {
+			assert_eq!(
+				Balances::free_balance(family),
+				per_family,
+				"every family in a full batch must be paid its equal share"
+			);
+		}
+		assert_eq!(Hippocampus::compute_emission_available(), 0, "every planck accounted for");
+	});
+}
+
+#[test]
+fn a_full_epoch_batch_of_max_weights_cannot_saturate_the_denominator() {
+	// `pay_compute_miners` sums a whole epoch's weights into a u128 denominator
+	// and divides the payout by it. `MaxEpochWeightPerNode` (u64::MAX by
+	// default) exists to keep that sum far inside u128 — the fund-conservation
+	// argument breaks if it can saturate.
+	//
+	// This pins the worst case the runtime can actually produce: a full close
+	// batch where every entry carries the maximum permitted weight. There is no
+	// setter extrinsic for `MaxEpochWeightPerNode`, so the default is the
+	// operative value; a sudo `set_storage` that raised it toward u128::MAX
+	// would invalidate this, which is exactly what the pallet doc warns about.
+	// Annotate before widening: `ConstU32` satisfies both `Get<u32>` and
+	// `Get<Option<u32>>`, so `u128::from(..::get())` alone is ambiguous.
+	let max_batch: u32 =
+		<Runtime as pallet_compute_scoring::Config>::MaxMinerStatusUpdatesPerCall::get();
+	let max_batch = u128::from(max_batch);
+
+	// `MaxEpochWeightPerNode` is storage with a `type_value` default, not a
+	// Config constant, so reading it needs an externalities environment.
+	new_test_ext().execute_with(|| {
+		let max_weight = pallet_compute_scoring::MaxEpochWeightPerNode::<Runtime>::get();
+		assert_eq!(max_weight, u64::MAX as u128, "the documented default is the operative value");
+
+		let total = max_batch
+			.checked_mul(max_weight)
+			.expect("a full max-weight close batch must not overflow the u128 denominator");
+
+		// Not merely non-overflowing: leave room for the payout numerator, which
+		// is multiplied by a weight before the division.
+		assert!(
+			total <= u128::MAX / 1_000_000,
+			"denominator {total} leaves too little headroom for the payout numerator"
+		);
+	});
 }
