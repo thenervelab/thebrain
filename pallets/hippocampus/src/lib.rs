@@ -80,6 +80,16 @@ pub mod pallet {
 		/// every node belonging to the same payee. A repeated account is not
 		/// unsound (it just receives several transfers), but it burns one of
 		/// the `MaxComputeMinersPerPayout` slots per node instead of per payee.
+		///
+		/// **Caller contract**: the returned weights MUST sum to strictly less
+		/// than `u128::MAX`. The bank folds them into a single `u128`
+		/// denominator with `saturating_add`; a sum that saturated would be an
+		/// under-sized denominator and the pro-rata shares could then exceed
+		/// the requested payout, overdrawing the compartment. The production
+		/// implementation inherits this from compute-scoring's per-entry
+		/// `MaxEpochWeightPerNode` cap over a bounded entry count — an
+		/// implementation without an equivalent per-entry bound must impose
+		/// one itself.
 		fn active_compute_miners() -> Vec<(AccountId, u128)>;
 	}
 
@@ -602,9 +612,23 @@ pub mod pallet {
 					<= T::MaxComputeMinersPerPayout::get(),
 				Error::<T>::TooManyComputeMiners
 			);
-			// Saturating: a saturated total is still >= every individual weight,
-			// so `weight_share`'s `weight <= total_weight` contract holds and
-			// the only consequence is shares rounding down.
+			// `saturating_add` here is an overflow guard, NOT a benign
+			// rounding choice: a total that actually saturated would be an
+			// UNDER-sized denominator, and `Σ weight_share(pool, wᵢ, total)`
+			// could then exceed `pool` — overdrawing the compartment and
+			// booking past the daily cap. (Two payees at `u128::MAX` would
+			// each receive the whole pool.) So conservation depends on the
+			// fold never saturating, which holds because the compute-scoring
+			// pallet caps every entry at `MaxEpochWeightPerNode` (default
+			// `u64::MAX`) before writing it and at most
+			// `MaxMinerStatusUpdatesPerCall` entries exist per epoch —
+			// a ceiling ~17 orders of magnitude below `u128::MAX`.
+			//
+			// That margin lives in ANOTHER pallet's constant. Anything that
+			// raises `MaxEpochWeightPerNode` toward `u128::MAX`, or a
+			// `ComputeMinerWeights` implementation that does not inherit that
+			// per-entry cap, must re-establish the bound here first — e.g. by
+			// rejecting a fold that saturates.
 			let total_weight: u128 =
 				miners.iter().fold(0u128, |acc, (_, w)| acc.saturating_add(*w));
 			ensure!(total_weight > 0, Error::<T>::NoEligibleComputeMiners);
