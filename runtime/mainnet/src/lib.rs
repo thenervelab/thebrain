@@ -439,8 +439,12 @@ impl pallet_hippocampus::Config for Runtime {
 	type BlocksPer24Hours = BlocksPer24Hours;
 	type Max24HourMinerPayout = Max24HourMinerPayout;
 	type ComputeMinerWeights = ComputeMinerWeightsSource;
-	// Payees are families, not nodes: `pallet_compute_scoring::MaxFamilies`
-	// (600) bounds the list regardless of how many children each one runs.
+	// Payees are families, not nodes. The bound comes from
+	// `pallet_compute_scoring::MaxMinerStatusUpdatesPerCall` (128): one close
+	// per epoch writes at most that many `EpochWeights` entries, which
+	// aggregate to at most that many distinct families. Keep this ABOVE
+	// `MaxMinerStatusUpdatesPerCall` — if that constant ever exceeds this one,
+	// every `pay_compute_miners` call fails with `TooManyComputeMiners`.
 	type MaxComputeMinersPerPayout = ConstU32<640>;
 	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
 }
