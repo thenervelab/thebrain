@@ -764,6 +764,29 @@ pub mod pallet {
 				.saturating_sub(EmissionPaidOut::<T>::get())
 		}
 
+		/// What `request_payment` may actually release: the free balance above
+		/// ED, minus BOTH emission compartments.
+		///
+		/// The compartments are reserved for `pay_storage_miners` /
+		/// `pay_compute_miners`, and that reservation has to be enforced here
+		/// rather than left to each caller. Callers that subtract it themselves
+		/// (the arion payout source, the referral commission path) clamp their
+		/// own amount first, so this second ceiling is a no-op for them; the
+		/// callers that don't — the sudo-refund retry and the chargeback refund
+		/// — were able to drain the bank down to ED while the compartment
+		/// ledger still showed a full balance, leaving `pay_compute_miners` to
+		/// fail with `InsufficientBankBalance` against emission that was
+		/// nominally reserved for it.
+		///
+		/// This bounds only what THIS pallet knows it owes. Runtime-level
+		/// reservations (undistributed marketplace backing, pending sudo
+		/// refunds) are still the caller's to subtract.
+		pub fn unreserved_for_payout() -> BalanceOf<T> {
+			Self::available_for_payout()
+				.saturating_sub(Self::emission_available())
+				.saturating_sub(Self::compute_emission_available())
+		}
+
 		/// Compute emission deposited but not yet distributed to compute
 		/// miners.
 		///
@@ -832,9 +855,12 @@ pub mod pallet {
 				Some(cap) => amount.min(cap),
 				None => amount,
 			};
+			// Clamped against the UNRESERVED balance, not the raw free balance:
+			// a requester must not be able to spend emission the bank is
+			// holding for the two miner payouts.
 			let paid: BalanceOf<T> = payment_math::payable(
 				Tokens::new(capped_amount.saturated_into()),
-				Tokens::new(Self::available_for_payout().saturated_into()),
+				Tokens::new(Self::unreserved_for_payout().saturated_into()),
 			)
 			.get()
 			.saturated_into();

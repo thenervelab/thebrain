@@ -1371,3 +1371,56 @@ fn a_source_without_an_epoch_is_not_replay_guarded() {
 		assert_eq!(Balances::free_balance(charlie()), 1_000);
 	});
 }
+
+#[test]
+fn request_payment_cannot_spend_the_emission_compartments() {
+	// The compartments are reserved for the two miner payouts. A whitelisted
+	// requester could previously drain the bank down to ED while the ledger
+	// still showed a full compartment, leaving `pay_compute_miners` to fail
+	// with `InsufficientBankBalance` against emission reserved for it.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 1_000, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			5_000,
+			DepositType::Emission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			3_000,
+			DepositType::ComputeEmission
+		));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), bob()));
+
+		// 9_000 in the bank, but 8_000 of it is spoken for.
+		let unreserved = Hippocampus::unreserved_for_payout();
+		let paid = Hippocampus::request_payment(&bob(), &charlie(), 9_000).expect("pays");
+
+		assert_eq!(paid, unreserved, "only the unreserved remainder is spendable");
+		assert!(paid <= 1_000, "the grant, not the emission, is what was available");
+		// Both compartments survive intact and are still fully payable.
+		assert_eq!(Hippocampus::emission_available(), 5_000);
+		assert_eq!(Hippocampus::compute_emission_available(), 3_000);
+
+		set_compute_miners(vec![(dave(), 1)]);
+		whitelist_miner_payment_caller(alice());
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 3_000));
+		assert_eq!(Balances::free_balance(dave()), 3_000);
+	});
+}
+
+#[test]
+fn request_payment_still_spends_freely_when_nothing_is_reserved() {
+	// The clamp must not starve the ordinary path — with empty compartments,
+	// the full balance above ED remains spendable.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 5_000, DepositType::Grant));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), bob()));
+
+		assert_eq!(Hippocampus::unreserved_for_payout(), Hippocampus::available_for_payout());
+		// `available_for_payout` is free-minus-ED, so the ED cushion — and only
+		// the ED cushion — is withheld.
+		let paid = Hippocampus::request_payment(&bob(), &charlie(), 5_000).expect("pays");
+		assert_eq!(paid, 5_000 - ExistentialDeposit::get());
+	});
+}
