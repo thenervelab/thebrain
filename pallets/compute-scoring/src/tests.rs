@@ -780,10 +780,12 @@ fn vali_submit_epoch_close_silent_heartbeat() {
 }
 
 #[test]
-fn vali_submit_epoch_close_rejects_non_root_origin() {
+fn vali_submit_epoch_close_rejects_unprivileged_origin() {
     new_test_ext().execute_with(|| {
         let updates: BoundedVec<_, _> =
             BoundedVec::try_from(vec![upd(NODE_A, MinerStatus::Active, 100)]).unwrap();
+        // 7 is neither root nor the audit authority.
+        assert_ne!(7u64, AUDIT_AUTHORITY);
         assert_noop!(
             ComputeScoring::vali_submit_epoch_close(RuntimeOrigin::signed(7u64), 1, updates),
             sp_runtime::DispatchError::BadOrigin
@@ -791,6 +793,56 @@ fn vali_submit_epoch_close_rejects_non_root_origin() {
         // Storage untouched.
         assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_A), None);
         assert_eq!(CurrentEpoch::<TestRuntime>::get(), 0);
+    });
+}
+
+/// The epoch close is reachable by the SAME authority that signs the
+/// audit aggregates and live attestations feeding it.
+///
+/// Regression guard for the mainnet cutover: `vali_submit_epoch_close`
+/// used to hardcode `ensure_root`, which binds the submitter to
+/// whoever holds sudo *on the chain*. On a chain whose sudo is not the
+/// compute cluster's key, the closer could not submit at all — the
+/// weights were produced, signed, and then unlandable.
+#[test]
+fn vali_submit_epoch_close_accepts_the_audit_authority() {
+    new_test_ext().execute_with(|| {
+        let updates: BoundedVec<_, _> = BoundedVec::try_from(vec![
+            upd(NODE_A, MinerStatus::Active, 1_000),
+            upd(NODE_B, MinerStatus::Quarantined, 0),
+        ])
+        .unwrap();
+
+        assert_ok!(ComputeScoring::vali_submit_epoch_close(
+            RuntimeOrigin::signed(AUDIT_AUTHORITY),
+            1,
+            updates,
+        ));
+
+        // The close did real work, not just pass the origin gate.
+        assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_A), Some(1_000));
+        assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_B), Some(0));
+        assert_eq!(CurrentEpoch::<TestRuntime>::get(), 1);
+    });
+}
+
+/// Root MUST keep working across the origin relax, so a runtime that
+/// binds `AuditAuthorityOrigin` to `EitherOfDiverse<EnsureRoot, ..>`
+/// does not strand an existing sudo-wrapped submitter mid-upgrade.
+#[test]
+fn vali_submit_epoch_close_still_accepts_root() {
+    new_test_ext().execute_with(|| {
+        let updates: BoundedVec<_, _> =
+            BoundedVec::try_from(vec![upd(NODE_A, MinerStatus::Active, 500)]).unwrap();
+
+        assert_ok!(ComputeScoring::vali_submit_epoch_close(
+            RuntimeOrigin::root(),
+            1,
+            updates,
+        ));
+
+        assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_A), Some(500));
+        assert_eq!(CurrentEpoch::<TestRuntime>::get(), 1);
     });
 }
 
@@ -4129,12 +4181,16 @@ mod review_b6 {
                     epoch,
                     one(NODE, 1),
                 ));
-                let backlog = frame_system::Pallet::<TestRuntime>::events().iter().any(|e| {
-                    matches!(
-                        &e.event,
-                        RuntimeEvent::ComputeScoring(ComputeEvent::EpochHistoryPruneBacklog { .. })
-                    )
-                });
+                let backlog = frame_system::Pallet::<TestRuntime>::events()
+                    .iter()
+                    .any(|e| {
+                        matches!(
+                            &e.event,
+                            RuntimeEvent::ComputeScoring(
+                                ComputeEvent::EpochHistoryPruneBacklog { .. }
+                            )
+                        )
+                    });
                 (
                     LiveAttestationCount::<TestRuntime>::iter_prefix(1u64).count(),
                     EpochPruneWatermark::<TestRuntime>::get(),
@@ -4421,6 +4477,258 @@ mod deposit_invariant {
             ));
             assert_eq!(Balances::reserved_balance(FAM), 0);
             assert_eq!(Balances::free_balance(FAM), 10_000);
+        });
+    }
+}
+
+/// The root-settable dedicated submitter (`ValiSubmitter`).
+///
+/// The point of this surface is that the account vali submits with can be a
+/// FRESH key whose only capability is these three calls — rotatable by an
+/// extrinsic instead of by a runtime upgrade, and unable to escalate.
+mod vali_submitter {
+    use super::*;
+    use crate::{Event, ValiSubmitter};
+
+    /// Deliberately NOT `AUDIT_AUTHORITY`. If it were, a passing test could
+    /// not distinguish "admitted because root designated it" from "admitted
+    /// by the Config origin all along" — the assertion would be vacuous.
+    const DEDICATED: AccountId = 7777;
+
+    #[test]
+    fn root_designates_and_the_event_records_it() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_eq!(ValiSubmitter::<TestRuntime>::get(), None);
+
+            assert_ok!(ComputeScoring::set_vali_submitter(
+                RuntimeOrigin::root(),
+                Some(DEDICATED),
+            ));
+
+            assert_eq!(ValiSubmitter::<TestRuntime>::get(), Some(DEDICATED));
+            System::assert_has_event(
+                Event::ValiSubmitterSet {
+                    who: Some(DEDICATED),
+                }
+                .into(),
+            );
+        });
+    }
+
+    /// The privilege separation this whole design rests on: the designated
+    /// key must not be able to re-designate itself, or the split between the
+    /// hot submission key and the admin surface would be decorative.
+    #[test]
+    fn the_designated_key_cannot_redesignate_itself() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_vali_submitter(
+                RuntimeOrigin::root(),
+                Some(DEDICATED),
+            ));
+
+            assert_noop!(
+                ComputeScoring::set_vali_submitter(RuntimeOrigin::signed(DEDICATED), Some(9999),),
+                sp_runtime::DispatchError::BadOrigin
+            );
+            // Nor the audit authority.
+            assert_noop!(
+                ComputeScoring::set_vali_submitter(
+                    RuntimeOrigin::signed(AUDIT_AUTHORITY),
+                    Some(9999),
+                ),
+                sp_runtime::DispatchError::BadOrigin
+            );
+            // Nor the ADMIN authority — this is the load-bearing one. The
+            // production runtime binds ComputeScoringAdminOrigin and
+            // AuditAuthorityOrigin to the SAME pinned account, so if
+            // designation were merely admin-gated, the key vali holds could
+            // re-designate itself and the privilege split would be
+            // decorative. Mutation-proven: with `ensure_root` swapped for
+            // `ComputeScoringAdminOrigin`, this is the assertion that dies.
+            assert_ne!(ADMIN_AUTHORITY, AUDIT_AUTHORITY);
+            assert_noop!(
+                ComputeScoring::set_vali_submitter(
+                    RuntimeOrigin::signed(ADMIN_AUTHORITY),
+                    Some(9999),
+                ),
+                sp_runtime::DispatchError::BadOrigin
+            );
+
+            assert_eq!(ValiSubmitter::<TestRuntime>::get(), Some(DEDICATED));
+        });
+    }
+
+    #[test]
+    fn the_designated_key_can_close_an_epoch() {
+        new_test_ext().execute_with(|| {
+            let updates: BoundedVec<_, _> =
+                BoundedVec::try_from(vec![upd(NODE_A, MinerStatus::Active, 1_000)]).unwrap();
+
+            // Before designation it is just an unrelated account.
+            assert_noop!(
+                ComputeScoring::vali_submit_epoch_close(
+                    RuntimeOrigin::signed(DEDICATED),
+                    1,
+                    updates.clone(),
+                ),
+                sp_runtime::DispatchError::BadOrigin
+            );
+
+            assert_ok!(ComputeScoring::set_vali_submitter(
+                RuntimeOrigin::root(),
+                Some(DEDICATED),
+            ));
+
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::signed(DEDICATED),
+                1,
+                updates,
+            ));
+
+            // It did real work, not merely pass the gate.
+            assert_eq!(EpochWeights::<TestRuntime>::get(1, NODE_A), Some(1_000));
+            assert_eq!(CurrentEpoch::<TestRuntime>::get(), 1);
+        });
+    }
+
+    #[test]
+    fn the_designated_key_can_submit_audit_stats() {
+        new_test_ext().execute_with(|| {
+            let pair = ed25519::Pair::from_seed(&[42u8; 32]);
+            assert_ok!(ComputeScoring::set_audit_vm_pubkey(
+                RuntimeOrigin::root(),
+                NODE_ID,
+                pair.public().0,
+            ));
+            assert_ok!(ComputeScoring::set_vali_submitter(
+                RuntimeOrigin::root(),
+                Some(DEDICATED),
+            ));
+
+            let view = make_view(BoundedVec::try_from(b"key-0".to_vec()).unwrap(), [0u8; 32]);
+            let body = canonical_aggregate_body(&view);
+            let signed = make_signed(&pair, body.clone());
+
+            assert_ok!(ComputeScoring::submit_audit_stats(
+                RuntimeOrigin::signed(DEDICATED),
+                view,
+                signed,
+            ));
+
+            assert_eq!(
+                LastAggregateHashByNode::<TestRuntime>::get(NODE_ID),
+                Some(sp_io::hashing::sha2_256(&body)),
+            );
+        });
+    }
+
+    #[test]
+    fn the_designated_key_can_submit_a_live_attestation() {
+        new_test_ext().execute_with(|| {
+            let pair = ed25519::Pair::from_seed(&[0x42; 32]);
+            let pubkey = pair.public().0;
+            assert_ok!(ComputeScoring::set_kbs_attestation_pubkey(
+                RuntimeOrigin::root(),
+                pubkey,
+            ));
+            assert_ok!(ComputeScoring::set_vali_submitter(
+                RuntimeOrigin::root(),
+                Some(DEDICATED),
+            ));
+
+            let view = make_la_view(pubkey);
+            let body = canonical_la_body(&view);
+            let signed = make_la_signed(&pair, body);
+
+            assert_ok!(ComputeScoring::submit_live_attestation(
+                RuntimeOrigin::signed(DEDICATED),
+                view,
+                signed,
+            ));
+
+            let record = LastLiveAttestation::<TestRuntime>::get(vm_id_hash()).unwrap();
+            assert_eq!(record.attestation_seq, 1);
+        });
+    }
+
+    /// `None` is a real revocation, not a no-op — this is the compromise
+    /// response, so it has to actually take effect.
+    #[test]
+    fn revoking_removes_the_capability() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_vali_submitter(
+                RuntimeOrigin::root(),
+                Some(DEDICATED),
+            ));
+            let updates: BoundedVec<_, _> =
+                BoundedVec::try_from(vec![upd(NODE_A, MinerStatus::Active, 1)]).unwrap();
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::signed(DEDICATED),
+                1,
+                updates.clone(),
+            ));
+
+            assert_ok!(ComputeScoring::set_vali_submitter(
+                RuntimeOrigin::root(),
+                None
+            ));
+            assert_eq!(ValiSubmitter::<TestRuntime>::get(), None);
+
+            assert_noop!(
+                ComputeScoring::vali_submit_epoch_close(
+                    RuntimeOrigin::signed(DEDICATED),
+                    2,
+                    updates,
+                ),
+                sp_runtime::DispatchError::BadOrigin
+            );
+        });
+    }
+
+    /// Designating one account must not silently displace the runtime's own
+    /// origin — a chain mid-migration needs both to work.
+    #[test]
+    fn designation_does_not_displace_the_config_origin() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(ComputeScoring::set_vali_submitter(
+                RuntimeOrigin::root(),
+                Some(DEDICATED),
+            ));
+
+            let updates: BoundedVec<_, _> =
+                BoundedVec::try_from(vec![upd(NODE_A, MinerStatus::Active, 7)]).unwrap();
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::root(),
+                1,
+                updates.clone(),
+            ));
+            assert_ok!(ComputeScoring::vali_submit_epoch_close(
+                RuntimeOrigin::signed(AUDIT_AUTHORITY),
+                2,
+                updates,
+            ));
+            assert_eq!(CurrentEpoch::<TestRuntime>::get(), 2);
+        });
+    }
+
+    /// A chain that never calls `set_vali_submitter` must behave exactly as
+    /// it did before this storage existed.
+    #[test]
+    fn an_undesignated_account_is_still_refused() {
+        new_test_ext().execute_with(|| {
+            assert_eq!(ValiSubmitter::<TestRuntime>::get(), None);
+            let updates: BoundedVec<_, _> =
+                BoundedVec::try_from(vec![upd(NODE_A, MinerStatus::Active, 1)]).unwrap();
+            assert_noop!(
+                ComputeScoring::vali_submit_epoch_close(
+                    RuntimeOrigin::signed(DEDICATED),
+                    1,
+                    updates,
+                ),
+                sp_runtime::DispatchError::BadOrigin
+            );
+            assert_eq!(CurrentEpoch::<TestRuntime>::get(), 0);
         });
     }
 }

@@ -1032,6 +1032,35 @@ pub mod pallet {
     #[pallet::storage]
     pub type EpochPruneWatermark<T> = StorageValue<_, u64, ValueQuery>;
 
+    /// The account authorised to submit vali's attested payloads:
+    /// [`Pallet::submit_audit_stats`],
+    /// [`Pallet::submit_live_attestation`] and
+    /// [`Pallet::vali_submit_epoch_close`].
+    ///
+    /// Set by ROOT via [`Pallet::set_vali_submitter`]. `None` (the
+    /// default) means "not designated" and changes nothing — the
+    /// runtime's [`Config::AuditAuthorityOrigin`] remains the only way
+    /// in, exactly as before this storage existed.
+    ///
+    /// **Why storage and not just the Config origin.** A runtime that
+    /// pins the submitter as `EnsureSignedBy<SomeHardcodedMembers>` can
+    /// only rotate that account by *upgrading the runtime*. That is the
+    /// wrong cost for a hot, automated key: it cannot be rotated on
+    /// compromise, it cannot be scoped down, and in practice it ends up
+    /// being an account that already exists for another purpose. Making
+    /// it a root-settable storage value lets an operator mint a FRESH
+    /// key whose only capability is this one surface, hand it to vali,
+    /// and rotate or revoke it with an extrinsic.
+    ///
+    /// It deliberately does NOT grant [`Config::ComputeScoringAdminOrigin`].
+    /// The admin surface (17 setters incl. `slash_stake`,
+    /// `set_stake_enabled`) is rare and high-privilege; the submission
+    /// surface is hot and automated. Keeping them apart is the whole
+    /// point — and it is why this account cannot re-designate itself:
+    /// only root can call [`Pallet::set_vali_submitter`].
+    #[pallet::storage]
+    pub type ValiSubmitter<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
+
     // --- PR-I3 (kept) ---
 
     /// Registered audit-VM Ed25519 public key for each node. Set
@@ -1534,6 +1563,17 @@ pub mod pallet {
         /// Registration lockup was enabled/disabled by admin.
         LockupEnabledSet {
             enabled: bool,
+        },
+        /// Root designated (or, with `None`, revoked) the account
+        /// authorised to submit vali's attested payloads.
+        ///
+        /// Emitted on every successful [`Pallet::set_vali_submitter`],
+        /// including a revocation, so the authority's whole history is
+        /// reconstructible from the event log — this is the one thing
+        /// an observer needs to answer "who was allowed to close epoch
+        /// N".
+        ValiSubmitterSet {
+            who: Option<T::AccountId>,
         },
         /// Base child deposit floor was set by admin.
         BaseChildDepositSet {
@@ -2288,6 +2328,37 @@ pub mod pallet {
             }
         }
 
+        /// Origin gate for vali's three attested-submission calls:
+        /// [`Pallet::submit_audit_stats`],
+        /// [`Pallet::submit_live_attestation`] and
+        /// [`Pallet::vali_submit_epoch_close`].
+        ///
+        /// Admits EITHER:
+        ///  1. the account root designated in [`ValiSubmitter`] — a
+        ///     dedicated, rotatable key whose only capability is this
+        ///     surface; or
+        ///  2. whatever [`Config::AuditAuthorityOrigin`] admits — the
+        ///     pre-existing runtime-pinned path, unchanged.
+        ///
+        /// (1) is checked first and is a plain storage read, so the
+        /// normal case costs one read and never constructs the Config
+        /// origin's error. (2) is the fallback, which is what keeps
+        /// this backwards compatible: a chain that never calls
+        /// [`Pallet::set_vali_submitter`] behaves exactly as before.
+        ///
+        /// Fails closed with `BadOrigin` — an unsigned or unrelated
+        /// signed origin matches neither arm.
+        fn ensure_vali_submitter(origin: OriginFor<T>) -> DispatchResult {
+            if let Ok(who) = ensure_signed(origin.clone()) {
+                if ValiSubmitter::<T>::get().as_ref() == Some(&who) {
+                    return Ok(());
+                }
+            }
+            T::AuditAuthorityOrigin::ensure_origin(origin)
+                .map(|_| ())
+                .map_err(|_| DispatchError::BadOrigin.into())
+        }
+
         /// Fee-free registrations allowed per family when lockup
         /// is enabled (`None` → 1).
         pub fn free_child_slots_per_family() -> u32 {
@@ -2838,7 +2909,7 @@ pub mod pallet {
             view: AggregateView<T::MaxValidatorIdLen, T::MaxFamilyIdLen, T::MaxAuditVmKeyIdLen>,
             signed: SignedAggregateWire<T::MaxAggregateBody>,
         ) -> DispatchResult {
-            T::AuditAuthorityOrigin::ensure_origin(origin)?;
+            Self::ensure_vali_submitter(origin)?;
 
             // (1) Wire-shape sanity.
             ensure!(!signed.body.is_empty(), Error::<T>::EmptyAggregateBody);
@@ -3050,7 +3121,7 @@ pub mod pallet {
             view: LiveAttestationView<T::MaxVmIdLen>,
             signed: SignedLiveAttestationWire<T::MaxLiveAttestationBody>,
         ) -> DispatchResult {
-            T::AuditAuthorityOrigin::ensure_origin(origin)?;
+            Self::ensure_vali_submitter(origin)?;
 
             // (1) Wire-shape sanity.
             ensure!(
@@ -3202,11 +3273,26 @@ pub mod pallet {
         /// same status as the stored row stays silent so the on-
         /// chain event log doesn't pollute with no-op signals.
         ///
-        /// **Root-only** (locked Q13 single-operator v1 per
-        /// `#40` 2026-05-20 plan révisé). A future PR may relax
-        /// this to a multi-vali origin once the trust posture
-        /// changes; today the §G "single authoritative submitter"
-        /// invariant is structurally pinned by `ensure_root`.
+        /// Gated on [`Config::AuditAuthorityOrigin`] — the SAME
+        /// origin that guards [`Pallet::submit_audit_stats`] and
+        /// [`Pallet::submit_live_attestation`].
+        ///
+        /// This was `ensure_root` under the Q13 single-operator v1
+        /// posture (`#40` 2026-05-20), which the doc already flagged
+        /// as relaxable. `ensure_root` binds the submitter to
+        /// whoever holds *sudo on the chain*, which is not
+        /// necessarily the vali that produced the weights: on a
+        /// chain where sudo belongs to the chain operators rather
+        /// than to the compute cluster, the closer cannot submit at
+        /// all. Admitting the audit authority widens no trust
+        /// boundary — that key already signs the audit aggregates
+        /// and live attestations which *produce* the weights this
+        /// call merely seals. The §G "single authoritative
+        /// submitter" invariant is preserved: it is now pinned by
+        /// the runtime's `AuditAuthorityOrigin` binding, which a
+        /// runtime is free to declare as
+        /// `EitherOfDiverse<EnsureRoot, EnsureSignedBy<..>>` to keep
+        /// accepting root.
         ///
         /// `epoch` MUST be strictly greater than the stored
         /// `CurrentEpoch` — replaying an old close is an
@@ -3225,7 +3311,7 @@ pub mod pallet {
             epoch: u64,
             status_updates: BoundedVec<MinerStatusUpdate, T::MaxMinerStatusUpdatesPerCall>,
         ) -> DispatchResultWithPostInfo {
-            ensure_root(origin)?;
+            Self::ensure_vali_submitter(origin)?;
 
             let cur = CurrentEpoch::<T>::get();
             ensure!(epoch > cur, Error::<T>::EpochRegression);
@@ -3322,12 +3408,10 @@ pub mod pallet {
             // above and post-dispatch cannot upgrade it back to
             // `Pays::Yes`, so this only ever gives block weight back.
             Ok(frame_support::dispatch::PostDispatchInfo {
-                actual_weight: Some(
-                    <T as pallet::Config>::WeightInfo::vali_submit_epoch_close(
-                        updates_len,
-                        swept,
-                    ),
-                ),
+                actual_weight: Some(<T as pallet::Config>::WeightInfo::vali_submit_epoch_close(
+                    updates_len,
+                    swept,
+                )),
                 pays_fee: Pays::No,
             })
         }
@@ -3336,6 +3420,46 @@ pub mod pallet {
 
         /// Admin: enable/disable registration lockup
         /// (reserve/unbond).
+        /// **Root**: designate (or revoke, with `None`) the account
+        /// allowed to submit vali's attested payloads —
+        /// [`Pallet::submit_audit_stats`],
+        /// [`Pallet::submit_live_attestation`] and
+        /// [`Pallet::vali_submit_epoch_close`].
+        ///
+        /// This exists so the submitter can be a **dedicated key**
+        /// rather than whichever account the runtime happened to pin at
+        /// upgrade time. Mint a fresh keypair, `sudo` this once, hand
+        /// the seed to the closer, and that key can do this and nothing
+        /// else. On compromise, `sudo` again — a rotation is an
+        /// extrinsic, not a runtime upgrade.
+        ///
+        /// **Root, not `ComputeScoringAdminOrigin`, on purpose.** If the
+        /// admin origin could set this, and a chain binds admin to the
+        /// same account it hands vali, then the hot key could
+        /// re-designate itself and the separation would be decorative.
+        /// Root-only makes designation strictly more privileged than
+        /// anything the designated key can do.
+        ///
+        /// Setting `None` is a real revocation: the surface immediately
+        /// falls back to [`Config::AuditAuthorityOrigin`] alone.
+        /// Idempotent — re-setting the same account is accepted and
+        /// re-emits the event, so an operator replaying a runbook is
+        /// never left guessing whether it took.
+        #[pallet::call_index(56)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::set_vali_submitter(), Pays::No))]
+        pub fn set_vali_submitter(
+            origin: OriginFor<T>,
+            who: Option<T::AccountId>,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            match &who {
+                Some(a) => ValiSubmitter::<T>::put(a.clone()),
+                None => ValiSubmitter::<T>::kill(),
+            }
+            Self::deposit_event(Event::ValiSubmitterSet { who });
+            Ok(())
+        }
+
         #[pallet::call_index(30)]
         #[pallet::weight((<T as pallet::Config>::WeightInfo::set_lockup_enabled(), Pays::No))]
         pub fn set_lockup_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
@@ -3564,8 +3688,7 @@ pub mod pallet {
             // obligation we cannot certify the operator, and `register_child`
             // is refused in that same state. Quarantine is recoverable at the
             // next epoch close; a stranded reward is not a stranded fund.
-            let value_at_risk =
-                StakeUsdPerChild::<T>::get().saturating_mul(children.len() as u128);
+            let value_at_risk = StakeUsdPerChild::<T>::get().saturating_mul(children.len() as u128);
             let exiting = remaining.is_zero()
                 || !Self::is_stake_sufficient(&who, Self::required_alpha(value_at_risk));
             if exiting {

@@ -26,6 +26,7 @@ pub trait WeightInfo {
     fn request_unstake() -> Weight;
 
     // --- Admin ---
+    fn set_vali_submitter() -> Weight;
     fn set_lockup_enabled() -> Weight;
     fn set_base_child_deposit() -> Weight;
     fn set_free_child_slots_per_family() -> Weight;
@@ -89,6 +90,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().reads(2u64.saturating_mul(MAX_CHILDREN)))
             .saturating_add(T::DbWeight::get().writes(2))
             .saturating_add(T::DbWeight::get().writes(MAX_CHILDREN))
+    }
+
+    fn set_vali_submitter() -> Weight {
+        Weight::from_parts(5_000_000, 0).saturating_add(T::DbWeight::get().writes(1))
     }
 
     fn set_lockup_enabled() -> Weight {
@@ -190,6 +195,9 @@ impl WeightInfo for () {
         Weight::zero()
     }
     fn request_unstake() -> Weight {
+        Weight::zero()
+    }
+    fn set_vali_submitter() -> Weight {
         Weight::zero()
     }
     fn set_lockup_enabled() -> Weight {

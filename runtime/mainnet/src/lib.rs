@@ -255,8 +255,15 @@ impl pallet_compute_scoring::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type ComputeScoringAdminOrigin =
 		frame_system::EnsureSignedBy<ComputeScoringAuthorityMembers, AccountId>;
-	type AuditAuthorityOrigin =
-		frame_system::EnsureSignedBy<ComputeScoringAuthorityMembers, AccountId>;
+	// Root is admitted ALONGSIDE the pinned authority. `vali_submit_epoch_close`
+	// moved off `ensure_root` onto this origin, so binding it to
+	// `EnsureSignedBy` alone would strand any sudo-wrapped submitter the
+	// moment the upgrade lands. Keeping root costs nothing — it was already
+	// strictly more privileged than this account.
+	type AuditAuthorityOrigin = EitherOfDiverse<
+		EnsureRoot<AccountId>,
+		frame_system::EnsureSignedBy<ComputeScoringAuthorityMembers, AccountId>,
+	>;
 	type DepositCurrency = Balances;
 	type FamilyRegistry = pallet_registration::Pallet<Runtime>;
 	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
@@ -461,7 +468,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92004,
+	spec_version: 92005,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
