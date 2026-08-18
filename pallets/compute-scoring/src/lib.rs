@@ -977,7 +977,19 @@ pub mod pallet {
     /// reward-critical number stored — one `u128::MAX` entry breaks
     /// every downstream normalisation. The default (`u64::MAX`)
     /// guarantees that even a full `MaxMinerStatusUpdatesPerCall`
-    /// batch sums far inside u128. Admin-tunable downward.
+    /// batch sums far inside u128.
+    ///
+    /// **No setter extrinsic exists**: this is reachable only via a
+    /// sudo `set_storage` or a migration. Treat the default as the
+    /// operative value.
+    ///
+    /// Downstream consumers rely on the batch-sum headroom this
+    /// bound provides, not merely on the per-entry cap —
+    /// `pallet_hippocampus::pay_compute_miners` sums a whole epoch's
+    /// weights into a `u128` denominator and its fund-conservation
+    /// argument breaks if that sum can saturate. Raising this value
+    /// toward `u128::MAX` is therefore NOT a local change; audit
+    /// every reader first.
     #[pallet::type_value]
     pub fn DefaultMaxEpochWeightPerNode() -> u128 {
         u64::MAX as u128

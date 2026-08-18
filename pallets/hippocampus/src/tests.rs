@@ -1,6 +1,6 @@
 use crate::{
-	mock::*, DepositType, EmissionPaidOut, Error, Event, MinerPaymentWhitelist, TotalDeposited,
-	TotalPaidByRequester, TotalPaidOut,
+	mock::*, ComputeEmissionPaidOut, DepositType, EmissionPaidOut, Error, Event, LastPaidComputeEpoch,
+	MinerPaymentWhitelist, TotalDeposited, TotalPaidByRequester, TotalPaidOut,
 };
 use frame_support::{assert_noop, assert_ok};
 
@@ -691,5 +691,736 @@ fn pay_storage_miners_resets_24hour_period() {
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), cap));
 		assert_eq!(Hippocampus::emission_available(), 0);
 		assert_eq!(Balances::free_balance(charlie()), cap * 2);
+	});
+}
+
+// ---------------------------------------------------------------------------
+// pay_compute_miners
+//
+// Mirrors the `pay_storage_miners` suite above, plus the tests that pin the
+// wall between the two compartments — the property that makes this a separate
+// extrinsic rather than a flag on the existing one.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pay_compute_miners_distributes_pro_rata() {
+	new_test_ext().execute_with(|| {
+		// The Grant covers the bank's ED so the full amount is payable.
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1), (dave(), 3)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1_000));
+
+		assert_eq!(Balances::free_balance(charlie()), 250);
+		assert_eq!(Balances::free_balance(dave()), 750);
+		assert_eq!(ComputeEmissionPaidOut::<Test>::get(), 1_000);
+		assert_eq!(Hippocampus::compute_emission_available(), 0);
+		assert_eq!(TotalPaidOut::<Test>::get(), 1_000);
+		System::assert_last_event(
+			Event::ComputeMinersPaid {
+				requested: 1_000,
+				paid: 1_000,
+				miners_paid: 2,
+				miners_skipped: 0,
+			}
+			.into(),
+		);
+
+		let events = System::events();
+		for expected in [
+			Event::ComputeMinerPaymentPaid { miner: charlie(), amount: 250 },
+			Event::ComputeMinerPaymentPaid { miner: dave(), amount: 750 },
+		] {
+			let expected = expected.into();
+			assert!(
+				events.iter().any(|record| record.event == expected),
+				"missing per-miner event: {expected:?}"
+			);
+		}
+	});
+}
+
+#[test]
+fn pay_compute_miners_handles_wide_u128_weights() {
+	// The compute weights are u128, not the storage ranking's u16 — a realistic
+	// `EpochWeights` pair near `MaxEpochWeightPerNode` (u64::MAX) must still
+	// split cleanly and never overflow the wide intermediate.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::ComputeEmission
+		));
+		let big = u64::MAX as u128;
+		set_compute_miners(vec![(charlie(), big), (dave(), big)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 10_000));
+
+		assert_eq!(Balances::free_balance(charlie()), 5_000);
+		assert_eq!(Balances::free_balance(dave()), 5_000);
+		assert_eq!(ComputeEmissionPaidOut::<Test>::get(), 10_000);
+	});
+}
+
+#[test]
+fn pay_compute_miners_conserves_every_planck() {
+	// Invariant sweep: whatever the weight vector, exactly `paid` leaves the
+	// bank, all of it lands with miners, both ledgers book the same figure,
+	// and floor-division dust is bounded by one planck per miner.
+	let cases: &[(&[u128], u128)] = &[
+		(&[1, 3], 1_000),
+		(&[7, 7, 7], 1_000),
+		(&[1, u32::MAX as u128], 9_999),
+		(&[13, 29, 58], 101),
+		(&[5], 10),
+		(&[1, 2, 3, 4, 5, 6, 7], 9_973),
+	];
+	for (weights, amount) in cases {
+		new_test_ext().execute_with(|| {
+			assert_ok!(Hippocampus::deposit(
+				RuntimeOrigin::signed(alice()),
+				10,
+				DepositType::Grant
+			));
+			assert_ok!(Hippocampus::deposit(
+				RuntimeOrigin::signed(alice()),
+				10_000,
+				DepositType::ComputeEmission
+			));
+			let miners: Vec<(AccountId, u128)> = weights
+				.iter()
+				.enumerate()
+				.map(|(i, w)| {
+					let index = u8::try_from(i).expect("small test vector");
+					(sp_runtime::AccountId32::new([100 + index; 32]), *w)
+				})
+				.collect();
+			set_compute_miners(miners.clone());
+			whitelist_miner_payment_caller(alice());
+
+			let bank_before = Balances::free_balance(hippocampus_account());
+			assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), *amount));
+
+			let received: u128 =
+				miners.iter().map(|(miner, _)| Balances::free_balance(miner)).sum();
+			let bank_delta = bank_before - Balances::free_balance(hippocampus_account());
+			assert_eq!(received, bank_delta, "weights {weights:?}");
+			assert_eq!(ComputeEmissionPaidOut::<Test>::get(), received, "weights {weights:?}");
+			assert_eq!(TotalPaidOut::<Test>::get(), received, "weights {weights:?}");
+			assert!(received <= *amount);
+			assert!(
+				*amount - received < weights.len() as u128,
+				"dust exceeded bound for weights {weights:?}: paid {received} of {amount}"
+			);
+		});
+	}
+}
+
+#[test]
+fn pay_compute_miners_skips_failed_transfers() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		// charlie's share (101 * 1/20 = 5) is below the ED of 10 and charlie
+		// holds no account, so the transfer itself fails and is skipped;
+		// dave's share (95) clears the ED and pays out.
+		set_compute_miners(vec![(charlie(), 1), (dave(), 19)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 101));
+
+		assert_eq!(Balances::free_balance(charlie()), 0);
+		assert_eq!(Balances::free_balance(dave()), 95);
+		assert_eq!(ComputeEmissionPaidOut::<Test>::get(), 95);
+		assert_eq!(Hippocampus::compute_emission_available(), 905);
+		System::assert_last_event(
+			Event::ComputeMinersPaid {
+				requested: 101,
+				paid: 95,
+				miners_paid: 1,
+				miners_skipped: 1,
+			}
+			.into(),
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_dust_stays_in_compartment() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 3), (dave(), 7)]);
+		whitelist_miner_payment_caller(alice());
+
+		// 101 * 3/10 = 30, 101 * 7/10 = 70 — one planck of dust remains.
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 101));
+
+		assert_eq!(Balances::free_balance(charlie()), 30);
+		assert_eq!(Balances::free_balance(dave()), 70);
+		assert_eq!(ComputeEmissionPaidOut::<Test>::get(), 100);
+		assert_eq!(Hippocampus::compute_emission_available(), 900);
+	});
+}
+
+#[test]
+fn pay_compute_miners_skips_zero_shares() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			100_000,
+			DepositType::ComputeEmission
+		));
+		// 10_000 * 1/65_536 floors to zero: charlie is skipped, not fatal.
+		set_compute_miners(vec![(charlie(), 1), (dave(), 65_535)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 10_000));
+
+		assert_eq!(Balances::free_balance(charlie()), 0);
+		assert_eq!(Balances::free_balance(dave()), 9_999);
+		System::assert_last_event(
+			Event::ComputeMinersPaid {
+				requested: 10_000,
+				paid: 9_999,
+				miners_paid: 1,
+				miners_skipped: 1,
+			}
+			.into(),
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_requires_whitelisted_caller() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 100),
+			Error::<Test>::PaymentCallerNotWhitelisted
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_rejects_zero_amount() {
+	new_test_ext().execute_with(|| {
+		whitelist_miner_payment_caller(alice());
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 0),
+			Error::<Test>::ZeroAmount
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_respects_distribution_switch() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), false));
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 100),
+			Error::<Test>::DistributionDisabled
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_cannot_spend_other_compartments() {
+	new_test_ext().execute_with(|| {
+		// A fat bank funded by everything except compute emission — including
+		// the *storage* emission compartment — pays nothing.
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 1_000, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::MarketplaceRevenue
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 100),
+			Error::<Test>::InsufficientComputeEmissionFunds
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_cannot_spend_the_compute_compartment() {
+	// The other direction of the wall: compute emission is invisible to the
+	// storage payout.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 1_000, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
+			Error::<Test>::InsufficientEmissionFunds
+		);
+	});
+}
+
+#[test]
+fn the_two_compartments_are_independently_spendable() {
+	// Both funded, both fully spent — neither ledger nor 24h counter bleeds
+	// into the other.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::Emission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+		set_compute_miners(vec![(dave(), 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1_000));
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1_000));
+
+		assert_eq!(Balances::free_balance(charlie()), 1_000);
+		assert_eq!(Balances::free_balance(dave()), 1_000);
+		assert_eq!(EmissionPaidOut::<Test>::get(), 1_000);
+		assert_eq!(ComputeEmissionPaidOut::<Test>::get(), 1_000);
+		assert_eq!(Hippocampus::emission_available(), 0);
+		assert_eq!(Hippocampus::compute_emission_available(), 0);
+		assert_eq!(TotalPaidOut::<Test>::get(), 2_000);
+	});
+}
+
+#[test]
+fn pay_compute_miners_cannot_overdraw_the_bank() {
+	new_test_ext().execute_with(|| {
+		// Compartment says 1_000 but another consumer already drained the
+		// account below that — reject rather than pay partially.
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), bob()));
+		assert_ok!(Hippocampus::request_payment(&bob(), &charlie(), 600));
+		set_compute_miners(vec![(dave(), 1)]);
+		whitelist_miner_payment_caller(alice());
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1_000),
+			Error::<Test>::InsufficientBankBalance
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_rejects_empty_or_zero_weight_set() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		whitelist_miner_payment_caller(alice());
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 100),
+			Error::<Test>::NoEligibleComputeMiners
+		);
+		// Every node reported by the validator as a zero-reward verdict.
+		set_compute_miners(vec![(charlie(), 0), (dave(), 0)]);
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 100),
+			Error::<Test>::NoEligibleComputeMiners
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_bounds_the_miner_list() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		// MaxComputeMinersPerPayout is 16 in the mock; 17 entries must reject.
+		let miners: Vec<_> =
+			(1u8..=17).map(|i| (sp_runtime::AccountId32::new([i; 32]), 1u128)).collect();
+		set_compute_miners(miners);
+		whitelist_miner_payment_caller(alice());
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 100),
+			Error::<Test>::TooManyComputeMiners
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_compartment_is_cumulative() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 600));
+		assert_eq!(Hippocampus::compute_emission_available(), 400);
+
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 401),
+			Error::<Test>::InsufficientComputeEmissionFunds
+		);
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 400));
+		assert_eq!(Hippocampus::compute_emission_available(), 0);
+		assert_eq!(Balances::free_balance(charlie()), 1_000);
+	});
+}
+
+#[test]
+fn pay_compute_miners_respects_24hour_cap() {
+	new_test_ext().execute_with(|| {
+		let cap = Max24HourMinerPayout::get();
+
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			cap * 2,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), cap + 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), cap - 100));
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 101),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 100));
+		assert_eq!(Balances::free_balance(charlie()), cap);
+	});
+}
+
+#[test]
+fn the_24hour_budget_is_shared_across_both_payouts() {
+	// One `Max24HourMinerPayout` for storage and compute together: whatever
+	// one payout spends is gone from the other's daily allowance, even though
+	// each still has its own fully-funded compartment.
+	new_test_ext().execute_with(|| {
+		let cap = Max24HourMinerPayout::get();
+
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			cap,
+			DepositType::Emission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			cap,
+			DepositType::ComputeEmission
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+		set_compute_miners(vec![(dave(), 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		// Storage takes 60% of the shared daily budget.
+		let storage_spend = cap / 10 * 6;
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), storage_spend));
+
+		// Compute may spend only the remainder, however full its compartment is.
+		assert_noop!(
+			Hippocampus::pay_compute_miners(
+				RuntimeOrigin::signed(alice()),
+				cap - storage_spend + 1
+			),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+		assert_ok!(Hippocampus::pay_compute_miners(
+			RuntimeOrigin::signed(alice()),
+			cap - storage_spend
+		));
+
+		// The shared budget is now exhausted for BOTH payouts.
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+
+		assert_eq!(Balances::free_balance(charlie()) + Balances::free_balance(dave()), cap);
+		// Both compartments still hold what the rate limit stopped them spending.
+		assert_eq!(Hippocampus::emission_available(), cap - storage_spend);
+		assert_eq!(Hippocampus::compute_emission_available(), storage_spend);
+	});
+}
+
+#[test]
+fn the_shared_24hour_period_resets_once_for_both_payouts() {
+	new_test_ext().execute_with(|| {
+		let cap = Max24HourMinerPayout::get();
+
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			cap,
+			DepositType::Emission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			cap,
+			DepositType::ComputeEmission
+		));
+		set_ranked_miners(vec![(charlie(), 1)]);
+		set_compute_miners(vec![(dave(), 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		// Compute exhausts the shared budget; storage is locked out too.
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), cap));
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+
+		// Crossing the boundary resets the one counter, so storage — which
+		// never spent a planck this period — can now draw a full budget.
+		System::set_block_number(BlocksPer24Hours::get());
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), cap));
+		assert_eq!(Balances::free_balance(charlie()), cap);
+		assert_eq!(Balances::free_balance(dave()), cap);
+	});
+}
+
+#[test]
+fn pay_compute_miners_resets_24hour_period() {
+	new_test_ext().execute_with(|| {
+		let cap = Max24HourMinerPayout::get();
+
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			cap * 2,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		// Exhaust the whole 24-hour budget; the next planck rejects.
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), cap));
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+
+		// One block short of the period boundary the budget is still spent.
+		System::set_block_number(BlocksPer24Hours::get() - 1);
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::ExceedsDaily24HourMinerPayoutLimit
+		);
+
+		// At the boundary the period resets and a full budget is available.
+		System::set_block_number(BlocksPer24Hours::get());
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), cap));
+		assert_eq!(Hippocampus::compute_emission_available(), 0);
+		assert_eq!(Balances::free_balance(charlie()), cap * 2);
+	});
+}
+
+#[test]
+fn removed_miner_payment_caller_cannot_pay_compute_miners() {
+	new_test_ext().execute_with(|| {
+		let caller = alice();
+		assert_ok!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::root(), caller.clone()));
+		assert_ok!(Hippocampus::remove_miner_payment_caller(RuntimeOrigin::root(), caller.clone()));
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(caller), 100),
+			Error::<Test>::PaymentCallerNotWhitelisted
+		);
+	});
+}
+
+#[test]
+fn pay_compute_miners_refuses_to_settle_an_epoch_twice() {
+	// The replay guard keys on the weight source's epoch. A source that reports
+	// one keeps its epoch settleable exactly once.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		set_compute_epoch(Some(4));
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500));
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), Some(4));
+
+		// Compartment still holds 500, so only the guard can reject this.
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500),
+			Error::<Test>::ComputeEpochAlreadyPaid
+		);
+		// An older epoch is refused too — settlement only moves forward.
+		set_compute_epoch(Some(3));
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500),
+			Error::<Test>::ComputeEpochAlreadyPaid
+		);
+
+		set_compute_epoch(Some(5));
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500));
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), Some(5));
+		assert_eq!(Balances::free_balance(charlie()), 1_000);
+	});
+}
+
+#[test]
+fn a_payout_that_paid_nobody_leaves_the_epoch_settleable() {
+	// Every transfer skipped => nothing moved => burning the epoch would strand
+	// it forever. The cursor must not advance until something is actually paid.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		// Weight so small its share floors to zero => skipped, nothing paid.
+		set_compute_miners(vec![(charlie(), 1), (dave(), u64::MAX as u128)]);
+		set_compute_epoch(Some(7));
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1));
+		assert_eq!(Balances::free_balance(charlie()), 0, "share floored to zero");
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), None, "nothing paid, epoch not consumed");
+
+		// The same epoch can still be settled once the amount is workable.
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 999));
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), Some(7));
+	});
+}
+
+#[test]
+fn a_source_without_an_epoch_is_not_replay_guarded() {
+	// `current_weight_epoch() == None` opts out entirely, preserving the
+	// storage-ranking style semantics for any such source.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		set_compute_miners(vec![(charlie(), 1)]);
+		set_compute_epoch(None);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500));
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 500));
+		assert_eq!(LastPaidComputeEpoch::<Test>::get(), None);
+		assert_eq!(Balances::free_balance(charlie()), 1_000);
+	});
+}
+
+#[test]
+fn request_payment_cannot_spend_the_emission_compartments() {
+	// The compartments are reserved for the two miner payouts. A whitelisted
+	// requester could previously drain the bank down to ED while the ledger
+	// still showed a full compartment, leaving `pay_compute_miners` to fail
+	// with `InsufficientBankBalance` against emission reserved for it.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 1_000, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			5_000,
+			DepositType::Emission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			3_000,
+			DepositType::ComputeEmission
+		));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), bob()));
+
+		// 9_000 in the bank, but 8_000 of it is spoken for.
+		let unreserved = Hippocampus::unreserved_for_payout();
+		let paid = Hippocampus::request_payment(&bob(), &charlie(), 9_000).expect("pays");
+
+		assert_eq!(paid, unreserved, "only the unreserved remainder is spendable");
+		assert!(paid <= 1_000, "the grant, not the emission, is what was available");
+		// Both compartments survive intact and are still fully payable.
+		assert_eq!(Hippocampus::emission_available(), 5_000);
+		assert_eq!(Hippocampus::compute_emission_available(), 3_000);
+
+		set_compute_miners(vec![(dave(), 1)]);
+		whitelist_miner_payment_caller(alice());
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 3_000));
+		assert_eq!(Balances::free_balance(dave()), 3_000);
+	});
+}
+
+#[test]
+fn request_payment_still_spends_freely_when_nothing_is_reserved() {
+	// The clamp must not starve the ordinary path — with empty compartments,
+	// the full balance above ED remains spendable.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 5_000, DepositType::Grant));
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), bob()));
+
+		assert_eq!(Hippocampus::unreserved_for_payout(), Hippocampus::available_for_payout());
+		// `available_for_payout` is free-minus-ED, so the ED cushion — and only
+		// the ED cushion — is withheld.
+		let paid = Hippocampus::request_payment(&bob(), &charlie(), 5_000).expect("pays");
+		assert_eq!(paid, 5_000 - ExistentialDeposit::get());
 	});
 }

@@ -50,6 +50,11 @@ parameter_types! {
 
 thread_local! {
 	static RANKED_MINERS: RefCell<Vec<(AccountId, u16)>> = const { RefCell::new(Vec::new()) };
+	static COMPUTE_MINERS: RefCell<Vec<(AccountId, u128)>> = const { RefCell::new(Vec::new()) };
+	/// Epoch the mock weight set belongs to. Defaults to `None` so the tests
+	/// that predate the replay guard keep exercising a source with no
+	/// settlement period, and only the tests that opt in drive the cursor.
+	static COMPUTE_EPOCH: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
 
 /// Test control for the ranked-miner set `pay_storage_miners` reads.
@@ -62,10 +67,32 @@ pub fn whitelist_miner_payment_caller(who: AccountId) {
 	pallet_hippocampus::MinerPaymentWhitelist::<Test>::insert(who, ());
 }
 
+/// Test control for the weighted compute-miner set `pay_compute_miners` reads.
+pub fn set_compute_miners(miners: Vec<(AccountId, u128)>) {
+	COMPUTE_MINERS.with(|m| *m.borrow_mut() = miners);
+}
+
 pub struct MockRanking;
 impl pallet_hippocampus::StorageMinerRanking<AccountId> for MockRanking {
 	fn active_storage_miners() -> Vec<(AccountId, u16)> {
 		RANKED_MINERS.with(|m| m.borrow().clone())
+	}
+}
+
+/// Test control for the epoch the compute weight set belongs to. `None`
+/// (the default) opts out of the bank's replay guard.
+pub fn set_compute_epoch(epoch: Option<u64>) {
+	COMPUTE_EPOCH.with(|e| *e.borrow_mut() = epoch);
+}
+
+pub struct MockComputeWeights;
+impl pallet_hippocampus::ComputeMinerWeights<AccountId> for MockComputeWeights {
+	fn active_compute_miners() -> Vec<(AccountId, u128)> {
+		COMPUTE_MINERS.with(|m| m.borrow().clone())
+	}
+
+	fn current_weight_epoch() -> Option<u64> {
+		COMPUTE_EPOCH.with(|e| *e.borrow())
 	}
 }
 
@@ -85,6 +112,8 @@ impl pallet_hippocampus::Config for Test {
 	type MaxMinersPerPayout = ConstU32<16>;
 	type BlocksPer24Hours = BlocksPer24Hours;
 	type Max24HourMinerPayout = Max24HourMinerPayout;
+	type ComputeMinerWeights = MockComputeWeights;
+	type MaxComputeMinersPerPayout = ConstU32<16>;
 	type WeightInfo = ();
 }
 
@@ -120,6 +149,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 	ext.execute_with(|| {
 		System::set_block_number(1);
 		set_ranked_miners(Vec::new());
+		set_compute_miners(Vec::new());
 	});
 	ext
 }

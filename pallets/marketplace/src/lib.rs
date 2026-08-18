@@ -1344,7 +1344,8 @@ pub mod pallet {
 			// still owed to the ranking/marketplace pots and chargeback
 			// refunds still owed to the sudo account are not spendable as
 			// commissions, the root-set ReferralBankFloor, and the emission
-			// compartment reserved for ranking-based `pay_storage_miners` stay
+			// compartments reserved for ranking-based `pay_storage_miners` and
+			// weight-based `pay_compute_miners` stay
 			// untouched on top of that. Commission volume can at worst
 			// drain the headroom above the floor, never funds owed to
 			// someone else and never the last of the bank.
@@ -1353,6 +1354,10 @@ pub mod pallet {
 				.saturating_add(ReferralBankFloor::<T>::get())
 				.saturating_add(
 					pallet_hippocampus::Pallet::<T>::emission_available().saturated_into::<u128>(),
+				)
+				.saturating_add(
+					pallet_hippocampus::Pallet::<T>::compute_emission_available()
+						.saturated_into::<u128>(),
 				);
 			let headroom = pallet_hippocampus::Pallet::<T>::available_for_payout()
 				.saturated_into::<u128>()

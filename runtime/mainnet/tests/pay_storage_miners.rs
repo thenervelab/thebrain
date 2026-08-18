@@ -212,6 +212,10 @@ fn daily_miner_payout_cap_is_3500_alpha() {
 	// Guards the 18-decimals scaling of the cap: the constant originally
 	// shipped 1000x too small (3 alpha instead of 3000). If the intended
 	// daily cap changes, change this test together with the runtime value.
+	//
+	// 3500 is the COMBINED ceiling for `pay_storage_miners` +
+	// `pay_compute_miners`, not a per-payout allowance. Adding a consumer to
+	// the shared counter is not a reason to raise it.
 	const UNIT: u128 = 1_000_000_000_000_000_000;
 	assert_eq!(<Runtime as pallet_hippocampus::Config>::Max24HourMinerPayout::get(), 3_500 * UNIT);
 }

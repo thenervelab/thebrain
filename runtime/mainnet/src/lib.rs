@@ -150,14 +150,16 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	fn available() -> Balance {
 		// Compartmentalization: the alpha backing still owed to the ranking /
 		// marketplace pots — and chargeback refunds still owed back to the
-		// sudo account — and the emission compartment reserved for ranking-based
-		// `pay_storage_miners` — is not spendable by the miner settlement: a runaway
+		// sudo account — and the emission compartments reserved for ranking-based
+		// `pay_storage_miners` and weight-based `pay_compute_miners` — is not
+		// spendable by the miner settlement: a runaway
 		// miner due (bad stats, bad price, compromised authority key) can at
 		// worst drain the miner budget, never funds owed to someone else.
 		pallet_hippocampus::Pallet::<Runtime>::available_for_payout()
 			.saturating_sub(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get())
 			.saturating_sub(pallet_marketplace::PendingSudoRefunds::<Runtime>::get())
 			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::emission_available())
+			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::compute_emission_available())
 	}
 }
 
@@ -189,6 +191,88 @@ impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingS
 				}
 			})
 			.collect()
+	}
+}
+
+/// Adapter: `pay_compute_miners` reads the compute-scoring pallet's §23
+/// reward weights for the most recently closed epoch and pays each node's
+/// **family** account (the operator that put up the child deposit).
+///
+/// `CurrentEpoch` holds the epoch id of the last `vali_submit_epoch_close`
+/// (the close writes `EpochWeights[epoch][*]` and then sets `CurrentEpoch =
+/// epoch`), so it *is* the last closed epoch — not `epoch - 1`. Before the
+/// first close it is `0` and the weight map is empty, which the bank rejects
+/// with `NoEligibleComputeMiners`.
+///
+/// TWO status fields are checked, because compute-scoring keeps two and they
+/// move independently:
+///
+/// * `ChildRegistrations[child].status` (`ChildStatus`) is the *registration*
+///   lifecycle — `Unbonding`, or a `node_id` that no longer maps to a child,
+///   means the operator is gone.
+/// * `MinerStatuses[node_id]` (`MinerStatus`) is the *operational* verdict —
+///   `Quarantined` / `Decommissioned`.
+///
+/// Filtering on the registration alone is not enough. `request_unstake`
+/// quarantines every child of an exiting family via `transition_node_status`
+/// but leaves `ChildStatus::Active` untouched, so a family that pulled its
+/// entire collateral *after* an epoch closed would otherwise still collect its
+/// full pro-rata share of that epoch's stale weights with nothing at risk —
+/// the opposite of compute-scoring's "a stranded reward is not a stranded
+/// fund" intent. The weight alone cannot be relied on to encode the verdict:
+/// `vali_submit_epoch_close` always writes the submitted weight and transitions
+/// status separately, so a batch entry may carry `Quarantined` *and* a non-zero
+/// weight.
+///
+/// `MinerStatuses` is `OptionQuery` and a node recovering to `Active` has its
+/// row REMOVED, so an absent row means Active and must NOT be filtered out.
+///
+/// Weights of every child belonging to the same family are summed so a family
+/// receives one transfer and consumes one `MaxComputeMinersPerPayout` slot,
+/// however many nodes it runs.
+pub struct ComputeMinerWeightsSource;
+impl pallet_hippocampus::ComputeMinerWeights<AccountId> for ComputeMinerWeightsSource {
+	fn active_compute_miners() -> Vec<(AccountId, u128)> {
+		use sp_std::collections::btree_map::BTreeMap;
+
+		let epoch = pallet_compute_scoring::CurrentEpoch::<Runtime>::get();
+
+		let mut by_family: BTreeMap<AccountId, u128> = BTreeMap::new();
+		for entry in pallet_compute_scoring::Pallet::<Runtime>::epoch_weights_for(epoch) {
+			if entry.weight == 0 {
+				continue;
+			}
+			let Some(child) = pallet_compute_scoring::NodeIdToChild::<Runtime>::get(entry.node_id)
+			else {
+				continue;
+			};
+			let Some(reg) = pallet_compute_scoring::ChildRegistrations::<Runtime>::get(&child)
+			else {
+				continue;
+			};
+			if reg.status != pallet_compute_scoring::ChildStatus::Active {
+				continue;
+			}
+			// Absent row == Active (see above); only an explicit non-Active
+			// operational status is disqualifying.
+			if let Some(op) = pallet_compute_scoring::MinerStatuses::<Runtime>::get(entry.node_id) {
+				if op.status != pallet_compute_scoring::MinerStatus::Active {
+					continue;
+				}
+			}
+			by_family
+				.entry(reg.family)
+				.and_modify(|w| *w = w.saturating_add(entry.weight))
+				.or_insert(entry.weight);
+		}
+
+		by_family.into_iter().collect()
+	}
+
+	fn current_weight_epoch() -> Option<u64> {
+		// Same value `active_compute_miners` reads its weights from, so the
+		// bank's replay guard keys on exactly the epoch it is settling.
+		Some(pallet_compute_scoring::CurrentEpoch::<Runtime>::get())
 	}
 }
 
@@ -368,6 +452,22 @@ parameter_types! {
 	/// Miner payment settlement interval (~24h at 6s/block). `0` = disabled.
 	pub const ArionSettlementInterval: BlockNumber = 14_400;
 	pub const BlocksPer24Hours: BlockNumber = 14_400; // ~24 hours at 6-second blocks
+	/// Total emission the bank may release to miners per 24 hours, across
+	/// `pay_storage_miners` AND `pay_compute_miners` together — one shared
+	/// counter, not one each.
+	///
+	/// 3500 is deliberately the COMBINED ceiling, not a per-payout allowance,
+	/// and is NOT to be scaled up because a second consumer was added. The two
+	/// payouts compete for one daily budget by design: whatever storage draws
+	/// is unavailable to compute for the rest of the period, and vice versa.
+	/// A day where storage draws heavily and compute then hits
+	/// `ExceedsDaily24HourMinerPayoutLimit` is the cap working as intended —
+	/// no funds are lost, the compute compartment is cumulative and the
+	/// remainder settles in a later period.
+	///
+	/// Do not "fix" that contention by raising this to cover both consumers
+	/// separately; sizing it against the sum of both emission schedules would
+	/// double the maximum daily drain this constant exists to bound.
 	pub const Max24HourMinerPayout: Balance = 3_500_000_000_000_000_000_000; // 3500 alpha (18 decimals)
 }
 
@@ -380,6 +480,14 @@ impl pallet_hippocampus::Config for Runtime {
 	type MaxMinersPerPayout = ConstU32<512>;
 	type BlocksPer24Hours = BlocksPer24Hours;
 	type Max24HourMinerPayout = Max24HourMinerPayout;
+	type ComputeMinerWeights = ComputeMinerWeightsSource;
+	// Payees are families, not nodes. The bound comes from
+	// `pallet_compute_scoring::MaxMinerStatusUpdatesPerCall` (128): one close
+	// per epoch writes at most that many `EpochWeights` entries, which
+	// aggregate to at most that many distinct families. Keep this ABOVE
+	// `MaxMinerStatusUpdatesPerCall` — if that constant ever exceeds this one,
+	// every `pay_compute_miners` call fails with `TooManyComputeMiners`.
+	type MaxComputeMinersPerPayout = ConstU32<640>;
 	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
 }
 #[cfg(feature = "std")]
@@ -468,11 +576,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92005,
+	spec_version: 92006,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
-	// Bumped with 9196: `arion.register_child` dropped its `miner_uid`
-	// argument, so previously-encoded calls no longer decode.
 	transaction_version: 1,
 	state_version: 0,
 };
