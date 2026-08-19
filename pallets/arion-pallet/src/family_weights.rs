@@ -23,8 +23,10 @@ use sp_std::prelude::*;
 /// Sum each family's eligible child weights.
 ///
 /// * `families` — every family and its child list.
-/// * `is_eligible` — whether a child currently counts (Active registration,
-///   weight not stale).
+/// * `is_eligible` — whether a child counts **toward this family**: called
+///   with `(family, child)` so the implementation can confirm the child's own
+///   registration names the family whose list it was found under, on top of
+///   the Active/freshness checks.
 /// * `node_weight` — the child's latest reported node weight.
 ///
 /// Families whose eligible children sum to zero are **dropped**, not returned
@@ -40,7 +42,7 @@ use sp_std::prelude::*;
 /// value and silently equalizing shares the payout is supposed to separate.
 pub fn sum_family_weights<AccountId, Children>(
 	families: impl Iterator<Item = (AccountId, Children)>,
-	is_eligible: impl Fn(&AccountId) -> bool,
+	is_eligible: impl Fn(&AccountId, &AccountId) -> bool,
 	node_weight: impl Fn(&AccountId) -> u16,
 ) -> Vec<(AccountId, u128)>
 where
@@ -50,7 +52,7 @@ where
 	for (family, children) in families {
 		let mut total: u128 = 0;
 		for child in children {
-			if !is_eligible(&child) {
+			if !is_eligible(&family, &child) {
 				continue;
 			}
 			total = total.saturating_add(u128::from(node_weight(&child)));
@@ -83,7 +85,7 @@ mod tests {
 		let (eligible, weights) = env(&[(1, true, 10), (2, true, 25), (3, true, 5)]);
 		let out = sum_family_weights(
 			vec![(100u8, vec![1u8, 2, 3])].into_iter(),
-			|c| eligible[c],
+			|_f, c| eligible[c],
 			|c| weights[c],
 		);
 		assert_eq!(out, vec![(100, 40)]);
@@ -95,7 +97,7 @@ mod tests {
 		let (eligible, weights) = env(&[(1, true, 10), (2, false, 25), (3, true, 5)]);
 		let out = sum_family_weights(
 			vec![(100u8, vec![1u8, 2, 3])].into_iter(),
-			|c| eligible[c],
+			|_f, c| eligible[c],
 			|c| weights[c],
 		);
 		assert_eq!(out, vec![(100, 15)]);
@@ -106,7 +108,7 @@ mod tests {
 		let (eligible, weights) = env(&[(1, false, 10), (2, false, 25)]);
 		let out = sum_family_weights(
 			vec![(100u8, vec![1u8, 2])].into_iter(),
-			|c| eligible[c],
+			|_f, c| eligible[c],
 			|c| weights[c],
 		);
 		assert!(out.is_empty());
@@ -118,7 +120,7 @@ mod tests {
 		let (eligible, weights) = env(&[(1, true, 0), (2, true, 0)]);
 		let out = sum_family_weights(
 			vec![(100u8, vec![1u8, 2])].into_iter(),
-			|c| eligible[c],
+			|_f, c| eligible[c],
 			|c| weights[c],
 		);
 		assert!(out.is_empty());
@@ -126,7 +128,8 @@ mod tests {
 
 	#[test]
 	fn family_with_no_children_is_dropped() {
-		let out = sum_family_weights(vec![(100u8, Vec::<u8>::new())].into_iter(), |_| true, |_| 10);
+		let out =
+			sum_family_weights(vec![(100u8, Vec::<u8>::new())].into_iter(), |_, _| true, |_| 10);
 		assert!(out.is_empty());
 	}
 
@@ -136,7 +139,7 @@ mod tests {
 			env(&[(1, true, 10), (2, true, 10), (3, true, 30), (4, false, 1_000)]);
 		let out = sum_family_weights(
 			vec![(100u8, vec![1u8, 2]), (200u8, vec![3u8, 4])].into_iter(),
-			|c| eligible[c],
+			|_f, c| eligible[c],
 			|c| weights[c],
 		);
 		// Two nodes at 10 lose to one node at 30 — share follows summed
@@ -148,10 +151,27 @@ mod tests {
 	fn family_total_exceeds_u16_without_saturating() {
 		// 35 children (the runtime's MaxChildrenPerFamily) at MaxNodeWeight.
 		let children: Vec<u8> = (1..=35).collect();
-		let out = sum_family_weights(vec![(100u8, children)].into_iter(), |_| true, |_| 50_000);
+		let out =
+			sum_family_weights(vec![(100u8, children)].into_iter(), |_, _| true, |_| 50_000);
 		assert_eq!(out, vec![(100, 1_750_000)]);
 		// The point of the u128 accumulator: a u16 one would have stopped here.
 		assert!(out[0].1 > u128::from(u16::MAX));
+	}
+
+	#[test]
+	fn a_child_registered_to_another_family_is_not_counted() {
+		// The child list is one index and the child's own registration is
+		// another. If they ever disagree, the registration wins: a family must
+		// never be credited for weight belonging to a child it does not own.
+		let owner: BTreeMap<u8, u8> = [(1u8, 100u8), (2, 100), (3, 200)].into_iter().collect();
+		let out = sum_family_weights(
+			// Family 100's list wrongly contains child 3, which is registered
+			// to family 200.
+			vec![(100u8, vec![1u8, 2, 3])].into_iter(),
+			|f, c| owner[c] == *f,
+			|_| 10,
+		);
+		assert_eq!(out, vec![(100, 20)]);
 	}
 
 	#[test]
@@ -159,7 +179,7 @@ mod tests {
 		// Same per-node weight on both sides: three nodes beat one, 3:1.
 		let out = sum_family_weights(
 			vec![(100u8, vec![1u8, 2, 3]), (200u8, vec![4u8])].into_iter(),
-			|_| true,
+			|_, _| true,
 			|_| 50_000,
 		);
 		let small = out.iter().find(|(f, _)| *f == 200).unwrap().1;

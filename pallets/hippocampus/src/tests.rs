@@ -366,10 +366,19 @@ fn pay_storage_miners_handles_wide_u128_family_weights() {
 }
 
 #[test]
-fn pay_storage_miners_never_overdraws_on_a_saturating_weight_sum() {
-	// The trait forbids a weight set whose sum saturates u128, but if one ever
-	// arrives the bank must still not pay out more than it was asked for —
-	// `saturating_add` shrinks the denominator, which inflates every share.
+fn pay_storage_miners_rejects_a_weight_set_that_overruns_u128() {
+	// A denominator that saturates is SMALLER than the true total, and a small
+	// denominator inflates every pro-rata share: two payees at `u128::MAX`
+	// each compute a share of the whole pool. The bank must refuse the set
+	// outright, because the compartment guards ran once against `amount`
+	// before the transfer loop and nothing caps the running total.
+	//
+	// The bank is funded well past the requested amount ON PURPOSE, and from a
+	// second compartment. An under-funded bank makes this test pass for the
+	// wrong reason — the second transfer fails on insufficient balance and is
+	// booked as `miners_skipped`, so the payout looks conserved when it is
+	// only broke. That is exactly how the original version of this test
+	// passed against unguarded code.
 	new_test_ext().execute_with(|| {
 		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
 		assert_ok!(Hippocampus::deposit(
@@ -377,7 +386,41 @@ fn pay_storage_miners_never_overdraws_on_a_saturating_weight_sum() {
 			10_000,
 			DepositType::Emission
 		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			100_000,
+			DepositType::MarketplaceRevenue
+		));
 		set_storage_miners(vec![(charlie(), u128::MAX), (dave(), u128::MAX)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 10_000),
+			Error::<Test>::WeightSumOverflow
+		);
+		// Nothing moved and no ledger advanced.
+		assert_eq!(Balances::free_balance(charlie()), 0);
+		assert_eq!(Balances::free_balance(dave()), 0);
+		assert_eq!(EmissionPaidOut::<Test>::get(), 0);
+		assert_eq!(Hippocampus::emission_available(), 10_000);
+	});
+}
+
+#[test]
+fn a_weight_set_at_the_u128_ceiling_still_settles() {
+	// The guard rejects an overrun, not a large-but-representable total: a set
+	// summing to exactly `u128::MAX` must still pay. Otherwise the fix trades
+	// an overdraw for a payout that can never settle.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::Emission
+		));
+		let half = u128::MAX / 2;
+		// half + (half + 1) == u128::MAX exactly.
+		set_storage_miners(vec![(charlie(), half), (dave(), half + 1)]);
 		whitelist_miner_payment_caller(alice());
 
 		let bank_before = Balances::free_balance(hippocampus_account());
@@ -386,6 +429,36 @@ fn pay_storage_miners_never_overdraws_on_a_saturating_weight_sum() {
 		let paid = bank_before - Balances::free_balance(hippocampus_account());
 		assert!(paid <= 10_000, "payout {paid} exceeded the requested 10_000");
 		assert_eq!(EmissionPaidOut::<Test>::get(), paid);
+	});
+}
+
+#[test]
+fn pay_compute_miners_rejects_a_weight_set_that_overruns_u128() {
+	// Same guard on the compute compartment, and the same funding trap: the
+	// bank holds far more than the request so a rejected set cannot be
+	// confused with a bank that simply ran out.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::ComputeEmission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			100_000,
+			DepositType::MarketplaceRevenue
+		));
+		set_compute_miners(vec![(charlie(), u128::MAX), (dave(), u128::MAX)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 10_000),
+			Error::<Test>::WeightSumOverflow
+		);
+		assert_eq!(Balances::free_balance(charlie()), 0);
+		assert_eq!(ComputeEmissionPaidOut::<Test>::get(), 0);
+		assert_eq!(Hippocampus::compute_emission_available(), 10_000);
 	});
 }
 

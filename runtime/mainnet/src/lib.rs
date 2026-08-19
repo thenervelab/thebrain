@@ -481,7 +481,19 @@ impl pallet_hippocampus::Config for Runtime {
 	type PalletId = HippocampusPalletId;
 	type AdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
 	type StorageMinerWeights = ArionFamilyWeightsSource;
-	type MaxMinersPerPayout = ConstU32<512>;
+	// Payees are Arion families, not ranked nodes. Every family in the payout
+	// set has at least one Active child, and `register_child` caps
+	// `TotalActiveChildren` at `MaxChildrenTotal` (1_000), so at most 1_000
+	// families can ever carry weight. Keep this ABOVE that — if the family
+	// count passes this constant, every `pay_storage_miners` call fails with
+	// `TooManyMiners` and no storage emission can be paid at all, with each
+	// missed day unrecoverable under the 24-hour cap.
+	//
+	// NOT sized off `MaxFamilies` (600): that cap is only enforced when a
+	// family claims its FIRST fee-free slot, and `FamilyCount` is decremented
+	// on cleanup without being re-incremented on re-registration, so it does
+	// not bound the number of distinct families. `MaxChildrenTotal` does.
+	type MaxMinersPerPayout = ConstU32<1024>;
 	type BlocksPer24Hours = BlocksPer24Hours;
 	type Max24HourMinerPayout = Max24HourMinerPayout;
 	type ComputeMinerWeights = ComputeMinerWeightsSource;

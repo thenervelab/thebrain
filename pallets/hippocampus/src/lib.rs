@@ -395,6 +395,11 @@ pub mod pallet {
 		InsufficientComputeEmissionFunds,
 		/// The weighted compute-miner list exceeds `MaxComputeMinersPerPayout`.
 		TooManyComputeMiners,
+		/// The weight source returned a set whose weights sum past `u128`.
+		/// Both payouts reject rather than settle: a saturated denominator
+		/// inflates every pro-rata share and can overdraw the compartment.
+		/// Appended last on purpose — `Error` variants are metadata-indexed.
+		WeightSumOverflow,
 		/// No compute miner carries a non-zero weight this window.
 		NoEligibleComputeMiners,
 		/// This compute epoch has already been settled. Re-paying it would
@@ -556,14 +561,20 @@ pub mod pallet {
 				u32::try_from(miners.len()).unwrap_or(u32::MAX) <= T::MaxMinersPerPayout::get(),
 				Error::<T>::TooManyMiners
 			);
-			// `saturating_add`, not `sum()`: a plain sum would panic in debug
-			// and wrap in release on an overflowing weight set. Saturating can
-			// only ever make the denominator too *small* — which the trait's
-			// caller contract forbids the source from producing — while
-			// wrapping could make it arbitrarily small and hand out shares
-			// that overdraw the compartment.
-			let total_weight: u128 =
-				miners.iter().fold(0u128, |acc, (_, w)| acc.saturating_add(*w));
+			// `checked_add`, not `sum()` and not `saturating_add`. A plain sum
+			// wraps in release; saturating clamps. BOTH produce a denominator
+			// that is too *small*, and a small denominator inflates every
+			// pro-rata share — `weight_share` caps one share at the pool, but
+			// nothing caps their sum, and the compartment guards above were
+			// checked once against `amount` before this loop. Two entries at
+			// `u128::MAX` saturate to `u128::MAX` and then pay each of them
+			// the FULL requested amount, walking other compartments' funds out
+			// of the bank booked as emission. The trait forbids such a set;
+			// this refuses to settle one rather than trusting the contract.
+			let total_weight: u128 = miners
+				.iter()
+				.try_fold(0u128, |acc, (_, w)| acc.checked_add(*w))
+				.ok_or(Error::<T>::WeightSumOverflow)?;
 			ensure!(total_weight > 0, Error::<T>::NoEligibleMiners);
 
 			let bank = Self::account_id();
@@ -695,13 +706,15 @@ pub mod pallet {
 			// `MaxMinerStatusUpdatesPerCall` entries exist per epoch —
 			// a ceiling ~17 orders of magnitude below `u128::MAX`.
 			//
-			// That margin lives in ANOTHER pallet's constant. Anything that
-			// raises `MaxEpochWeightPerNode` toward `u128::MAX`, or a
-			// `ComputeMinerWeights` implementation that does not inherit that
-			// per-entry cap, must re-establish the bound here first — e.g. by
-			// rejecting a fold that saturates.
-			let total_weight: u128 =
-				miners.iter().fold(0u128, |acc, (_, w)| acc.saturating_add(*w));
+			// That margin lives in ANOTHER pallet's constant. Rather than trust
+			// it, the fold refuses to settle a set that overruns `u128` at all
+			// — so raising `MaxEpochWeightPerNode`, or supplying a
+			// `ComputeMinerWeights` implementation that does not inherit the
+			// per-entry cap, fails the payout instead of silently overdrawing.
+			let total_weight: u128 = miners
+				.iter()
+				.try_fold(0u128, |acc, (_, w)| acc.checked_add(*w))
+				.ok_or(Error::<T>::WeightSumOverflow)?;
 			ensure!(total_weight > 0, Error::<T>::NoEligibleComputeMiners);
 
 			let bank = Self::account_id();

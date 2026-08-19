@@ -9,7 +9,7 @@
 //! was the production bug: Arion operators never appear in that leaderboard,
 //! so registered families carrying real weight received nothing.
 
-use frame_support::traits::Currency;
+use frame_support::traits::{Currency, Get};
 use frame_support::{assert_noop, assert_ok};
 use hippius_mainnet_runtime::{
 	AccountId, ArionPayoutSource, Balances, Hippocampus, Runtime, RuntimeOrigin, System,
@@ -329,6 +329,36 @@ fn unweighted_families_are_dropped_not_paid_zero() {
 }
 
 #[test]
+fn a_family_is_not_paid_for_a_child_registered_to_someone_else() {
+	// `FamilyChildren` and `ChildRegistrations` are two indexes of one fact.
+	// The registration is authoritative: if a family's child list names a
+	// child whose registration points at a different family, that child's
+	// weight belongs to the other family and must not be credited here.
+	new_test_ext().execute_with(|| {
+		let (thief, owner) = (account(2), account(3));
+		fund_bank_and_whitelist_admin(100_000);
+
+		seed_active_child(&thief, &child(10), 100);
+		seed_active_child(&owner, &child(11), 300);
+		// Splice the owner's child into the thief's list without touching the
+		// child's registration.
+		pallet_arion::FamilyChildren::<Runtime>::mutate(&thief, |v| {
+			v.try_push(child(11)).expect("under MaxChildrenPerFamily");
+		});
+
+		let weights = pallet_arion::Pallet::<Runtime>::active_family_weights();
+		let of = |f: &AccountId| weights.iter().find(|(a, _)| a == f).map(|(_, w)| *w);
+		assert_eq!(of(&thief), Some(100), "thief was credited for a child it does not own");
+		assert_eq!(of(&owner), Some(300));
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
+
+		assert_eq!(Balances::free_balance(&thief), 25_000);
+		assert_eq!(Balances::free_balance(&owner), 75_000);
+	});
+}
+
+#[test]
 fn pay_storage_miners_excludes_uid_238_account() {
 	new_test_ext().execute_with(|| {
 		let (fam_a, capture) = (account(2), account(5));
@@ -395,6 +425,26 @@ fn the_ranking_pallet_no_longer_decides_who_gets_paid() {
 		assert_eq!(Balances::free_balance(&ranked_only), 0);
 		assert_eq!(Balances::free_balance(&family), 100_000);
 	});
+}
+
+#[test]
+fn the_payout_slot_bound_covers_every_family_that_can_exist() {
+	// `pay_storage_miners` rejects the WHOLE call when the payee set exceeds
+	// `MaxMinersPerPayout`, so a bound below the reachable family count is not
+	// a degraded payout — it is a total, silent halt of storage emission, with
+	// every missed day unrecoverable under the 24-hour cap.
+	//
+	// The reachable count is `MaxChildrenTotal`, not `MaxFamilies`: a family
+	// needs one Active child to carry weight, and `register_child` caps
+	// `TotalActiveChildren` unconditionally, whereas `MaxFamilies` is checked
+	// only on a family's first fee-free slot.
+	let max_payees: u32 = <Runtime as pallet_hippocampus::Config>::MaxMinersPerPayout::get();
+	let max_families: u32 = <Runtime as pallet_arion::Config>::MaxChildrenTotal::get();
+	assert!(
+		max_payees >= max_families,
+		"MaxMinersPerPayout ({max_payees}) must cover every family that can hold \
+		 an active child ({max_families}), or pay_storage_miners bricks entirely"
+	);
 }
 
 #[test]

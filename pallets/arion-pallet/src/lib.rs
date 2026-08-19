@@ -2291,8 +2291,10 @@ pub mod pallet {
 		/// distributes by: for each family, the **sum of the node weights of
 		/// its eligible children**.
 		///
-		/// A child is eligible when it is both:
+		/// A child is eligible when all of the following hold:
 		///
+		/// * `ChildRegistrations[child].family == family` — the child's own
+		///   registration names the family whose list it was found under; and
 		/// * `ChildRegistrations[child].status == Active` — a child that
 		///   deregistered is in `Unbonding` with its deposit on the way out,
 		///   so it has nothing at risk and must not keep earning; and
@@ -2319,12 +2321,18 @@ pub mod pallet {
 			let stale = T::StaleChildBuckets::get();
 			crate::family_weights::sum_family_weights(
 				FamilyChildren::<T>::iter(),
-				|child| {
-					let active = matches!(
-						ChildRegistrations::<T>::get(child),
-						Some(reg) if reg.status == ChildStatus::Active
-					);
-					active && bucket.saturating_sub(NodeWeightLastBucket::<T>::get(child)) <= stale
+				|family, child| {
+					let Some(reg) = ChildRegistrations::<T>::get(child) else { return false };
+					// The child's OWN registration must name the family whose
+					// list it was found under. `FamilyChildren` and
+					// `ChildRegistrations` are two indexes of one fact, kept in
+					// step by `register_child` / `deregister_child`; this makes
+					// "a family is only paid for children it owns" enforced
+					// here rather than assumed of every future writer. The read
+					// is already needed for the status check, so it is free.
+					reg.family == *family
+						&& reg.status == ChildStatus::Active
+						&& bucket.saturating_sub(NodeWeightLastBucket::<T>::get(child)) <= stale
 				},
 				|child| NodeWeightByChild::<T>::get(child),
 			)
