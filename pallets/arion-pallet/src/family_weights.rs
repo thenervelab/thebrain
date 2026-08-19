@@ -151,8 +151,7 @@ mod tests {
 	fn family_total_exceeds_u16_without_saturating() {
 		// 35 children (the runtime's MaxChildrenPerFamily) at MaxNodeWeight.
 		let children: Vec<u8> = (1..=35).collect();
-		let out =
-			sum_family_weights(vec![(100u8, children)].into_iter(), |_, _| true, |_| 50_000);
+		let out = sum_family_weights(vec![(100u8, children)].into_iter(), |_, _| true, |_| 50_000);
 		assert_eq!(out, vec![(100, 1_750_000)]);
 		// The point of the u128 accumulator: a u16 one would have stopped here.
 		assert!(out[0].1 > u128::from(u16::MAX));

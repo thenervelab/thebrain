@@ -395,16 +395,16 @@ pub mod pallet {
 		InsufficientComputeEmissionFunds,
 		/// The weighted compute-miner list exceeds `MaxComputeMinersPerPayout`.
 		TooManyComputeMiners,
-		/// The weight source returned a set whose weights sum past `u128`.
-		/// Both payouts reject rather than settle: a saturated denominator
-		/// inflates every pro-rata share and can overdraw the compartment.
-		/// Appended last on purpose — `Error` variants are metadata-indexed.
-		WeightSumOverflow,
 		/// No compute miner carries a non-zero weight this window.
 		NoEligibleComputeMiners,
 		/// This compute epoch has already been settled. Re-paying it would
 		/// pay the same epoch's work twice; wait for the next epoch close.
 		ComputeEpochAlreadyPaid,
+		/// The weight source returned a set whose weights sum past `u128`.
+		/// Both payouts reject rather than settle: a saturated denominator
+		/// inflates every pro-rata share and can overdraw the compartment.
+		/// Appended last on purpose — `Error` variants are metadata-indexed.
+		WeightSumOverflow,
 	}
 
 	#[pallet::call]

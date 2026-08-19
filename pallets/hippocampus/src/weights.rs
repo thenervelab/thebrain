@@ -15,11 +15,14 @@ use sp_std::marker::PhantomData;
 /// Reads `pay_storage_miners` spends assembling its payee set from the Arion
 /// pallet, before it pays anybody.
 ///
-/// Sized off the mainnet registration caps: `MaxFamilies` (600) map keys, plus
-/// three reads (`ChildRegistrations`, `NodeWeightLastBucket`,
-/// `NodeWeightByChild`) for each of at most `MaxChildrenTotal` (1_000)
-/// children across all families.
-const SOURCE_SCAN_READS: u64 = 600 + 3 * 1_000;
+/// Sized off `MaxChildrenTotal` (1_000): a `FamilyChildren` key exists only
+/// while a family has at least one Active child (the key is removed at zero by
+/// `cleanup_family_when_no_active_children`), so the number of scanned family
+/// keys is bounded by the active-child cap, not by `MaxFamilies` (600) — same
+/// reasoning that sizes `MaxMinersPerPayout` in the mainnet runtime. On top of
+/// those keys, three reads (`ChildRegistrations`, `NodeWeightLastBucket`,
+/// `NodeWeightByChild`) for each of at most `MaxChildrenTotal` children.
+const SOURCE_SCAN_READS: u64 = 1_000 + 3 * 1_000;
 
 pub trait WeightInfo {
 	fn deposit() -> Weight;
