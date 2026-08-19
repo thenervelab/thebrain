@@ -13,7 +13,9 @@
 //!   actually paid; the caller is responsible for handling shortfalls. Fails with
 //!   `DistributionDisabled` while the global switch is off.
 //! - `pay_storage_miners(amount)`: admin-gated; distributes `amount` from the
-//!   emission compartment to ranked storage miners pro-rata by ranking weight.
+//!   emission compartment to Arion storage families pro-rata by weight — a
+//!   family's weight is the sum of the node weights of its eligible children,
+//!   so the operator running the most/best-weighted nodes is paid the most.
 //! - `pay_compute_miners(amount)`: admin-gated; distributes `amount` from the
 //!   *compute* emission compartment to compute miners pro-rata by their
 //!   epoch reward weight. Its compartment (`DepositType::ComputeEmission`)
@@ -53,14 +55,40 @@ pub mod pallet {
 	pub type BalanceOf<T> =
 		<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
-	/// Ranked storage miners the bank distributes emission to.
+	/// Storage miners the bank distributes the storage emission compartment to.
 	///
-	/// Implemented by the runtime against the storage-ranking pallet so the
-	/// bank stays decoupled from where rankings come from.
-	pub trait StorageMinerRanking<AccountId> {
-		/// Payout account and current ranking weight of every active storage
-		/// miner. Zero-weight entries receive nothing.
-		fn active_storage_miners() -> Vec<(AccountId, u16)>;
+	/// Implemented by the runtime against the Arion pallet's family/child
+	/// registry and its validator-reported node weights, so the bank stays
+	/// decoupled from where those weights come from.
+	pub trait StorageMinerWeights<AccountId> {
+		/// Payout account and weight of every storage miner eligible for the
+		/// current payout window. Zero-weight entries receive nothing.
+		///
+		/// Weights are `u128`, not the `u16` a single Arion *node* weight is
+		/// stored as: a payee is a family, and a family's weight is the sum
+		/// over its children, which overruns `u16` well inside the runtime's
+		/// registration caps.
+		///
+		/// **Caller contract**: each payout account MUST appear at most once —
+		/// the implementation is responsible for aggregating the weights of
+		/// every node belonging to the same payee. A repeated account is not
+		/// unsound (it just receives several transfers), but it burns one of
+		/// the `MaxMinersPerPayout` slots per node instead of per payee.
+		///
+		/// **Caller contract**: the returned weights MUST sum to strictly less
+		/// than `u128::MAX`. The bank folds them into a single `u128`
+		/// denominator with `saturating_add`; a sum that saturated would be an
+		/// under-sized denominator and the pro-rata shares could then exceed
+		/// the requested payout, overdrawing the compartment. The production
+		/// implementation inherits this from Arion's per-node `MaxNodeWeight`
+		/// cap over a bounded child count — an implementation without an
+		/// equivalent per-entry bound must impose one itself.
+		///
+		/// **Caller contract**: the read cost of this call is NOT covered by
+		/// `WeightInfo::pay_storage_miners`'s per-miner term; the
+		/// implementation's scan must be bounded by on-chain caps rather than
+		/// by anything a caller supplies.
+		fn active_storage_miners() -> Vec<(AccountId, u128)>;
 	}
 
 	/// Compute miners the bank distributes the compute emission compartment to.
@@ -72,8 +100,7 @@ pub mod pallet {
 		/// Payout account and reward weight of every compute miner eligible
 		/// for the current payout window. Zero-weight entries receive nothing.
 		///
-		/// Weights are `u128` (the compute-scoring `EpochWeights` width, not
-		/// the `u16` the storage ranking uses).
+		/// Weights are `u128` (the compute-scoring `EpochWeights` width).
 		///
 		/// **Caller contract**: each payout account MUST appear at most once —
 		/// the implementation is responsible for aggregating the weights of
@@ -95,7 +122,7 @@ pub mod pallet {
 		/// Identifier of the settlement period the weights above belong to,
 		/// used by the bank as an idempotency key.
 		///
-		/// Unlike the storage ranking — a rolling "current standing" that can
+		/// Unlike the storage weights — a rolling "current standing" that can
 		/// legitimately be paid any number of times — compute weights are a
 		/// *per-epoch entitlement*: `EpochWeights[epoch]` is written once and
 		/// never changes, so paying the same epoch twice pays the same work
@@ -132,10 +159,10 @@ pub mod pallet {
 		/// Origin allowed to manage the requester whitelist.
 		type AdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
-		/// Ranked storage miners paid by `pay_storage_miners`.
-		type MinerRanking: StorageMinerRanking<Self::AccountId>;
+		/// Weighted storage miners paid by `pay_storage_miners`.
+		type StorageMinerWeights: StorageMinerWeights<Self::AccountId>;
 
-		/// Most ranked miners a single `pay_storage_miners` call will pay.
+		/// Most storage miners a single `pay_storage_miners` call will pay.
 		#[pallet::constant]
 		type MaxMinersPerPayout: Get<u32>;
 
@@ -310,7 +337,7 @@ pub mod pallet {
 		RequesterCapRemoved { who: T::AccountId },
 		/// Distribution enabled/disabled status changed.
 		DistributionEnabledChanged { enabled: bool },
-		/// `pay_storage_miners` distributed emission pro-rata by ranking weight.
+		/// `pay_storage_miners` distributed emission pro-rata by family weight.
 		/// `paid < requested` when shares rounded to zero or a transfer was
 		/// skipped; the difference stays in the emission compartment.
 		StorageMinersPaid {
@@ -478,12 +505,14 @@ pub mod pallet {
 		}
 
 		/// Distribute `amount` from the bank's emission compartment to storage
-		/// miners, pro-rata to their current ranking weight.
+		/// miners, pro-rata to their weight.
 		///
-		/// Callable only by whitelisted callers. The runtime's `MinerRanking`
-		/// trait implementation must filter out validators and uid 238 from
-		/// the returned miner list. Floor-division dust and skipped shares
-		/// stay in the compartment.
+		/// Callable only by whitelisted callers. The runtime's
+		/// `StorageMinerWeights` implementation decides who is eligible, which
+		/// account each payee is paid at, and what that payee's weight is —
+		/// in production, an Arion family and the summed node weight of its
+		/// eligible children. Floor-division dust and skipped shares stay in
+		/// the compartment.
 		#[pallet::call_index(8)]
 		#[pallet::weight(<T as Config>::WeightInfo::pay_storage_miners(T::MaxMinersPerPayout::get()))]
 		pub fn pay_storage_miners(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
@@ -522,12 +551,19 @@ pub mod pallet {
 			// consumer overdrew, or the ED cushion); never overdraw the account.
 			ensure!(amount <= Self::available_for_payout(), Error::<T>::InsufficientBankBalance);
 
-			let miners = T::MinerRanking::active_storage_miners();
+			let miners = T::StorageMinerWeights::active_storage_miners();
 			ensure!(
 				u32::try_from(miners.len()).unwrap_or(u32::MAX) <= T::MaxMinersPerPayout::get(),
 				Error::<T>::TooManyMiners
 			);
-			let total_weight: u128 = miners.iter().map(|(_, w)| u128::from(*w)).sum();
+			// `saturating_add`, not `sum()`: a plain sum would panic in debug
+			// and wrap in release on an overflowing weight set. Saturating can
+			// only ever make the denominator too *small* — which the trait's
+			// caller contract forbids the source from producing — while
+			// wrapping could make it arbitrarily small and hand out shares
+			// that overdraw the compartment.
+			let total_weight: u128 =
+				miners.iter().fold(0u128, |acc, (_, w)| acc.saturating_add(*w));
 			ensure!(total_weight > 0, Error::<T>::NoEligibleMiners);
 
 			let bank = Self::account_id();
@@ -538,9 +574,7 @@ pub mod pallet {
 
 			for (owner, weight) in miners {
 				let share: BalanceOf<T> =
-					payment_math::weight_share(pool, u128::from(weight), total_weight)
-						.get()
-						.saturated_into();
+					payment_math::weight_share(pool, weight, total_weight).get().saturated_into();
 				// Zero shares (weight rounds below one planck) and failed
 				// transfers (e.g. a reaped owner account below its ED) are
 				// skipped, not fatal: their share stays in the compartment.

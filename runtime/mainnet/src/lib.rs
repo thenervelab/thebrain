@@ -163,33 +163,37 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	}
 }
 
-/// Adapter: `pay_storage_miners` reads the storage-miner ranking
-/// (`RankingStorage`, instance 1) and pays each node's registered owner.
-pub struct StorageMinerRankingSource;
-impl pallet_hippocampus::StorageMinerRanking<AccountId> for StorageMinerRankingSource {
-	fn active_storage_miners() -> Vec<(AccountId, u16)> {
-		// Get uid 238's account if it exists
+/// Adapter: `pay_storage_miners` reads the **Arion** pallet — its family/child
+/// registry and its validator-reported node weights — and pays each family.
+///
+/// NOT `RankingStorage`. The ranking pallet is a separate, storage-node-keyed
+/// leaderboard that Arion operators do not appear in: paying from it left
+/// registered Arion families with real weight receiving nothing at all, which
+/// is the bug this adapter exists to fix. Arion is where a storage miner
+/// registers, where its deposit is locked, and where its weight is reported,
+/// so it is also where the payout set comes from.
+///
+/// The payee is the **family** (the operator account that put up the child
+/// deposits), not a child node account, and the family's weight is the sum of
+/// its eligible children's `NodeWeightByChild` — so a family's share of a
+/// payout is its summed node weight over the network's, and the family
+/// carrying the most weight is paid the most. Eligibility (Active
+/// registration + a non-stale weight) and the aggregation live in
+/// `pallet_arion::Pallet::active_family_weights`, which also guarantees the
+/// bank's "one payee, one entry" contract: `FamilyChildren` is keyed by
+/// family, so no family can appear twice.
+pub struct ArionFamilyWeightsSource;
+impl pallet_hippocampus::StorageMinerWeights<AccountId> for ArionFamilyWeightsSource {
+	fn active_storage_miners() -> Vec<(AccountId, u128)> {
+		// Carried over from the ranking-based adapter: uid 238 is excluded
+		// from emission by operator decision. Kept source-independent — it
+		// now only bites if that account is itself a registered Arion family.
 		let uid_238_account =
 			pallet_metagraph::Pallet::<Runtime>::get_uid_item(238).map(|uid| uid.substrate_address);
 
-		pallet_rankings::Pallet::<Runtime>::get_ranked_list()
+		pallet_arion::Pallet::<Runtime>::active_family_weights()
 			.into_iter()
-			.filter(|node| {
-				node.is_active && node.node_type == pallet_registration::NodeType::StorageMiner
-			})
-			.filter_map(|node| {
-				pallet_registration::Pallet::<Runtime>::get_registered_node(node.node_id.clone())
-					.ok()
-					.map(|info| (info.owner, node.weight))
-			})
-			// Filter out uid 238's account (already filtered to StorageMiner type by ranking)
-			.filter(|(owner, _)| {
-				if let Some(uid_238_acc) = &uid_238_account {
-					owner != uid_238_acc
-				} else {
-					true
-				}
-			})
+			.filter(|(family, _)| Some(family) != uid_238_account.as_ref())
 			.collect()
 	}
 }
@@ -476,7 +480,7 @@ impl pallet_hippocampus::Config for Runtime {
 	type Currency = Balances;
 	type PalletId = HippocampusPalletId;
 	type AdminOrigin = frame_system::EnsureSignedBy<ArionAdminMembers, AccountId>;
-	type MinerRanking = StorageMinerRankingSource;
+	type StorageMinerWeights = ArionFamilyWeightsSource;
 	type MaxMinersPerPayout = ConstU32<512>;
 	type BlocksPer24Hours = BlocksPer24Hours;
 	type Max24HourMinerPayout = Max24HourMinerPayout;
@@ -576,7 +580,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92006,
+	spec_version: 92007,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,

@@ -49,7 +49,7 @@ parameter_types! {
 }
 
 thread_local! {
-	static RANKED_MINERS: RefCell<Vec<(AccountId, u16)>> = const { RefCell::new(Vec::new()) };
+	static STORAGE_MINERS: RefCell<Vec<(AccountId, u128)>> = const { RefCell::new(Vec::new()) };
 	static COMPUTE_MINERS: RefCell<Vec<(AccountId, u128)>> = const { RefCell::new(Vec::new()) };
 	/// Epoch the mock weight set belongs to. Defaults to `None` so the tests
 	/// that predate the replay guard keep exercising a source with no
@@ -57,9 +57,12 @@ thread_local! {
 	static COMPUTE_EPOCH: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
 
-/// Test control for the ranked-miner set `pay_storage_miners` reads.
-pub fn set_ranked_miners(miners: Vec<(AccountId, u16)>) {
-	RANKED_MINERS.with(|m| *m.borrow_mut() = miners);
+/// Test control for the weighted storage-miner set `pay_storage_miners` reads.
+///
+/// In production these are Arion families and their summed child weights; the
+/// mock stands in for `pallet_arion::Pallet::active_family_weights`.
+pub fn set_storage_miners(miners: Vec<(AccountId, u128)>) {
+	STORAGE_MINERS.with(|m| *m.borrow_mut() = miners);
 }
 
 /// Whitelist an account to call `pay_storage_miners`.
@@ -72,10 +75,10 @@ pub fn set_compute_miners(miners: Vec<(AccountId, u128)>) {
 	COMPUTE_MINERS.with(|m| *m.borrow_mut() = miners);
 }
 
-pub struct MockRanking;
-impl pallet_hippocampus::StorageMinerRanking<AccountId> for MockRanking {
-	fn active_storage_miners() -> Vec<(AccountId, u16)> {
-		RANKED_MINERS.with(|m| m.borrow().clone())
+pub struct MockStorageWeights;
+impl pallet_hippocampus::StorageMinerWeights<AccountId> for MockStorageWeights {
+	fn active_storage_miners() -> Vec<(AccountId, u128)> {
+		STORAGE_MINERS.with(|m| m.borrow().clone())
 	}
 }
 
@@ -108,7 +111,7 @@ impl pallet_hippocampus::Config for Test {
 	type Currency = Balances;
 	type PalletId = HippocampusPalletId;
 	type AdminOrigin = frame_system::EnsureRoot<AccountId>;
-	type MinerRanking = MockRanking;
+	type StorageMinerWeights = MockStorageWeights;
 	type MaxMinersPerPayout = ConstU32<16>;
 	type BlocksPer24Hours = BlocksPer24Hours;
 	type Max24HourMinerPayout = Max24HourMinerPayout;
@@ -148,7 +151,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 	let mut ext = sp_io::TestExternalities::new(t);
 	ext.execute_with(|| {
 		System::set_block_number(1);
-		set_ranked_miners(Vec::new());
+		set_storage_miners(Vec::new());
 		set_compute_miners(Vec::new());
 	});
 	ext

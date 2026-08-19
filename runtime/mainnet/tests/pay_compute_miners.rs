@@ -13,7 +13,6 @@ use hippius_mainnet_runtime::{
 use pallet_arion::PayoutSource;
 use pallet_compute_scoring::{ChildRegistration, ChildStatus};
 use pallet_hippocampus::{ComputeMinerWeights, DepositType};
-use pallet_registration::{ColdkeyNodeInfoLite, NodeType, Status};
 use sp_core::crypto::Ss58Codec;
 use sp_runtime::{AccountId32, BuildStorage};
 
@@ -166,31 +165,34 @@ fn the_same_epoch_cannot_be_paid_twice() {
 	});
 }
 
-/// Register a storage-miner node and append it to the ranked list — needed
-/// only to prove the shared 24-hour budget spans both payouts.
-fn seed_ranked_storage_miner(node_seed: u8, owner: &AccountId, weight: u16, is_active: bool) {
-	let node_id = vec![node_seed; 32];
-	pallet_registration::ColdkeyNodeRegistrationV2::<Runtime>::insert(
-		node_id.clone(),
-		Some(ColdkeyNodeInfoLite {
-			node_id: node_id.clone(),
-			node_type: NodeType::StorageMiner,
-			status: Status::Online,
-			registered_at: 0u32.into(),
-			owner: owner.clone(),
-		}),
+/// Register an Arion storage family with one weighted child — needed only to
+/// prove the shared 24-hour budget spans both payouts.
+///
+/// `pay_storage_miners` reads Arion (`FamilyChildren` + `NodeWeightByChild`),
+/// not the ranking pallet, so seeding a ranked node here would leave the
+/// storage payout with no eligible miners.
+fn seed_arion_storage_family(family: &AccountId, child: &AccountId, weight: u16) {
+	let node_id: [u8; 32] = child.clone().into();
+	pallet_arion::ChildRegistrations::<Runtime>::insert(
+		child,
+		pallet_arion::ChildRegistration {
+			family: family.clone(),
+			node_id,
+			status: pallet_arion::ChildStatus::Active,
+			deposit: 0u128,
+			unbonding_end: 0u32.into(),
+		},
 	);
-	let mut list = pallet_rankings::RankedList::<Runtime>::get();
-	list.push(pallet_rankings::NodeRankings {
-		rank: u32::from(node_seed),
-		node_id,
-		node_ss58_address: owner.to_ss58check().into_bytes(),
-		node_type: NodeType::StorageMiner,
-		weight,
-		last_updated: 0u32.into(),
-		is_active,
+	pallet_arion::FamilyChildren::<Runtime>::mutate(family, |v| {
+		v.try_push(child.clone()).expect("under MaxChildrenPerFamily");
 	});
-	pallet_rankings::RankedList::<Runtime>::put(list);
+	pallet_arion::FamilyActiveChildren::<Runtime>::mutate(family, |n| *n += 1);
+	// Reported in the current bucket, so the weight is fresh.
+	pallet_arion::NodeWeightByChild::<Runtime>::insert(child, weight);
+	pallet_arion::NodeWeightLastBucket::<Runtime>::insert(
+		child,
+		pallet_arion::CurrentWeightBucket::<Runtime>::get(),
+	);
 }
 
 /// Close of `epoch`: `vali_submit_epoch_close` sets `CurrentEpoch = epoch`
@@ -389,7 +391,7 @@ fn the_daily_cap_is_shared_with_storage_payouts() {
 	new_test_ext().execute_with(|| {
 		let cap = <Runtime as pallet_hippocampus::Config>::Max24HourMinerPayout::get();
 		let family_a = account(2);
-		let storage_miner = account(9);
+		let storage_family = account(9);
 		let funder = account(1);
 		Balances::make_free_balance_be(&funder, cap.saturating_mul(4));
 
@@ -411,13 +413,13 @@ fn the_daily_cap_is_shared_with_storage_payouts() {
 		));
 		assert_ok!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::signed(admin()), admin()));
 
-		seed_ranked_storage_miner(30, &storage_miner, 100, true);
+		seed_arion_storage_family(&storage_family, &account(31), 100);
 		seed_compute_child(10, &family_a, &account(20), 7, 100, ChildStatus::Active);
 		close_epoch(7);
 
 		// Storage takes the whole day's budget.
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), cap));
-		assert_eq!(Balances::free_balance(&storage_miner), cap);
+		assert_eq!(Balances::free_balance(&storage_family), cap);
 
 		// Compute is rate-limited out even though its compartment is full.
 		assert_noop!(
