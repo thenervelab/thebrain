@@ -1,6 +1,7 @@
 use crate::{
-	mock::*, ComputeEmissionPaidOut, DepositType, EmissionPaidOut, Error, Event, LastPaidComputeEpoch,
-	MinerPaymentWhitelist, TotalDeposited, TotalPaidByRequester, TotalPaidOut,
+	mock::*, ComputeEmissionPaidOut, DepositType, EmissionPaidOut, Error, Event,
+	LastPaidComputeEpoch, MinerPaymentWhitelist, TotalDeposited, TotalPaidByRequester,
+	TotalPaidOut,
 };
 use frame_support::{assert_noop, assert_ok};
 
@@ -243,7 +244,7 @@ fn pay_storage_miners_distributes_pro_rata() {
 			1_000,
 			DepositType::Emission
 		));
-		set_ranked_miners(vec![(charlie(), 1), (dave(), 3)]);
+		set_storage_miners(vec![(charlie(), 1), (dave(), 3)]);
 		whitelist_miner_payment_caller(alice());
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1_000));
@@ -279,6 +280,189 @@ fn pay_storage_miners_distributes_pro_rata() {
 }
 
 #[test]
+fn pay_storage_miners_pays_every_family_by_summed_child_weight() {
+	// The regression this payout source exists for: families with real weight
+	// were receiving nothing because the payee set came from the ranking
+	// pallet, which Arion operators do not appear in. Every family the source
+	// returns must be paid, and paid in proportion to its summed child weight.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::Emission
+		));
+		// Family weights as Arion aggregates them: charlie runs three nodes at
+		// 50_000, dave one. Both are far past u16::MAX territory in total.
+		set_storage_miners(vec![(charlie(), 150_000), (dave(), 50_000)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 10_000));
+
+		// 3:1 on summed weight, and nobody eligible is left out.
+		assert_eq!(Balances::free_balance(charlie()), 7_500);
+		assert_eq!(Balances::free_balance(dave()), 2_500);
+		System::assert_last_event(
+			Event::StorageMinersPaid {
+				requested: 10_000,
+				paid: 10_000,
+				miners_paid: 2,
+				miners_skipped: 0,
+			}
+			.into(),
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_ranks_families_by_weight_not_by_node_count() {
+	// dave runs more nodes than charlie but carries less total weight, so
+	// dave is paid less: the share follows the summed weight, which is what
+	// "largest family gets the biggest share" has to mean once families run
+	// different numbers of differently-weighted nodes.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::Emission
+		));
+		// charlie: 1 node at 40_000. dave: 4 nodes at 2_500 = 10_000.
+		set_storage_miners(vec![(charlie(), 40_000), (dave(), 10_000)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 10_000));
+
+		assert_eq!(Balances::free_balance(charlie()), 8_000);
+		assert_eq!(Balances::free_balance(dave()), 2_000);
+		assert!(Balances::free_balance(charlie()) > Balances::free_balance(dave()));
+	});
+}
+
+#[test]
+fn pay_storage_miners_handles_wide_u128_family_weights() {
+	// A u16 accumulator would have clamped both families to 65_535 and split
+	// this payout 50/50. The u128 widening is what keeps the 4:1 real.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::Emission
+		));
+		// 35 children at MaxNodeWeight (the runtime's per-family ceiling) vs a
+		// quarter of that — both above u16::MAX.
+		let big = 1_750_000u128;
+		let small = big / 4;
+		assert!(small > u128::from(u16::MAX));
+		set_storage_miners(vec![(charlie(), big), (dave(), small)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 10_000));
+
+		assert_eq!(Balances::free_balance(charlie()), 8_000);
+		assert_eq!(Balances::free_balance(dave()), 2_000);
+	});
+}
+
+#[test]
+fn pay_storage_miners_rejects_a_weight_set_that_overruns_u128() {
+	// A denominator that saturates is SMALLER than the true total, and a small
+	// denominator inflates every pro-rata share: two payees at `u128::MAX`
+	// each compute a share of the whole pool. The bank must refuse the set
+	// outright, because the compartment guards ran once against `amount`
+	// before the transfer loop and nothing caps the running total.
+	//
+	// The bank is funded well past the requested amount ON PURPOSE, and from a
+	// second compartment. An under-funded bank makes this test pass for the
+	// wrong reason — the second transfer fails on insufficient balance and is
+	// booked as `miners_skipped`, so the payout looks conserved when it is
+	// only broke. That is exactly how the original version of this test
+	// passed against unguarded code.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::Emission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			100_000,
+			DepositType::MarketplaceRevenue
+		));
+		set_storage_miners(vec![(charlie(), u128::MAX), (dave(), u128::MAX)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 10_000),
+			Error::<Test>::WeightSumOverflow
+		);
+		// Nothing moved and no ledger advanced.
+		assert_eq!(Balances::free_balance(charlie()), 0);
+		assert_eq!(Balances::free_balance(dave()), 0);
+		assert_eq!(EmissionPaidOut::<Test>::get(), 0);
+		assert_eq!(Hippocampus::emission_available(), 10_000);
+	});
+}
+
+#[test]
+fn a_weight_set_at_the_u128_ceiling_still_settles() {
+	// The guard rejects an overrun, not a large-but-representable total: a set
+	// summing to exactly `u128::MAX` must still pay. Otherwise the fix trades
+	// an overdraw for a payout that can never settle.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::Emission
+		));
+		let half = u128::MAX / 2;
+		// half + (half + 1) == u128::MAX exactly.
+		set_storage_miners(vec![(charlie(), half), (dave(), half + 1)]);
+		whitelist_miner_payment_caller(alice());
+
+		let bank_before = Balances::free_balance(hippocampus_account());
+		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 10_000));
+
+		let paid = bank_before - Balances::free_balance(hippocampus_account());
+		assert!(paid <= 10_000, "payout {paid} exceeded the requested 10_000");
+		assert_eq!(EmissionPaidOut::<Test>::get(), paid);
+	});
+}
+
+#[test]
+fn pay_compute_miners_rejects_a_weight_set_that_overruns_u128() {
+	// Same guard on the compute compartment, and the same funding trap: the
+	// bank holds far more than the request so a rejected set cannot be
+	// confused with a bank that simply ran out.
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			10_000,
+			DepositType::ComputeEmission
+		));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			100_000,
+			DepositType::MarketplaceRevenue
+		));
+		set_compute_miners(vec![(charlie(), u128::MAX), (dave(), u128::MAX)]);
+		whitelist_miner_payment_caller(alice());
+
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 10_000),
+			Error::<Test>::WeightSumOverflow
+		);
+		assert_eq!(Balances::free_balance(charlie()), 0);
+		assert_eq!(ComputeEmissionPaidOut::<Test>::get(), 0);
+		assert_eq!(Hippocampus::compute_emission_available(), 10_000);
+	});
+}
+
+#[test]
 fn pay_storage_miners_skips_failed_transfers() {
 	new_test_ext().execute_with(|| {
 		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
@@ -290,7 +474,7 @@ fn pay_storage_miners_skips_failed_transfers() {
 		// charlie's share (101 * 1/20 = 5) is below the ED of 10 and charlie
 		// holds no account, so the transfer itself fails and is skipped;
 		// dave's share (95) clears the ED and pays out.
-		set_ranked_miners(vec![(charlie(), 1), (dave(), 19)]);
+		set_storage_miners(vec![(charlie(), 1), (dave(), 19)]);
 		whitelist_miner_payment_caller(alice());
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 101));
@@ -318,13 +502,16 @@ fn pay_storage_miners_conserves_every_planck() {
 	// Invariant sweep: whatever the weight vector, exactly `paid` leaves the
 	// bank, all of it lands with miners, both ledgers book the same figure,
 	// and floor-division dust is bounded by one planck per miner.
-	let cases: &[(&[u16], u128)] = &[
+	let cases: &[(&[u128], u128)] = &[
 		(&[1, 3], 1_000),
 		(&[7, 7, 7], 1_000),
 		(&[1, 65_535], 9_999),
 		(&[13, 29, 58], 101),
 		(&[5], 10),
 		(&[1, 2, 3, 4, 5, 6, 7], 9_973),
+		// Family-scale totals: sums of 35 children at MaxNodeWeight, i.e.
+		// well past what a u16 weight could have carried.
+		(&[1_750_000, 250_000], 9_973),
 	];
 	for (weights, amount) in cases {
 		new_test_ext().execute_with(|| {
@@ -338,7 +525,7 @@ fn pay_storage_miners_conserves_every_planck() {
 				10_000,
 				DepositType::Emission
 			));
-			let miners: Vec<(AccountId, u16)> = weights
+			let miners: Vec<(AccountId, u128)> = weights
 				.iter()
 				.enumerate()
 				.map(|(i, w)| {
@@ -346,7 +533,7 @@ fn pay_storage_miners_conserves_every_planck() {
 					(sp_runtime::AccountId32::new([100 + index; 32]), *w)
 				})
 				.collect();
-			set_ranked_miners(miners.clone());
+			set_storage_miners(miners.clone());
 			whitelist_miner_payment_caller(alice());
 
 			let bank_before = Balances::free_balance(hippocampus_account());
@@ -397,7 +584,7 @@ fn pay_storage_miners_respects_distribution_switch() {
 			1_000,
 			DepositType::Emission
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		whitelist_miner_payment_caller(alice());
 		assert_ok!(Hippocampus::set_distribution_enabled(RuntimeOrigin::root(), false));
 		assert_noop!(
@@ -417,7 +604,7 @@ fn pay_storage_miners_cannot_spend_other_compartments() {
 			1_000,
 			DepositType::MarketplaceRevenue
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		whitelist_miner_payment_caller(alice());
 		assert_noop!(
 			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
@@ -438,7 +625,7 @@ fn pay_storage_miners_cannot_overdraw_the_bank() {
 		));
 		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), bob()));
 		assert_ok!(Hippocampus::request_payment(&bob(), &charlie(), 600));
-		set_ranked_miners(vec![(dave(), 1)]);
+		set_storage_miners(vec![(dave(), 1)]);
 		whitelist_miner_payment_caller(alice());
 		assert_noop!(
 			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 1_000),
@@ -448,7 +635,7 @@ fn pay_storage_miners_cannot_overdraw_the_bank() {
 }
 
 #[test]
-fn pay_storage_miners_rejects_empty_or_zero_weight_ranking() {
+fn pay_storage_miners_rejects_empty_or_zero_weight_sources() {
 	new_test_ext().execute_with(|| {
 		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
 		assert_ok!(Hippocampus::deposit(
@@ -461,7 +648,7 @@ fn pay_storage_miners_rejects_empty_or_zero_weight_ranking() {
 			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
 			Error::<Test>::NoEligibleMiners
 		);
-		set_ranked_miners(vec![(charlie(), 0), (dave(), 0)]);
+		set_storage_miners(vec![(charlie(), 0), (dave(), 0)]);
 		whitelist_miner_payment_caller(alice());
 		assert_noop!(
 			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
@@ -481,8 +668,8 @@ fn pay_storage_miners_bounds_the_miner_list() {
 		));
 		// MaxMinersPerPayout is 16 in the mock; 17 entries must reject.
 		let miners: Vec<_> =
-			(1u8..=17).map(|i| (sp_runtime::AccountId32::new([i; 32]), 1u16)).collect();
-		set_ranked_miners(miners);
+			(1u8..=17).map(|i| (sp_runtime::AccountId32::new([i; 32]), 1u128)).collect();
+		set_storage_miners(miners);
 		whitelist_miner_payment_caller(alice());
 		assert_noop!(
 			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
@@ -500,7 +687,7 @@ fn pay_storage_miners_dust_stays_in_compartment() {
 			1_000,
 			DepositType::Emission
 		));
-		set_ranked_miners(vec![(charlie(), 3), (dave(), 7)]);
+		set_storage_miners(vec![(charlie(), 3), (dave(), 7)]);
 		whitelist_miner_payment_caller(alice());
 
 		// 101 * 3/10 = 30, 101 * 7/10 = 70 — one planck of dust remains.
@@ -532,7 +719,7 @@ fn pay_storage_miners_skips_zero_shares() {
 			DepositType::Emission
 		));
 		// 10_000 * 1/65_536 floors to zero: charlie is skipped, not fatal.
-		set_ranked_miners(vec![(charlie(), 1), (dave(), 65_535)]);
+		set_storage_miners(vec![(charlie(), 1), (dave(), 65_535)]);
 		whitelist_miner_payment_caller(alice());
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 10_000));
@@ -560,7 +747,7 @@ fn pay_storage_miners_compartment_is_cumulative() {
 			1_000,
 			DepositType::Emission
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		whitelist_miner_payment_caller(alice());
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 600));
@@ -589,7 +776,7 @@ fn pay_storage_miners_respects_24hour_cap() {
 			cap * 2,
 			DepositType::Emission
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		whitelist_miner_payment_caller(alice());
 
 		// A single request above the cap rejects outright.
@@ -667,7 +854,7 @@ fn pay_storage_miners_resets_24hour_period() {
 			cap * 2,
 			DepositType::Emission
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		whitelist_miner_payment_caller(alice());
 
 		// Exhaust the whole 24-hour budget; the next planck rejects.
@@ -748,7 +935,7 @@ fn pay_compute_miners_distributes_pro_rata() {
 
 #[test]
 fn pay_compute_miners_handles_wide_u128_weights() {
-	// The compute weights are u128, not the storage ranking's u16 — a realistic
+	// A realistic
 	// `EpochWeights` pair near `MaxEpochWeightPerNode` (u64::MAX) must still
 	// split cleanly and never overflow the wide intermediate.
 	new_test_ext().execute_with(|| {
@@ -983,7 +1170,7 @@ fn pay_storage_miners_cannot_spend_the_compute_compartment() {
 			1_000,
 			DepositType::ComputeEmission
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		whitelist_miner_payment_caller(alice());
 		assert_noop!(
 			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
@@ -1008,7 +1195,7 @@ fn the_two_compartments_are_independently_spendable() {
 			1_000,
 			DepositType::ComputeEmission
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		set_compute_miners(vec![(dave(), 1)]);
 		whitelist_miner_payment_caller(alice());
 
@@ -1164,7 +1351,7 @@ fn the_24hour_budget_is_shared_across_both_payouts() {
 			cap,
 			DepositType::ComputeEmission
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		set_compute_miners(vec![(dave(), 1)]);
 		whitelist_miner_payment_caller(alice());
 
@@ -1218,7 +1405,7 @@ fn the_shared_24hour_period_resets_once_for_both_payouts() {
 			cap,
 			DepositType::ComputeEmission
 		));
-		set_ranked_miners(vec![(charlie(), 1)]);
+		set_storage_miners(vec![(charlie(), 1)]);
 		set_compute_miners(vec![(dave(), 1)]);
 		whitelist_miner_payment_caller(alice());
 

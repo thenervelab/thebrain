@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod family_weights;
 pub mod weights;
 pub use weights::WeightInfo;
 
@@ -2284,6 +2285,57 @@ pub mod pallet {
 			let pen = pen_total / fresh_children;
 			let final_score = with_uptime.saturating_sub(pen).min(max_score);
 			final_score as u16
+		}
+
+		/// Active families and the payout weight the storage-emission bank
+		/// distributes by: for each family, the **sum of the node weights of
+		/// its eligible children**.
+		///
+		/// A child is eligible when all of the following hold:
+		///
+		/// * `ChildRegistrations[child].family == family` — the child's own
+		///   registration names the family whose list it was found under; and
+		/// * `ChildRegistrations[child].status == Active` — a child that
+		///   deregistered is in `Unbonding` with its deposit on the way out,
+		///   so it has nothing at risk and must not keep earning; and
+		/// * **fresh** — its weight was last reported within
+		///   `StaleChildBuckets` of `CurrentWeightBucket`. `NodeWeightByChild`
+		///   keeps a node's last value until `prune_stale_node_weights` gets
+		///   to it, so without the freshness check a node that went offline
+		///   would be paid on its final good weight indefinitely.
+		///
+		/// These are exactly the two filters `compute_family_weight_from_nodes`
+		/// applies, so a family cannot be eligible for scoring and ineligible
+		/// for payment or vice versa.
+		///
+		/// Families are the payees: emission goes to the account that put up
+		/// the child deposits, not to the child accounts. Each family appears
+		/// at most once — `FamilyChildren` is keyed by family — which is the
+		/// bank's "one payee, one entry" contract.
+		///
+		/// Cost is bounded by the registration caps, not by the caller:
+		/// at most `MaxFamilies` keys scanned and `MaxChildrenTotal` children
+		/// read across all of them (3 reads each).
+		pub fn active_family_weights() -> Vec<(T::AccountId, u128)> {
+			let bucket = CurrentWeightBucket::<T>::get();
+			let stale = T::StaleChildBuckets::get();
+			crate::family_weights::sum_family_weights(
+				FamilyChildren::<T>::iter(),
+				|family, child| {
+					let Some(reg) = ChildRegistrations::<T>::get(child) else { return false };
+					// The child's OWN registration must name the family whose
+					// list it was found under. `FamilyChildren` and
+					// `ChildRegistrations` are two indexes of one fact, kept in
+					// step by `register_child` / `deregister_child`; this makes
+					// "a family is only paid for children it owns" enforced
+					// here rather than assumed of every future writer. The read
+					// is already needed for the status check, so it is free.
+					reg.family == *family
+						&& reg.status == ChildStatus::Active
+						&& bucket.saturating_sub(NodeWeightLastBucket::<T>::get(child)) <= stale
+				},
+				|child| NodeWeightByChild::<T>::get(child),
+			)
 		}
 
 		pub fn get_total_family_weight() -> u128 {

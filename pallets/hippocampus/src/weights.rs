@@ -12,6 +12,18 @@ use frame_support::{
 };
 use sp_std::marker::PhantomData;
 
+/// Reads `pay_storage_miners` spends assembling its payee set from the Arion
+/// pallet, before it pays anybody.
+///
+/// Sized off `MaxChildrenTotal` (1_000): a `FamilyChildren` key exists only
+/// while a family has at least one Active child (the key is removed at zero by
+/// `cleanup_family_when_no_active_children`), so the number of scanned family
+/// keys is bounded by the active-child cap, not by `MaxFamilies` (600) — same
+/// reasoning that sizes `MaxMinersPerPayout` in the mainnet runtime. On top of
+/// those keys, three reads (`ChildRegistrations`, `NodeWeightLastBucket`,
+/// `NodeWeightByChild`) for each of at most `MaxChildrenTotal` children.
+const SOURCE_SCAN_READS: u64 = 1_000 + 3 * 1_000;
+
 pub trait WeightInfo {
 	fn deposit() -> Weight;
 	fn add_requester() -> Weight;
@@ -45,8 +57,15 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	fn pay_storage_miners(n: u32) -> Weight {
 		// Guards + compartment/ledger bookkeeping, then one transfer
 		// (2 account reads/writes) per miner.
+		//
+		// `SOURCE_SCAN_READS` covers building the payee set, which the
+		// per-miner term does not: the Arion source walks `FamilyChildren`
+		// (<= `MaxFamilies` keys) and reads registration, freshness, and
+		// weight for each child (<= `MaxChildrenTotal` x 3 network-wide). It
+		// is a flat term because the walk is bounded by those registration
+		// caps, not by `n`. Revisit if the runtime raises them.
 		Weight::from_parts(30_000_000, 0)
-			.saturating_add(T::DbWeight::get().reads(5_u64))
+			.saturating_add(T::DbWeight::get().reads(5_u64 + SOURCE_SCAN_READS))
 			.saturating_add(T::DbWeight::get().writes(3_u64))
 			.saturating_add(
 				Weight::from_parts(50_000_000, 0)
@@ -90,7 +109,7 @@ impl WeightInfo for () {
 
 	fn pay_storage_miners(n: u32) -> Weight {
 		Weight::from_parts(30_000_000, 0)
-			.saturating_add(RocksDbWeight::get().reads(5_u64))
+			.saturating_add(RocksDbWeight::get().reads(5_u64 + SOURCE_SCAN_READS))
 			.saturating_add(RocksDbWeight::get().writes(3_u64))
 			.saturating_add(
 				Weight::from_parts(50_000_000, 0)
