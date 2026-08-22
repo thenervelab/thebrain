@@ -287,6 +287,36 @@ pub mod pallet {
 	#[pallet::getter(fn referral_bank_floor)]
 	pub type ReferralBankFloor<T: Config> = StorageValue<_, u128, ValueQuery>;
 
+	#[pallet::type_value]
+	pub fn DefaultReferralPayoutThreshold() -> u128 {
+		1_000
+	}
+
+	/// Minimum accrued commission before an hourly payout is attempted.
+	///
+	/// Hourly pay-as-you-go commissions are dust — 5% of one hour of per-GB
+	/// billing — so paying each one as it is earned would burn a transfer per
+	/// user per hour and lose most of them to the existential deposit anyway.
+	/// They accrue instead and settle in one transfer once the balance clears
+	/// this threshold, which must stay comfortably above ED for a first payout
+	/// to be able to create the referrer's account.
+	#[pallet::storage]
+	#[pallet::getter(fn referral_payout_threshold)]
+	pub type ReferralPayoutThreshold<T: Config> =
+		StorageValue<_, u128, ValueQuery, DefaultReferralPayoutThreshold>;
+
+	/// Commission earned on hourly pay-as-you-go charges but not yet paid out,
+	/// per referrer, in credits.
+	///
+	/// This is a running balance, not a debt: it is paid down as far as the
+	/// bank's headroom above `ReferralBankFloor` allows, and whatever the bank
+	/// cannot cover simply stays here for the next attempt. Nothing in the
+	/// billing flow ever waits on it.
+	#[pallet::storage]
+	#[pallet::getter(fn accrued_referral_commission)]
+	pub type AccruedReferralCommission<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
 	/// Tracks the last block a user cancelled any subscription, to enforce resubscribe cooldowns.
 	#[pallet::storage]
 	#[pallet::getter(fn last_subscription_cancelled_at)]
@@ -497,6 +527,19 @@ pub mod pallet {
 		/// Root changed the bank floor referral commissions must not breach.
 		ReferralBankFloorUpdated {
 			floor: u128,
+		},
+		/// Root changed the accrual threshold for hourly commission payouts.
+		ReferralPayoutThresholdUpdated {
+			threshold: u128,
+		},
+		/// Hourly pay-as-you-go commission credited to a referrer's accrued
+		/// balance. `accrued_credits` is the balance after adding
+		/// `added_credits`; a payout is attempted in the same pass once it
+		/// clears `ReferralPayoutThreshold`.
+		ReferralCommissionAccrued {
+			referrer: T::AccountId,
+			added_credits: u128,
+			accrued_credits: u128,
 		},
 		/// User Drive + S3 usage metrics were updated by a validator.
 		UserBackendFilesUpdated {
@@ -1271,6 +1314,25 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// Root sets the minimum accrued commission that triggers an hourly
+		/// payout.
+		///
+		/// Raising it batches hourly commissions into fewer, larger transfers;
+		/// lowering it pays them out sooner. Setting it below the existential
+		/// deposit is allowed but pointless: a payout that cannot create the
+		/// referrer's account fails and the balance simply stays accrued.
+		#[pallet::call_index(31)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn sudo_set_referral_payout_threshold(
+			origin: OriginFor<T>,
+			threshold: u128,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			ReferralPayoutThreshold::<T>::put(threshold);
+			Self::deposit_event(Event::ReferralPayoutThresholdUpdated { threshold });
+			Ok(())
+		}
+
 		/// Create referral codes on behalf of users. Callable only by a whitelisted caller,
 		/// bounded by `MaxReferralCodesPerCall`.
 		///
@@ -1328,15 +1390,23 @@ pub mod pallet {
 			split(Credits::new(charged_credits), rate).0.get()
 		}
 
-		/// Pay a referral commission in native tokens from the bank.
+		/// Pay a referral commission in native tokens from the bank, returning
+		/// the amount actually released.
 		///
 		/// Credits → planck is 1:1 numerically (same convention as
 		/// pallet-registration). The bank never overdraws: it pays what it can
 		/// and the shortfall is dropped — a referral commission is a bonus,
 		/// never a debt, and must never fail the billing flow that earned it.
-		fn try_pay_referral_commission_tokens(referrer: &T::AccountId, commission_credits: u128) {
+		///
+		/// The return value lets the hourly accrual path settle its running
+		/// balance by exactly what was paid; the purchase and monthly-renewal
+		/// callers ignore it and keep dropping any shortfall.
+		fn try_pay_referral_commission_tokens(
+			referrer: &T::AccountId,
+			commission_credits: u128,
+		) -> u128 {
 			if commission_credits == 0 {
-				return;
+				return 0;
 			}
 
 			// Compartmentalization wall — same rule the runtime's
@@ -1371,11 +1441,13 @@ pub mod pallet {
 				requested,
 			) {
 				Ok(paid) => {
+					let paid_tokens = paid.saturated_into::<u128>();
 					Self::deposit_event(Event::<T>::ReferralCommissionPaid {
 						referrer: referrer.clone(),
 						requested_credits: commission_credits,
-						paid_tokens: paid.saturated_into(),
+						paid_tokens,
 					});
+					paid_tokens
 				},
 				Err(e) => {
 					// Not-whitelisted (post-upgrade setup missed), payouts
@@ -1392,7 +1464,58 @@ pub mod pallet {
 						referrer: referrer.clone(),
 						requested_credits: commission_credits,
 					});
+					0
 				},
+			}
+		}
+
+		/// The referrer behind a user's redeemed code, if the user redeemed one.
+		fn referrer_of(who: &T::AccountId) -> Option<T::AccountId> {
+			let code = CreditsPallet::<T>::referred_users(who)?;
+			CreditsPallet::<T>::referral_codes(code)
+		}
+
+		/// Credit a referrer for one hourly pay-as-you-go charge, settling the
+		/// accrued balance once it clears the payout threshold.
+		///
+		/// Hourly charges are recurring usage, so they follow the
+		/// monthly-renewal rule rather than the purchase rule: the referrer
+		/// earns a commission on what was collected, and the referred user
+		/// gets no discount — the 5% buyer discount stays purchase-only.
+		fn accrue_hourly_referral_commission(user: &T::AccountId, charged_credits: u128) {
+			let commission = Self::referral_commission_credits(charged_credits);
+			if commission == 0 {
+				return;
+			}
+			let Some(referrer) = Self::referrer_of(user) else {
+				return;
+			};
+
+			let accrued = AccruedReferralCommission::<T>::get(&referrer).saturating_add(commission);
+			Self::deposit_event(Event::ReferralCommissionAccrued {
+				referrer: referrer.clone(),
+				added_credits: commission,
+				accrued_credits: accrued,
+			});
+
+			// Below the threshold the balance just sits; paying it now would
+			// cost a transfer to move dust the referrer likely cannot receive.
+			if accrued < ReferralPayoutThreshold::<T>::get() {
+				AccruedReferralCommission::<T>::insert(&referrer, accrued);
+				return;
+			}
+
+			// Settle by exactly what the bank released. A bank that is dry, at
+			// its floor, or unable to reach the referrer leaves the remainder
+			// accrued for the next hour instead of dropping it — the accrual
+			// IS the ledger here, unlike the one-shot purchase path where a
+			// missed commission has nowhere to be recorded.
+			let paid = Self::try_pay_referral_commission_tokens(&referrer, accrued);
+			let remainder = accrued.saturating_sub(paid);
+			if remainder == 0 {
+				AccruedReferralCommission::<T>::remove(&referrer);
+			} else {
+				AccruedReferralCommission::<T>::insert(&referrer, remainder);
 			}
 		}
 
@@ -2219,11 +2342,9 @@ pub mod pallet {
 					let storage_part = if storage_ok { total_storage_charge } else { 0 };
 					let total_charged = storage_part.saturating_add(compute_charged_total);
 					if total_charged > 0 {
-						if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
-							if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
-								let commission = Self::referral_commission_credits(total_charged);
-								Self::try_pay_referral_commission_tokens(&referrer, commission);
-							}
+						if let Some(referrer) = Self::referrer_of(&account_id) {
+							let commission = Self::referral_commission_credits(total_charged);
+							Self::try_pay_referral_commission_tokens(&referrer, commission);
 						}
 					}
 
@@ -2357,6 +2478,12 @@ pub mod pallet {
 						let charge_result = Self::consume_credits(user.clone(), charge_amount);
 
 						if charge_result.is_ok() {
+							// Commission on money actually collected, same rule
+							// as the monthly path. Accrued rather than paid per
+							// hour, and never allowed to affect the charge that
+							// earned it.
+							Self::accrue_hourly_referral_commission(&user, charge_amount);
+
 							let tx_result = Self::record_credits_transaction(
 								&user,
 								NativeTransactionType::Subscription,
@@ -2388,10 +2515,12 @@ pub mod pallet {
 			// Conservative weight accounting:
 			// - reading `UserAllSubscriptionPlans` and `StorageLastChargedAt` per user
 			// - charged/removed paths do writes and call into other pallets
+			// - a charged user may also walk the referral lookup, read the bank's
+			//   reserve ledgers, and write back an accrual or a payout
 			let reads = users_seen
 				.saturating_mul(5)
-				.saturating_add(users_charged_or_removed.saturating_mul(10));
-			let writes = users_charged_or_removed.saturating_mul(10);
+				.saturating_add(users_charged_or_removed.saturating_mul(20));
+			let writes = users_charged_or_removed.saturating_mul(12);
 			T::DbWeight::get().reads_writes(reads, writes)
 		}
 

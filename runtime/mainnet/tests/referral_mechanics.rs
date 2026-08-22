@@ -734,3 +734,334 @@ fn failed_renewal_deactivates_subscription_and_pays_no_commission() {
 		assert_eq!(Balances::free_balance(&referrer), ED + PURCHASE_COMMISSION);
 	});
 }
+
+// ── Hourly pay-as-you-go commission ──────────────────────────────────────
+//
+// Users without an active storage plan are billed per GiB every hour by
+// `handle_arion_storage_charging`. That path follows the monthly-renewal
+// rule, not the purchase rule: the referrer earns a commission, the referred
+// user gets no discount. Because an hour of per-GB billing is dust, the
+// commission accrues per referrer and settles in one transfer once it clears
+// `ReferralPayoutThreshold`.
+
+/// Hourly price per GiB. Odd so the 5% commission actually floors.
+const PRICE_PER_GB: u128 = 411;
+/// 3 GiB + 1 byte — billed as 4 whole GiB, so `gibs_ceil` rounding is live.
+const FILE_BYTES: u128 = 3 * payment_math::GIB + 1;
+/// `411 × 4` — one hour of billing.
+const HOURLY_CHARGE: u128 = 1_644;
+/// `split(1_644, 500).0` = ⌊1_644 × 500 / 10_000⌋ = ⌊82.2⌋.
+const HOURLY_COMMISSION: u128 = 82;
+
+/// `BlocksPerHour` is 600 and the charge check only runs on multiples of
+/// `BlockChargeCheckInterval` (8), so the soonest block that can carry the
+/// next hourly charge is 608 after the previous one. Hour `h` is therefore
+/// block `h × 608`, and consecutive hours are always far enough apart.
+const HOURLY_STEP: u64 = 608;
+
+/// Low threshold so a payout lands on the third hour (246 ≥ 200) instead of
+/// the thirteenth, while staying above what a single hour earns.
+const TEST_THRESHOLD: u128 = 200;
+
+fn set_threshold(threshold: u128) {
+	assert_ok!(Marketplace::sudo_set_referral_payout_threshold(RuntimeOrigin::root(), threshold));
+}
+
+/// Put `who` on the hourly path: files stored in arion, no storage plan.
+fn store_files(who: &AccountId) {
+	assert_ok!(Marketplace::set_price_per_gb(RuntimeOrigin::root(), PRICE_PER_GB));
+	pallet_arion::UserTotalFilesSize::<Runtime>::insert(who, FILE_BYTES);
+}
+
+/// Run the hourly charge tick for each hour in `hours` (1-based). Ranges are
+/// explicit rather than cumulative so a test that charges again after an
+/// assertion says exactly which hours it is adding.
+fn run_hours(hours: core::ops::RangeInclusive<u64>) {
+	for h in hours {
+		let block = h * HOURLY_STEP;
+		System::set_block_number(block);
+		Marketplace::on_initialize(block);
+	}
+}
+
+/// A referred user billed hourly: ED-funded referrer, credits deposited with
+/// the code, files stored, no subscription. Returns (referrer, user).
+fn referred_hourly_setup(user_credits: u128) -> (AccountId, AccountId) {
+	let referrer = account(10);
+	let user = account(11);
+	let code = new_referral_code(&referrer);
+	fund_ed(&referrer);
+	deposit_credits(&user, user_credits, Some(code));
+	store_files(&user);
+	(referrer, user)
+}
+
+#[test]
+fn hourly_charge_below_threshold_accrues_without_paying() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		let (referrer, user) = referred_hourly_setup(10 * HOURLY_CHARGE);
+		let bank_before = Balances::free_balance(&Hippocampus::account_id());
+
+		run_hours(1..=1);
+
+		// The user was billed one hour at the full per-GiB rate.
+		assert_eq!(Credits::get_free_credits(&user), 9 * HOURLY_CHARGE);
+		// Commission is held, not paid: nothing left the bank.
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), HOURLY_COMMISSION);
+		assert_eq!(Balances::free_balance(&referrer), ED);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), bank_before);
+	});
+}
+
+#[test]
+fn hourly_accrual_pays_out_once_it_clears_the_threshold() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		let (referrer, user) = referred_hourly_setup(10 * HOURLY_CHARGE);
+		let bank_before = Balances::free_balance(&Hippocampus::account_id());
+
+		// 82, then 164 — both under 200 — then 246 clears it and settles all
+		// three hours in one transfer.
+		run_hours(1..=3);
+
+		let payout = 3 * HOURLY_COMMISSION;
+		assert_eq!(payout, 246);
+		assert_eq!(Balances::free_balance(&referrer), ED + payout);
+		assert_eq!(
+			Marketplace::accrued_referral_commission(&referrer),
+			0,
+			"a fully paid accrual is cleared, not left as a zero row"
+		);
+		assert!(!pallet_marketplace::AccruedReferralCommission::<Runtime>::contains_key(&referrer));
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), bank_before - payout);
+		assert_eq!(Credits::get_free_credits(&user), 7 * HOURLY_CHARGE);
+	});
+}
+
+#[test]
+fn hourly_accrual_restarts_after_a_payout() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		let (referrer, _user) = referred_hourly_setup(10 * HOURLY_CHARGE);
+
+		run_hours(1..=3);
+		assert_eq!(Balances::free_balance(&referrer), ED + 3 * HOURLY_COMMISSION);
+
+		// Hour 4 opens a fresh accrual on top of the hour-3 payout.
+		run_hours(4..=4);
+		assert_eq!(Balances::free_balance(&referrer), ED + 3 * HOURLY_COMMISSION);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), HOURLY_COMMISSION);
+	});
+}
+
+#[test]
+fn default_threshold_batches_thirteen_hours_into_one_payout() {
+	new_test_ext().execute_with(|| {
+		// No sudo call: exercise the shipped default (1_000), which needs
+		// ⌈1_000 / 82⌉ = 13 hours to clear.
+		assert_eq!(Marketplace::referral_payout_threshold(), 1_000);
+		let (referrer, _user) = referred_hourly_setup(20 * HOURLY_CHARGE);
+
+		run_hours(1..=12);
+		assert_eq!(12 * HOURLY_COMMISSION, 984);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 984);
+		assert_eq!(Balances::free_balance(&referrer), ED, "984 is still under 1_000");
+
+		run_hours(13..=13);
+		assert_eq!(13 * HOURLY_COMMISSION, 1_066);
+		assert_eq!(Balances::free_balance(&referrer), ED + 1_066);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 0);
+	});
+}
+
+#[test]
+fn hourly_charge_without_a_referrer_accrues_nothing() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		let user = account(11);
+		deposit_credits(&user, 10 * HOURLY_CHARGE, None);
+		store_files(&user);
+		let bank_before = Balances::free_balance(&Hippocampus::account_id());
+
+		run_hours(1..=3);
+
+		assert_eq!(Credits::get_free_credits(&user), 7 * HOURLY_CHARGE);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), bank_before);
+	});
+}
+
+#[test]
+fn hourly_billing_gives_the_referred_user_no_discount() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		let (_referrer, referred) = referred_hourly_setup(10 * HOURLY_CHARGE);
+		let plain = account(12);
+		deposit_credits(&plain, 10 * HOURLY_CHARGE, None);
+		pallet_arion::UserTotalFilesSize::<Runtime>::insert(&plain, FILE_BYTES);
+
+		run_hours(1..=1);
+
+		// The 5% buyer discount is purchase-only; hourly usage is recurring,
+		// so both users pay the identical per-GiB charge.
+		assert_eq!(Credits::get_free_credits(&referred), Credits::get_free_credits(&plain));
+		assert_eq!(Credits::get_free_credits(&referred), 9 * HOURLY_CHARGE);
+	});
+}
+
+#[test]
+fn subscriber_who_cancels_keeps_earning_commission_hourly() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		let referrer = account(10);
+		let buyer = account(11);
+		let plan_id = add_plan(b"storage", true);
+		let code = new_referral_code(&referrer);
+		fund_ed(&referrer);
+		// Enough for the discounted first month plus several hourly charges.
+		deposit_credits(&buyer, CHARGED + 10 * HOURLY_CHARGE, Some(code));
+		purchase(&buyer, plan_id, None);
+
+		// The purchase commission lands immediately, and the subscription
+		// suppresses hourly billing entirely.
+		assert_eq!(Balances::free_balance(&referrer), ED + PURCHASE_COMMISSION);
+		store_files(&buyer);
+		run_hours(1..=1);
+		assert_eq!(
+			Credits::get_free_credits(&buyer),
+			10 * HOURLY_CHARGE,
+			"an active storage plan is not also billed per GiB"
+		);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 0);
+
+		// Cancel: a Jan-1 purchase has no whole future month to refund, so the
+		// credit balance is untouched and the user drops onto the hourly path.
+		assert_ok!(Marketplace::cancel_user_subscription(
+			RuntimeOrigin::signed(backend()),
+			buyer.clone(),
+			None,
+		));
+		assert_eq!(Credits::get_free_credits(&buyer), 10 * HOURLY_CHARGE);
+
+		run_hours(2..=5);
+
+		assert_eq!(Credits::get_free_credits(&buyer), 6 * HOURLY_CHARGE);
+		// The first three post-cancel hours settle at 246; the fourth accrues
+		// 82 towards the next payout.
+		assert_eq!(
+			Balances::free_balance(&referrer),
+			ED + PURCHASE_COMMISSION + 3 * HOURLY_COMMISSION,
+		);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), HOURLY_COMMISSION);
+	});
+}
+
+#[test]
+fn accrual_survives_a_bank_at_its_floor_and_pays_later() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		// Floor above the whole bank balance: nothing is payable.
+		assert_ok!(Marketplace::sudo_set_referral_bank_floor(RuntimeOrigin::root(), BANK_FUND));
+		let (referrer, _user) = referred_hourly_setup(10 * HOURLY_CHARGE);
+
+		run_hours(1..=3);
+
+		// The payout attempt released nothing, so the balance stays owed —
+		// unlike the one-shot purchase path, where a shortfall is dropped
+		// because there is nowhere to record it.
+		assert_eq!(Balances::free_balance(&referrer), ED);
+		assert_eq!(Balances::free_balance(&Hippocampus::account_id()), BANK_FUND);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 3 * HOURLY_COMMISSION);
+
+		// Lift the floor: the next hour settles everything accrued so far.
+		assert_ok!(Marketplace::sudo_set_referral_bank_floor(RuntimeOrigin::root(), 0));
+		run_hours(4..=4);
+
+		assert_eq!(Balances::free_balance(&referrer), ED + 4 * HOURLY_COMMISSION);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 0);
+	});
+}
+
+#[test]
+fn partial_payout_leaves_the_exact_remainder_accrued() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		// Leave exactly 100 tokens of headroom above the floor.
+		let floor = BANK_FUND - ED - 100;
+		assert_ok!(Marketplace::sudo_set_referral_bank_floor(RuntimeOrigin::root(), floor));
+		let (referrer, _user) = referred_hourly_setup(10 * HOURLY_CHARGE);
+
+		run_hours(1..=3);
+
+		// 246 requested, 100 released, 146 still owed — and the floor holds.
+		assert_eq!(Balances::free_balance(&referrer), ED + 100);
+		assert_eq!(
+			Marketplace::accrued_referral_commission(&referrer),
+			3 * HOURLY_COMMISSION - 100,
+		);
+		assert!(Balances::free_balance(&Hippocampus::account_id()) >= floor + ED);
+	});
+}
+
+#[test]
+fn accrual_is_retained_until_it_can_create_an_unfunded_referrers_account() {
+	new_test_ext().execute_with(|| {
+		// Threshold below ED with a referrer that was never funded: every
+		// payout attempt from hour 2 on fails the ED check until the accrual
+		// itself reaches 500.
+		set_threshold(100);
+		let referrer = account(10);
+		let user = account(11);
+		let code = new_referral_code(&referrer);
+		deposit_credits(&user, 10 * HOURLY_CHARGE, Some(code));
+		store_files(&user);
+		assert_eq!(Balances::free_balance(&referrer), 0);
+
+		// 82 · 164 · 246 · 328 · 410 · 492 — all under the 500 ED.
+		run_hours(1..=6);
+		assert_eq!(6 * HOURLY_COMMISSION, 492);
+		assert_eq!(Balances::free_balance(&referrer), 0);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 492);
+
+		// Hour 7 reaches 574 ≥ ED, so the transfer can now create the account.
+		run_hours(7..=7);
+		assert_eq!(7 * HOURLY_COMMISSION, 574);
+		assert_eq!(Balances::free_balance(&referrer), 574);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 0);
+	});
+}
+
+#[test]
+fn hourly_commission_follows_the_sudo_set_rate() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		// 10% instead of the default 5%: ⌊1_644 × 1_000 / 10_000⌋ = 164.
+		assert_ok!(Marketplace::sudo_set_referral_commission_rate(RuntimeOrigin::root(), 1_000));
+		let (referrer, _user) = referred_hourly_setup(10 * HOURLY_CHARGE);
+
+		run_hours(1..=1);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 164);
+
+		// 328 clears the threshold on hour 2 instead of hour 3.
+		run_hours(2..=2);
+		assert_eq!(Balances::free_balance(&referrer), ED + 328);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 0);
+	});
+}
+
+#[test]
+fn a_failed_hourly_charge_earns_no_commission() {
+	new_test_ext().execute_with(|| {
+		set_threshold(TEST_THRESHOLD);
+		// Credits for two hours only; the third charge finds an empty balance.
+		let (referrer, user) = referred_hourly_setup(2 * HOURLY_CHARGE);
+
+		run_hours(1..=3);
+
+		assert_eq!(Credits::get_free_credits(&user), 0);
+		// Two hours earned 164 — under the threshold, so nothing was paid, and
+		// the uncollected third hour added nothing.
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 2 * HOURLY_COMMISSION);
+		assert_eq!(Balances::free_balance(&referrer), ED);
+	});
+}
