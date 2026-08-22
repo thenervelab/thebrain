@@ -1052,6 +1052,13 @@ parameter_types! {
 	pub const MaxUserFileUsageUpdatesPerCall: u32 = 250;
 	/// Cap on `create_referral_codes_for` batch size.
 	pub const MaxReferralCodesPerCall: u32 = 250;
+	/// Accrued referral commissions are swept out to referrers every 30
+	/// minutes, with no balance threshold to reach first.
+	pub const ReferralPayoutInterval: u32 = (MINUTES * 30) as u32;
+	/// Referrers paid per sweep. At one sweep every 30 minutes this clears
+	/// 12_000 owed referrers a day, far ahead of any plausible backlog, while
+	/// keeping a single block's payout work bounded.
+	pub const MaxReferralPayoutsPerSweep: u32 = 250;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1071,6 +1078,8 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxRequestsPerBlock = MaxRequestsPerBlock;
 	type MaxUserFileUsageUpdatesPerCall = MaxUserFileUsageUpdatesPerCall;
 	type MaxReferralCodesPerCall = MaxReferralCodesPerCall;
+	type ReferralPayoutInterval = ReferralPayoutInterval;
+	type MaxReferralPayoutsPerSweep = MaxReferralPayoutsPerSweep;
 }
 
 parameter_types! {

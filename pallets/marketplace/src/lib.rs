@@ -107,6 +107,13 @@ pub mod pallet {
 					.saturating_add(T::DbWeight::get().reads_writes(1, result.unique as u64));
 			}
 
+			// Referral commissions accrued by hourly billing are swept out on
+			// their own cadence, independent of the charge interval that earns
+			// them: billing writes the balance, this pays it.
+			if current_block % T::ReferralPayoutInterval::get().into() == 0u32.into() {
+				weight_used = weight_used.saturating_add(Self::sweep_referral_commissions());
+			}
+
 			// Only execute on blocks divisible by the configured interval
 			if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
 				weight_used =
@@ -207,6 +214,18 @@ pub mod pallet {
 		/// Max number of users a single `create_referral_codes_for` call may cover.
 		#[pallet::constant]
 		type MaxReferralCodesPerCall: Get<u32>;
+
+		/// How often accrued referral commissions are swept out to referrers,
+		/// in blocks. Fixed at compile time on purpose: commission payout is
+		/// automatic plumbing, not an operational dial.
+		#[pallet::constant]
+		type ReferralPayoutInterval: Get<u32>;
+
+		/// Max referrers paid in a single sweep, bounding its weight. Sweeps
+		/// resume from `ReferralPayoutCursor`, so exceeding this in one block
+		/// delays a referrer to the next sweep rather than skipping them.
+		#[pallet::constant]
+		type MaxReferralPayoutsPerSweep: Get<u32>;
     }
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -287,35 +306,31 @@ pub mod pallet {
 	#[pallet::getter(fn referral_bank_floor)]
 	pub type ReferralBankFloor<T: Config> = StorageValue<_, u128, ValueQuery>;
 
-	#[pallet::type_value]
-	pub fn DefaultReferralPayoutThreshold() -> u128 {
-		1_000
-	}
-
-	/// Minimum accrued commission before an hourly payout is attempted.
-	///
-	/// Hourly pay-as-you-go commissions are dust — 5% of one hour of per-GB
-	/// billing — so paying each one as it is earned would burn a transfer per
-	/// user per hour and lose most of them to the existential deposit anyway.
-	/// They accrue instead and settle in one transfer once the balance clears
-	/// this threshold, which must stay comfortably above ED for a first payout
-	/// to be able to create the referrer's account.
-	#[pallet::storage]
-	#[pallet::getter(fn referral_payout_threshold)]
-	pub type ReferralPayoutThreshold<T: Config> =
-		StorageValue<_, u128, ValueQuery, DefaultReferralPayoutThreshold>;
-
 	/// Commission earned on hourly pay-as-you-go charges but not yet paid out,
 	/// per referrer, in credits.
 	///
+	/// Hourly billing earns a referrer 5% of one hour of per-GB charges, which
+	/// is dust, so the hourly path only ever writes here — it never touches the
+	/// bank. `sweep_referral_commissions` drains this map on its own schedule.
+	///
 	/// This is a running balance, not a debt: it is paid down as far as the
 	/// bank's headroom above `ReferralBankFloor` allows, and whatever the bank
-	/// cannot cover simply stays here for the next attempt. Nothing in the
+	/// cannot cover simply stays here for the next sweep. Nothing in the
 	/// billing flow ever waits on it.
 	#[pallet::storage]
 	#[pallet::getter(fn accrued_referral_commission)]
 	pub type AccruedReferralCommission<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// Raw storage key the next commission sweep resumes from.
+	///
+	/// A sweep pays at most `MaxReferralPayoutsPerSweep` referrers so its
+	/// weight stays bounded no matter how many referrers are owed. The cursor
+	/// makes successive sweeps round-robin through the map instead of
+	/// repeatedly retrying the same first N keys and starving the tail.
+	/// `None` means "start from the beginning".
+	#[pallet::storage]
+	pub type ReferralPayoutCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
 	/// Tracks the last block a user cancelled any subscription, to enforce resubscribe cooldowns.
 	#[pallet::storage]
@@ -528,14 +543,9 @@ pub mod pallet {
 		ReferralBankFloorUpdated {
 			floor: u128,
 		},
-		/// Root changed the accrual threshold for hourly commission payouts.
-		ReferralPayoutThresholdUpdated {
-			threshold: u128,
-		},
 		/// Hourly pay-as-you-go commission credited to a referrer's accrued
 		/// balance. `accrued_credits` is the balance after adding
-		/// `added_credits`; a payout is attempted in the same pass once it
-		/// clears `ReferralPayoutThreshold`.
+		/// `added_credits`; it is paid out by the next commission sweep.
 		ReferralCommissionAccrued {
 			referrer: T::AccountId,
 			added_credits: u128,
@@ -1314,25 +1324,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Root sets the minimum accrued commission that triggers an hourly
-		/// payout.
-		///
-		/// Raising it batches hourly commissions into fewer, larger transfers;
-		/// lowering it pays them out sooner. Setting it below the existential
-		/// deposit is allowed but pointless: a payout that cannot create the
-		/// referrer's account fails and the balance simply stays accrued.
-		#[pallet::call_index(31)]
-		#[pallet::weight((10_000, Pays::No))]
-		pub fn sudo_set_referral_payout_threshold(
-			origin: OriginFor<T>,
-			threshold: u128,
-		) -> DispatchResult {
-			ensure_root(origin)?;
-			ReferralPayoutThreshold::<T>::put(threshold);
-			Self::deposit_event(Event::ReferralPayoutThresholdUpdated { threshold });
-			Ok(())
-		}
-
 		/// Create referral codes on behalf of users. Callable only by a whitelisted caller,
 		/// bounded by `MaxReferralCodesPerCall`.
 		///
@@ -1475,8 +1466,10 @@ pub mod pallet {
 			CreditsPallet::<T>::referral_codes(code)
 		}
 
-		/// Credit a referrer for one hourly pay-as-you-go charge, settling the
-		/// accrued balance once it clears the payout threshold.
+		/// Credit a referrer for one hourly pay-as-you-go charge.
+		///
+		/// Bookkeeping only — the billing path never touches the bank. The
+		/// balance is paid out by `sweep_referral_commissions`.
 		///
 		/// Hourly charges are recurring usage, so they follow the
 		/// monthly-renewal rule rather than the purchase rule: the referrer
@@ -1492,31 +1485,94 @@ pub mod pallet {
 			};
 
 			let accrued = AccruedReferralCommission::<T>::get(&referrer).saturating_add(commission);
+			AccruedReferralCommission::<T>::insert(&referrer, accrued);
 			Self::deposit_event(Event::ReferralCommissionAccrued {
 				referrer: referrer.clone(),
 				added_credits: commission,
 				accrued_credits: accrued,
 			});
+		}
 
-			// Below the threshold the balance just sits; paying it now would
-			// cost a transfer to move dust the referrer likely cannot receive.
-			if accrued < ReferralPayoutThreshold::<T>::get() {
-				AccruedReferralCommission::<T>::insert(&referrer, accrued);
-				return;
+		/// Pay out accrued hourly commissions, at most
+		/// `MaxReferralPayoutsPerSweep` referrers per call.
+		///
+		/// Runs on a fixed `ReferralPayoutInterval` cadence with no threshold
+		/// to reach: whatever a referrer has earned goes out on the next sweep.
+		/// Each balance is settled by exactly what the bank released, so a bank
+		/// that is dry or at its `ReferralBankFloor` leaves the remainder
+		/// accrued for the next sweep rather than dropping it.
+		///
+		/// Balances below the existential deposit are left to accumulate. That
+		/// is not a payout threshold — such a transfer cannot succeed at all,
+		/// so attempting it would only burn weight and emit a failure event
+		/// every sweep until the balance grew past ED on its own.
+		fn sweep_referral_commissions() -> Weight {
+			let limit = T::MaxReferralPayoutsPerSweep::get() as usize;
+			if limit == 0 {
+				return T::DbWeight::get().reads(1);
 			}
 
-			// Settle by exactly what the bank released. A bank that is dry, at
-			// its floor, or unable to reach the referrer leaves the remainder
-			// accrued for the next hour instead of dropping it — the accrual
-			// IS the ledger here, unlike the one-shot purchase path where a
-			// missed commission has nowhere to be recorded.
-			let paid = Self::try_pay_referral_commission_tokens(&referrer, accrued);
-			let remainder = accrued.saturating_sub(paid);
-			if remainder == 0 {
-				AccruedReferralCommission::<T>::remove(&referrer);
+			// Snapshot the batch before paying: settlement mutates the map, and
+			// a live iterator over storage being written underneath is exactly
+			// the kind of undefined behavior that is not worth risking here.
+			let cursor = ReferralPayoutCursor::<T>::get();
+			let batch: Vec<(T::AccountId, u128)> = match cursor {
+				Some(key) => AccruedReferralCommission::<T>::iter_from(key).take(limit).collect(),
+				None => AccruedReferralCommission::<T>::iter().take(limit).collect(),
+			};
+
+			// End of the map (or an empty one): restart from the top next time.
+			if batch.is_empty() {
+				ReferralPayoutCursor::<T>::kill();
+				return T::DbWeight::get().reads_writes(2, 1);
+			}
+
+			// A short batch means we reached the end of the map, so the next
+			// sweep must start from the top again. Parking the cursor here
+			// instead would make that sweep find nothing beyond it and pay
+			// nobody — with fewer referrers than the per-sweep limit, which is
+			// the normal case, every second sweep would be wasted and everyone
+			// would be paid at half the intended rate.
+			//
+			// Otherwise resume after the last key we looked at, whether or not
+			// it was paid: an unpayable balance must not block the referrers
+			// behind it in the map.
+			let exhausted = batch.len() < limit;
+			let resume_from =
+				AccruedReferralCommission::<T>::hashed_key_for(&batch[batch.len() - 1].0);
+
+			let ed = <T as pallet::Config>::Currency::minimum_balance().saturated_into::<u128>();
+			let mut paid_count: u64 = 0;
+			for (referrer, accrued) in batch.iter() {
+				if *accrued < ed {
+					continue;
+				}
+				let paid = Self::try_pay_referral_commission_tokens(referrer, *accrued);
+				if paid == 0 {
+					continue;
+				}
+				paid_count = paid_count.saturating_add(1);
+				let remainder = accrued.saturating_sub(paid);
+				if remainder == 0 {
+					AccruedReferralCommission::<T>::remove(referrer);
+				} else {
+					AccruedReferralCommission::<T>::insert(referrer, remainder);
+				}
+			}
+
+			if exhausted {
+				ReferralPayoutCursor::<T>::kill();
 			} else {
-				AccruedReferralCommission::<T>::insert(&referrer, remainder);
+				ReferralPayoutCursor::<T>::put(resume_from);
 			}
+
+			// One read per key inspected, plus the bank reserve ledgers and a
+			// balance write for each referrer actually paid.
+			let inspected = batch.len() as u64;
+			T::DbWeight::get().reads_writes(
+				inspected.saturating_add(paid_count.saturating_mul(8)).saturating_add(2),
+				paid_count.saturating_mul(4).saturating_add(1),
+			)
 		}
 
 		fn referral_discount_and_owner(
@@ -2479,9 +2535,9 @@ pub mod pallet {
 
 						if charge_result.is_ok() {
 							// Commission on money actually collected, same rule
-							// as the monthly path. Accrued rather than paid per
-							// hour, and never allowed to affect the charge that
-							// earned it.
+							// as the monthly path. Recorded only — the sweep
+							// pays it, so the charge that earned it never waits
+							// on the bank.
 							Self::accrue_hourly_referral_commission(&user, charge_amount);
 
 							let tx_result = Self::record_credits_transaction(
@@ -2515,12 +2571,12 @@ pub mod pallet {
 			// Conservative weight accounting:
 			// - reading `UserAllSubscriptionPlans` and `StorageLastChargedAt` per user
 			// - charged/removed paths do writes and call into other pallets
-			// - a charged user may also walk the referral lookup, read the bank's
-			//   reserve ledgers, and write back an accrual or a payout
+			// - a charged user also walks the referral lookup and writes one
+			//   accrual row; paying it out is the sweep's weight, not ours
 			let reads = users_seen
 				.saturating_mul(5)
-				.saturating_add(users_charged_or_removed.saturating_mul(20));
-			let writes = users_charged_or_removed.saturating_mul(12);
+				.saturating_add(users_charged_or_removed.saturating_mul(13));
+			let writes = users_charged_or_removed.saturating_mul(11);
 			T::DbWeight::get().reads_writes(reads, writes)
 		}
 
