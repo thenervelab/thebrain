@@ -134,10 +134,15 @@ fn purchase(owner: &AccountId, plan_id: Hashed, pay_upfront: Option<u128>) {
 	));
 }
 
-fn change_plan(user: &AccountId, new_plan_id: Hashed) -> frame_support::dispatch::DispatchResult {
+fn change_plan(
+	user: &AccountId,
+	old_plan_id: Hashed,
+	new_plan_id: Hashed,
+) -> frame_support::dispatch::DispatchResult {
 	Marketplace::change_storage_plan(
 		RuntimeOrigin::signed(backend()),
 		user.clone(),
+		old_plan_id,
 		new_plan_id,
 		None,
 		None,
@@ -149,10 +154,12 @@ fn change_plan(user: &AccountId, new_plan_id: Hashed) -> frame_support::dispatch
 /// applies — required for the atomicity assertions on failure paths.
 fn dispatch_change(
 	user: &AccountId,
+	old_plan_id: Hashed,
 	new_plan_id: Hashed,
 ) -> frame_support::dispatch::DispatchResultWithPostInfo {
 	RuntimeCall::Marketplace(pallet_marketplace::Call::change_storage_plan {
 		user: user.clone(),
+		old_plan_id,
 		new_plan_id,
 		selected_image_name: None,
 		location_id: None,
@@ -187,7 +194,7 @@ fn upgrade_on_the_first_charges_only_the_price_difference() {
 		purchase(&user, solo, None);
 		assert_eq!(Credits::get_free_credits(&user), MAX_PRICE - SOLO_PRICE);
 
-		assert_ok!(change_plan(&user, max));
+		assert_ok!(change_plan(&user, solo, max));
 
 		assert_eq!(Credits::get_free_credits(&user), 0, "only the delta is charged");
 		let sub = storage_subscription(&user);
@@ -208,7 +215,7 @@ fn mid_month_upgrade_never_bills_the_remaining_days_twice() {
 		purchase(&user, solo, None);
 		assert_eq!(Credits::get_free_credits(&user), 10_000 - SOLO_PRORATED);
 
-		assert_ok!(change_plan(&user, max));
+		assert_ok!(change_plan(&user, solo, max));
 
 		// Total out of pocket for January is exactly one prorated Max month:
 		// the 517 already paid for Solo carries over as a credit.
@@ -229,7 +236,7 @@ fn upgrade_is_rejected_atomically_when_the_delta_is_unaffordable() {
 		let sub_before = storage_subscription(&user);
 
 		assert_noop!(
-			dispatch_change(&user, max),
+			dispatch_change(&user, solo, max),
 			pallet_marketplace::Error::<Runtime>::InsufficientFreeCredits,
 		);
 
@@ -252,7 +259,7 @@ fn downgrade_costs_nothing_now_and_bills_the_cheaper_plan_next_month() {
 		purchase(&user, max, None);
 		assert_eq!(Credits::get_free_credits(&user), 0);
 
-		assert_ok!(change_plan(&user, solo));
+		assert_ok!(change_plan(&user, max, solo));
 
 		// The month already bought is not refunded — the same rule the cancel
 		// path applies to the current month — but it fully covers the cheaper
@@ -280,7 +287,7 @@ fn prepaid_months_pay_for_the_new_plan_before_free_credits_do() {
 		// Upgrading to Max: Feb + Mar (2_000) are refunded and January's Solo
 		// month (1_000) carries over, which together cover Max's 3_000 exactly.
 		// Net movement is zero and the user never needs spare credits.
-		assert_ok!(change_plan(&user, max));
+		assert_ok!(change_plan(&user, solo, max));
 
 		assert_eq!(Credits::get_free_credits(&user), 0, "settled by netting alone");
 		let sub = storage_subscription(&user);
@@ -302,7 +309,7 @@ fn surplus_prepaid_months_are_refunded_as_one_net_movement() {
 
 		// Refund = Feb + Mar of Max = 6_000. Charge = Solo's January (1_000)
 		// minus the Max January already paid ⇒ 0. Net refund = 6_000.
-		assert_ok!(change_plan(&user, solo));
+		assert_ok!(change_plan(&user, max, solo));
 
 		assert_eq!(Credits::get_free_credits(&user), 6_000);
 		assert_eq!(storage_subscription(&user).next_charge_unix_day, Some(FEB1_2026_DAY));
@@ -321,7 +328,7 @@ fn change_leaves_no_entitlement_gap_and_arms_no_resubscribe_cooldown() {
 		purchase(&user, solo, None);
 		let old_id = storage_subscription(&user).id;
 
-		assert_ok!(change_plan(&user, max));
+		assert_ok!(change_plan(&user, solo, max));
 
 		// Exactly one storage subscription throughout — the slot was replaced,
 		// never emptied, so the user is never without a storage entitlement.
@@ -334,7 +341,7 @@ fn change_leaves_no_entitlement_gap_and_arms_no_resubscribe_cooldown() {
 		// The cooldown that forces cancel + re-purchase across blocks is never armed…
 		assert_eq!(Marketplace::last_subscription_cancelled_at(&user), None);
 		// …so a second change lands in the very same block.
-		assert_ok!(change_plan(&user, solo));
+		assert_ok!(change_plan(&user, max, solo));
 		assert_eq!(storage_subscription(&user).package.id, solo);
 	});
 }
@@ -356,7 +363,7 @@ fn referral_attribution_survives_and_commission_follows_the_net_charge() {
 
 		// Upgrade: Max discounted to 2_850, less the 950 Solo month already
 		// paid ⇒ 1_900 charged, commission ⌊1_900 × 5%⌋ = 95.
-		assert_ok!(change_plan(&user, max));
+		assert_ok!(change_plan(&user, solo, max));
 
 		assert_eq!(Credits::get_free_credits(&user), 10_000 - 950 - 1_900);
 		assert_eq!(Balances::free_balance(&referrer), ED + 47 + 95);
@@ -379,6 +386,7 @@ fn only_whitelisted_callers_may_change_a_plan() {
 			Marketplace::change_storage_plan(
 				RuntimeOrigin::signed(account(99)),
 				user.clone(),
+				solo,
 				max,
 				None,
 				None,
@@ -391,6 +399,7 @@ fn only_whitelisted_callers_may_change_a_plan() {
 			Marketplace::change_storage_plan(
 				RuntimeOrigin::signed(user.clone()),
 				user.clone(),
+				solo,
 				max,
 				None,
 				None,
@@ -405,12 +414,12 @@ fn only_whitelisted_callers_may_change_a_plan() {
 #[test]
 fn a_user_without_an_active_storage_subscription_cannot_change_plan() {
 	new_test_ext().execute_with(|| {
-		let (_solo, max) = ladder();
+		let (solo, max) = ladder();
 		let user = account(11);
 		deposit_credits(&user, 10_000, None);
 
 		assert_err!(
-			change_plan(&user, max),
+			change_plan(&user, solo, max),
 			pallet_marketplace::Error::<Runtime>::NoActiveSubscription,
 		);
 
@@ -418,7 +427,7 @@ fn a_user_without_an_active_storage_subscription_cannot_change_plan() {
 		let compute = add_plan(b"compute", SOLO_PRICE, false);
 		purchase(&user, compute, None);
 		assert_err!(
-			change_plan(&user, max),
+			change_plan(&user, solo, max),
 			pallet_marketplace::Error::<Runtime>::NoActiveSubscription,
 		);
 	});
@@ -433,24 +442,30 @@ fn the_target_plan_must_be_a_different_live_storage_plan() {
 		purchase(&user, solo, None);
 
 		// Same plan is a no-op the backend should not be able to bill for.
-		assert_err!(change_plan(&user, solo), pallet_marketplace::Error::<Runtime>::InvalidInput);
+		assert_err!(
+			change_plan(&user, solo, solo),
+			pallet_marketplace::Error::<Runtime>::InvalidInput
+		);
 
 		// Unknown plan.
 		assert_err!(
-			change_plan(&user, <Runtime as frame_system::Config>::Hashing::hash_of(&b"nope")),
+			change_plan(&user, solo, <Runtime as frame_system::Config>::Hashing::hash_of(&b"nope")),
 			pallet_marketplace::Error::<Runtime>::PlanNotFound,
 		);
 
 		// Compute plans are not a storage-plan target.
 		let compute = add_plan(b"compute", MAX_PRICE, false);
 		assert_err!(
-			change_plan(&user, compute),
+			change_plan(&user, solo, compute),
 			pallet_marketplace::Error::<Runtime>::InvalidPlanType,
 		);
 
 		// Suspended target.
 		assert_ok!(Marketplace::set_package_suspension(RuntimeOrigin::root(), max, true));
-		assert_err!(change_plan(&user, max), pallet_marketplace::Error::<Runtime>::PlanSuspended);
+		assert_err!(
+			change_plan(&user, solo, max),
+			pallet_marketplace::Error::<Runtime>::PlanSuspended
+		);
 
 		assert_eq!(storage_subscription(&user).package.id, solo);
 	});
@@ -466,7 +481,7 @@ fn the_purchase_plan_kill_switch_also_stops_plan_changes() {
 
 		assert_ok!(Marketplace::sudo_set_purchase_plan_enabled(RuntimeOrigin::root(), false));
 		assert_err!(
-			change_plan(&user, max),
+			change_plan(&user, solo, max),
 			pallet_marketplace::Error::<Runtime>::PlanOperationDisabled,
 		);
 	});
@@ -483,14 +498,105 @@ fn plan_changes_are_rate_limited_per_block_like_purchases() {
 		// `MaxRequestsPerBlock` is 5 and the purchase consumed one, so four
 		// changes fit and the fifth is refused.
 		for i in 0..4 {
-			let target = if i % 2 == 0 { max } else { solo };
-			assert_ok!(change_plan(&user, target));
+			let (from, to) = if i % 2 == 0 { (solo, max) } else { (max, solo) };
+			assert_ok!(change_plan(&user, from, to));
 		}
-		assert_err!(change_plan(&user, max), pallet_marketplace::Error::<Runtime>::TooManyRequests);
+		assert_err!(
+			change_plan(&user, solo, max),
+			pallet_marketplace::Error::<Runtime>::TooManyRequests
+		);
 
 		// The counter is cleared on the pallet's 15-block boundary.
 		System::set_block_number(15);
 		<Marketplace as Hooks<u64>>::on_initialize(15);
-		assert_ok!(change_plan(&user, max));
+		assert_ok!(change_plan(&user, solo, max));
+	});
+}
+
+// ── Selecting among several storage subscriptions ────────────────────────
+
+#[test]
+fn old_plan_id_picks_which_storage_subscription_changes() {
+	new_test_ext().execute_with(|| {
+		let (solo, max) = ladder();
+		let other = add_plan(b"other", SOLO_PRICE, true);
+		let user = account(11);
+
+		// Two active storage subscriptions — allowed now that storage is no
+		// longer capped at one per account.
+		deposit_credits(&user, 10_000, None);
+		purchase(&user, solo, None);
+		purchase(&user, other, None);
+		let untouched_id = Marketplace::user_all_subscription_plans(&user)
+			.into_iter()
+			.find(|s| s.package.id == other)
+			.expect("other subscription exists")
+			.id;
+
+		assert_ok!(change_plan(&user, solo, max));
+
+		let subs = Marketplace::user_all_subscription_plans(&user);
+		let active: Vec<_> = subs.iter().filter(|s| s.active).collect();
+		assert_eq!(active.len(), 2, "the other subscription is not consumed");
+
+		// The named one moved to Max…
+		assert!(active.iter().any(|s| s.package.id == max));
+		// …and the bystander is untouched, same subscription id and all.
+		let bystander = active
+			.iter()
+			.find(|s| s.package.id == other)
+			.expect("other subscription survives");
+		assert_eq!(bystander.id, untouched_id);
+		assert_eq!(bystander.paid_per_month, SOLO_PRICE);
+		assert!(!active.iter().any(|s| s.package.id == solo), "solo was replaced");
+	});
+}
+
+#[test]
+fn a_plan_the_user_does_not_hold_is_not_a_valid_source() {
+	new_test_ext().execute_with(|| {
+		let (solo, max) = ladder();
+		let other = add_plan(b"other", SOLO_PRICE, true);
+		let user = account(11);
+
+		deposit_credits(&user, 10_000, None);
+		purchase(&user, solo, None);
+		let before = Credits::get_free_credits(&user);
+
+		// Holds Solo, not Other — distinct from having no storage plan at all.
+		assert_err!(
+			change_plan(&user, other, max),
+			pallet_marketplace::Error::<Runtime>::InvalidPlanForSubscription,
+		);
+		assert_eq!(Credits::get_free_credits(&user), before, "no credits moved");
+		assert_eq!(storage_subscription(&user).package.id, solo);
+	});
+}
+
+#[test]
+fn two_subscriptions_on_the_same_plan_are_refused_rather_than_guessed() {
+	new_test_ext().execute_with(|| {
+		let (solo, max) = ladder();
+		let user = account(11);
+
+		// Same plan twice: the two are not interchangeable (different prepaid
+		// months), so `old_plan_id` cannot say which one to change.
+		deposit_credits(&user, 10_000, None);
+		purchase(&user, solo, None);
+		purchase(&user, solo, Some(3));
+		let before = Credits::get_free_credits(&user);
+
+		assert_err!(
+			change_plan(&user, solo, max),
+			pallet_marketplace::Error::<Runtime>::AmbiguousStorageSubscription,
+		);
+		assert_eq!(Credits::get_free_credits(&user), before, "no credits moved");
+		assert_eq!(
+			Marketplace::user_all_subscription_plans(&user)
+				.iter()
+				.filter(|s| s.active && s.package.id == solo)
+				.count(),
+			2,
+		);
 	});
 }

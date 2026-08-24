@@ -614,6 +614,9 @@ pub mod pallet {
 		StorageRequestNotFound,
 		PlanNotFound,
 		InvalidPlanType,
+		/// No longer raised: accounts may hold more than one active storage
+		/// subscription. Kept in place so the error indices of every variant
+		/// below it stay stable for clients decoding older extrinsics.
 		AlreadyHasActiveSubscription,
 		PlanSuspended,
 		InsufficientFreeCredits,
@@ -644,6 +647,9 @@ pub mod pallet {
 		SubscriptionCancellationNotAuthorized,
 		WhitelistedCallerNotAuthorized,
 		TooManyUpdates,
+		/// More than one active storage subscription is on the named plan, so
+		/// `old_plan_id` does not identify which one to change.
+		AmbiguousStorageSubscription,
 	}
 
 	#[pallet::storage]
@@ -1167,6 +1173,14 @@ pub mod pallet {
 		/// (`ReferredUsers`) is left exactly as it was; the buyer discount and the
 		/// referrer commission apply to the new plan as they do at purchase.
 		///
+		/// `old_plan_id` names the storage plan the user is changing *from*.
+		/// Accounts may hold several active storage subscriptions, so it is what
+		/// selects the one to swap; it must match an active storage subscription
+		/// and differ from `new_plan_id`. If two active subscriptions sit on that
+		/// same plan the call fails with `AmbiguousStorageSubscription` rather
+		/// than guessing, because the two can carry different prepaid months and
+		/// changing the wrong one moves the wrong credits.
+		///
 		/// `selected_image_name` / `location_id` / `cloud_init_cid` mirror
 		/// `purchase_plan`'s per-plan inputs so the backend can pass the same shape
 		/// on both calls. Storage plans are provisioned from the plan alone, so —
@@ -1177,6 +1191,7 @@ pub mod pallet {
 		pub fn change_storage_plan(
 			origin: OriginFor<T>,
 			user: T::AccountId,
+			old_plan_id: T::Hash,
 			new_plan_id: T::Hash,
 			selected_image_name: Option<Vec<u8>>,
 			location_id: Option<u32>,
@@ -1200,6 +1215,7 @@ pub mod pallet {
 
 			Self::do_change_storage_plan(
 				&user,
+				old_plan_id,
 				new_plan_id,
 				location_id,
 				Self::normalize_image_selection(selected_image_name),
@@ -1818,16 +1834,14 @@ pub mod pallet {
 			// Check if storage operations are enabled
 			ensure!(Self::is_purchase_plan_enabled(), Error::<T>::PlanOperationDisabled);
 
-			// Enforce: only one active storage subscription at a time, and
-			// validate the overall subscription cap before any state changes.
-			// The dispatch storage layer would roll a late failure back
-			// anyway, but failing fast wastes no work and keeps the flow
-			// safe for any future non-dispatch caller.
+			// Validate the subscription cap before any state changes. The
+			// dispatch storage layer would roll a late failure back anyway,
+			// but failing fast wastes no work and keeps the flow safe for
+			// any future non-dispatch caller.
+			//
+			// Storage plans are not limited to one per account: the only bound
+			// is the shared `MaxActiveSubscriptions` cap, exactly as for compute.
 			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
-			ensure!(
-				!subscriptions.iter().any(|s| s.active && s.package.is_storage_plan),
-				Error::<T>::AlreadyHasActiveSubscription
-			);
 			let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
 			ensure!(
 				active_count < T::MaxActiveSubscriptions::get(),
@@ -1946,6 +1960,7 @@ pub mod pallet {
 		/// and prepaid months can pay for the new plan directly.
 		fn do_change_storage_plan(
 			account_id: &T::AccountId,
+			old_plan_id: T::Hash,
 			new_plan_id: T::Hash,
 			_location_id: Option<u32>,
 			_selected_image_name: Option<Vec<u8>>,
@@ -1962,19 +1977,36 @@ pub mod pallet {
 
 			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(account_id);
 
-			// Exactly one active storage subscription. `do_purchase_storage_plan`
-			// enforces that invariant on the way in, so more than one is corrupt
-			// state we refuse rather than silently pick a winner from.
-			let mut active_storage = subscriptions
+			// An account may hold several active storage subscriptions, so
+			// `old_plan_id` names the one to change. Two subscriptions on the
+			// *same* plan are possible and are not interchangeable — they can
+			// carry different prepaid months and `paid_per_month` — so an
+			// ambiguous selection is refused rather than resolved arbitrarily,
+			// since changing the wrong one moves the wrong credits.
+			let mut on_old_plan = subscriptions
 				.iter()
 				.enumerate()
 				.filter(|(_, s)| s.active && s.package.is_storage_plan)
+				.filter(|(_, s)| s.package.id == old_plan_id)
 				.map(|(i, _)| i);
-			let index = active_storage.next().ok_or(Error::<T>::NoActiveSubscription)?;
-			ensure!(active_storage.next().is_none(), Error::<T>::TooManyActiveSubscriptions);
+			let index = match on_old_plan.next() {
+				Some(index) => index,
+				// Separate "you hold no storage plan" from "you are not on that
+				// plan", so the caller can tell a lapsed subscription from a
+				// stale plan id.
+				None => {
+					let has_active_storage =
+						subscriptions.iter().any(|s| s.active && s.package.is_storage_plan);
+					return Err(if has_active_storage {
+						Error::<T>::InvalidPlanForSubscription.into()
+					} else {
+						Error::<T>::NoActiveSubscription.into()
+					});
+				},
+			};
+			ensure!(on_old_plan.next().is_none(), Error::<T>::AmbiguousStorageSubscription);
 
 			let old_sub = subscriptions[index].clone();
-			let old_plan_id = old_sub.package.id;
 			ensure!(new_plan_id != old_plan_id, Error::<T>::InvalidInput);
 
 			let new_plan = Plans::<T>::get(&new_plan_id).ok_or(Error::<T>::PlanNotFound)?;
