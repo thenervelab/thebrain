@@ -2144,10 +2144,12 @@ impl InstanceFilter<RuntimeCall> for ProxyType {
 					// NonTransfer proxies must not be able to drain the principal via
 					// credit purchases or hAlpha withdrawals.
 					| RuntimeCall::Marketplace(pallet_marketplace::Call::purchase_plan { .. })
-					// A plan upgrade consumes credits for the net delta, same drain.
+					// A plan upgrade consumes credits for the net delta, same drain —
+					// on either storage slot.
 					| RuntimeCall::Marketplace(
 						pallet_marketplace::Call::change_storage_plan { .. }
 					)
+					| RuntimeCall::Marketplace(pallet_marketplace::Call::change_s3_plan { .. })
 					| RuntimeCall::AlphaBridge(pallet_alpha_bridge::Call::withdraw { .. })
 			),
 			ProxyType::Governance => matches!(

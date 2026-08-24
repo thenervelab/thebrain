@@ -68,8 +68,55 @@ pub struct Plan<Hash> {
 	pub plan_technical_description: Vec<u8>, // JSON with technical details
 	pub is_suspended: bool,
 	pub price: u128,
+	/// Drive storage. Mutually exclusive with `is_s3_plan`; `add_new_plan`
+	/// rejects a plan that sets both.
 	pub is_storage_plan: bool,
+	/// S3 storage. Mutually exclusive with `is_storage_plan`.
+	pub is_s3_plan: bool,
 	pub storage_limit: Option<u128>,
+}
+
+/// Which storage slot a plan occupies. Compute plans occupy none.
+///
+/// An account holds at most one active plan per flavour, and each flavour
+/// exempts only its own bytes from hourly per-GB billing — so this is what the
+/// uniqueness rule, the plan-change routing and the hourly exemption all key
+/// on, rather than re-deriving the same boolean pair at each site.
+#[derive(Clone, Copy, PartialEq, Eq, RuntimeDebug)]
+pub enum StorageFlavour {
+	Drive,
+	S3,
+}
+
+impl<Hash> Plan<Hash> {
+	/// `None` for compute plans, which occupy no storage slot.
+	///
+	/// The two flags are mutually exclusive, so the order here only decides how
+	/// the impossible both-set combination degrades: as Drive, never silently
+	/// as compute. `add_new_plan` rejects it and no migration produces it.
+	pub fn storage_flavour(&self) -> Option<StorageFlavour> {
+		if self.is_storage_plan {
+			Some(StorageFlavour::Drive)
+		} else if self.is_s3_plan {
+			Some(StorageFlavour::S3)
+		} else {
+			None
+		}
+	}
+
+	/// Any non-compute plan — Drive or S3.
+	///
+	/// This is the "storage vs compute" split every routing branch wants.
+	/// Reading `is_storage_plan` alone would silently route S3 plans down the
+	/// compute path.
+	pub fn is_any_storage(&self) -> bool {
+		self.is_storage_plan || self.is_s3_plan
+	}
+
+	/// Drive storage specifically.
+	pub fn is_drive_plan(&self) -> bool {
+		self.is_storage_plan
+	}
 }
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo)]

@@ -116,6 +116,7 @@ fn add_plan(name: &[u8], is_storage_plan: bool) -> <Runtime as frame_system::Con
 		b"{}".to_vec(),
 		PLAN_PRICE,
 		is_storage_plan,
+		false,
 		Some(1_000_000),
 	));
 	<Runtime as frame_system::Config>::Hashing::hash_of(&name.to_vec())
@@ -584,8 +585,10 @@ fn below_ed_first_commission_is_skipped() {
 		let code = new_referral_code(&referrer);
 		// Deliberately NOT funding the referrer: a 475-token transfer cannot
 		// create an account under the 500 existential deposit, so the
-		// commission is skipped. Referrers need an existing account (or a
-		// first commission ≥ ED) to receive payouts.
+		// commission is dropped. Note this is the account-creation rule, not a
+		// payout threshold — a referrer who already holds ED receives 475
+		// here, which is exactly why the sweep tests the *resulting* balance
+		// rather than the commission on its own.
 		deposit_credits(&buyer, CHARGED, Some(code));
 		purchase(&buyer, plan_id, None);
 
@@ -738,15 +741,16 @@ fn failed_renewal_deactivates_subscription_and_pays_no_commission() {
 // ── Hourly pay-as-you-go commission ──────────────────────────────────────
 //
 // Users without an active storage plan are billed per GiB every hour by
-// `handle_arion_storage_charging`. That path follows the monthly-renewal
+// `handle_hourly_storage_charging`. That path follows the monthly-renewal
 // rule, not the purchase rule: the referrer earns a commission, the referred
-// user gets no discount. Because an hour of per-GB billing is dust, the
-// commission accrues per referrer and settles in one transfer once it clears
-// `ReferralPayoutThreshold`.
+// user gets no discount. An hour of per-GB billing is dust, so the commission
+// is accrued per referrer and paid by a separate sweep on a fixed interval —
+// there is no balance threshold to reach first.
 
-/// Hourly price per GiB. Odd so the 5% commission actually floors, and large
-/// enough that one hour's commission clears the 500 ED on its own — the
-/// dust case is covered separately with `SMALL_FILE_BYTES`.
+/// Hourly price per GiB. Odd so the commission actually floors, and large
+/// enough that one hour's commission clears the 500 ED on its own, which is
+/// what lets an unfunded referrer's account be created — the dust case is
+/// covered separately with `SMALL_FILE_BYTES`.
 const PRICE_PER_GB: u128 = 2_713;
 /// 3 GiB + 1 byte — billed as 4 whole GiB, so `gibs_ceil` rounding is live.
 const FILE_BYTES: u128 = 3 * payment_math::GIB + 1;
@@ -759,8 +763,9 @@ const HOURLY_COMMISSION: u128 = 542;
 const SMALL_FILE_BYTES: u128 = 1;
 /// `2_713 × 1` — one hour of the smallest possible bill.
 const SMALL_CHARGE: u128 = 2_713;
-/// `split(2_713, 500).0` = ⌊135.65⌋. Under the 500 ED, so it cannot be paid
-/// out until four hours of it have piled up.
+/// `split(2_713, 500).0` = ⌊135.65⌋. Under the 500 ED, so it pays out at once
+/// to a referrer whose account already exists, and only has to pile up for
+/// four hours when the transfer would have to *create* the account.
 const SMALL_COMMISSION: u128 = 135;
 
 /// `BlocksPerHour` is 600 and the charge check only runs on multiples of
@@ -774,10 +779,10 @@ const HOURLY_STEP: u64 = 608;
 /// that earns them and with no balance threshold to reach first.
 const SWEEP_INTERVAL: u64 = 300;
 
-/// Put `who` on the hourly path: files stored in arion, no storage plan.
+/// Put `who` on the hourly path: Drive bytes reported, no storage plan.
 fn store_files(who: &AccountId) {
 	assert_ok!(Marketplace::set_price_per_gb(RuntimeOrigin::root(), PRICE_PER_GB));
-	pallet_arion::UserTotalFilesSize::<Runtime>::insert(who, FILE_BYTES);
+	pallet_marketplace::UserTotalDriveFilesSize::<Runtime>::insert(who, FILE_BYTES);
 }
 
 /// Run the hourly charge tick for each hour in `hours` (1-based), without
@@ -827,7 +832,7 @@ fn referred_dust_setup(user_credits: u128) -> (AccountId, AccountId) {
 	fund_ed(&referrer);
 	deposit_credits(&user, user_credits, Some(code));
 	assert_ok!(Marketplace::set_price_per_gb(RuntimeOrigin::root(), PRICE_PER_GB));
-	pallet_arion::UserTotalFilesSize::<Runtime>::insert(&user, SMALL_FILE_BYTES);
+	pallet_marketplace::UserTotalDriveFilesSize::<Runtime>::insert(&user, SMALL_FILE_BYTES);
 	(referrer, user)
 }
 
@@ -908,16 +913,53 @@ fn a_sweep_with_nothing_owed_moves_no_money() {
 }
 
 #[test]
-fn dust_below_ed_accumulates_until_the_sweep_can_pay_it() {
+fn dust_is_paid_at_once_to_a_referrer_who_already_holds_ed() {
 	new_test_ext().execute_with(|| {
-		// 135/hour against a 500 ED: the first three sweeps cannot move it,
-		// and skipping is not a threshold — such a transfer cannot succeed.
+		// 135/hour against a 500 ED. The existential deposit is the
+		// account-*creation* rule, not the transfer rule, and `request_payment`
+		// spends its `KeepAlive` on the bank rather than the destination — so a
+		// referrer who already exists takes the dust on the very first sweep.
+		// Withholding it here would strand live referrers for hours, and for
+		// longer the smaller `price_per_gb` is.
 		let (referrer, _user) = referred_dust_setup(10 * SMALL_CHARGE);
+
+		run_hours(1..=1);
+		run_sweep();
+
+		assert_eq!(Balances::free_balance(&referrer), ED + SMALL_COMMISSION);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 0);
+
+		// …and it keeps clearing every sweep rather than batching up.
+		run_hours(2..=2);
+		run_sweep();
+
+		assert_eq!(Balances::free_balance(&referrer), ED + 2 * SMALL_COMMISSION);
+		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 0);
+	});
+}
+
+#[test]
+fn an_unfunded_referrer_accumulates_dust_until_it_can_create_the_account() {
+	new_test_ext().execute_with(|| {
+		// The same dust, but with no ED funding the skip is real: a transfer
+		// that would leave the destination below ED cannot create the account.
+		// This is the only case the sweep still withholds.
+		let referrer = account(10);
+		let user = account(11);
+		let code = new_referral_code(&referrer);
+		deposit_credits(&user, 10 * SMALL_CHARGE, Some(code));
+		assert_ok!(Marketplace::set_price_per_gb(RuntimeOrigin::root(), PRICE_PER_GB));
+		pallet_marketplace::UserTotalDriveFilesSize::<Runtime>::insert(&user, SMALL_FILE_BYTES);
+		assert_eq!(Balances::free_balance(&referrer), 0, "no ED funding");
 
 		for h in 1..=3 {
 			run_hours(h..=h);
 			run_sweep();
-			assert_eq!(Balances::free_balance(&referrer), ED, "hour {h} is still dust");
+			assert_eq!(
+				Balances::free_balance(&referrer),
+				0,
+				"hour {h} still cannot create the account"
+			);
 			assert_eq!(
 				Marketplace::accrued_referral_commission(&referrer),
 				h as u128 * SMALL_COMMISSION,
@@ -929,7 +971,7 @@ fn dust_below_ed_accumulates_until_the_sweep_can_pay_it() {
 		run_hours(4..=4);
 		run_sweep();
 		assert_eq!(4 * SMALL_COMMISSION, 540);
-		assert_eq!(Balances::free_balance(&referrer), ED + 540);
+		assert_eq!(Balances::free_balance(&referrer), 540);
 		assert_eq!(Marketplace::accrued_referral_commission(&referrer), 0);
 	});
 }
@@ -973,7 +1015,7 @@ fn hourly_billing_gives_the_referred_user_no_discount() {
 		let (_referrer, referred) = referred_hourly_setup(10 * HOURLY_CHARGE);
 		let plain = account(12);
 		deposit_credits(&plain, 10 * HOURLY_CHARGE, None);
-		pallet_arion::UserTotalFilesSize::<Runtime>::insert(&plain, FILE_BYTES);
+		pallet_marketplace::UserTotalDriveFilesSize::<Runtime>::insert(&plain, FILE_BYTES);
 
 		run_hours(1..=1);
 
@@ -1176,7 +1218,7 @@ fn a_backlog_past_the_per_sweep_bound_resumes_on_the_next_sweep() {
 			let code = new_referral_code(&referrer);
 			fund_ed(&referrer);
 			deposit_credits(&user, 2 * HOURLY_CHARGE, Some(code));
-			pallet_arion::UserTotalFilesSize::<Runtime>::insert(&user, FILE_BYTES);
+			pallet_marketplace::UserTotalDriveFilesSize::<Runtime>::insert(&user, FILE_BYTES);
 		}
 
 		run_hours(1..=1);
