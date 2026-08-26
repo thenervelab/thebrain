@@ -592,7 +592,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92007,
+	spec_version: 92009,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1052,6 +1052,13 @@ parameter_types! {
 	pub const MaxUserFileUsageUpdatesPerCall: u32 = 250;
 	/// Cap on `create_referral_codes_for` batch size.
 	pub const MaxReferralCodesPerCall: u32 = 250;
+	/// Accrued referral commissions are swept out to referrers every 30
+	/// minutes, with no balance threshold to reach first.
+	pub const ReferralPayoutInterval: u32 = (MINUTES * 30) as u32;
+	/// Referrers paid per sweep. At one sweep every 30 minutes this clears
+	/// 12_000 owed referrers a day, far ahead of any plausible backlog, while
+	/// keeping a single block's payout work bounded.
+	pub const MaxReferralPayoutsPerSweep: u32 = 250;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1071,6 +1078,8 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxRequestsPerBlock = MaxRequestsPerBlock;
 	type MaxUserFileUsageUpdatesPerCall = MaxUserFileUsageUpdatesPerCall;
 	type MaxReferralCodesPerCall = MaxReferralCodesPerCall;
+	type ReferralPayoutInterval = ReferralPayoutInterval;
+	type MaxReferralPayoutsPerSweep = MaxReferralPayoutsPerSweep;
 }
 
 parameter_types! {
@@ -2135,10 +2144,12 @@ impl InstanceFilter<RuntimeCall> for ProxyType {
 					// NonTransfer proxies must not be able to drain the principal via
 					// credit purchases or hAlpha withdrawals.
 					| RuntimeCall::Marketplace(pallet_marketplace::Call::purchase_plan { .. })
-					// A plan upgrade consumes credits for the net delta, same drain.
+					// A plan upgrade consumes credits for the net delta, same drain —
+					// on either storage slot.
 					| RuntimeCall::Marketplace(
 						pallet_marketplace::Call::change_storage_plan { .. }
 					)
+					| RuntimeCall::Marketplace(pallet_marketplace::Call::change_s3_plan { .. })
 					| RuntimeCall::AlphaBridge(pallet_alpha_bridge::Call::withdraw { .. })
 			),
 			ProxyType::Governance => matches!(

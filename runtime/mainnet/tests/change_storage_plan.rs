@@ -94,6 +94,17 @@ fn new_test_ext() -> sp_io::TestExternalities {
 }
 
 fn add_plan(name: &[u8], price: u128, is_storage_plan: bool) -> Hashed {
+	add_plan_of_flavour(name, price, is_storage_plan, false)
+}
+
+/// The three kinds are mutually exclusive: Drive `(true, false)`,
+/// S3 `(false, true)`, compute `(false, false)`.
+fn add_plan_of_flavour(
+	name: &[u8],
+	price: u128,
+	is_storage_plan: bool,
+	is_s3_plan: bool,
+) -> Hashed {
 	assert_ok!(Marketplace::add_new_plan(
 		RuntimeOrigin::root(),
 		name.to_vec(),
@@ -101,6 +112,7 @@ fn add_plan(name: &[u8], price: u128, is_storage_plan: bool) -> Hashed {
 		b"{}".to_vec(),
 		price,
 		is_storage_plan,
+		is_s3_plan,
 		Some(price * 1_000),
 	));
 	<Runtime as frame_system::Config>::Hashing::hash_of(&name.to_vec())
@@ -164,7 +176,7 @@ fn dispatch_change(
 fn storage_subscription(owner: &AccountId) -> pallet_marketplace::UserPlanSubscription<Runtime> {
 	Marketplace::user_all_subscription_plans(owner)
 		.into_iter()
-		.find(|s| s.package.is_storage_plan)
+		.find(|s| s.package.is_drive_plan())
 		.expect("storage subscription exists")
 }
 
@@ -492,5 +504,320 @@ fn plan_changes_are_rate_limited_per_block_like_purchases() {
 		System::set_block_number(15);
 		<Marketplace as Hooks<u64>>::on_initialize(15);
 		assert_ok!(change_plan(&user, max));
+	});
+}
+
+// ── Drive and S3 as two independent storage slots ────────────────────────
+//
+// `is_s3_plan` narrows a storage plan to the S3 flavour. An account holds at
+// most one active plan of each flavour, and a change is routed by the flavour
+// of the plan being moved onto, so the two slots never interfere.
+
+/// An S3 plan priced like Max, so the netting assertions reuse the ladder's
+/// arithmetic.
+fn s3_ladder() -> (Hashed, Hashed) {
+	(
+		add_plan_of_flavour(b"s3-solo", SOLO_PRICE, false, true),
+		add_plan_of_flavour(b"s3-max", MAX_PRICE, false, true),
+	)
+}
+
+fn change_s3(user: &AccountId, new_plan_id: Hashed) -> frame_support::dispatch::DispatchResult {
+	Marketplace::change_s3_plan(
+		RuntimeOrigin::signed(backend()),
+		user.clone(),
+		new_plan_id,
+		None,
+		None,
+		None,
+	)
+}
+
+fn s3_subscription(owner: &AccountId) -> pallet_marketplace::UserPlanSubscription<Runtime> {
+	Marketplace::user_all_subscription_plans(owner)
+		.into_iter()
+		.find(|s| s.package.is_s3_plan)
+		.expect("s3 subscription exists")
+}
+
+#[test]
+fn a_plan_may_not_claim_both_storage_flavours() {
+	new_test_ext().execute_with(|| {
+		// Drive and S3 are separate kinds with separate per-account slots, so a
+		// plan claiming both would occupy two at once.
+		assert_err!(
+			Marketplace::add_new_plan(
+				RuntimeOrigin::root(),
+				b"both".to_vec(),
+				b"{}".to_vec(),
+				b"{}".to_vec(),
+				SOLO_PRICE,
+				true,
+				true,
+				None,
+			),
+			pallet_marketplace::Error::<Runtime>::InvalidPlanType,
+		);
+
+		// Claiming neither is simply a compute plan, which stays legal.
+		assert_ok!(Marketplace::add_new_plan(
+			RuntimeOrigin::root(),
+			b"compute-ok".to_vec(),
+			b"{}".to_vec(),
+			b"{}".to_vec(),
+			SOLO_PRICE,
+			false,
+			false,
+			None,
+		));
+	});
+}
+
+#[test]
+fn one_drive_plan_and_one_s3_plan_may_be_held_at_once() {
+	new_test_ext().execute_with(|| {
+		let (solo, _max) = ladder();
+		let (s3_solo, _s3_max) = s3_ladder();
+		let user = account(11);
+		deposit_credits(&user, 10_000, None);
+
+		// One of each flavour coexists — the S3 purchase is not blocked by the
+		// Drive plan, whose bytes it does not cover.
+		purchase(&user, solo, None);
+		purchase(&user, s3_solo, None);
+
+		let subs = Marketplace::user_all_subscription_plans(&user);
+		assert_eq!(subs.iter().filter(|s| s.active && s.package.is_drive_plan()).count(), 1);
+		assert_eq!(subs.iter().filter(|s| s.active && s.package.is_s3_plan).count(), 1);
+	});
+}
+
+#[test]
+fn a_second_plan_of_the_same_flavour_is_refused() {
+	new_test_ext().execute_with(|| {
+		let (solo, max) = ladder();
+		let (s3_solo, s3_max) = s3_ladder();
+		let user = account(11);
+		deposit_credits(&user, 100_000, None);
+
+		purchase(&user, solo, None);
+		let after_drive = Credits::get_free_credits(&user);
+
+		// A different Drive plan is still a Drive plan.
+		assert_err!(
+			Marketplace::purchase_plan(
+				RuntimeOrigin::signed(backend()),
+				user.clone(),
+				vec![max],
+				None,
+				None,
+				None,
+				None,
+			),
+			pallet_marketplace::Error::<Runtime>::AlreadyHasActiveSubscription,
+		);
+		assert_eq!(Credits::get_free_credits(&user), after_drive, "no credits moved");
+
+		purchase(&user, s3_solo, None);
+		let after_s3 = Credits::get_free_credits(&user);
+
+		// …and the same rule applies independently to the S3 slot.
+		assert_err!(
+			Marketplace::purchase_plan(
+				RuntimeOrigin::signed(backend()),
+				user.clone(),
+				vec![s3_max],
+				None,
+				None,
+				None,
+				None,
+			),
+			pallet_marketplace::Error::<Runtime>::AlreadyHasActiveSubscription,
+		);
+		assert_eq!(Credits::get_free_credits(&user), after_s3, "no credits moved");
+	});
+}
+
+#[test]
+fn each_extrinsic_moves_only_its_own_slot() {
+	new_test_ext().execute_with(|| {
+		let (solo, max) = ladder();
+		let (s3_solo, s3_max) = s3_ladder();
+		let user = account(11);
+		deposit_credits(&user, 100_000, None);
+
+		purchase(&user, solo, None);
+		purchase(&user, s3_solo, None);
+		let drive_id = storage_subscription(&user).id;
+		let s3_id = s3_subscription(&user).id;
+
+		// `change_storage_plan` moves the Drive subscription…
+		assert_ok!(change_plan(&user, max));
+		assert_eq!(storage_subscription(&user).package.id, max);
+		assert_eq!(s3_subscription(&user).package.id, s3_solo, "s3 slot untouched");
+		assert_eq!(s3_subscription(&user).id, s3_id, "same s3 subscription, not replaced");
+
+		// …and `change_s3_plan` moves the S3 one.
+		assert_ok!(change_s3(&user, s3_max));
+		assert_eq!(s3_subscription(&user).package.id, s3_max);
+		assert_eq!(storage_subscription(&user).package.id, max, "drive slot untouched");
+
+		// Neither change ever emptied a slot or armed the resubscribe cooldown.
+		assert_ne!(storage_subscription(&user).id, drive_id, "drive slot was replaced in place");
+		assert_eq!(Marketplace::last_subscription_cancelled_at(&user), None);
+		assert_eq!(
+			Marketplace::user_all_subscription_plans(&user)
+				.iter()
+				.filter(|s| s.active)
+				.count(),
+			2,
+		);
+	});
+}
+
+#[test]
+fn changing_a_flavour_the_user_does_not_hold_is_refused() {
+	new_test_ext().execute_with(|| {
+		let (solo, _max) = ladder();
+		let (_s3_solo, s3_max) = s3_ladder();
+		let user = account(11);
+		deposit_credits(&user, 10_000, None);
+		purchase(&user, solo, None);
+		let before = Credits::get_free_credits(&user);
+
+		// Holding a Drive plan is not holding an S3 plan: `change_s3_plan` has no
+		// subscription to move, and must not fall back to the Drive one.
+		assert_err!(
+			change_s3(&user, s3_max),
+			pallet_marketplace::Error::<Runtime>::NoActiveSubscription,
+		);
+		assert_eq!(Credits::get_free_credits(&user), before, "no credits moved");
+		assert_eq!(storage_subscription(&user).package.id, solo);
+	});
+}
+
+#[test]
+fn neither_change_accepts_a_plan_of_the_other_flavour() {
+	new_test_ext().execute_with(|| {
+		let (solo, max) = ladder();
+		let (s3_solo, s3_max) = s3_ladder();
+		let user = account(11);
+		deposit_credits(&user, 100_000, None);
+		purchase(&user, solo, None);
+		purchase(&user, s3_solo, None);
+		let before = Credits::get_free_credits(&user);
+
+		// Crossing the flavours would leave the account holding two of one kind
+		// and none of the other, so each call refuses the other's plans.
+		assert_err!(
+			change_plan(&user, s3_max),
+			pallet_marketplace::Error::<Runtime>::InvalidPlanType,
+		);
+		assert_err!(change_s3(&user, max), pallet_marketplace::Error::<Runtime>::InvalidPlanType,);
+
+		assert_eq!(Credits::get_free_credits(&user), before, "no credits moved");
+		assert_eq!(storage_subscription(&user).package.id, solo);
+		assert_eq!(s3_subscription(&user).package.id, s3_solo);
+	});
+}
+
+#[test]
+fn an_s3_upgrade_charges_only_the_price_difference() {
+	new_test_ext().execute_with(|| {
+		let (s3_solo, s3_max) = s3_ladder();
+		let user = account(11);
+
+		// The same netting `change_storage_plan` does, on the S3 slot: enough
+		// for Solo plus the delta and not a credit more, so paying for January
+		// twice would not fit.
+		deposit_credits(&user, SOLO_PRICE + (MAX_PRICE - SOLO_PRICE), None);
+		purchase(&user, s3_solo, None);
+		assert_eq!(Credits::get_free_credits(&user), MAX_PRICE - SOLO_PRICE);
+
+		assert_ok!(change_s3(&user, s3_max));
+
+		assert_eq!(Credits::get_free_credits(&user), 0, "only the delta is charged");
+		let sub = s3_subscription(&user);
+		assert_eq!(sub.package.id, s3_max);
+		assert_eq!(sub.paid_per_month, MAX_PRICE);
+		assert_eq!(sub.next_charge_unix_day, Some(FEB1_2026_DAY));
+	});
+}
+
+#[test]
+fn an_s3_downgrade_refunds_surplus_prepaid_months_as_one_movement() {
+	new_test_ext().execute_with(|| {
+		let (s3_solo, s3_max) = s3_ladder();
+		let user = account(11);
+		deposit_credits(&user, 9_000, None);
+		purchase(&user, s3_max, Some(3));
+		assert_eq!(Credits::get_free_credits(&user), 0);
+
+		// Refund = Feb + Mar of Max = 6_000. Charge = Solo's January (1_000)
+		// minus the Max January already paid ⇒ 0. Net refund = 6_000.
+		assert_ok!(change_s3(&user, s3_solo));
+
+		assert_eq!(Credits::get_free_credits(&user), 6_000);
+		assert_eq!(s3_subscription(&user).next_charge_unix_day, Some(FEB1_2026_DAY));
+	});
+}
+
+#[test]
+fn only_whitelisted_callers_may_change_an_s3_plan() {
+	new_test_ext().execute_with(|| {
+		let (s3_solo, s3_max) = s3_ladder();
+		let user = account(11);
+		deposit_credits(&user, 10_000, None);
+		purchase(&user, s3_solo, None);
+
+		// Same ACL as `change_storage_plan`: neither a stranger…
+		assert_err!(
+			Marketplace::change_s3_plan(
+				RuntimeOrigin::signed(account(99)),
+				user.clone(),
+				s3_max,
+				None,
+				None,
+				None,
+			),
+			pallet_marketplace::Error::<Runtime>::WhitelistedCallerNotAuthorized,
+		);
+		// …nor the subscriber themselves may relay it.
+		assert_err!(
+			Marketplace::change_s3_plan(
+				RuntimeOrigin::signed(user.clone()),
+				user.clone(),
+				s3_max,
+				None,
+				None,
+				None,
+			),
+			pallet_marketplace::Error::<Runtime>::WhitelistedCallerNotAuthorized,
+		);
+
+		assert_eq!(s3_subscription(&user).package.id, s3_solo);
+	});
+}
+
+#[test]
+fn both_change_calls_share_one_per_block_request_budget() {
+	new_test_ext().execute_with(|| {
+		let (solo, max) = ladder();
+		let (s3_solo, s3_max) = s3_ladder();
+		let user = account(11);
+		deposit_credits(&user, 100_000, None);
+		purchase(&user, solo, None);
+		purchase(&user, s3_solo, None);
+
+		// `MaxRequestsPerBlock` is 5 and the two purchases consumed two, so
+		// three changes fit across the two calls and the fourth is refused —
+		// alternating between them must not double the budget.
+		assert_ok!(change_plan(&user, max));
+		assert_ok!(change_s3(&user, s3_max));
+		assert_ok!(change_plan(&user, solo));
+		assert_err!(
+			change_s3(&user, s3_solo),
+			pallet_marketplace::Error::<Runtime>::TooManyRequests,
+		);
 	});
 }

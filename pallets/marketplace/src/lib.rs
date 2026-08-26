@@ -2,7 +2,7 @@
 pub use pallet::*;
 pub use types::*;
 
-mod migrations;
+pub mod migrations;
 mod types;
 use sp_core::offchain::KeyTypeId;
 // use frame_system::offchain::SignedPayload;
@@ -88,7 +88,7 @@ pub mod pallet {
 	pub struct Pallet<T>(_);
 
 	/// The current storage version.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -107,10 +107,17 @@ pub mod pallet {
 					.saturating_add(T::DbWeight::get().reads_writes(1, result.unique as u64));
 			}
 
+			// Referral commissions accrued by hourly billing are swept out on
+			// their own cadence, independent of the charge interval that earns
+			// them: billing writes the balance, this pays it.
+			if current_block % T::ReferralPayoutInterval::get().into() == 0u32.into() {
+				weight_used = weight_used.saturating_add(Self::sweep_referral_commissions());
+			}
+
 			// Only execute on blocks divisible by the configured interval
 			if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
 				weight_used =
-					weight_used.saturating_add(Self::handle_arion_storage_charging(current_block));
+					weight_used.saturating_add(Self::handle_hourly_storage_charging(current_block));
 				// Monthly subscription charging:
 				// - recurring charges happen only on the 1st day of the calendar month
 				// - guarded by a unix-day marker so we only run once per day even if multiple blocks hit this interval
@@ -207,6 +214,18 @@ pub mod pallet {
 		/// Max number of users a single `create_referral_codes_for` call may cover.
 		#[pallet::constant]
 		type MaxReferralCodesPerCall: Get<u32>;
+
+		/// How often accrued referral commissions are swept out to referrers,
+		/// in blocks. Fixed at compile time on purpose: commission payout is
+		/// automatic plumbing, not an operational dial.
+		#[pallet::constant]
+		type ReferralPayoutInterval: Get<u32>;
+
+		/// Max referrers paid in a single sweep, bounding its weight. Sweeps
+		/// resume from `ReferralPayoutCursor`, so exceeding this in one block
+		/// delays a referrer to the next sweep rather than skipping them.
+		#[pallet::constant]
+		type MaxReferralPayoutsPerSweep: Get<u32>;
     }
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -286,6 +305,35 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn referral_bank_floor)]
 	pub type ReferralBankFloor<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// Commission earned on hourly pay-as-you-go charges but not yet paid out,
+	/// per referrer, in credits.
+	///
+	/// Hourly billing earns a referrer the configured commission rate
+	/// (`ReferralCommissionRateBps`, root-settable) on one hour of per-GB
+	/// charges, which is dust, so the hourly path only ever writes here — it
+	/// never touches the bank. `sweep_referral_commissions` drains this map on
+	/// its own schedule. Not to be confused with the buyer's 5% referral
+	/// discount, which is a separate purchase-only constant.
+	///
+	/// This is a running balance, not a debt: it is paid down as far as the
+	/// bank's headroom above `ReferralBankFloor` allows, and whatever the bank
+	/// cannot cover simply stays here for the next sweep. Nothing in the
+	/// billing flow ever waits on it.
+	#[pallet::storage]
+	#[pallet::getter(fn accrued_referral_commission)]
+	pub type AccruedReferralCommission<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// Raw storage key the next commission sweep resumes from.
+	///
+	/// A sweep pays at most `MaxReferralPayoutsPerSweep` referrers so its
+	/// weight stays bounded no matter how many referrers are owed. The cursor
+	/// makes successive sweeps round-robin through the map instead of
+	/// repeatedly retrying the same first N keys and starving the tail.
+	/// `None` means "start from the beginning".
+	#[pallet::storage]
+	pub type ReferralPayoutCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
 	/// Tracks the last block a user cancelled any subscription, to enforce resubscribe cooldowns.
 	#[pallet::storage]
@@ -476,16 +524,34 @@ pub mod pallet {
 			available_credits: u128,
 		},
 		/// Referral commission released from the bank in native tokens.
-		/// `paid_tokens < requested_credits` means the bank could only cover
-		/// part of the commission; the shortfall is dropped, not owed.
+		///
+		/// `paid_tokens < requested_credits` means the bank could only cover part
+		/// of the commission. What happens to the shortfall depends on which path
+		/// emitted this, and the event alone does not say which:
+		/// - purchase and monthly renewal drop it — it is gone, never owed;
+		/// - the hourly sweep keeps it in `AccruedReferralCommission` and retries
+		///   on the next sweep, so a later `ReferralCommissionPaid` for the same
+		///   referrer can be the remainder of *this* obligation rather than new
+		///   earnings.
+		///
+		/// An indexer summing `paid_tokens` per referrer is therefore correct for
+		/// total tokens received, and must not treat `requested_credits` as
+		/// earnings — on the sweep path the same credits can be requested across
+		/// several events before they are fully paid.
 		ReferralCommissionPaid {
 			referrer: T::AccountId,
 			requested_credits: u128,
 			paid_tokens: u128,
 		},
-		/// Referral commission could not be paid (e.g. bank requester not
-		/// whitelisted, or the referrer cannot receive the transfer). Billing
-		/// itself is unaffected; the commission is dropped.
+		/// Referral commission could not be paid at all (e.g. bank requester not
+		/// whitelisted, or the bank is at its floor). Billing itself is always
+		/// unaffected.
+		///
+		/// As with `ReferralCommissionPaid`, the fate of the commission depends on
+		/// the path: purchase and monthly renewal drop it, while the hourly sweep
+		/// leaves the full amount accrued and retries next sweep — so a repeated
+		/// `ReferralCommissionSkipped` for one referrer is the *same* obligation
+		/// being retried, not a new one each time.
 		ReferralCommissionSkipped {
 			referrer: T::AccountId,
 			requested_credits: u128,
@@ -497,6 +563,14 @@ pub mod pallet {
 		/// Root changed the bank floor referral commissions must not breach.
 		ReferralBankFloorUpdated {
 			floor: u128,
+		},
+		/// Hourly pay-as-you-go commission credited to a referrer's accrued
+		/// balance. `accrued_credits` is the balance after adding
+		/// `added_credits`; it is paid out by the next commission sweep.
+		ReferralCommissionAccrued {
+			referrer: T::AccountId,
+			added_credits: u128,
+			accrued_credits: u128,
 		},
 		/// User Drive + S3 usage metrics were updated by a validator.
 		UserBackendFilesUpdated {
@@ -535,6 +609,18 @@ pub mod pallet {
 			charged_credits: u128,
 			refunded_credits: u128,
 		},
+		/// The S3 counterpart of `StoragePlanChanged`. Emitted as its own
+		/// variant rather than adding a flavour field, so existing indexers
+		/// keep decoding Drive changes unchanged and never mistake an S3
+		/// change for one.
+		S3PlanChanged {
+			user: T::AccountId,
+			old_plan: T::Hash,
+			new_plan: T::Hash,
+			subscription_id: SubscriptionId,
+			charged_credits: u128,
+			refunded_credits: u128,
+		},
 	}
 
 	#[pallet::error]
@@ -561,6 +647,8 @@ pub mod pallet {
 		StorageRequestNotFound,
 		PlanNotFound,
 		InvalidPlanType,
+		/// The account already holds an active subscription of the storage
+		/// flavour being purchased — one Drive plan and one S3 plan at a time.
 		AlreadyHasActiveSubscription,
 		PlanSuspended,
 		InsufficientFreeCredits,
@@ -674,10 +762,18 @@ pub mod pallet {
 			plan_technical_description: Vec<u8>,
 			price: u128,
 			is_storage_plan: bool,
+			is_s3_plan: bool,
 			storage_limit: Option<u128>,
 		) -> DispatchResult {
 			// Ensure the caller is sudo
 			ensure_root(origin)?;
+
+			// Drive and S3 are separate plan kinds, each with its own per-account
+			// slot and its own hourly-billing exemption. A plan claiming both
+			// would occupy two slots at once and exempt bytes it was never bought
+			// for, so the combination is refused. Setting neither is a compute
+			// plan, which is what every non-storage plan already is.
+			ensure!(!(is_storage_plan && is_s3_plan), Error::<T>::InvalidPlanType);
 
 			// Generate a unique ID for the plan (you can use a counter or a random hash)
 			let plan_id = T::Hashing::hash_of(&plan_name); // Example way to generate a unique ID
@@ -692,6 +788,7 @@ pub mod pallet {
 				is_suspended: false,
 				price,
 				is_storage_plan,
+				is_s3_plan,
 				storage_limit,
 			};
 
@@ -760,7 +857,7 @@ pub mod pallet {
 				ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
 				// Process the purchase based on plan type
-				if plan.is_storage_plan {
+				if plan.is_any_storage() {
 					// Handle storage plan purchase
 					Self::do_purchase_storage_plan(owner.clone(), plan_id, pay_upfront)?;
 				} else {
@@ -779,7 +876,7 @@ pub mod pallet {
 
 				successful_purchases.push(plan_id);
 				// Emit event for successful purchase
-				let selected_image_name = if plan.is_storage_plan {
+				let selected_image_name = if plan.is_any_storage() {
 					None
 				} else {
 					Self::normalize_image_selection(selected_image_names[i].clone())
@@ -1114,10 +1211,15 @@ pub mod pallet {
 		/// (`ReferredUsers`) is left exactly as it was; the buyer discount and the
 		/// referrer commission apply to the new plan as they do at purchase.
 		///
+		/// This call moves the **Drive** subscription only, and `new_plan_id` must
+		/// itself be a Drive plan. An account's S3 subscription is a separate slot
+		/// with its own extrinsic, [`Pallet::change_s3_plan`], and is never touched
+		/// here.
+		///
 		/// `selected_image_name` / `location_id` / `cloud_init_cid` mirror
 		/// `purchase_plan`'s per-plan inputs so the backend can pass the same shape
 		/// on both calls. Storage plans are provisioned from the plan alone, so —
-		/// exactly as in `purchase_plan`'s `is_storage_plan` branch — they are
+		/// exactly as in `purchase_plan`'s storage branch — they are
 		/// accepted and not written to the subscription.
 		#[pallet::call_index(30)]
 		#[pallet::weight((0, Pays::No))]
@@ -1129,27 +1231,47 @@ pub mod pallet {
 			location_id: Option<u32>,
 			cloud_init_cid: Option<Vec<u8>>,
 		) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-
-			let allowed = WhitelistedCallers::<T>::get();
-			ensure!(allowed.contains(&who), Error::<T>::WhitelistedCallerNotAuthorized);
-
-			// Same per-block rate limit `purchase_plan` applies, counted against the
-			// subscriber rather than the relayer — it is what bounds repeated plan
-			// changes within a block, since this call has no resubscribe cooldown.
-			let max_requests_per_block = T::MaxRequestsPerBlock::get();
-			let user_requests_count = UserRequestsCount::<T>::get(&user);
-			ensure!(
-				user_requests_count.saturating_add(1) <= max_requests_per_block,
-				Error::<T>::TooManyRequests
-			);
-			UserRequestsCount::<T>::insert(&user, user_requests_count.saturating_add(1));
-
-			Self::do_change_storage_plan(
-				&user,
+			Self::dispatch_plan_change(
+				origin,
+				user,
+				StorageFlavour::Drive,
 				new_plan_id,
+				selected_image_name,
 				location_id,
-				Self::normalize_image_selection(selected_image_name),
+				cloud_init_cid,
+			)
+		}
+
+		/// Move a user's active **S3** subscription onto a different S3 plan.
+		///
+		/// The S3 counterpart of [`Pallet::change_storage_plan`]: same whitelisted
+		/// caller, same per-block rate limit, and the same single-net-movement
+		/// settlement — refund of unused prepaid months and the carry for the
+		/// unexpired remainder of the current month are netted against the new
+		/// plan's first month, so `FreeCredits` moves once and the month already
+		/// paid for is never billed twice.
+		///
+		/// The two slots are independent: this never touches the account's Drive
+		/// subscription, and `new_plan_id` must be an S3 plan. An account with no
+		/// active S3 subscription gets `NoActiveSubscription` even when it holds a
+		/// Drive one, because there is nothing on this slot to move.
+		#[pallet::call_index(31)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn change_s3_plan(
+			origin: OriginFor<T>,
+			user: T::AccountId,
+			new_plan_id: T::Hash,
+			selected_image_name: Option<Vec<u8>>,
+			location_id: Option<u32>,
+			cloud_init_cid: Option<Vec<u8>>,
+		) -> DispatchResult {
+			Self::dispatch_plan_change(
+				origin,
+				user,
+				StorageFlavour::S3,
+				new_plan_id,
+				selected_image_name,
+				location_id,
 				cloud_init_cid,
 			)
 		}
@@ -1328,15 +1450,25 @@ pub mod pallet {
 			split(Credits::new(charged_credits), rate).0.get()
 		}
 
-		/// Pay a referral commission in native tokens from the bank.
+		/// Pay a referral commission in native tokens from the bank, returning
+		/// the amount actually released.
 		///
 		/// Credits → planck is 1:1 numerically (same convention as
 		/// pallet-registration). The bank never overdraws: it pays what it can
-		/// and the shortfall is dropped — a referral commission is a bonus,
-		/// never a debt, and must never fail the billing flow that earned it.
-		fn try_pay_referral_commission_tokens(referrer: &T::AccountId, commission_credits: u128) {
+		/// and never fails the billing flow that earned the commission.
+		///
+		/// What happens to a shortfall is the *caller's* choice, not this
+		/// function's, and the two callers differ:
+		/// - purchase and monthly renewal ignore the return value and drop it — a
+		///   commission is a bonus there, never a debt;
+		/// - the hourly sweep settles `AccruedReferralCommission` by exactly what
+		///   was paid, so the remainder survives and is retried next sweep.
+		fn try_pay_referral_commission_tokens(
+			referrer: &T::AccountId,
+			commission_credits: u128,
+		) -> u128 {
 			if commission_credits == 0 {
-				return;
+				return 0;
 			}
 
 			// Compartmentalization wall — same rule the runtime's
@@ -1371,11 +1503,13 @@ pub mod pallet {
 				requested,
 			) {
 				Ok(paid) => {
+					let paid_tokens = paid.saturated_into::<u128>();
 					Self::deposit_event(Event::<T>::ReferralCommissionPaid {
 						referrer: referrer.clone(),
 						requested_credits: commission_credits,
-						paid_tokens: paid.saturated_into(),
+						paid_tokens,
 					});
+					paid_tokens
 				},
 				Err(e) => {
 					// Not-whitelisted (post-upgrade setup missed), payouts
@@ -1392,8 +1526,138 @@ pub mod pallet {
 						referrer: referrer.clone(),
 						requested_credits: commission_credits,
 					});
+					0
 				},
 			}
+		}
+
+		/// The referrer behind a user's redeemed code, if the user redeemed one.
+		fn referrer_of(who: &T::AccountId) -> Option<T::AccountId> {
+			let code = CreditsPallet::<T>::referred_users(who)?;
+			CreditsPallet::<T>::referral_codes(code)
+		}
+
+		/// Credit a referrer for one hourly pay-as-you-go charge.
+		///
+		/// Bookkeeping only — the billing path never touches the bank. The
+		/// balance is paid out by `sweep_referral_commissions`.
+		///
+		/// Hourly charges are recurring usage, so they follow the
+		/// monthly-renewal rule rather than the purchase rule: the referrer
+		/// earns a commission on what was collected, and the referred user
+		/// gets no discount — the 5% buyer discount stays purchase-only.
+		fn accrue_hourly_referral_commission(user: &T::AccountId, charged_credits: u128) {
+			let commission = Self::referral_commission_credits(charged_credits);
+			if commission == 0 {
+				return;
+			}
+			let Some(referrer) = Self::referrer_of(user) else {
+				return;
+			};
+
+			let accrued = AccruedReferralCommission::<T>::get(&referrer).saturating_add(commission);
+			AccruedReferralCommission::<T>::insert(&referrer, accrued);
+			Self::deposit_event(Event::ReferralCommissionAccrued {
+				referrer: referrer.clone(),
+				added_credits: commission,
+				accrued_credits: accrued,
+			});
+		}
+
+		/// Pay out accrued hourly commissions, at most
+		/// `MaxReferralPayoutsPerSweep` referrers per call.
+		///
+		/// Runs on a fixed `ReferralPayoutInterval` cadence with no threshold
+		/// to reach: whatever a referrer has earned goes out on the next sweep.
+		/// Each balance is settled by exactly what the bank released, so a bank
+		/// that is dry or at its `ReferralBankFloor` leaves the remainder
+		/// accrued for the next sweep rather than dropping it.
+		///
+		/// The one balance left to accumulate is the one that would leave the
+		/// referrer *still* below the existential deposit afterwards. That is not
+		/// a payout threshold on the commission: ED is the account-**creation**
+		/// rule, not the transfer rule, and `request_payment` spends its
+		/// `KeepAlive` on the bank, not the destination. A referrer who already
+		/// holds ED can therefore receive any positive amount, exactly as the
+		/// purchase path already relies on — `PURCHASE_COMMISSION` is 475 against
+		/// an ED of 500 and lands today. Skipping on the commission alone would
+		/// strand live referrers for hours, and for longer the smaller
+		/// `price_per_gb` is. Only a transfer that cannot create the account is
+		/// skipped, which also keeps unfunded destinations from emitting a
+		/// failure event every sweep forever.
+		fn sweep_referral_commissions() -> Weight {
+			let limit = T::MaxReferralPayoutsPerSweep::get() as usize;
+			if limit == 0 {
+				return T::DbWeight::get().reads(1);
+			}
+
+			// Snapshot the batch before paying: settlement mutates the map, and
+			// a live iterator over storage being written underneath is exactly
+			// the kind of undefined behavior that is not worth risking here.
+			let cursor = ReferralPayoutCursor::<T>::get();
+			let batch: Vec<(T::AccountId, u128)> = match cursor {
+				Some(key) => AccruedReferralCommission::<T>::iter_from(key).take(limit).collect(),
+				None => AccruedReferralCommission::<T>::iter().take(limit).collect(),
+			};
+
+			// End of the map (or an empty one): restart from the top next time.
+			if batch.is_empty() {
+				ReferralPayoutCursor::<T>::kill();
+				return T::DbWeight::get().reads_writes(2, 1);
+			}
+
+			// A short batch means we reached the end of the map, so the next
+			// sweep must start from the top again. Parking the cursor here
+			// instead would make that sweep find nothing beyond it and pay
+			// nobody — with fewer referrers than the per-sweep limit, which is
+			// the normal case, every second sweep would be wasted and everyone
+			// would be paid at half the intended rate.
+			//
+			// Otherwise resume after the last key we looked at, whether or not
+			// it was paid: an unpayable balance must not block the referrers
+			// behind it in the map.
+			let exhausted = batch.len() < limit;
+			let resume_from =
+				AccruedReferralCommission::<T>::hashed_key_for(&batch[batch.len() - 1].0);
+
+			let ed = <T as pallet::Config>::Currency::minimum_balance().saturated_into::<u128>();
+			let mut paid_count: u64 = 0;
+			for (referrer, accrued) in batch.iter() {
+				// Measure the balance the transfer would *land on*, not the
+				// commission in isolation: a referrer already at or above ED can
+				// take any positive amount, and only an account that would still
+				// be dust afterwards is one the transfer cannot create.
+				let dest_balance = <T as pallet::Config>::Currency::free_balance(referrer)
+					.saturated_into::<u128>();
+				if dest_balance.saturating_add(*accrued) < ed {
+					continue;
+				}
+				let paid = Self::try_pay_referral_commission_tokens(referrer, *accrued);
+				if paid == 0 {
+					continue;
+				}
+				paid_count = paid_count.saturating_add(1);
+				let remainder = accrued.saturating_sub(paid);
+				if remainder == 0 {
+					AccruedReferralCommission::<T>::remove(referrer);
+				} else {
+					AccruedReferralCommission::<T>::insert(referrer, remainder);
+				}
+			}
+
+			if exhausted {
+				ReferralPayoutCursor::<T>::kill();
+			} else {
+				ReferralPayoutCursor::<T>::put(resume_from);
+			}
+
+			// One read per key inspected, plus the bank reserve ledgers and a
+			// balance write for each referrer actually paid.
+			let inspected = batch.len() as u64;
+			T::DbWeight::get().reads_writes(
+				inspected.saturating_add(paid_count.saturating_mul(8)).saturating_add(2),
+				paid_count.saturating_mul(4).saturating_add(1),
+			)
 		}
 
 		fn referral_discount_and_owner(
@@ -1475,8 +1739,12 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Restricted canceller path: remove storage subscriptions from storage (delete rows),
-		/// and refund unused prepaid months for any removed *active* storage subs.
+		/// Restricted canceller path: remove every storage subscription from
+		/// storage (delete rows), and refund unused prepaid months for any removed
+		/// *active* one.
+		///
+		/// "Storage" here means both flavours: an account's Drive and S3
+		/// subscriptions are removed together, leaving only its compute plans.
 		fn do_delete_storage_subscription_with_refund(account_id: &T::AccountId) -> DispatchResult {
 			let now = <frame_system::Pallet<T>>::block_number();
 			let mut refunded: u128 = 0;
@@ -1486,7 +1754,7 @@ pub mod pallet {
 				let original_len = subscriptions.len();
 
 				for sub in subscriptions.iter() {
-					if sub.package.is_storage_plan && sub.active {
+					if sub.package.is_any_storage() && sub.active {
 						refunded =
 							refunded.saturating_add(Self::unused_prepaid_refund_credits(sub));
 					}
@@ -1494,7 +1762,7 @@ pub mod pallet {
 
 				*subscriptions = subscriptions
 					.iter()
-					.filter(|sub| !sub.package.is_storage_plan)
+					.filter(|sub| !sub.package.is_any_storage())
 					.cloned()
 					.collect();
 
@@ -1639,14 +1907,24 @@ pub mod pallet {
 			// Check if storage operations are enabled
 			ensure!(Self::is_purchase_plan_enabled(), Error::<T>::PlanOperationDisabled);
 
-			// Enforce: only one active storage subscription at a time, and
-			// validate the overall subscription cap before any state changes.
-			// The dispatch storage layer would roll a late failure back
-			// anyway, but failing fast wastes no work and keeps the flow
-			// safe for any future non-dispatch caller.
+			// Check if plan exists
+			let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
+
+			ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
+
+			// Enforce: one active subscription per storage flavour — one Drive plan
+			// and one S3 plan — and validate the overall subscription cap, both
+			// before any state changes. The dispatch storage layer would roll a
+			// late failure back anyway, but failing fast wastes no work and keeps
+			// the flow safe for any future non-dispatch caller.
+			//
+			// Matching on the flavour is what lets the two coexist: buying an S3
+			// plan is blocked only by another active S3 plan, never by the Drive
+			// plan whose bytes it does not cover.
+			let flavour = plan.storage_flavour();
 			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
 			ensure!(
-				!subscriptions.iter().any(|s| s.active && s.package.is_storage_plan),
+				!subscriptions.iter().any(|s| s.active && s.package.storage_flavour() == flavour),
 				Error::<T>::AlreadyHasActiveSubscription
 			);
 			let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
@@ -1654,11 +1932,6 @@ pub mod pallet {
 				active_count < T::MaxActiveSubscriptions::get(),
 				Error::<T>::TooManyActiveSubscriptions
 			);
-
-			// Check if plan exists
-			let plan = Plans::<T>::get(&plan_id).ok_or(Error::<T>::PlanNotFound)?;
-
-			ensure!(!plan.is_suspended, Error::<T>::PlanSuspended);
 
 			// Determine the (monthly) price for the plan.
 			// If the user purchases mid-month, charge a pro-rated amount based on remaining days
@@ -1765,8 +2038,51 @@ pub mod pallet {
 		///
 		/// The refund is then netted against the charge, so `FreeCredits` moves once
 		/// and prepaid months can pay for the new plan directly.
-		fn do_change_storage_plan(
+		/// Shared entry point behind `change_storage_plan` and `change_s3_plan`.
+		///
+		/// Both extrinsics are the same call on a different slot, so the ACL and
+		/// the rate limit live here once rather than being copied per flavour —
+		/// a copy is exactly where the two would drift apart.
+		fn dispatch_plan_change(
+			origin: OriginFor<T>,
+			user: T::AccountId,
+			flavour: StorageFlavour,
+			new_plan_id: T::Hash,
+			selected_image_name: Option<Vec<u8>>,
+			location_id: Option<u32>,
+			cloud_init_cid: Option<Vec<u8>>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			let allowed = WhitelistedCallers::<T>::get();
+			ensure!(allowed.contains(&who), Error::<T>::WhitelistedCallerNotAuthorized);
+
+			// Same per-block rate limit `purchase_plan` applies, counted against the
+			// subscriber rather than the relayer — it is what bounds repeated plan
+			// changes within a block, since this call has no resubscribe cooldown.
+			// Both flavours share the counter, so a user cannot double their budget
+			// by alternating between the two calls.
+			let max_requests_per_block = T::MaxRequestsPerBlock::get();
+			let user_requests_count = UserRequestsCount::<T>::get(&user);
+			ensure!(
+				user_requests_count.saturating_add(1) <= max_requests_per_block,
+				Error::<T>::TooManyRequests
+			);
+			UserRequestsCount::<T>::insert(&user, user_requests_count.saturating_add(1));
+
+			Self::do_change_plan_of_flavour(
+				&user,
+				flavour,
+				new_plan_id,
+				location_id,
+				Self::normalize_image_selection(selected_image_name),
+				cloud_init_cid,
+			)
+		}
+
+		fn do_change_plan_of_flavour(
 			account_id: &T::AccountId,
+			flavour: StorageFlavour,
 			new_plan_id: T::Hash,
 			_location_id: Option<u32>,
 			_selected_image_name: Option<Vec<u8>>,
@@ -1783,16 +2099,18 @@ pub mod pallet {
 
 			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(account_id);
 
-			// Exactly one active storage subscription. `do_purchase_storage_plan`
-			// enforces that invariant on the way in, so more than one is corrupt
-			// state we refuse rather than silently pick a winner from.
-			let mut active_storage = subscriptions
+			// Exactly one active subscription *of this flavour*.
+			// `do_purchase_storage_plan` enforces that invariant on the way in, so
+			// more than one is corrupt state we refuse rather than silently pick a
+			// winner from. The other flavour is never a candidate, so an account
+			// holding both keeps the one it did not ask to change.
+			let mut active_of_flavour = subscriptions
 				.iter()
 				.enumerate()
-				.filter(|(_, s)| s.active && s.package.is_storage_plan)
+				.filter(|(_, s)| s.active && s.package.storage_flavour() == Some(flavour))
 				.map(|(i, _)| i);
-			let index = active_storage.next().ok_or(Error::<T>::NoActiveSubscription)?;
-			ensure!(active_storage.next().is_none(), Error::<T>::TooManyActiveSubscriptions);
+			let index = active_of_flavour.next().ok_or(Error::<T>::NoActiveSubscription)?;
+			ensure!(active_of_flavour.next().is_none(), Error::<T>::TooManyActiveSubscriptions);
 
 			let old_sub = subscriptions[index].clone();
 			let old_plan_id = old_sub.package.id;
@@ -1800,7 +2118,10 @@ pub mod pallet {
 
 			let new_plan = Plans::<T>::get(&new_plan_id).ok_or(Error::<T>::PlanNotFound)?;
 			ensure!(!new_plan.is_suspended, Error::<T>::PlanSuspended);
-			ensure!(new_plan.is_storage_plan, Error::<T>::InvalidPlanType);
+			// The target must be the same flavour: a Drive change cannot land on an
+			// S3 plan, which would leave the account holding two S3 subscriptions
+			// and no Drive one.
+			ensure!(new_plan.storage_flavour() == Some(flavour), Error::<T>::InvalidPlanType);
 
 			// Unused prepaid full months on the old plan — the cancel refund, unchanged.
 			let refund_credits = Self::unused_prepaid_refund_credits(&old_sub);
@@ -1891,14 +2212,25 @@ pub mod pallet {
 
 			UserAllSubscriptionPlans::<T>::insert(account_id, subscriptions);
 
-			Self::deposit_event(Event::StoragePlanChanged {
-				user: account_id.clone(),
-				old_plan: old_plan_id,
-				new_plan: new_plan_id,
-				subscription_id,
-				charged_credits: net_charge,
-				refunded_credits: net_refund,
-			});
+			let event = match flavour {
+				StorageFlavour::Drive => Event::StoragePlanChanged {
+					user: account_id.clone(),
+					old_plan: old_plan_id,
+					new_plan: new_plan_id,
+					subscription_id,
+					charged_credits: net_charge,
+					refunded_credits: net_refund,
+				},
+				StorageFlavour::S3 => Event::S3PlanChanged {
+					user: account_id.clone(),
+					old_plan: old_plan_id,
+					new_plan: new_plan_id,
+					subscription_id,
+					charged_credits: net_charge,
+					refunded_credits: net_refund,
+				},
+			};
+			Self::deposit_event(event);
 
 			Ok(())
 		}
@@ -2066,6 +2398,64 @@ pub mod pallet {
 		/// Unified function to handle all subscription charging (storage + compute) in single iteration.
 		///
 		/// Returns a conservative weight estimate based on number of users/subscriptions processed.
+		/// Charge one month for each due subscription, one at a time, in ascending
+		/// subscription id order.
+		///
+		/// Returns `(credits actually collected, ids that could not be paid)`.
+		///
+		/// Charging per subscription rather than as a lump sum is what makes a
+		/// partial payment partial: an account that can afford one of its
+		/// subscriptions but not all of them keeps the ones it can pay for
+		/// instead of losing every subscription on that side. Ascending id order
+		/// makes which ones survive deterministic — oldest first.
+		fn charge_due_subscriptions_individually(
+			account_id: &T::AccountId,
+			due: &[UserPlanSubscription<T>],
+		) -> (u128, Vec<SubscriptionId>) {
+			let mut charged_total = 0u128;
+			let mut failed = Vec::new();
+			let mut available = CreditsPallet::<T>::get_free_credits(account_id);
+
+			let mut sorted = due.to_vec();
+			sorted.sort_by_key(|sub| sub.id);
+
+			for sub in &sorted {
+				let price = sub.package.price;
+				let paid = available >= price
+					&& Self::consume_credits(account_id.clone(), price)
+						.and_then(|_| {
+							Self::record_credits_transaction(
+								account_id,
+								NativeTransactionType::Subscription,
+								price,
+							)
+						})
+						.is_ok();
+
+				if paid {
+					charged_total = charged_total.saturating_add(price);
+					available = available.saturating_sub(price);
+				} else {
+					failed.push(sub.id);
+				}
+			}
+
+			(charged_total, failed)
+		}
+
+		/// Monthly renewal sweep: charge every due subscription for the accounts
+		/// that hold them, and deactivate the ones that cannot be paid.
+		///
+		/// Storage and compute are charged as independent sides — a failure on one
+		/// never deactivates the other — and *within* each side one subscription at
+		/// a time, in ascending subscription id order. Per-subscription is what
+		/// keeps a partial payment partial: an account holding a Drive plan and an
+		/// S3 plan that can afford only one keeps the one it paid for rather than
+		/// losing both, which would also drop the covered side onto hourly
+		/// pay-as-you-go billing.
+		///
+		/// Runs at most `max_catchup_months` cycles per account so a chain that
+		/// missed several month boundaries catches up without an unbounded loop.
 		fn handle_all_subscription_charging(current_block: BlockNumberFor<T>) -> Weight {
 			let mut users_seen: u64 = 0;
 			let mut users_with_active_subs: u64 = 0;
@@ -2100,13 +2490,13 @@ pub mod pallet {
 
 					let storage_subs_to_charge: Vec<_> = active_subs
 						.iter()
-						.filter(|sub| sub.package.is_storage_plan)
+						.filter(|sub| sub.package.is_any_storage())
 						.filter(due)
 						.cloned()
 						.collect();
 					let compute_subs_to_charge: Vec<_> = active_subs
 						.iter()
-						.filter(|sub| !sub.package.is_storage_plan)
+						.filter(|sub| !sub.package.is_any_storage())
 						.filter(due)
 						.cloned()
 						.collect();
@@ -2116,77 +2506,51 @@ pub mod pallet {
 						break;
 					}
 
-					// Calculate total charge amounts (one month worth for each due sub).
-					let mut total_storage_charge = 0u128;
-					let mut total_compute_charge = 0u128;
-
-					for sub in &storage_subs_to_charge {
-						total_storage_charge =
-							total_storage_charge.saturating_add(sub.package.price);
-					}
-					for sub in &compute_subs_to_charge {
-						total_compute_charge =
-							total_compute_charge.saturating_add(sub.package.price);
-					}
+					// One month's worth for each due subscription, per side. These
+					// totals are only used to decide whether there is anything to
+					// do and to report the shortfall — the actual charging is per
+					// subscription below.
+					let total_storage_charge = storage_subs_to_charge
+						.iter()
+						.fold(0u128, |acc, sub| acc.saturating_add(sub.package.price));
+					let total_compute_charge = compute_subs_to_charge
+						.iter()
+						.fold(0u128, |acc, sub| acc.saturating_add(sub.package.price));
 
 					if total_storage_charge == 0 && total_compute_charge == 0 {
 						break;
 					}
 					users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
 
-					// Charge storage and compute independently; deactivate only the failed side.
-					let mut storage_ok = total_storage_charge == 0;
-					let mut compute_ok = total_compute_charge == 0;
-
+					// Charge storage and compute independently, and *within* each
+					// side charge one subscription at a time in ascending id order.
+					//
+					// Per-subscription is what keeps a partial payment partial. An
+					// account can hold a Drive plan and an S3 plan at once, so
+					// summing the storage side and failing it as a unit would take
+					// both away from a user who could afford one — dropping the
+					// side they had covered onto hourly pay-as-you-go, and starting
+					// hourly commission accrual on it. Ascending id order makes the
+					// survivor deterministic: the oldest subscription is charged
+					// first and so is the one that survives.
 					let storage_available_at_attempt =
 						CreditsPallet::<T>::get_free_credits(&account_id);
-					if total_storage_charge > 0 {
-						if storage_available_at_attempt >= total_storage_charge {
-							storage_ok =
-								Self::consume_credits(account_id.clone(), total_storage_charge)
-									.and_then(|_| {
-										Self::record_credits_transaction(
-											&account_id,
-											NativeTransactionType::Subscription,
-											total_storage_charge.into(),
-										)
-									})
-									.is_ok();
-						} else {
-							storage_ok = false;
-						}
-					}
+					let (storage_charged_total, storage_subs_to_deactivate) =
+						Self::charge_due_subscriptions_individually(
+							&account_id,
+							&storage_subs_to_charge,
+						);
 
-					// Charge compute subscriptions individually in ascending order of subscription ID
-					let mut compute_charged_total = 0u128;
-					let mut compute_subs_to_deactivate = Vec::new();
-					let mut compute_available = CreditsPallet::<T>::get_free_credits(&account_id);
-					let mut sorted_compute_subs = compute_subs_to_charge.clone();
-					sorted_compute_subs.sort_by_key(|sub| sub.id);
-					for sub in &sorted_compute_subs {
-						let price = sub.package.price;
-						if compute_available >= price {
-							if Self::consume_credits(account_id.clone(), price)
-								.and_then(|_| {
-									Self::record_credits_transaction(
-										&account_id,
-										NativeTransactionType::Subscription,
-										price.into(),
-									)
-								})
-								.is_ok()
-							{
-								compute_charged_total = compute_charged_total.saturating_add(price);
-								compute_available = compute_available.saturating_sub(price);
-								// Mark as charged below
-							} else {
-								compute_subs_to_deactivate.push(sub.id);
-							}
-						} else {
-							compute_subs_to_deactivate.push(sub.id);
-						}
-					}
-					compute_ok = compute_subs_to_deactivate.is_empty();
+					let compute_available_at_attempt =
+						CreditsPallet::<T>::get_free_credits(&account_id);
+					let (compute_charged_total, compute_subs_to_deactivate) =
+						Self::charge_due_subscriptions_individually(
+							&account_id,
+							&compute_subs_to_charge,
+						);
+
+					let mut subs_to_deactivate = storage_subs_to_deactivate;
+					subs_to_deactivate.extend(compute_subs_to_deactivate);
 
 					// Update successfully charged subscriptions (only those due),
 					// advancing from the previous `next_charge_unix_day`, not from "now".
@@ -2198,12 +2562,7 @@ pub mod pallet {
 							continue;
 						}
 
-						let ok_for_type = if sub.package.is_storage_plan {
-							storage_ok
-						} else {
-							!compute_subs_to_deactivate.contains(&sub.id)
-						};
-						if ok_for_type {
+						if !subs_to_deactivate.contains(&sub.id) {
 							sub.last_charged_at = current_block;
 							let prev_next = sub.next_charge_unix_day.unwrap_or(today);
 							sub.next_charge_unix_day = Some(
@@ -2214,58 +2573,39 @@ pub mod pallet {
 						}
 					}
 
-					// Referral commission on the credits actually collected
-					// this cycle, paid in native tokens from the bank.
-					let storage_part = if storage_ok { total_storage_charge } else { 0 };
-					let total_charged = storage_part.saturating_add(compute_charged_total);
+					// Referral commission on the credits actually collected this
+					// cycle. Both sides now report what they really charged, so a
+					// partially paid side earns commission on exactly the
+					// subscriptions that went through.
+					let total_charged =
+						storage_charged_total.saturating_add(compute_charged_total);
 					if total_charged > 0 {
-						if let Some(ref_code) = CreditsPallet::<T>::referred_users(&account_id) {
-							if let Some(referrer) = CreditsPallet::<T>::referral_codes(ref_code) {
-								let commission = Self::referral_commission_credits(total_charged);
-								Self::try_pay_referral_commission_tokens(&referrer, commission);
-							}
+						if let Some(referrer) = Self::referrer_of(&account_id) {
+							let commission = Self::referral_commission_credits(total_charged);
+							Self::try_pay_referral_commission_tokens(&referrer, commission);
 						}
 					}
 
-					// Deactivate failed side(s) and emit failure events.
-					if !storage_ok && total_storage_charge > 0 {
-						log::warn!(
-							target: "runtime::marketplace",
-							"monthly storage subscription charge failed for {:?}: required={}, available_at_attempt={}",
-							account_id,
-							total_storage_charge,
+					// Deactivate the subscriptions that could not be paid, refund
+					// any unused prepaid months, and report each one individually.
+					for sub_id in subs_to_deactivate {
+						let Some(failed) = subs.iter().find(|s| s.id == sub_id).cloned() else {
+							continue;
+						};
+						let price = failed.package.price;
+						let available_at_attempt = if failed.package.is_any_storage() {
 							storage_available_at_attempt
-						);
-						for sub in subs.iter_mut() {
-							if sub.active
-								&& sub.package.is_storage_plan
-								&& sub.next_charge_unix_day.map_or(true, |d| today >= d)
-							{
-								sub.active = false;
-							}
-						}
-						Self::deposit_event(Event::SubscriptionChargeFailed {
-							who: account_id.clone(),
-							required_credits: total_storage_charge,
-							available_credits: storage_available_at_attempt,
-						});
-					}
-
-					// Deactivate compute subs that failed individually, refund unused prepaid
-					for sub_id in compute_subs_to_deactivate {
-						let price = sorted_compute_subs
-							.iter()
-							.find(|s| s.id == sub_id)
-							.unwrap()
-							.package
-							.price;
+						} else {
+							compute_available_at_attempt
+						};
 						log::warn!(
 							target: "runtime::marketplace",
-							"monthly compute subscription charge failed for {:?}, sub_id={}: required={}, available_at_attempt={}",
+							"monthly {} subscription charge failed for {:?}, sub_id={}: required={}, available_at_attempt={}",
+							if failed.package.is_any_storage() { "storage" } else { "compute" },
 							account_id,
 							sub_id,
 							price,
-							compute_available
+							available_at_attempt
 						);
 						for sub in subs.iter_mut() {
 							if sub.id == sub_id && sub.active {
@@ -2290,7 +2630,7 @@ pub mod pallet {
 						Self::deposit_event(Event::SubscriptionChargeFailed {
 							who: account_id.clone(),
 							required_credits: price,
-							available_credits: compute_available,
+							available_credits: available_at_attempt,
 						});
 					}
 				}
@@ -2310,20 +2650,40 @@ pub mod pallet {
 			T::DbWeight::get().reads_writes(reads, writes)
 		}
 
-		// charges users for storage
-		fn handle_arion_storage_charging(current_block: BlockNumberFor<T>) -> Weight {
+		/// Hourly pay-as-you-go billing for users with no subscription covering
+		/// their bytes.
+		///
+		/// Drive and S3 bytes are metered and billed separately, each exempted by
+		/// its own plan: an active Drive plan takes the Drive bytes out of the bill
+		/// and an active S3 plan takes the S3 bytes out, so a user holding one plan
+		/// still pays hourly for the other side's usage and a user holding both
+		/// pays nothing. Both halves settle as a single charge against one
+		/// `StorageLastChargedAt` marker, so an account is still billed at most
+		/// once an hour.
+		///
+		/// Each half rounds up to whole GiB on its own, which is deliberate: the
+		/// two byte counts come from different backends and are billed as separate
+		/// line items, so a partial GiB on each side is a partial GiB of each.
+		fn handle_hourly_storage_charging(current_block: BlockNumberFor<T>) -> Weight {
 			let mut users_seen: u64 = 0;
 			let mut users_charged_or_removed: u64 = 0;
-			// Get all users who requested storage
-			let all_users_who_requested_storage = pallet_arion::Pallet::<T>::get_all_users();
-			for user in all_users_who_requested_storage {
+			// Every user the validator metric has ever reported on. Both usage
+			// extrinsics write all four Drive/S3 maps together, so this key set
+			// covers S3-only users too — their Drive row is simply zero.
+			for (user, drive_file_size) in UserTotalDriveFilesSize::<T>::iter() {
 				users_seen = users_seen.saturating_add(1);
-				// Check if user has any active storage plan subscription
+
+				// Which halves of the bill a subscription already covers.
 				let subscriptions = UserAllSubscriptionPlans::<T>::get(&user);
-				if !subscriptions.is_empty()
-					&& subscriptions.iter().any(|sub| sub.active && sub.package.is_storage_plan)
-				{
-					// Skip charging this user as they have an active storage plan
+				let mut has_drive_plan = false;
+				let mut has_s3_plan = false;
+				for sub in subscriptions.iter().filter(|sub| sub.active) {
+					has_drive_plan |= sub.package.is_drive_plan();
+					has_s3_plan |= sub.package.is_s3_plan;
+				}
+
+				// Both sides covered — nothing left to meter for this user.
+				if has_drive_plan && has_s3_plan {
 					continue;
 				}
 
@@ -2331,12 +2691,13 @@ pub mod pallet {
 				let last_charged_at = StorageLastChargedAt::<T>::get(user.clone());
 				let block_difference = current_block.saturating_sub(last_charged_at);
 				if block_difference > T::BlocksPerHour::get().into() {
-					// Variables to track total file size and fulfilled requests for updating
-					let total_file_size_in_bs: u128 =
-						pallet_arion::Pallet::<T>::user_total_files_size(&user).unwrap_or(0);
+					let s3_file_size = UserTotalS3FilesSize::<T>::get(&user).unwrap_or(0);
+
+					let billable_drive = if has_drive_plan { 0 } else { drive_file_size };
+					let billable_s3 = if has_s3_plan { 0 } else { s3_file_size };
 
 					// Skip if no files to charge
-					if total_file_size_in_bs == 0 {
+					if billable_drive == 0 && billable_s3 == 0 {
 						continue;
 					}
 
@@ -2346,17 +2707,28 @@ pub mod pallet {
 					let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
 
 					// Bill in whole GiB, rounding any partial GiB up.
-					let charge_amount = times(
-						Credits::new(price_per_gb),
-						gibs_ceil(Bytes::new(total_file_size_in_bs)),
-					)
-					.get();
+					let charge_amount =
+						times(Credits::new(price_per_gb), gibs_ceil(Bytes::new(billable_drive)))
+							.get()
+							.saturating_add(
+								times(
+									Credits::new(price_per_gb),
+									gibs_ceil(Bytes::new(billable_s3)),
+								)
+								.get(),
+							);
 
 					if user_free_credits >= charge_amount {
 						// Decrease user credits
 						let charge_result = Self::consume_credits(user.clone(), charge_amount);
 
 						if charge_result.is_ok() {
+							// Commission on money actually collected, same rule
+							// as the monthly path. Recorded only — the sweep
+							// pays it, so the charge that earned it never waits
+							// on the bank.
+							Self::accrue_hourly_referral_commission(&user, charge_amount);
+
 							let tx_result = Self::record_credits_transaction(
 								&user,
 								NativeTransactionType::Subscription,
@@ -2386,12 +2758,16 @@ pub mod pallet {
 			}
 
 			// Conservative weight accounting:
-			// - reading `UserAllSubscriptionPlans` and `StorageLastChargedAt` per user
+			// - iterating `UserTotalDriveFilesSize` and reading
+			//   `UserAllSubscriptionPlans`, `UserTotalS3FilesSize` and
+			//   `StorageLastChargedAt` per user
 			// - charged/removed paths do writes and call into other pallets
+			// - a charged user also walks the referral lookup and writes one
+			//   accrual row; paying it out is the sweep's weight, not ours
 			let reads = users_seen
 				.saturating_mul(5)
-				.saturating_add(users_charged_or_removed.saturating_mul(10));
-			let writes = users_charged_or_removed.saturating_mul(10);
+				.saturating_add(users_charged_or_removed.saturating_mul(13));
+			let writes = users_charged_or_removed.saturating_mul(11);
 			T::DbWeight::get().reads_writes(reads, writes)
 		}
 
@@ -2411,7 +2787,7 @@ pub mod pallet {
 				.flat_map(|(account_id, subscriptions)| {
 					subscriptions
 						.into_iter()
-						.filter(|sub| sub.active && !sub.package.is_storage_plan)
+						.filter(|sub| sub.active && !sub.package.is_any_storage())
 						.map(move |sub| (account_id.clone(), sub))
 				})
 				.collect()
@@ -2433,7 +2809,7 @@ pub mod pallet {
 				for sub in subscriptions.iter_mut() {
 					if sub.id == subscription_id && sub.active {
 						refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
-						was_storage = sub.package.is_storage_plan;
+						was_storage = sub.package.is_any_storage();
 						sub.active = false;
 						cancelled = true;
 						break; // Stop looping after finding the subscription
