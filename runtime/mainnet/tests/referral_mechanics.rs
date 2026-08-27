@@ -702,6 +702,15 @@ fn monthly_renewal_pays_commission_in_tokens() {
 		let sub = storage_subscription(&buyer);
 		assert!(sub.active);
 		assert_eq!(sub.next_charge_unix_day, Some(MAR1_2026_DAY));
+		// The discount was purchase-only, so once this subscription renews it
+		// is no longer a discounted one and must stop claiming to be. The field
+		// is what the refund and carry-credit paths value a cycle by, so a
+		// stale `PAID_PER_MONTH` here would credit the buyer 9_499 for a cycle
+		// they just paid 9_999 for.
+		assert_eq!(
+			sub.paid_per_month, PLAN_PRICE,
+			"a renewal records the face price it actually charged",
+		);
 	});
 }
 

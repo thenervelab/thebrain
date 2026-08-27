@@ -143,10 +143,20 @@ where
 	/// Unix day (UTC) of the 1st of the next month when recurring charging is due.
 	/// `None` means legacy behavior (charge on the next 1st).
 	pub next_charge_unix_day: Option<u32>,
-	/// Actual credits paid per month (after referral discount).
+	/// Credits actually charged for one billing cycle, as of the most recent
+	/// payment.
 	///
-	/// Note: upfront purchases can include a prorated first month; this field tracks the
-	/// discounted *full-month* price, which is what we refund for unused prepaid full months.
+	/// Set at purchase to the discounted price (referred buyers pay 95% of
+	/// face, on every cycle of an upfront purchase), and rewritten on each
+	/// renewal to the face price — renewals carry no discount, so a
+	/// subscription that renews stops being a discounted one.
+	///
+	/// Keeping it current matters because it is what the money paths value a
+	/// cycle by: `unused_prepaid_refund_credits` refunds whole prepaid cycles
+	/// at this rate, and `remaining_cycle_value` credits the unexpired part of
+	/// the current one. Left at the purchase figure it would understate what a
+	/// renewed subscription costs, and under-credit its holder on a plan
+	/// change.
 	pub paid_per_month: u128,
 	pub _phantom: PhantomData<T>, // Placeholder for generic type
 }

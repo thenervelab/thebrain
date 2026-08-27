@@ -2852,6 +2852,20 @@ pub mod pallet {
 
 						if !subs_to_deactivate.contains(&sub.id) {
 							sub.last_charged_at = current_block;
+							// Record what this renewal actually cost, which is
+							// the face price: the referral discount is a
+							// purchase-time incentive and is deliberately not
+							// applied to renewals.
+							//
+							// Leaving the purchase-time figure here would let it
+							// go stale the moment a discounted subscription
+							// renews, and it is not a decorative field — the
+							// refund and carry-credit paths value a cycle from
+							// it, so a referred user changing plans later would
+							// be credited 95% of a cycle they had paid 100% for.
+							// Kept in step with `charge_due_subscriptions_individually`,
+							// which charges this same `package.price`.
+							sub.paid_per_month = sub.package.price;
 							// Advance to the next anniversary of the billing
 							// anchor, from the previous due date rather than
 							// from "now" — otherwise arrears would drag the
