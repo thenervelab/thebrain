@@ -2011,23 +2011,60 @@ pub mod pallet {
 			StoragePricePerMiner::<T>::get()
 		}
 
-		fn prorated_monthly_price(monthly_price: u128) -> u128 {
-			// days_remaining is inclusive of today; crate ceil-rounds and clamps
-			// days_remaining to days_in_month so a part never exceeds a full month.
-			prorate_first_month(
-				Credits::new(monthly_price),
-				u32::from(pallet_calendar::Pallet::<T>::days_remaining_in_current_month()),
-				u32::from(pallet_calendar::Pallet::<T>::days_in_current_month()),
-			)
-			.get()
+		/// What the unexpired remainder of a subscription's **current cycle** is
+		/// worth, at `monthly_price`.
+		///
+		/// Under 1st-of-month billing "the rest of what you paid for" and "the
+		/// rest of the calendar month" were the same span, so a single
+		/// calendar-month proration could stand in for both. Under anniversaries
+		/// they diverge: a user due on the 14th has a cycle running the 14th to
+		/// the 14th, and valuing their remainder against the calendar month
+		/// would silently over- or under-credit every plan change.
+		///
+		/// Measured against the subscription's own due date: `due - today` days
+		/// remaining out of `due - previous_anniversary(due)` in the cycle. Both
+		/// ends come from the same `add_months_clamped` the charge path uses, so
+		/// the two cannot drift apart.
+		fn remaining_cycle_value(sub: &UserPlanSubscription<T>, monthly_price: u128) -> u128 {
+			let Some(due_day) = sub.next_charge_unix_day else {
+				return 0;
+			};
+			let today = Self::current_unix_day();
+			if today >= due_day {
+				return 0;
+			}
+
+			let anchor = Self::anchor_of(sub);
+			let cycle_start =
+				pallet_calendar::Pallet::<T>::add_months_clamped(due_day, anchor, -1);
+			// A cycle is never shorter than 28 days; a zero here would mean the
+			// date math failed, and falling back to the month length keeps the
+			// credit finite rather than dividing by nothing.
+			let cycle_days = due_day.saturating_sub(cycle_start);
+			let cycle_days = if cycle_days == 0 {
+				u32::from(pallet_calendar::Pallet::<T>::days_in_month_of_day(due_day)).max(1)
+			} else {
+				cycle_days
+			};
+
+			// `due_day - today` is inclusive of today in the same sense the
+			// calendar-month version was: on the last day of a cycle it is 1,
+			// and on the due date itself it is 0 because a charge is imminent.
+			let days_remaining = due_day.saturating_sub(today);
+
+			prorate_first_month(Credits::new(monthly_price), days_remaining, cycle_days).get()
 		}
 
-		/// Total upfront charge when buying `upfront_months` starting mid-month:
-		/// `1 prorated month + (upfront_months - 1) full months`.
-		fn upfront_prorated_total(monthly_price: u128, upfront_months: u128) -> u128 {
-			let first = Self::prorated_monthly_price(monthly_price);
-			let remaining_full_months = upfront_months.saturating_sub(1);
-			first.saturating_add(times(Credits::new(monthly_price), remaining_full_months).get())
+		/// Due date after paying for `cycles` whole billing cycles from `from_day`.
+		///
+		/// Clamped at **each** step rather than once at the end, which is what
+		/// makes three months from Jan 31 land on Apr 30 instead of Apr 3.
+		fn advance_cycles(from_day: u32, anchor: u8, cycles: u32) -> u32 {
+			let mut day = from_day;
+			for _ in 0..cycles.max(1) {
+				day = pallet_calendar::Pallet::<T>::add_months_clamped(day, anchor, 1);
+			}
+			day
 		}
 
 		#[transactional]
@@ -2124,18 +2161,19 @@ pub mod pallet {
 				Error::<T>::TooManyActiveSubscriptions
 			);
 
-			// Determine the (monthly) price for the plan.
-			// If the user purchases mid-month, charge a pro-rated amount based on remaining days
-			// in the current month (inclusive of today).
-			let mut plan_price_native = Self::prorated_monthly_price(plan.price);
+			// Whole cycles at full price. Billing runs from the purchase date to
+			// the same day next month, so there is no partial first month to
+			// prorate — a user who pays on the 14th is paid up to the 14th.
+			let cycles: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
+			let cycles = cycles.max(1);
+			let plan_price_native = times(Credits::new(plan.price), u128::from(cycles)).get();
 
-			if let Some(upfront_months) = pay_upfront {
-				plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
-			}
-
-			let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
-			let next_charge_unix_day =
-				Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
+			// The anchor is this purchase's day-of-month, and the due date is it
+			// advanced `cycles` times — clamped at each step, so three months
+			// from Jan 31 lands on Apr 30 rather than Apr 3.
+			let today = Self::current_unix_day();
+			let anchor = pallet_calendar::Pallet::<T>::day_of_month(today).max(1);
+			let next_charge_unix_day = Some(Self::advance_cycles(today, anchor, cycles));
 
 			// Apply referral discount ONLY at subscription purchase time (not on renewals).
 			let (referral_discount, ref_owner) =
@@ -2162,6 +2200,7 @@ pub mod pallet {
 				*id = id.saturating_add(1);
 				current_id
 			});
+			Self::set_anchor(subscription_id, anchor);
 
 			Self::consume_credits(who.clone(), charged_credits)?;
 
@@ -2318,23 +2357,21 @@ pub mod pallet {
 			// Unused prepaid full months on the old plan — the cancel refund, unchanged.
 			let refund_credits = Self::unused_prepaid_refund_credits(&old_sub);
 
-			// Value of the remaining days of the current month on the old plan. Only
-			// counts while the old subscription is actually paid through the current
-			// month; a lapsed subscription, or a legacy one with no
-			// `next_charge_unix_day`, carries nothing forward. `paid_per_month` is
-			// the discounted price actually billed, so the carry never exceeds what
-			// the user paid for those days.
-			let paid_through_this_month = old_sub
-				.next_charge_unix_day
-				.is_some_and(|due_day| due_day > Self::current_unix_day());
-			let carry_credits = if paid_through_this_month {
-				Self::prorated_monthly_price(old_sub.paid_per_month)
-			} else {
-				0
-			};
+			// Value of the unexpired remainder of the old plan's **current
+			// cycle**. Measured against the old subscription's own due date, not
+			// against the calendar month: under anniversaries those are
+			// different spans, and using the wrong one silently over- or
+			// under-credits every plan change. A lapsed subscription, or a
+			// legacy one with no `next_charge_unix_day`, carries nothing
+			// forward. `paid_per_month` is the discounted price actually billed,
+			// so the carry never exceeds what the user paid for those days.
+			let carry_credits = Self::remaining_cycle_value(&old_sub, old_sub.paid_per_month);
 
-			// New plan's first month, prorated and discounted like a fresh purchase.
-			let new_plan_price = Self::prorated_monthly_price(new_plan.price);
+			// The new plan starts a fresh cycle today at full price, exactly as a
+			// new purchase would, and is discounted the same way.
+			let today = Self::current_unix_day();
+			let anchor = pallet_calendar::Pallet::<T>::day_of_month(today).max(1);
+			let new_plan_price = new_plan.price;
 			let (referral_discount, ref_owner) =
 				Self::referral_discount_and_owner(account_id, new_plan_price);
 			let charged_credits =
@@ -2375,6 +2412,7 @@ pub mod pallet {
 				*id = id.saturating_add(1);
 				current_id
 			});
+			Self::set_anchor(subscription_id, anchor);
 
 			// 95% of face price for referred users — the same conserved split the
 			// purchase paths record, so future refunds keep valuing a month correctly.
@@ -2395,9 +2433,7 @@ pub mod pallet {
 				active: true,
 				last_charged_at: <frame_system::Pallet<T>>::block_number(),
 				selected_image_name: None,
-				next_charge_unix_day: Some(
-					pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(1),
-				),
+				next_charge_unix_day: Some(Self::advance_cycles(today, anchor, 1)),
 				paid_per_month,
 				_phantom: PhantomData,
 			};
@@ -2471,16 +2507,14 @@ pub mod pallet {
 				);
 			}
 
-			// Determine the (monthly) price (pro-rated if purchased mid-month).
-			let mut plan_price_native = Self::prorated_monthly_price(plan.price);
+			// Whole cycles at full price — see `do_purchase_storage_plan`.
+			let cycles: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
+			let cycles = cycles.max(1);
+			let plan_price_native = times(Credits::new(plan.price), u128::from(cycles)).get();
 
-			if let Some(upfront_months) = pay_upfront {
-				plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
-			}
-
-			let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
-			let next_charge_unix_day =
-				Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
+			let today = Self::current_unix_day();
+			let anchor = pallet_calendar::Pallet::<T>::day_of_month(today).max(1);
+			let next_charge_unix_day = Some(Self::advance_cycles(today, anchor, cycles));
 
 			// Apply referral discount ONLY at subscription purchase time (not on renewals).
 			let (referral_discount, ref_owner) =
@@ -2512,6 +2546,7 @@ pub mod pallet {
 				*id = id.saturating_add(1);
 				current_id
 			});
+			Self::set_anchor(subscription_id, anchor);
 
 			Self::consume_credits(who.clone(), charged_credits)?;
 
