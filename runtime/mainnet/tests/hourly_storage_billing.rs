@@ -212,6 +212,65 @@ fn the_hourly_sweep_is_bounded_per_tick_and_reaches_everyone() {
 	});
 }
 
+/// Paging must not turn one hour's bill into several. Within a single hour,
+/// each user is charged exactly once no matter how many ticks the sweep needs
+/// to work through them.
+///
+/// This is the property the cursor can actually break, and the one that
+/// "everyone was reached" does not check: a sweep that restarted from the top
+/// each tick would bill the head of the map repeatedly and never reach the
+/// tail, and every user would still show *some* spend. Asserting the exact
+/// amount is what separates the two.
+///
+/// Ticks here are 8 blocks apart rather than `HOURLY_STEP`, so all of them fall
+/// inside one `BlocksPerHour` window — after a user's first charge their
+/// `StorageLastChargedAt` makes them ineligible for the rest of it.
+#[test]
+fn a_paged_sweep_bills_each_user_exactly_once_an_hour() {
+	new_test_ext().execute_with(|| {
+		let total = 300u32;
+		let user_of = |n: u32| {
+			let mut raw = [0u8; 32];
+			raw[0] = 0xD0;
+			raw[1..5].copy_from_slice(&n.to_le_bytes());
+			AccountId32::new(raw)
+		};
+
+		for n in 0..total {
+			let user = user_of(n);
+			deposit_credits(&user, 1_000_000);
+			report_usage(&user, DRIVE_BYTES, S3_BYTES);
+		}
+		let before: Vec<u128> = (0..total).map(|n| Credits::get_free_credits(&user_of(n))).collect();
+
+		// First tick is past `BlocksPerHour`, so everyone starts eligible.
+		// Subsequent ticks are 8 blocks apart and stay inside that same hour.
+		let mut block = HOURLY_STEP;
+		System::set_block_number(block);
+		Marketplace::on_initialize(block);
+		for _ in 0..20 {
+			block += 8;
+			System::set_block_number(block);
+			Marketplace::on_initialize(block);
+		}
+
+		// Note the cursor is deliberately *not* asserted empty here. Once a pass
+		// completes the sweep restarts from the top and keeps walking — cheaply,
+		// since everyone is now within their hour and takes the probe path — so
+		// it parks a cursor again. That re-walking is the cost of having no
+		// index over "who owes something", which is the follow-on work; what
+		// matters here is that it is bounded and that it does not re-charge.
+		for n in 0..total {
+			let user = user_of(n);
+			assert_eq!(
+				before[n as usize] - Credits::get_free_credits(&user),
+				BOTH_SIDES_CHARGE,
+				"user {n} was billed for exactly one hour, not zero and not twice",
+			);
+		}
+	});
+}
+
 #[test]
 fn a_user_with_no_plan_pays_for_both_drive_and_s3() {
 	new_test_ext().execute_with(|| {
