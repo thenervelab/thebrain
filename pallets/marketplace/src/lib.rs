@@ -274,11 +274,6 @@ pub mod pallet {
 		StorageMap<_, Blake2_128Concat, T::AccountId, BlockNumberFor<T>, ValueQuery>;
 
 	#[pallet::storage]
-	#[pallet::getter(fn user_plan_subscription)]
-	pub(super) type UserPlanSubscriptions<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, UserPlanSubscription<T>, OptionQuery>;
-
-	#[pallet::storage]
 	#[pallet::getter(fn user_all_subscription_plans)]
 	// `pub` rather than `pub(super)`: the getter returns `Vec` through
 	// `ValueQuery`, so an absent key and an empty one read identically through
@@ -473,14 +468,6 @@ pub mod pallet {
 			amount: BalanceOf<T>,
 		},
 		PackageSuspensionSet(T::Hash, bool),
-		StoragePlanPriceUpdated {
-			plan_id: T::Hash,
-			new_price_per_gb: u32,
-		},
-		ComputePlanPriceUpdated {
-			plan_id: T::Hash,
-			new_price_per_block: u32,
-		},
 		PointTransactionRecorded {
 			who: T::AccountId,
 			transaction_type: NativeTransactionType,
