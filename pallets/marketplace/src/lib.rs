@@ -90,6 +90,13 @@ pub mod pallet {
 	/// The current storage version.
 	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
+	/// How many empty due-days the renewal drain may skip past in one tick.
+	///
+	/// The cursor only advances over a drained day, so after downtime it has to
+	/// walk forward to today. Bounding the walk keeps the probe cost declarable
+	/// while still closing a two-month gap in a handful of ticks.
+	const MAX_DAY_PROBES: u32 = 64;
+
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_runtime_upgrade() -> Weight {
@@ -118,16 +125,19 @@ pub mod pallet {
 			if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
 				weight_used =
 					weight_used.saturating_add(Self::handle_hourly_storage_charging(current_block));
-				// Monthly subscription charging:
-				// - recurring charges happen only on the 1st day of the calendar month
-				// - guarded by a unix-day marker so we only run once per day even if multiple blocks hit this interval
-				if let Some(unix_day) = Self::should_run_monthly_subscription_charge() {
-					weight_used = weight_used
-						.saturating_add(Self::handle_all_subscription_charging(current_block));
-					// Mark as run for today only after charging completes, to allow retry
-					// if future changes introduce abortable failure paths.
-					LastMonthlySubscriptionChargeDay::<T>::put(unix_day);
-				}
+
+				// Populate the due-day index for subscriptions that predate it.
+				// Ordinary bounded hook work, not a migration — see
+				// `BackfillCursor`. No-op once finished.
+				weight_used = weight_used.saturating_add(Self::backfill_due_index());
+
+				// Subscription renewals: drain the accounts actually due, up to
+				// the per-run cap. Every day has someone due under date-to-date
+				// billing, so this runs every tick rather than once a month —
+				// which is only affordable because it reads the due-day prefix
+				// instead of walking every account.
+				weight_used = weight_used
+					.saturating_add(Self::handle_all_subscription_charging(current_block));
 				if let Err(e) = Self::release_matured_pending_alpha(current_block) {
 					log::error!(
 						target: "runtime::marketplace",
@@ -738,7 +748,6 @@ pub mod pallet {
 	/// fire on the first partial tick and suppress the rest of that day's queue.
 	/// The key is left in place deliberately: an orphaned `StorageValue` costs
 	/// nothing and removing it would need a migration to buy nothing.
-	#[deprecated(note = "replaced by DueDayCursor; retained only so no migration is needed")]
 	#[pallet::storage]
 	#[pallet::getter(fn last_monthly_subscription_charge_day)]
 	pub type LastMonthlySubscriptionChargeDay<T: Config> = StorageValue<_, u32, ValueQuery>;
@@ -1997,42 +2006,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Returns `Some(unix_day)` when monthly charging should run.
-		///
-		/// IMPORTANT: this function is side-effect free; the caller should write the day marker
-		/// only after the charging work completes, to avoid skipping the month if charging aborts.
-		fn should_run_monthly_subscription_charge() -> Option<u32> {
-			let today = Self::current_unix_day();
-			if LastMonthlySubscriptionChargeDay::<T>::get() == today {
-				return None;
-			}
-
-			// Catch-up behavior: if the chain misses the 1st-of-month tick, run on the first
-			// available day after restart as long as there exist due subscriptions.
-			//
-			// Legacy subs (`next_charge_unix_day == None`) are considered due from the 1st of the
-			// current month.
-			let current_month_first =
-				pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(0);
-			let any_due = UserAllSubscriptionPlans::<T>::iter().any(|(_who, subs)| {
-				subs.iter().any(|sub| {
-					if !sub.active {
-						return false;
-					}
-					match sub.next_charge_unix_day {
-						Some(d) => today >= d,
-						None => current_month_first > 0 && today >= current_month_first,
-					}
-				})
-			});
-
-			if any_due {
-				Some(today)
-			} else {
-				None
-			}
-		}
-
 		/// Helper function to get the current price per GB
 		pub fn get_storage_price_per_miner() -> u128 {
 			StoragePricePerMiner::<T>::get()
@@ -2676,26 +2649,25 @@ pub mod pallet {
 		///
 		/// Runs at most `max_catchup_months` cycles per account so a chain that
 		/// missed several month boundaries catches up without an unbounded loop.
-		fn handle_all_subscription_charging(current_block: BlockNumberFor<T>) -> Weight {
-			let mut users_seen: u64 = 0;
-			let mut users_with_active_subs: u64 = 0;
+		fn charge_account_due(account_id: &T::AccountId, current_block: BlockNumberFor<T>) -> bool {
 			let mut users_charged_or_cancelled: u64 = 0;
 			let today = Self::current_unix_day();
 			// Cap catch-up to avoid heavy loops after long downtime.
 			let max_catchup_months: u32 = 3;
 
-			// Iterate through all users with subscriptions once
-			for (account_id, subscriptions) in UserAllSubscriptionPlans::<T>::iter() {
-				users_seen = users_seen.saturating_add(1);
-				// Work on a local copy so we can do catch-up charging deterministically.
-				let before = subscriptions;
+			{
+				// Re-read the subscription rather than trusting the index entry
+				// that led us here. A drain spans blocks, so a user can cancel
+				// between their day opening and their entry being reached — and
+				// this is also what makes a stale index entry cost one wasted
+				// read instead of charging a cancelled plan.
+				let before = UserAllSubscriptionPlans::<T>::get(account_id);
 				let mut subs = before.clone();
 
 				// If no active subs, skip.
 				if !subs.iter().any(|s| s.active) {
-					continue;
+					return false;
 				}
-				users_with_active_subs = users_with_active_subs.saturating_add(1);
 
 				for _ in 0..max_catchup_months {
 					let active_subs: Vec<UserPlanSubscription<T>> =
@@ -2857,15 +2829,219 @@ pub mod pallet {
 				}
 
 				// Persist any advances/deactivations for this account.
-				Self::commit_subscriptions(&account_id, &before, subs);
+				Self::commit_subscriptions(account_id, &before, subs);
 			}
 
-			// Conservative weight accounting:
-			// - `iter()` reads each user's subscription entry once.
-			// - for users we charge/cancel, we likely write back to subscriptions and touch credits/tx records.
-			// Use intentionally-high multipliers to avoid undercounting as state grows.
+			users_charged_or_cancelled > 0
+		}
+
+		/// Renewal sweep: drain the accounts actually due, up to the per-run cap.
+		///
+		/// This replaces a full walk of `UserAllSubscriptionPlans` on every tick.
+		/// Date-to-date billing means somebody is due every day rather than only
+		/// on the 1st, so the old monthly sweep would have become a daily one —
+		/// running an unbounded loop 30x more often, which is strictly worse
+		/// than what it replaced. Reading only the due-day prefix makes the work
+		/// proportional to who is due instead of to how many subscriptions exist.
+		///
+		/// The cap is what lets the returned weight be a promise rather than a
+		/// report: nothing upstream rejects an overweight `on_initialize`, the
+		/// block is simply produced heavier, so the bound has to be applied
+		/// before the work rather than measured after it.
+		fn handle_all_subscription_charging(current_block: BlockNumberFor<T>) -> Weight {
+			let cap = T::MaxSubscriptionChargesPerRun::get() as usize;
+			if cap == 0 {
+				return T::DbWeight::get().reads(1);
+			}
+
+			// Until the backfill has populated the index, an account in its
+			// untouched tail has no entry and would go uncharged. Fall back to
+			// the pre-index full scan; this branch retires one release later.
+			if !BackfillDone::<T>::get() {
+				return Self::full_scan_subscription_charging(current_block);
+			}
+
+			let today = Self::current_unix_day();
+			let mut cursor = DueDayCursor::<T>::get().unwrap_or(today);
+			let mut accounts_charged: u64 = 0;
+			let mut accounts_seen: u64 = 0;
+			let mut day_probes: u32 = 0;
+
+			// Walking a cursor rather than reading only `today` is what stops a
+			// day that did not finish draining — or that the chain was down for
+			// — from being silently skipped. This is the role
+			// `max_catchup_months` plays in the old code and it has to survive.
+			while cursor <= today && (accounts_seen as usize) < cap && day_probes < MAX_DAY_PROBES {
+				let batch: Vec<T::AccountId> = DueAccounts::<T>::iter_key_prefix(cursor)
+					.take(cap.saturating_sub(accounts_seen as usize))
+					.collect();
+
+				if batch.is_empty() {
+					// Day fully drained. Advancing only on an empty prefix is
+					// what keeps the cursor from stranding a day's charges
+					// permanently; a charge always moves the due date forward by
+					// at least 28 days, so re-filed entries can never land
+					// behind it.
+					day_probes = day_probes.saturating_add(1);
+					cursor = cursor.saturating_add(1);
+					continue;
+				}
+
+				for account_id in batch {
+					// Drop the entry that led us here *before* charging, so the
+					// day always makes progress. A stale entry — one whose
+					// subscription is no longer due, or no longer exists — would
+					// otherwise keep the prefix non-empty forever and wedge the
+					// cursor. `commit_subscriptions` re-files the account under
+					// whatever days its subscriptions actually hold.
+					DueAccounts::<T>::remove(cursor, &account_id);
+					accounts_seen = accounts_seen.saturating_add(1);
+					if Self::charge_account_due(&account_id, current_block) {
+						accounts_charged = accounts_charged.saturating_add(1);
+					}
+				}
+			}
+
+			DueDayCursor::<T>::put(cursor);
+
+			// Bounded by construction: `accounts_seen <= cap`.
+			let reads = accounts_seen
+				.saturating_mul(6)
+				.saturating_add(accounts_charged.saturating_mul(10))
+				.saturating_add(u64::from(day_probes))
+				.saturating_add(2);
+			let writes = accounts_seen.saturating_add(accounts_charged.saturating_mul(10))
+				.saturating_add(1);
+			T::DbWeight::get().reads_writes(reads, writes)
+		}
+
+		/// Populate the due-day index for subscriptions that predate it.
+		///
+		/// This cannot be a migration. `pallet-migrations` is not configured in
+		/// this runtime — there is no `MultiBlockMigrator` and every existing
+		/// migration is a single-block `OnRuntimeUpgrade` — so iterating every
+		/// subscription there is the same unbounded work this change removes,
+		/// relocated into the one block where exceeding the budget breaks the
+		/// upgrade itself. Ordinary paginated hook work is bounded by
+		/// construction and costs nothing once finished.
+		///
+		/// Read-only over `UserAllSubscriptionPlans` except for one case: a
+		/// legacy `None` due date is written out as the 1st of the current
+		/// month, which is precisely what the old sweep already read it to mean.
+		/// An index has no key for `None`, so normalising it here is what stops
+		/// a survivor from silently never being billed again. That is a value
+		/// written through the existing type, not a change of shape.
+		fn backfill_due_index() -> Weight {
+			if BackfillDone::<T>::get() {
+				return T::DbWeight::get().reads(1);
+			}
+
+			let limit = T::MaxBackfillAccountsPerRun::get() as usize;
+			if limit == 0 {
+				return T::DbWeight::get().reads(1);
+			}
+
+			// Fix the floor once, on the first tick, so a run that spans days
+			// files every account against the same reference point.
+			let cursor_start = match DueDayCursor::<T>::get() {
+				Some(day) => day,
+				None => {
+					let start = pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(0);
+					DueDayCursor::<T>::put(start);
+					start
+				},
+			};
+
+			let batch: Vec<(T::AccountId, Vec<UserPlanSubscription<T>>)> =
+				match BackfillCursor::<T>::get() {
+					Some(key) => {
+						UserAllSubscriptionPlans::<T>::iter_from(key).take(limit).collect()
+					},
+					None => UserAllSubscriptionPlans::<T>::iter().take(limit).collect(),
+				};
+
+			if batch.is_empty() {
+				BackfillDone::<T>::put(true);
+				BackfillCursor::<T>::kill();
+				log::info!(
+					target: "runtime::marketplace",
+					"due-day index backfill complete; cursor at day {}",
+					cursor_start,
+				);
+				return T::DbWeight::get().reads_writes(2, 2);
+			}
+
+			let resume_from =
+				UserAllSubscriptionPlans::<T>::hashed_key_for(&batch[batch.len() - 1].0);
+			let exhausted = batch.len() < limit;
+			let mut normalised: u64 = 0;
+
+			for (account_id, subs) in batch.iter() {
+				let before = subs.clone();
+				let mut after = subs.clone();
+				for sub in after.iter_mut() {
+					if sub.active && sub.next_charge_unix_day.is_none() {
+						sub.next_charge_unix_day = Some(cursor_start);
+						normalised = normalised.saturating_add(1);
+					}
+				}
+
+				// File each account no earlier than the cursor. An overdue row
+				// — one whose day already passed while the chain was down —
+				// would otherwise sit behind the cursor where the drain can
+				// never reach it. Clamping it up to the cursor charges it on the
+				// next tick, which is the same outcome as being overdue, and
+				// `max_catchup_months` still bounds the arrears.
+				for sub in after.iter().filter(|s| s.active) {
+					let day = Self::effective_due_day(sub).max(cursor_start);
+					DueAccounts::<T>::insert(day, account_id, ());
+				}
+
+				// Only rewrite the stored vector when a `None` was normalised;
+				// otherwise this stays a pure index write.
+				if normalised > 0 && before.iter().any(|s| s.next_charge_unix_day.is_none()) {
+					UserAllSubscriptionPlans::<T>::insert(account_id, after);
+				}
+			}
+
+			if exhausted {
+				BackfillDone::<T>::put(true);
+				BackfillCursor::<T>::kill();
+				log::info!(target: "runtime::marketplace", "due-day index backfill complete");
+			} else {
+				BackfillCursor::<T>::put(resume_from);
+			}
+
+			let touched = batch.len() as u64;
+			T::DbWeight::get().reads_writes(
+				touched.saturating_add(3),
+				touched
+					.saturating_mul(u64::from(T::MaxActiveSubscriptions::get()))
+					.saturating_add(normalised)
+					.saturating_add(2),
+			)
+		}
+
+		/// Pre-index behaviour, kept alive only until `BackfillDone` is set.
+		///
+		/// Unbounded by nature — this is exactly what the index exists to
+		/// remove. Delete along with the `BackfillDone` gate one release after
+		/// the backfill has completed on every network.
+		fn full_scan_subscription_charging(current_block: BlockNumberFor<T>) -> Weight {
+			let mut users_seen: u64 = 0;
+			let mut users_charged_or_cancelled: u64 = 0;
+
+			let accounts: Vec<T::AccountId> =
+				UserAllSubscriptionPlans::<T>::iter_keys().collect();
+			for account_id in accounts {
+				users_seen = users_seen.saturating_add(1);
+				if Self::charge_account_due(&account_id, current_block) {
+					users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
+				}
+			}
+
 			let reads = users_seen
-				.saturating_add(users_with_active_subs.saturating_mul(5))
+				.saturating_mul(6)
 				.saturating_add(users_charged_or_cancelled.saturating_mul(10));
 			let writes = users_charged_or_cancelled.saturating_mul(10);
 			T::DbWeight::get().reads_writes(reads, writes)
@@ -3000,18 +3176,6 @@ pub mod pallet {
 		/// Helper function to get the current price per GB
 		pub fn get_price_per_bandwidth() -> u128 {
 			PricePerBandwidth::<T>::get()
-		}
-
-		/// Retrieve active compute subscriptions specifically
-		fn get_active_compute_subscriptions() -> Vec<(T::AccountId, UserPlanSubscription<T>)> {
-			UserAllSubscriptionPlans::<T>::iter()
-				.flat_map(|(account_id, subscriptions)| {
-					subscriptions
-						.into_iter()
-						.filter(|sub| sub.active && !sub.package.is_any_storage())
-						.map(move |sub| (account_id.clone(), sub))
-				})
-				.collect()
 		}
 
 		/// Cancel a specific subscription by ID (storage or compute).
