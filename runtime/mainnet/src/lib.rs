@@ -1075,6 +1075,17 @@ parameter_types! {
 	/// Accounts the one-time due-index backfill walks per tick. Read-only over
 	/// the subscription map, so it is cheaper per account than a charge.
 	pub const MaxBackfillAccountsPerRun: u32 = 256;
+	/// Share of a block the renewal drain may spend in one tick.
+	///
+	/// `AVERAGE_ON_INITIALIZE_RATIO` is the 10% of a block the builder assumes
+	/// *all* hook work costs, and the drain shares `on_initialize` with hourly
+	/// billing, the backfill and the referral sweep — so it gets half of that
+	/// allowance rather than the whole of it. At 2000ms a block this is 100ms,
+	/// which at the pallet's own ~1.4ms per charged account is ~71 accounts:
+	/// below `MaxSubscriptionChargesPerRun`, so on a full day the meter is the
+	/// binding constraint and the count is the backstop. That is the intended
+	/// order — the count rests on an estimate, the meter does not.
+	pub RenewalWeightBudget: Perbill = AVERAGE_ON_INITIALIZE_RATIO / 2;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1098,6 +1109,8 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxReferralPayoutsPerSweep = MaxReferralPayoutsPerSweep;
 	type MaxSubscriptionChargesPerRun = MaxSubscriptionChargesPerRun;
 	type MaxBackfillAccountsPerRun = MaxBackfillAccountsPerRun;
+	type RenewalWeightBudget = RenewalWeightBudget;
+	type WeightInfo = pallet_marketplace::weights::SubstrateWeight<Runtime>;
 }
 
 parameter_types! {
@@ -2898,6 +2911,7 @@ mod benches {
 		[pallet_timestamp, Timestamp]
 		[pallet_alpha_bridge, AlphaBridge]
 		[pallet_compute_scoring, ComputeScoring]
+		[pallet_marketplace, Marketplace]
 	);
 }
 

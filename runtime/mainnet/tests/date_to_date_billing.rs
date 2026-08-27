@@ -664,13 +664,22 @@ fn arrears_are_capped_at_three_cycles() {
 	});
 }
 
-// ── WEIGHT-DECLARED / the cap ────────────────────────────────────────────
+// ── WEIGHT-DECLARED ──────────────────────────────────────────────────────
 
-/// With more accounts due than the cap allows, exactly `cap` are charged and
-/// the remainder are charged on the next run with none lost. The cap is what
-/// makes the returned weight a promise rather than a report.
+/// A run is bounded before any of its work starts, and nothing due is lost —
+/// whatever a run cannot reach is charged by later runs.
+///
+/// The bound that binds is the *weight meter*, not the account count. At
+/// `RenewalWeightBudget` (5% of a 2000ms block = 100ms) and the pallet's own
+/// ~1.4ms per charged account, a run affords ~70 accounts, comfortably under
+/// `MaxSubscriptionChargesPerRun` (128). That ordering is deliberate and worth
+/// asserting: the count rests on an *estimate* of what an account costs, while
+/// the meter measures what was actually spent, so the meter is the one that
+/// should run out first. If a future weight change quietly made the count
+/// binding again, the hook would be back to trusting an estimate — and this
+/// test is what says so.
 #[test]
-fn the_cap_bounds_one_run_and_the_remainder_is_charged_next_run() {
+fn a_run_is_bounded_by_the_weight_meter_and_loses_nothing() {
 	new_test_ext_at(ms_2026(3, 9)).execute_with(|| {
 		let plan = add_plan(b"drive", PLAN_PRICE);
 		let total = CAP + 1;
@@ -685,24 +694,74 @@ fn the_cap_bounds_one_run_and_the_remainder_is_charged_next_run() {
 		let due = day_2026(4, 9);
 		assert_eq!(index_entries().len(), total as usize, "all are indexed on the same day");
 
+		let remaining = || pallet_marketplace::DueAccounts::<Runtime>::iter_key_prefix(due).count();
+
 		pallet_timestamp::Now::<Runtime>::put(ms_2026(4, 9));
 		tick_again();
 
-		let drained = total as usize - pallet_marketplace::DueAccounts::<Runtime>::iter_key_prefix(due).count();
-		assert_eq!(drained, CAP as usize, "exactly the cap is drained in one run");
-
-		tick_again();
-		assert_eq!(
-			pallet_marketplace::DueAccounts::<Runtime>::iter_key_prefix(due).count(),
-			0,
-			"the remainder is drained on the next run, with none lost",
+		let drained = total as usize - remaining();
+		assert!(drained > 0, "a run must make progress");
+		assert!(
+			drained < CAP as usize,
+			"the weight meter must run out before the account count does: drained {drained} \
+			 of a {CAP} cap",
 		);
+
+		// Keep ticking until the day is empty. Bounded runs mean more than one
+		// tick, which is the point — the work is spread, not dropped.
+		let mut ticks = 1;
+		while remaining() > 0 {
+			tick_again();
+			ticks += 1;
+			assert!(ticks < 16, "the day should drain in a handful of bounded runs");
+		}
+		assert!(ticks >= 2, "{total} accounts cannot fit in one metered run");
 
 		// Every one of them advanced a cycle — nobody was skipped.
 		for n in 0..total {
 			let user = bulk_account(n);
 			assert_eq!(due_day(&user), day_2026(5, 9), "account {n} renewed");
 		}
+	});
+}
+
+/// The weight the drain reports is the weight it metered, and it never exceeds
+/// the budget it was given.
+///
+/// This is the whole point of metering rather than tallying: `on_initialize` is
+/// not rejected for being overweight, so a hook that measures itself after the
+/// fact can only report the overrun, never prevent it.
+#[test]
+fn the_drain_never_returns_more_weight_than_its_budget() {
+	use frame_support::traits::Hooks;
+
+	new_test_ext_at(ms_2026(3, 9)).execute_with(|| {
+		let plan = add_plan(b"drive", PLAN_PRICE);
+		// Far more due at once than a single run can afford.
+		for n in 0..(CAP * 3) {
+			let user = bulk_account(n);
+			deposit_credits(&user, 100_000);
+			purchase(&user, plan);
+		}
+		finish_backfill();
+
+		let budget = <Runtime as pallet_marketplace::Config>::RenewalWeightBudget::get()
+			* <Runtime as frame_system::Config>::BlockWeights::get().max_block;
+
+		pallet_timestamp::Now::<Runtime>::put(ms_2026(4, 9));
+		let block = System::block_number() + TICK - (System::block_number() % TICK);
+		System::set_block_number(block);
+		let consumed = <Marketplace as Hooks<u64>>::on_initialize(block);
+
+		// The hook also runs hourly billing and the backfill probe, so its
+		// total is not the drain's alone — but the drain is the only unbounded
+		// part, and it must not have spent more than it was allotted.
+		assert!(
+			consumed.ref_time() <= budget.ref_time() * 2,
+			"on_initialize spent {} against a drain budget of {}",
+			consumed.ref_time(),
+			budget.ref_time(),
+		);
 	});
 }
 

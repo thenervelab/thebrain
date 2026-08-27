@@ -2,8 +2,11 @@
 pub use pallet::*;
 pub use types::*;
 
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
 pub mod migrations;
 mod types;
+pub mod weights;
 use sp_core::offchain::KeyTypeId;
 // use frame_system::offchain::SignedPayload;
 
@@ -53,6 +56,8 @@ pub mod pallet {
 	use super::*;
 	use frame_support::traits::ExistenceRequirement;
 	use frame_support::traits::Len;
+	use crate::weights::WeightInfo;
+	use frame_support::weights::WeightMeter;
 	use frame_support::{
 		pallet_prelude::*,
 		traits::OnRuntimeUpgrade,
@@ -79,7 +84,7 @@ pub mod pallet {
 	use sp_runtime::traits::Zero;
 	use sp_runtime::{
 		traits::{AccountIdConversion, AtLeast32BitUnsigned, Hash, SaturatedConversion},
-		Saturating,
+		Perbill, Saturating,
 	};
 	use sp_std::{vec, vec::Vec};
 	#[pallet::pallet]
@@ -252,6 +257,26 @@ pub mod pallet {
 		/// Max accounts the one-time due-index backfill walks per tick.
 		#[pallet::constant]
 		type MaxBackfillAccountsPerRun: Get<u32>;
+
+		/// Share of a block's maximum weight the renewal drain may spend in one
+		/// tick.
+		///
+		/// This is the bound that actually holds, as opposed to
+		/// `MaxSubscriptionChargesPerRun`, which bounds a count of accounts
+		/// against an *estimate* of what an account costs. Nothing upstream
+		/// rejects an overweight `on_initialize` — the block is simply produced
+		/// heavier — so the hook has to stop itself, and it can only do that
+		/// against a weight budget rather than against a headcount.
+		///
+		/// The drain shares `on_initialize` with hourly billing, the backfill
+		/// and the referral sweep, so this should be a fraction of the ~10%
+		/// `AVERAGE_ON_INITIALIZE_RATIO` the block builder assumes for all hook
+		/// work, not the whole of it.
+		#[pallet::constant]
+		type RenewalWeightBudget: Get<Perbill>;
+
+		/// Measured cost of the units the billing hook meters itself in.
+		type WeightInfo: crate::weights::WeightInfo;
     }
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -2731,7 +2756,14 @@ pub mod pallet {
 		///
 		/// Runs at most `max_catchup_months` cycles per account so a chain that
 		/// missed several month boundaries catches up without an unbounded loop.
-		fn charge_account_due(account_id: &T::AccountId, current_block: BlockNumberFor<T>) -> bool {
+		// `pub(crate)` so the benchmark can measure it directly. It is the unit
+		// the drain meters itself in, so the number that bounds the hook has to
+		// come from measuring this exact function rather than an extrinsic that
+		// resembles it.
+		pub(crate) fn charge_account_due(
+			account_id: &T::AccountId,
+			current_block: BlockNumberFor<T>,
+		) -> bool {
 			let mut users_charged_or_cancelled: u64 = 0;
 			let today = Self::current_unix_day();
 			// Cap catch-up to avoid heavy loops after long downtime.
@@ -2967,6 +2999,24 @@ pub mod pallet {
 				return Self::full_scan_subscription_charging(current_block);
 			}
 
+			// The bound that actually holds. `cap` bounds a headcount against an
+			// estimate of what an account costs; this bounds the work itself, so
+			// the returned weight is something the hook enforced rather than
+			// something it reported afterwards. Nothing upstream would reject an
+			// overweight hook, so stopping is ours to do.
+			let mut meter = WeightMeter::with_limit(
+				T::RenewalWeightBudget::get()
+					* <T as frame_system::Config>::BlockWeights::get().max_block,
+			);
+			let per_account = <T as Config>::WeightInfo::charge_account_due();
+			let per_probe = <T as Config>::WeightInfo::day_probe();
+
+			// Can't even afford to read and re-write the cursor: do nothing at
+			// all rather than half of it.
+			if meter.try_consume(<T as Config>::WeightInfo::drain_overhead()).is_err() {
+				return meter.consumed();
+			}
+
 			let today = Self::current_unix_day();
 			let mut cursor = DueDayCursor::<T>::get().unwrap_or(today);
 			let mut accounts_charged: u64 = 0;
@@ -2978,9 +3028,17 @@ pub mod pallet {
 			// — from being silently skipped. This is the role
 			// `max_catchup_months` plays in the old code and it has to survive.
 			while cursor <= today && (accounts_seen as usize) < cap && day_probes < MAX_DAY_PROBES {
-				let batch: Vec<T::AccountId> = DueAccounts::<T>::iter_key_prefix(cursor)
-					.take(cap.saturating_sub(accounts_seen as usize))
-					.collect();
+				// Size the batch by what we can afford as well as by what is
+				// left of the cap, so a batch is never *read* and then abandoned
+				// unpaid — the read costs weight whether or not we charge it.
+				let affordable = Self::accounts_affordable(&meter, per_account);
+				let take = cap.saturating_sub(accounts_seen as usize).min(affordable);
+				if take == 0 {
+					break;
+				}
+
+				let batch: Vec<T::AccountId> =
+					DueAccounts::<T>::iter_key_prefix(cursor).take(take).collect();
 
 				if batch.is_empty() {
 					// Day fully drained. Advancing only on an empty prefix is
@@ -2988,12 +3046,20 @@ pub mod pallet {
 					// permanently; a charge always moves the due date forward by
 					// at least 28 days, so re-filed entries can never land
 					// behind it.
+					if meter.try_consume(per_probe).is_err() {
+						break;
+					}
 					day_probes = day_probes.saturating_add(1);
 					cursor = cursor.saturating_add(1);
 					continue;
 				}
 
 				for account_id in batch {
+					// Charged up front: the account is about to be worked
+					// whether or not it turns out to owe anything, and the meter
+					// has to reflect what was spent, not what was collected.
+					meter.consume(per_account);
+
 					// Drop the entry that led us here *before* charging, so the
 					// day always makes progress. A stale entry — one whose
 					// subscription is no longer due, or no longer exists — would
@@ -3010,15 +3076,30 @@ pub mod pallet {
 
 			DueDayCursor::<T>::put(cursor);
 
-			// Bounded by construction: `accounts_seen <= cap`.
-			let reads = accounts_seen
-				.saturating_mul(6)
-				.saturating_add(accounts_charged.saturating_mul(10))
-				.saturating_add(u64::from(day_probes))
-				.saturating_add(2);
-			let writes = accounts_seen.saturating_add(accounts_charged.saturating_mul(10))
-				.saturating_add(1);
-			T::DbWeight::get().reads_writes(reads, writes)
+			// What the meter actually recorded, which is bounded by its limit
+			// before any of the work ran.
+			meter.consumed()
+		}
+
+		/// How many more accounts the meter can pay for at `per_account`.
+		///
+		/// Both dimensions of `Weight` bind, so this takes the smaller of the
+		/// two. A zero cost in a dimension means that dimension does not
+		/// constrain — `usize::MAX` rather than a division by zero — which
+		/// leaves `cap` as the bound, exactly as before the meter existed.
+		fn accounts_affordable(meter: &WeightMeter, per_account: Weight) -> usize {
+			let remaining = meter.remaining();
+			let by_time = if per_account.ref_time() == 0 {
+				usize::MAX
+			} else {
+				(remaining.ref_time() / per_account.ref_time()) as usize
+			};
+			let by_size = if per_account.proof_size() == 0 {
+				usize::MAX
+			} else {
+				(remaining.proof_size() / per_account.proof_size()) as usize
+			};
+			by_time.min(by_size)
 		}
 
 		/// Populate the due-day index for subscriptions that predate it.
