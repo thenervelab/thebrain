@@ -13,22 +13,19 @@
 //! means a wrong number here costs throughput (accounts wait for the next
 //! tick), never a block that overruns.
 //!
-//! The values below are the pallet's own conservative estimates, carried over
-//! from the comments they replace, and are marked as such. Replace them with a
-//! generated table:
+//! `charge_account_due` is measured. Re-measure it whenever the charge path
+//! gains or loses storage access:
 //!
 //! ```text
-//! cargo build --release --features runtime-benchmarks
+//! cargo build --release --bin hippius --features hippius/runtime-benchmarks
 //! ./target/release/hippius benchmark pallet \
 //!     --chain benchmark \
 //!     --pallet pallet_marketplace \
-//!     --extrinsic '*' \
-//!     --steps 50 --repeat 20 \
-//!     --output pallets/marketplace/src/weights.rs
+//!     --extrinsic charge_account_due \
+//!     --steps 50 --repeat 20
 //! ```
 //!
-//! Until then `MaxSubscriptionChargesPerRun` is an argument and not evidence —
-//! but the meter means the argument only has to be conservative, not exact.
+//! The remaining three are single storage operations and stay as estimates.
 
 #![allow(unused_parens)]
 
@@ -63,21 +60,28 @@ pub trait WeightInfo {
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
 ///
-/// **Estimated, not measured.** Each figure is the read/write count the code
-/// itself was already claiming, priced at `RocksDbWeight` (25µs a read, 100µs
-/// a write). They are intentionally generous: the meter treats them as the cost
-/// of the *next* unit, so over-estimating means stopping early and finishing on
-/// the following tick, while under-estimating is what lets a block run heavy.
+/// `charge_account_due` is **measured**; the other three remain conservative
+/// estimates of single storage operations, where any measurement would sit
+/// inside the rounding.
 pub struct SubstrateWeight<T>(PhantomData<T>);
 
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-	/// 16 reads, 10 writes — the per-charged-account figure the sweep's own
-	/// accounting used before it metered itself, which the design note costed
-	/// at ~1.4ms.
+	/// Measured: 156.2µs, 7 reads, 11 writes, 1309 bytes of proof.
+	///
+	/// `hippius benchmark pallet --chain benchmark --pallet pallet_marketplace
+	/// --extrinsic charge_account_due`, against an account holding
+	/// `MaxActiveSubscriptions` subscriptions all due and all payable.
+	///
+	/// Worth noting against the estimate it replaces (16 reads / 10 writes,
+	/// costed at ~1.4ms): the totals nearly agree, at ~1.43ms, but the shape
+	/// does not. The real charge does fewer reads and *more* writes than the
+	/// code claimed, and carries 156µs of compute the read/write count could
+	/// not see at all. The estimate was low — the direction that lets a block
+	/// run heavy — which is the argument for measuring rather than reasoning.
 	fn charge_account_due() -> Weight {
-		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(16))
-			.saturating_add(RocksDbWeight::get().writes(10))
+		Weight::from_parts(156_200_000, 1309)
+			.saturating_add(RocksDbWeight::get().reads(7))
+			.saturating_add(RocksDbWeight::get().writes(11))
 	}
 
 	/// Read the account's subscriptions once, then one index write per
@@ -109,9 +113,9 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 /// cannot reach the limit cannot catch a regression in it.
 impl WeightInfo for () {
 	fn charge_account_due() -> Weight {
-		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(16))
-			.saturating_add(RocksDbWeight::get().writes(10))
+		Weight::from_parts(156_200_000, 1309)
+			.saturating_add(RocksDbWeight::get().reads(7))
+			.saturating_add(RocksDbWeight::get().writes(11))
 	}
 
 	fn backfill_account() -> Weight {
