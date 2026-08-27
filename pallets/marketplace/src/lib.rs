@@ -488,6 +488,7 @@ pub mod pallet {
 			os_name: Vec<u8>,
 			url: Vec<u8>,
 		},
+		/// A plan was repriced by sudo. [plan_id, new_price]
 		PlanPriceUpdated(T::Hash, u128),
 		/// Specific miner request fee updated
 		SpecificMinerRequestFeeUpdated {
@@ -795,6 +796,32 @@ pub mod pallet {
 			// Insert the new plan into storage
 			Plans::<T>::insert(plan_id.clone(), new_plan);
 
+			Ok(())
+		}
+
+		/// Sudo function to set the price of an existing plan.
+		///
+		/// Only the plan in [`Plans`] is repriced, so this applies to purchases
+		/// and plan changes made from here on. Live subscriptions carry their own
+		/// copy of the plan taken at purchase time and keep being charged their
+		/// snapshot price until the holder changes plan.
+		#[pallet::call_index(32)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn set_plan_price(
+			origin: OriginFor<T>,
+			plan_id: T::Hash,
+			new_price: u128,
+		) -> DispatchResult {
+			// Ensure the caller is sudo
+			ensure_root(origin)?;
+
+			Plans::<T>::try_mutate(plan_id.clone(), |maybe_plan| -> DispatchResult {
+				let plan = maybe_plan.as_mut().ok_or(Error::<T>::PlanNotFound)?;
+				plan.price = new_price;
+				Ok(())
+			})?;
+
+			Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
 			Ok(())
 		}
 

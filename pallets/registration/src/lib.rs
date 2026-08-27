@@ -732,7 +732,7 @@ pub mod pallet {
 		/// Sudo function to update the fee for a specific node type
 		#[pallet::call_index(7)]
 		#[pallet::weight((0, Pays::No))]
-		pub fn set_node_type_fee(
+		pub fn set_node_type_fee_floor(
 			origin: OriginFor<T>,
 			node_type: NodeType,
 			fee: BalanceOf<T>,
