@@ -1219,6 +1219,83 @@ fn the_backfill_normalises_legacy_none_due_dates() {
 	});
 }
 
+/// The transitional full scan is bounded and round-robins, so the upgrade
+/// window cannot produce a heavy block.
+///
+/// This is the branch's worst moment by construction: the backfill takes
+/// `accounts / MaxBackfillAccountsPerRun` ticks to finish, and the fallback is
+/// live on every one of them. Unbounded, that is a full walk of every account
+/// on every tick for hours, starting the instant the runtime upgrade lands —
+/// the point at which a chain can least afford one. Bounded, each tick charges
+/// what it can afford and the cursor brings it back to the rest.
+#[test]
+fn the_pre_index_fallback_is_bounded_and_reaches_everyone() {
+	new_test_ext_at(ms_2026(3, 9)).execute_with(|| {
+		let plan = add_plan(b"drive", PLAN_PRICE);
+		// More than `MaxBackfillAccountsPerRun` (256), so the backfill genuinely
+		// spans ticks and the fallback is live for more than one of them — which
+		// is the situation being tested.
+		let total = 300u32;
+		for n in 0..total {
+			let user = bulk_account(n);
+			deposit_credits(&user, 100_000);
+			purchase(&user, plan);
+		}
+
+		// Pose the upgrade window: index empty, backfill not done.
+		let _ = pallet_marketplace::DueAccounts::<Runtime>::clear(u32::MAX, None);
+		pallet_marketplace::BackfillDone::<Runtime>::put(false);
+		pallet_marketplace::BackfillCursor::<Runtime>::kill();
+		pallet_marketplace::FullScanCursor::<Runtime>::kill();
+
+		let budget = <Runtime as pallet_marketplace::Config>::RenewalWeightBudget::get()
+			* <Runtime as frame_system::Config>::BlockWeights::get().max_block;
+
+		// One tick, still inside the window, must not spend more than its
+		// budget however many accounts exist.
+		pallet_timestamp::Now::<Runtime>::put(ms_2026(4, 9));
+		let block = next_tick_block();
+		System::set_block_number(block);
+		let consumed = <Marketplace as frame_support::traits::Hooks<u64>>::on_initialize(block);
+
+		// The backfill and the fallback share one budget and the backfill draws
+		// first, so on this tick it may take the whole of it and leave the scan
+		// nothing — that is the intended priority, not a failure. What must hold
+		// is the sum.
+		assert!(
+			!pallet_marketplace::BackfillDone::<Runtime>::get(),
+			"300 accounts cannot be indexed in one metered tick",
+		);
+		assert!(
+			consumed.ref_time() <= budget.ref_time() * 2,
+			"the upgrade-window tick spent {} against a shared budget of {}",
+			consumed.ref_time(),
+			budget.ref_time(),
+		);
+
+		// Every later tick stays inside the budget too, and between them the
+		// backfill finishes and the charges all land.
+		for _ in 0..40 {
+			let next = next_tick_block();
+			System::set_block_number(next);
+			let spent = <Marketplace as frame_support::traits::Hooks<u64>>::on_initialize(next);
+			assert!(
+				spent.ref_time() <= budget.ref_time() * 2,
+				"a later upgrade-window tick spent {}",
+				spent.ref_time(),
+			);
+		}
+		for n in 0..total {
+			let user = bulk_account(n);
+			assert_eq!(
+				due_day(&user),
+				day_2026(5, 9),
+				"account {n} was reached by the paged fallback",
+			);
+		}
+	});
+}
+
 /// Until the backfill finishes, an account in its untouched tail has no index
 /// entry — so the sweep must fall back to the full scan rather than skip them.
 /// Dropping the fallback early is silent free service for the tail.

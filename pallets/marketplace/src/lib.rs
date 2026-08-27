@@ -131,18 +131,35 @@ pub mod pallet {
 				weight_used =
 					weight_used.saturating_add(Self::handle_hourly_storage_charging(current_block));
 
+				// One budget shared by the two paged sweeps below, rather than
+				// one each. During the upgrade window both are live at once —
+				// the backfill building the index and the fallback scan
+				// charging from it — and separate budgets would bound each of
+				// them while leaving their *sum* free to overrun the hook's
+				// whole allowance, which is what a budget is for.
+				//
+				// The backfill draws first on purpose: until the index exists
+				// every tick pays for an unindexed scan, so finishing it is
+				// worth more than the charges it delays by a tick.
+				let mut meter = WeightMeter::with_limit(
+					T::RenewalWeightBudget::get()
+						* <T as frame_system::Config>::BlockWeights::get().max_block,
+				);
+
 				// Populate the due-day index for subscriptions that predate it.
 				// Ordinary bounded hook work, not a migration — see
 				// `BackfillCursor`. No-op once finished.
-				weight_used = weight_used.saturating_add(Self::backfill_due_index());
+				weight_used =
+					weight_used.saturating_add(Self::backfill_due_index(&mut meter));
 
 				// Subscription renewals: drain the accounts actually due, up to
 				// the per-run cap. Every day has someone due under date-to-date
 				// billing, so this runs every tick rather than once a month —
 				// which is only affordable because it reads the due-day prefix
 				// instead of walking every account.
-				weight_used = weight_used
-					.saturating_add(Self::handle_all_subscription_charging(current_block));
+				weight_used = weight_used.saturating_add(
+					Self::handle_all_subscription_charging(current_block, &mut meter),
+				);
 				if let Err(e) = Self::release_matured_pending_alpha(current_block) {
 					log::error!(
 						target: "runtime::marketplace",
@@ -846,6 +863,14 @@ pub mod pallet {
 	/// otherwise go uncharged. Retire the fallback one release after this ships.
 	#[pallet::storage]
 	pub type BackfillDone<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	/// Resume point for the transitional pre-index full scan.
+	///
+	/// The scan is live for the whole backfill window, so it has to be paged
+	/// like everything else in the hook. Retires together with
+	/// `full_scan_subscription_charging` and [`BackfillDone`].
+	#[pallet::storage]
+	pub type FullScanCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -1928,9 +1953,16 @@ pub mod pallet {
 				}
 			}
 
+			// Write only on an actual change. Every path that *reads* an
+			// account routes through here, including the sweep passing over an
+			// account with nothing due — so writing unconditionally would put a
+			// storage write on every account on every tick, whether or not
+			// anything about it moved.
 			if after.is_empty() {
-				UserAllSubscriptionPlans::<T>::remove(who);
-			} else {
+				if !before.is_empty() {
+					UserAllSubscriptionPlans::<T>::remove(who);
+				}
+			} else if after.as_slice() != before {
 				UserAllSubscriptionPlans::<T>::insert(who, after);
 			}
 		}
@@ -2986,35 +3018,43 @@ pub mod pallet {
 		/// report: nothing upstream rejects an overweight `on_initialize`, the
 		/// block is simply produced heavier, so the bound has to be applied
 		/// before the work rather than measured after it.
-		fn handle_all_subscription_charging(current_block: BlockNumberFor<T>) -> Weight {
+		fn handle_all_subscription_charging(
+			current_block: BlockNumberFor<T>,
+			meter: &mut WeightMeter,
+		) -> Weight {
 			let cap = T::MaxSubscriptionChargesPerRun::get() as usize;
 			if cap == 0 {
 				return T::DbWeight::get().reads(1);
 			}
 
+			// `cap` bounds a headcount against an estimate of what an account
+			// costs; the meter bounds the work itself, so the returned weight is
+			// something the hook enforced rather than something it reported
+			// afterwards. Nothing upstream would reject an overweight hook, so
+			// stopping is ours to do. The meter is shared with the backfill and
+			// arrives partly spent.
+			let spent_before = meter.consumed();
+
 			// Until the backfill has populated the index, an account in its
 			// untouched tail has no entry and would go uncharged. Fall back to
 			// the pre-index full scan; this branch retires one release later.
+			//
+			// It gets the same meter. The backfill runs for
+			// `accounts / MaxBackfillAccountsPerRun` ticks and this branch is
+			// live for every one of them, so an unbounded scan here is not a
+			// small transitional cost — it is a full walk of every account on
+			// every tick for the entire upgrade window, which is precisely when
+			// a chain can least afford one.
 			if !BackfillDone::<T>::get() {
-				return Self::full_scan_subscription_charging(current_block);
+				return Self::full_scan_subscription_charging(current_block, meter);
 			}
-
-			// The bound that actually holds. `cap` bounds a headcount against an
-			// estimate of what an account costs; this bounds the work itself, so
-			// the returned weight is something the hook enforced rather than
-			// something it reported afterwards. Nothing upstream would reject an
-			// overweight hook, so stopping is ours to do.
-			let mut meter = WeightMeter::with_limit(
-				T::RenewalWeightBudget::get()
-					* <T as frame_system::Config>::BlockWeights::get().max_block,
-			);
 			let per_account = <T as Config>::WeightInfo::charge_account_due();
 			let per_probe = <T as Config>::WeightInfo::day_probe();
 
 			// Can't even afford to read and re-write the cursor: do nothing at
 			// all rather than half of it.
 			if meter.try_consume(<T as Config>::WeightInfo::drain_overhead()).is_err() {
-				return meter.consumed();
+				return meter.consumed().saturating_sub(spent_before);
 			}
 
 			let today = Self::current_unix_day();
@@ -3031,7 +3071,7 @@ pub mod pallet {
 				// Size the batch by what we can afford as well as by what is
 				// left of the cap, so a batch is never *read* and then abandoned
 				// unpaid — the read costs weight whether or not we charge it.
-				let affordable = Self::accounts_affordable(&meter, per_account);
+				let affordable = Self::accounts_affordable(meter, per_account);
 				let take = cap.saturating_sub(accounts_seen as usize).min(affordable);
 				if take == 0 {
 					break;
@@ -3076,9 +3116,10 @@ pub mod pallet {
 
 			DueDayCursor::<T>::put(cursor);
 
-			// What the meter actually recorded, which is bounded by its limit
-			// before any of the work ran.
-			meter.consumed()
+			// Only this sweep's share of the shared meter — the backfill already
+			// reported its own, and double-counting it would overstate the
+			// hook's weight rather than understate it, but wrong either way.
+			meter.consumed().saturating_sub(spent_before)
 		}
 
 		/// How many more accounts the meter can pay for at `per_account`.
@@ -3118,14 +3159,27 @@ pub mod pallet {
 		/// An index has no key for `None`, so normalising it here is what stops
 		/// a survivor from silently never being billed again. That is a value
 		/// written through the existing type, not a change of shape.
-		fn backfill_due_index() -> Weight {
+		fn backfill_due_index(meter: &mut WeightMeter) -> Weight {
 			if BackfillDone::<T>::get() {
 				return T::DbWeight::get().reads(1);
 			}
 
-			let limit = T::MaxBackfillAccountsPerRun::get() as usize;
-			if limit == 0 {
+			let cap = T::MaxBackfillAccountsPerRun::get() as usize;
+			if cap == 0 {
 				return T::DbWeight::get().reads(1);
+			}
+
+			// Bounded by weight as well as by count. `MaxBackfillAccountsPerRun`
+			// is 256 and each account can cost up to `MaxActiveSubscriptions`
+			// index writes, so the count alone permits ~134ms of declared work —
+			// most of the hook's whole allowance, before the charging sweep that
+			// runs alongside it has spent anything.
+			let spent_before = meter.consumed();
+			let per_account = <T as Config>::WeightInfo::backfill_account();
+			let affordable = Self::accounts_affordable(meter, per_account);
+			let limit = cap.min(affordable);
+			if limit == 0 {
+				return meter.consumed().saturating_sub(spent_before);
 			}
 
 			// Fix the floor once, on the first tick, so a run that spans days
@@ -3157,6 +3211,10 @@ pub mod pallet {
 				);
 				return T::DbWeight::get().reads_writes(2, 2);
 			}
+
+			// Charged for what the batch will cost before it is applied, so the
+			// sweep sharing this meter sees an honest remainder.
+			meter.consume(per_account.saturating_mul(batch.len() as u64));
 
 			let resume_from =
 				UserAllSubscriptionPlans::<T>::hashed_key_for(&batch[batch.len() - 1].0);
@@ -3199,39 +3257,75 @@ pub mod pallet {
 				BackfillCursor::<T>::put(resume_from);
 			}
 
-			let touched = batch.len() as u64;
-			T::DbWeight::get().reads_writes(
-				touched.saturating_add(3),
-				touched
-					.saturating_mul(u64::from(T::MaxActiveSubscriptions::get()))
-					.saturating_add(normalised)
-					.saturating_add(2),
-			)
+			meter.consumed().saturating_sub(spent_before)
 		}
 
 		/// Pre-index behaviour, kept alive only until `BackfillDone` is set.
 		///
-		/// Unbounded by nature — this is exactly what the index exists to
-		/// remove. Delete along with the `BackfillDone` gate one release after
-		/// the backfill has completed on every network.
-		fn full_scan_subscription_charging(current_block: BlockNumberFor<T>) -> Weight {
-			let mut users_seen: u64 = 0;
-			let mut users_charged_or_cancelled: u64 = 0;
-
-			let accounts: Vec<T::AccountId> =
-				UserAllSubscriptionPlans::<T>::iter_keys().collect();
-			for account_id in accounts {
-				users_seen = users_seen.saturating_add(1);
-				if Self::charge_account_due(&account_id, current_block) {
-					users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
-				}
+		/// Paged rather than exhaustive. The original walked every account on
+		/// every tick, which was tolerable only if the fallback were momentary —
+		/// and it is not: the backfill takes `accounts /
+		/// MaxBackfillAccountsPerRun` ticks, and this runs on all of them. On a
+		/// chain of any size that is a full scan every tick for hours, starting
+		/// the moment the upgrade lands.
+		///
+		/// So it spends the drain's meter and resumes from [`FullScanCursor`],
+		/// round-robin like `sweep_referral_commissions`. An account the current
+		/// tick cannot afford is reached by a later one; nothing is skipped,
+		/// because a charge is due until it is taken and the cursor always comes
+		/// back around.
+		///
+		/// Delete along with the `BackfillDone` gate and `FullScanCursor` one
+		/// release after the backfill has completed on every network.
+		fn full_scan_subscription_charging(
+			current_block: BlockNumberFor<T>,
+			meter: &mut WeightMeter,
+		) -> Weight {
+			let spent_before = meter.consumed();
+			let per_account = <T as Config>::WeightInfo::charge_account_due();
+			if meter.try_consume(<T as Config>::WeightInfo::drain_overhead()).is_err() {
+				return meter.consumed().saturating_sub(spent_before);
 			}
 
-			let reads = users_seen
-				.saturating_mul(6)
-				.saturating_add(users_charged_or_cancelled.saturating_mul(10));
-			let writes = users_charged_or_cancelled.saturating_mul(10);
-			T::DbWeight::get().reads_writes(reads, writes)
+			let affordable = Self::accounts_affordable(meter, per_account);
+			if affordable == 0 {
+				return meter.consumed().saturating_sub(spent_before);
+			}
+
+			let batch: Vec<T::AccountId> = match FullScanCursor::<T>::get() {
+				Some(key) => UserAllSubscriptionPlans::<T>::iter_keys_from(key)
+					.take(affordable)
+					.collect(),
+				None => UserAllSubscriptionPlans::<T>::iter_keys().take(affordable).collect(),
+			};
+
+			// End of the map: start the next sweep from the top. Parking the
+			// cursor at the end instead would make every subsequent tick find
+			// nothing and charge nobody for the rest of the backfill window.
+			if batch.is_empty() {
+				FullScanCursor::<T>::kill();
+				return meter.consumed().saturating_sub(spent_before);
+			}
+
+			// A short batch means the map ended inside it, so the next sweep
+			// starts from the top; otherwise resume after the last key looked
+			// at, charged or not.
+			let exhausted = batch.len() < affordable;
+			let resume_from =
+				UserAllSubscriptionPlans::<T>::hashed_key_for(&batch[batch.len() - 1]);
+
+			for account_id in batch {
+				meter.consume(per_account);
+				Self::charge_account_due(&account_id, current_block);
+			}
+
+			if exhausted {
+				FullScanCursor::<T>::kill();
+			} else {
+				FullScanCursor::<T>::put(resume_from);
+			}
+
+			meter.consumed().saturating_sub(spent_before)
 		}
 
 		/// Hourly pay-as-you-go billing for users with no subscription covering
