@@ -1223,17 +1223,21 @@ fn a_backlog_past_the_per_sweep_bound_resumes_on_the_next_sweep() {
 		const OWED: u32 = 251;
 		const LIMIT: usize = 250;
 
-		assert_ok!(Marketplace::set_price_per_gb(RuntimeOrigin::root(), PRICE_PER_GB));
+		// Seed the backlog directly rather than driving it through an hour of
+		// billing. What is under test is `sweep_referral_commissions`'s
+		// pagination, and the hourly sweep that would otherwise build the
+		// backlog is itself paged now — so accruing 251 balances through it
+		// would take several ticks and re-charge the early users along the way,
+		// making the setup a test of the wrong thing.
 		for i in 0..OWED {
 			let referrer = account32(i);
-			let user = account32(1_000_000 + i);
-			let code = new_referral_code(&referrer);
 			fund_ed(&referrer);
-			deposit_credits(&user, 2 * HOURLY_CHARGE, Some(code));
-			pallet_marketplace::UserTotalDriveFilesSize::<Runtime>::insert(&user, FILE_BYTES);
+			pallet_marketplace::AccruedReferralCommission::<Runtime>::insert(
+				&referrer,
+				HOURLY_COMMISSION,
+			);
 		}
 
-		run_hours(1..=1);
 		assert_eq!(
 			pallet_marketplace::AccruedReferralCommission::<Runtime>::iter().count(),
 			OWED as usize,

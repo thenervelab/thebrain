@@ -292,6 +292,19 @@ pub mod pallet {
 		#[pallet::constant]
 		type RenewalWeightBudget: Get<Perbill>;
 
+		/// Share of a block's maximum weight the hourly pay-as-you-go sweep may
+		/// spend in one tick.
+		///
+		/// Separate from [`Config::RenewalWeightBudget`] rather than shared with
+		/// it, because the two have different shapes: the hourly sweep runs on
+		/// *every* tick and must not be starved by an upgrade-window backfill,
+		/// while the renewal drain has a day of slack. Separate budgets only
+		/// bound the total because they are sized to fit together — keep their
+		/// sum inside the ~10% `AVERAGE_ON_INITIALIZE_RATIO` the block builder
+		/// assumes for all hook work.
+		#[pallet::constant]
+		type HourlyWeightBudget: Get<Perbill>;
+
 		/// Measured cost of the units the billing hook meters itself in.
 		type WeightInfo: crate::weights::WeightInfo;
     }
@@ -863,6 +876,16 @@ pub mod pallet {
 	/// otherwise go uncharged. Retire the fallback one release after this ships.
 	#[pallet::storage]
 	pub type BackfillDone<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	/// Resume point for the hourly pay-as-you-go sweep.
+	///
+	/// The sweep visits every user the validator metric has ever reported on,
+	/// which is unbounded and grows forever, so it is paged like every other
+	/// walk in this hook. Unlike the due-day drain there is no index to make the
+	/// work proportional to who owes something — that is Workstream B — so for
+	/// now the cursor is what keeps a tick affordable.
+	#[pallet::storage]
+	pub type HourlyChargeCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
 	/// Resume point for the transitional pre-index full scan.
 	///
@@ -3343,13 +3366,55 @@ pub mod pallet {
 		/// two byte counts come from different backends and are billed as separate
 		/// line items, so a partial GiB on each side is a partial GiB of each.
 		fn handle_hourly_storage_charging(current_block: BlockNumberFor<T>) -> Weight {
-			let mut users_seen: u64 = 0;
-			let mut users_charged_or_removed: u64 = 0;
+			let mut meter = WeightMeter::with_limit(
+				T::HourlyWeightBudget::get()
+					* <T as frame_system::Config>::BlockWeights::get().max_block,
+			);
+			let probe = <T as Config>::WeightInfo::hourly_probe();
+			let charge = <T as Config>::WeightInfo::hourly_charge();
+
+			// Size the batch assuming every user in it turns out to owe
+			// something. Most will not, so the sweep usually finishes its batch
+			// with budget to spare — but a bound has to hold in the case it is
+			// bounding, not the average one.
+			let affordable = Self::accounts_affordable(&meter, probe.saturating_add(charge));
+			if affordable == 0 {
+				return meter.consumed();
+			}
+
 			// Every user the validator metric has ever reported on. Both usage
 			// extrinsics write all four Drive/S3 maps together, so this key set
 			// covers S3-only users too — their Drive row is simply zero.
-			for (user, drive_file_size) in UserTotalDriveFilesSize::<T>::iter() {
+			//
+			// Paged: this map only grows, and the sweep runs on every tick
+			// rather than on an anniversary, so it is the loop that reaches the
+			// block limit first. The cursor round-robins, so a user the current
+			// tick cannot afford is reached by a later one; an hourly charge
+			// stays owed until it is taken, and `StorageLastChargedAt` means a
+			// delayed charge bills the elapsed time rather than losing it.
+			let batch: Vec<(T::AccountId, u128)> = match HourlyChargeCursor::<T>::get() {
+				Some(key) => {
+					UserTotalDriveFilesSize::<T>::iter_from(key).take(affordable).collect()
+				},
+				None => UserTotalDriveFilesSize::<T>::iter().take(affordable).collect(),
+			};
+
+			// End of the map: restart from the top next tick. Parking the cursor
+			// at the end instead would leave every later tick finding nothing.
+			if batch.is_empty() {
+				HourlyChargeCursor::<T>::kill();
+				return meter.consumed();
+			}
+
+			let exhausted = batch.len() < affordable;
+			let resume_from =
+				UserTotalDriveFilesSize::<T>::hashed_key_for(&batch[batch.len() - 1].0);
+
+			let mut users_seen: u64 = 0;
+			let mut users_charged_or_removed: u64 = 0;
+			for (user, drive_file_size) in batch {
 				users_seen = users_seen.saturating_add(1);
+				meter.consume(probe);
 
 				// Which halves of the bill a subscription already covers.
 				let subscriptions = UserAllSubscriptionPlans::<T>::get(&user);
@@ -3397,6 +3462,7 @@ pub mod pallet {
 							);
 
 					if user_free_credits >= charge_amount {
+						meter.consume(charge);
 						// Decrease user credits
 						let charge_result = Self::consume_credits(user.clone(), charge_amount);
 
@@ -3435,18 +3501,22 @@ pub mod pallet {
 				}
 			}
 
-			// Conservative weight accounting:
-			// - iterating `UserTotalDriveFilesSize` and reading
-			//   `UserAllSubscriptionPlans`, `UserTotalS3FilesSize` and
-			//   `StorageLastChargedAt` per user
-			// - charged/removed paths do writes and call into other pallets
-			// - a charged user also walks the referral lookup and writes one
-			//   accrual row; paying it out is the sweep's weight, not ours
-			let reads = users_seen
-				.saturating_mul(5)
-				.saturating_add(users_charged_or_removed.saturating_mul(13));
-			let writes = users_charged_or_removed.saturating_mul(11);
-			T::DbWeight::get().reads_writes(reads, writes)
+			if exhausted {
+				HourlyChargeCursor::<T>::kill();
+			} else {
+				HourlyChargeCursor::<T>::put(resume_from);
+			}
+
+			log::trace!(
+				target: "runtime::marketplace",
+				"hourly sweep: {} seen, {} charged, {} of budget spent",
+				users_seen,
+				users_charged_or_removed,
+				meter.consumed().ref_time(),
+			);
+
+			// What the meter recorded, which was bounded before any of it ran.
+			meter.consumed()
 		}
 
 		/// Helper function to get the current price per GB

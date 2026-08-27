@@ -1086,6 +1086,14 @@ parameter_types! {
 	/// binding constraint and the count is the backstop. That is the intended
 	/// order — the count rests on an estimate, the meter does not.
 	pub RenewalWeightBudget: Perbill = AVERAGE_ON_INITIALIZE_RATIO / 2;
+	/// Share of a block the hourly pay-as-you-go sweep may spend in one tick.
+	///
+	/// 3% of 2000ms is 60ms, which alongside the renewal drain's 100ms keeps
+	/// both inside the ~200ms `AVERAGE_ON_INITIALIZE_RATIO` allows for all hook
+	/// work, with room left for the referral sweep and the request-count clear.
+	/// The two budgets are separate rather than shared so an upgrade-window
+	/// backfill cannot starve the sweep that runs every tick.
+	pub HourlyWeightBudget: Perbill = Perbill::from_percent(3);
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1110,6 +1118,7 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxSubscriptionChargesPerRun = MaxSubscriptionChargesPerRun;
 	type MaxBackfillAccountsPerRun = MaxBackfillAccountsPerRun;
 	type RenewalWeightBudget = RenewalWeightBudget;
+	type HourlyWeightBudget = HourlyWeightBudget;
 	type WeightInfo = pallet_marketplace::weights::SubstrateWeight<Runtime>;
 }
 

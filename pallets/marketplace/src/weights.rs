@@ -56,6 +56,17 @@ pub trait WeightInfo {
 	/// Probing one day whose prefix is already empty, while the cursor walks
 	/// forward to today.
 	fn day_probe() -> Weight;
+
+	/// Visiting one user in the hourly sweep and finding they owe nothing —
+	/// covered by a plan, storing nothing, or not yet an hour since their last
+	/// charge. Most users take this path on most ticks, so it is the cost that
+	/// dominates the sweep.
+	fn hourly_probe() -> Weight;
+
+	/// The *additional* cost when that user does owe something: the per-GiB
+	/// charge, the transaction record, the referral accrual and the
+	/// last-charged marker.
+	fn hourly_charge() -> Weight;
 }
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
@@ -103,6 +114,21 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	fn day_probe() -> Weight {
 		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(1))
 	}
+
+	/// Estimated: the 5 reads a visited user cost in the sweep's own prior
+	/// accounting — subscriptions, the last-charged marker, the S3 size, plus
+	/// slack.
+	fn hourly_probe() -> Weight {
+		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(5))
+	}
+
+	/// Estimated: the 13 reads and 11 writes a *charged* user cost in that same
+	/// accounting, on top of the probe.
+	fn hourly_charge() -> Weight {
+		Weight::from_parts(0, 0)
+			.saturating_add(RocksDbWeight::get().reads(13))
+			.saturating_add(RocksDbWeight::get().writes(11))
+	}
 }
 
 /// For tests and mocks: same shape, same relative costs, no database pricing.
@@ -132,5 +158,15 @@ impl WeightInfo for () {
 
 	fn day_probe() -> Weight {
 		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(1))
+	}
+
+	fn hourly_probe() -> Weight {
+		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(5))
+	}
+
+	fn hourly_charge() -> Weight {
+		Weight::from_parts(0, 0)
+			.saturating_add(RocksDbWeight::get().reads(13))
+			.saturating_add(RocksDbWeight::get().writes(11))
 	}
 }

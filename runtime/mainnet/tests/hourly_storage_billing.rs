@@ -152,6 +152,66 @@ fn hourly_spend(setup: impl FnOnce(&AccountId)) -> u128 {
 	before.saturating_sub(Credits::get_free_credits(&user))
 }
 
+/// The hourly sweep is bounded per tick and round-robins, so it cannot grow
+/// into a heavy block as the user base does.
+///
+/// This is the loop that reaches the block limit first: it visits every user
+/// the validator metric has ever reported on, that key set only grows, and it
+/// runs on *every* tick rather than on an anniversary. Unbounded it is fine at
+/// a hundred users and fatal at ten thousand, with nothing in between to
+/// signal the change — `on_initialize` is never rejected for being overweight,
+/// the block is just produced heavier.
+#[test]
+fn the_hourly_sweep_is_bounded_per_tick_and_reaches_everyone() {
+	new_test_ext().execute_with(|| {
+		// Enough users that one tick cannot afford them all.
+		let total = 300u32;
+		for n in 0..total {
+			let mut raw = [0u8; 32];
+			raw[0] = 0xC0;
+			raw[1..5].copy_from_slice(&n.to_le_bytes());
+			let user = AccountId32::new(raw);
+			deposit_credits(&user, 1_000_000);
+			report_usage(&user, DRIVE_BYTES, S3_BYTES);
+		}
+
+		let budget = <Runtime as pallet_marketplace::Config>::HourlyWeightBudget::get()
+			* <Runtime as frame_system::Config>::BlockWeights::get().max_block;
+
+		// One tick must not spend more than the sweep's budget, and must park a
+		// cursor because it cannot have finished.
+		System::set_block_number(HOURLY_STEP);
+		let consumed = Marketplace::on_initialize(HOURLY_STEP);
+		assert!(
+			consumed.ref_time() <= budget.ref_time() * 2,
+			"one hourly tick spent {} against a budget of {}",
+			consumed.ref_time(),
+			budget.ref_time(),
+		);
+		assert!(
+			pallet_marketplace::HourlyChargeCursor::<Runtime>::get().is_some(),
+			"300 users cannot fit in one metered tick — the sweep must park a cursor",
+		);
+
+		// The cursor comes back around: every user is billed, none skipped.
+		for _ in 0..40 {
+			let next = System::block_number() + HOURLY_STEP;
+			System::set_block_number(next);
+			Marketplace::on_initialize(next);
+		}
+		for n in 0..total {
+			let mut raw = [0u8; 32];
+			raw[0] = 0xC0;
+			raw[1..5].copy_from_slice(&n.to_le_bytes());
+			let user = AccountId32::new(raw);
+			assert!(
+				Credits::get_free_credits(&user) < 1_000_000,
+				"user {n} was reached by the paged sweep",
+			);
+		}
+	});
+}
+
 #[test]
 fn a_user_with_no_plan_pays_for_both_drive_and_s3() {
 	new_test_ext().execute_with(|| {
