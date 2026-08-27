@@ -1053,6 +1053,76 @@ fn no_upfront_length_lets_a_plan_change_return_more_than_was_paid() {
 	}
 }
 
+// ── Refunds on cancel ────────────────────────────────────────────────────
+
+/// Cancelling refunds the whole cycles that have not started, counted along
+/// the subscription's *own* anniversaries — and never the cycle in progress,
+/// which the holder is using.
+///
+/// This is the path the refund rewrite exists for, and the one an anchored-to-
+/// the-1st test cannot distinguish: for a 1st-anchored subscription the
+/// anniversary boundaries and the calendar-month boundaries are the same dates,
+/// so the old 1st-of-month walk and the new `add_months_clamped` walk agree by
+/// coincidence. Anchored to the 10th they diverge, and only then does the test
+/// actually pin which rule is in force.
+#[test]
+fn cancelling_refunds_whole_cycles_along_its_own_anniversaries() {
+	new_test_ext_at(ms_2026(1, 10)).execute_with(|| {
+		let plan = add_plan(b"drive", PLAN_PRICE);
+		let user = account(11);
+		deposit_credits(&user, 100_000);
+
+		let start = Credits::get_free_credits(&user);
+		purchase_upfront(&user, plan, 3);
+		assert_eq!(start - Credits::get_free_credits(&user), 3 * PLAN_PRICE);
+		assert_eq!(due_day(&user), day_2026(4, 10), "three cycles from the 10th");
+
+		// Feb 20 sits inside the second cycle (Feb 10 -> Mar 10). Walking back
+		// from Apr 10: Mar 10 is still ahead of today and counts; Feb 10 is
+		// behind it and stops the walk. So exactly one whole cycle is unused.
+		//
+		// Under the old 1st-of-month rule the boundaries would have been Mar 1
+		// and Apr 1 — two of them ahead of Feb 20 — and the refund would have
+		// been 2_000 for a subscription that has one unused cycle.
+		pallet_timestamp::Now::<Runtime>::put(ms_2026(2, 20));
+		let id = only_sub(&user).id;
+		cancel(&user, id);
+
+		assert_eq!(
+			start - Credits::get_free_credits(&user),
+			2 * PLAN_PRICE,
+			"the used cycle and the one in progress are kept, the third refunded",
+		);
+		assert!(subs_of(&user).is_empty(), "and the subscription is gone");
+		assert!(index_entries().is_empty(), "with no index entry left behind");
+	});
+}
+
+/// The cycle in progress is never refunded, even on its very last day — the
+/// holder had the service for all of it.
+#[test]
+fn cancelling_never_refunds_the_cycle_in_progress() {
+	new_test_ext_at(ms_2026(1, 10)).execute_with(|| {
+		let plan = add_plan(b"drive", PLAN_PRICE);
+		let user = account(11);
+		deposit_credits(&user, 100_000);
+
+		let start = Credits::get_free_credits(&user);
+		purchase(&user, plan);
+
+		// One day before the cycle ends.
+		pallet_timestamp::Now::<Runtime>::put(ms_2026(2, 9));
+		let id = only_sub(&user).id;
+		cancel(&user, id);
+
+		assert_eq!(
+			start - Credits::get_free_credits(&user),
+			PLAN_PRICE,
+			"a single-cycle subscription refunds nothing on cancel",
+		);
+	});
+}
+
 // ── Backfill ─────────────────────────────────────────────────────────────
 
 /// The backfill must be resumable: interrupting and resuming the cursor at any
