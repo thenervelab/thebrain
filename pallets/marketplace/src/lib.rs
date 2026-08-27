@@ -2757,10 +2757,20 @@ pub mod pallet {
 
 						if !subs_to_deactivate.contains(&sub.id) {
 							sub.last_charged_at = current_block;
+							// Advance to the next anniversary of the billing
+							// anchor, from the previous due date rather than
+							// from "now" — otherwise arrears would drag the
+							// anniversary later on every late charge.
+							//
+							// For a subscription anchored to the 1st, which is
+							// every one that predates this change, this is
+							// exactly `unix_day_of_first_of_month_after` and
+							// the schedule is bit-for-bit unchanged.
 							let prev_next = sub.next_charge_unix_day.unwrap_or(today);
+							let anchor = Self::anchor_of(sub);
 							sub.next_charge_unix_day = Some(
-								pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_after(
-									prev_next,
+								pallet_calendar::Pallet::<T>::add_months_clamped(
+									prev_next, anchor, 1,
 								),
 							);
 						}
