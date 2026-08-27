@@ -504,12 +504,17 @@ fn an_affordable_storage_plan_survives_when_its_sibling_cannot_be_paid() {
 
 		run_monthly_charge_at_feb1();
 
+		// A lapsed subscription is pruned outright rather than left in the
+		// vector with `active = false`: dead rows are decoded on every tick,
+		// so the sweep would keep paying for them forever.
 		let subs = Marketplace::user_all_subscription_plans(&user);
 		let drive_sub = subs.iter().find(|s| s.package.id == drive).expect("drive sub");
-		let s3_sub = subs.iter().find(|s| s.package.id == s3).expect("s3 sub");
 
 		assert!(drive_sub.active, "the plan the user could pay for is kept");
-		assert!(!s3_sub.active, "only the unaffordable plan is deactivated");
+		assert!(
+			!subs.iter().any(|s| s.package.id == s3),
+			"only the unaffordable plan is dropped, and it is dropped entirely",
+		);
 		assert_eq!(Credits::get_free_credits(&user), 0, "the cheaper renewal was collected");
 	});
 }

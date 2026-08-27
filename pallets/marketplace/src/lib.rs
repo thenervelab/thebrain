@@ -280,7 +280,11 @@ pub mod pallet {
 
 	#[pallet::storage]
 	#[pallet::getter(fn user_all_subscription_plans)]
-	pub(super) type UserAllSubscriptionPlans<T: Config> =
+	// `pub` rather than `pub(super)`: the getter returns `Vec` through
+	// `ValueQuery`, so an absent key and an empty one read identically through
+	// it. Tests asserting that a cancelled account's entry is *removed* need
+	// the map itself. Every other index this pallet maintains is already `pub`.
+	pub type UserAllSubscriptionPlans<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, Vec<UserPlanSubscription<T>>, ValueQuery>;
 
 	// Storage for OS Disk Image URLs

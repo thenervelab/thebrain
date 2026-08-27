@@ -731,8 +731,11 @@ fn failed_renewal_deactivates_subscription_and_pays_no_commission() {
 
 		run_monthly_charge_at_feb1();
 
-		let sub = storage_subscription(&buyer);
-		assert!(!sub.active, "unpayable subscription is deactivated");
+		// The lapsed subscription is pruned, not merely flagged inactive.
+		assert!(
+			Marketplace::user_all_subscription_plans(&buyer).is_empty(),
+			"unpayable subscription is deactivated and reclaimed",
+		);
 		// Commission accrues only on money actually collected.
 		assert_eq!(Balances::free_balance(&referrer), ED + PURCHASE_COMMISSION);
 	});
