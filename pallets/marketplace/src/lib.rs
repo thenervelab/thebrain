@@ -1923,6 +1923,63 @@ pub mod pallet {
 			}
 		}
 
+		/// Where `today` sits in the subscription's prepaid span:
+		/// `(cycle_start, cycle_end, whole_cycles_ahead)`.
+		///
+		/// `cycle_start <= today < cycle_end` is the cycle the user is
+		/// *currently in*, and `whole_cycles_ahead` counts the untouched cycles
+		/// between `cycle_end` and `next_charge_unix_day`.
+		///
+		/// Both money paths that split a prepaid span have to agree on which
+		/// cycle is current, or they double-count the days in it: the refund
+		/// returns whole cycles starting at or after `cycle_end`, and the carry
+		/// credit values the unexpired part of `[today, cycle_end)`. Deriving
+		/// both from this one walk is what makes them disjoint by construction.
+		///
+		/// Walking *backwards* from the due date with `add_months_clamped` and
+		/// the subscription's own anchor is also what keeps them in step with
+		/// the charge path, which walks the same anniversaries forwards — a
+		/// clamped month cannot make either disagree with what was billed.
+		///
+		/// `None` when there is no due date or the subscription is already due,
+		/// in which case there is nothing prepaid to split.
+		fn cycle_position(sub: &UserPlanSubscription<T>) -> Option<(u32, u32, u128)> {
+			let due_day = sub.next_charge_unix_day?;
+			let today = Self::current_unix_day();
+			if today >= due_day {
+				return None;
+			}
+
+			// `pay_upfront` is capped at 24 cycles, so a due date is at most 24
+			// anniversaries out and the walk needs at most that many steps to
+			// reach the current cycle. The extra step is slack, not need.
+			const MAX_CYCLE_WALK: u32 = 25;
+
+			let anchor = Self::anchor_of(sub);
+			let mut whole_cycles_ahead: u128 = 0;
+			let mut cycle_end = due_day;
+			for _ in 0..MAX_CYCLE_WALK {
+				let previous =
+					pallet_calendar::Pallet::<T>::add_months_clamped(cycle_end, anchor, -1);
+				// Date math out of range, or not actually moving backwards.
+				// Neither is reachable for a due date this pallet can write.
+				if previous == 0 || previous >= cycle_end {
+					return None;
+				}
+				if previous <= today {
+					return Some((previous, cycle_end, whole_cycles_ahead));
+				}
+				whole_cycles_ahead = whole_cycles_ahead.saturating_add(1);
+				cycle_end = previous;
+			}
+
+			// A due date further out than any purchase can produce. Refusing to
+			// place the cycle refunds and credits nothing, which is the safe
+			// direction — the alternative is paying out against a span we could
+			// not account for.
+			None
+		}
+
 		/// Refund credits for unused prepaid *full* months.
 		///
 		/// We do NOT refund the cycle currently in progress — the user is using
@@ -1933,38 +1990,11 @@ pub mod pallet {
 		/// plan change, the failed monthly charge, and the cancel. The last two
 		/// refund on a path nobody thinks of as a refund.
 		fn unused_prepaid_refund_credits(sub: &UserPlanSubscription<T>) -> u128 {
-			let Some(due_day) = sub.next_charge_unix_day else {
+			let Some((_, _, whole_cycles_ahead)) = Self::cycle_position(sub) else {
 				return 0;
 			};
 
-			let today = Self::current_unix_day();
-			if today >= due_day {
-				return 0;
-			}
-
-			// Count the whole cycles between the end of the current one and
-			// `due_day`. Walking *backwards* from the due date is what keeps
-			// this in step with the charge path: both use `add_months_clamped`
-			// with the same anchor, so a clamped month cannot make the refund
-			// disagree with what was actually billed.
-			//
-			// The cycle containing `today` is deliberately not refunded — the
-			// user is using it — which is the same rule the 1st-of-month version
-			// applied to the current calendar month.
-			let anchor = Self::anchor_of(sub);
-			let mut cycles_remaining: u128 = 0;
-			let mut boundary = due_day;
-			for _ in 0..24u32 {
-				let previous =
-					pallet_calendar::Pallet::<T>::add_months_clamped(boundary, anchor, -1);
-				if previous == 0 || previous <= today || previous >= boundary {
-					break;
-				}
-				cycles_remaining = cycles_remaining.saturating_add(1);
-				boundary = previous;
-			}
-
-			times(Credits::new(sub.paid_per_month), cycles_remaining).get()
+			times(Credits::new(sub.paid_per_month), whole_cycles_ahead).get()
 		}
 
 		fn refund_credits_with_batch(account_id: &T::AccountId, amount: u128) -> DispatchResult {
@@ -2046,31 +2076,41 @@ pub mod pallet {
 		/// ends come from the same `add_months_clamped` the charge path uses, so
 		/// the two cannot drift apart.
 		fn remaining_cycle_value(sub: &UserPlanSubscription<T>, monthly_price: u128) -> u128 {
-			let Some(due_day) = sub.next_charge_unix_day else {
+			// The cycle *containing today*, not the last cycle before the due
+			// date. Those are the same only when a single cycle remains: on a
+			// subscription that prepaid `n` cycles the due date is `n`
+			// anniversaries out, and measuring against it would value the whole
+			// prepaid span as one cycle — which `prorate_first_month` then
+			// clamps to a full month's price, handing back days the user has
+			// already used *and* the whole-cycle refund on top of them.
+			let Some((cycle_start, cycle_end, _)) = Self::cycle_position(sub) else {
 				return 0;
 			};
 			let today = Self::current_unix_day();
-			if today >= due_day {
-				return 0;
-			}
 
-			let anchor = Self::anchor_of(sub);
-			let cycle_start =
-				pallet_calendar::Pallet::<T>::add_months_clamped(due_day, anchor, -1);
 			// A cycle is never shorter than 28 days; a zero here would mean the
 			// date math failed, and falling back to the month length keeps the
 			// credit finite rather than dividing by nothing.
-			let cycle_days = due_day.saturating_sub(cycle_start);
+			let cycle_days = cycle_end.saturating_sub(cycle_start);
 			let cycle_days = if cycle_days == 0 {
-				u32::from(pallet_calendar::Pallet::<T>::days_in_month_of_day(due_day)).max(1)
+				u32::from(pallet_calendar::Pallet::<T>::days_in_month_of_day(cycle_end)).max(1)
 			} else {
 				cycle_days
 			};
 
-			// `due_day - today` is inclusive of today in the same sense the
+			// `cycle_end - today` is inclusive of today in the same sense the
 			// calendar-month version was: on the last day of a cycle it is 1,
-			// and on the due date itself it is 0 because a charge is imminent.
-			let days_remaining = due_day.saturating_sub(today);
+			// and on the boundary itself it is 0 because a charge is imminent.
+			let days_remaining = cycle_end.saturating_sub(today);
+
+			// Guaranteed by `cycle_start <= today < cycle_end`. If it ever
+			// fails, the clamp inside `prorate_first_month` silently pays out a
+			// full month instead — which is exactly how the multi-cycle
+			// over-credit stayed invisible.
+			debug_assert!(
+				days_remaining <= cycle_days,
+				"carry credit must value at most one cycle",
+			);
 
 			prorate_first_month(Credits::new(monthly_price), days_remaining, cycle_days).get()
 		}

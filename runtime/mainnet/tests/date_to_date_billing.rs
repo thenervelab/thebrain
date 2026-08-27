@@ -878,6 +878,122 @@ fn an_upfront_purchase_buys_whole_clamped_cycles() {
 	});
 }
 
+// ── Prepaid span accounting ──────────────────────────────────────────────
+
+/// The conservation rule for a plan change on a prepaid subscription: the
+/// whole-cycle refund and the carry credit split the *same* prepaid span, so
+/// together they can never hand back more than was paid, and never more than
+/// the days the user has not yet used.
+///
+/// This is the invariant a real over-credit bug broke. `remaining_cycle_value`
+/// measured the remaining days against the *due date* rather than against the
+/// cycle containing today. On a subscription that prepaid `n` cycles the due
+/// date is `n` anniversaries out, so the "days remaining" spanned every prepaid
+/// cycle at once while the divisor was a single cycle — and the proration
+/// clamps at one whole month, so the carry silently paid out a full month's
+/// price no matter how much of the current cycle had already been consumed.
+/// Stacked on the correct `n-1` cycle refund, that returned the entire amount
+/// paid while the user had already used part of cycle one and was starting a
+/// fresh cycle on the new plan, minting the difference as credits.
+#[test]
+fn a_plan_change_never_credits_back_more_than_the_unused_prepaid_span() {
+	// Two same-priced plans, so the change is pure accounting: whatever the
+	// user gets back beyond the unused days is credit conjured out of nothing.
+	new_test_ext_at(ms_2026(1, 1)).execute_with(|| {
+		let solo = add_plan(b"solo", PLAN_PRICE);
+		let other = add_plan(b"other", PLAN_PRICE);
+		let user = account(11);
+		deposit_credits(&user, 100_000);
+
+		let start = Credits::get_free_credits(&user);
+		purchase_upfront(&user, solo, 2);
+		assert_eq!(start - Credits::get_free_credits(&user), 2 * PLAN_PRICE);
+		assert_eq!(due_day(&user), day_2026(3, 1), "two whole cycles bought");
+
+		// Day 31 of a 31-day first cycle: 1 of 31 days is unused, so the carry
+		// is ceil(1_000 x 1/31) = 33, and the untouched February cycle refunds
+		// 1_000. The new Other cycle costs 1_000, so the net movement is
+		// 1_000 + 33 - 1_000 = 33 back, leaving 2_000 - 33 spent.
+		pallet_timestamp::Now::<Runtime>::put(ms_2026(1, 31));
+		assert_ok!(Marketplace::change_storage_plan(
+			RuntimeOrigin::signed(backend()),
+			user.clone(),
+			other,
+			None,
+			None,
+			None,
+		));
+
+		let spent = start - Credits::get_free_credits(&user);
+		assert_eq!(
+			spent,
+			2 * PLAN_PRICE - 33,
+			"only the unused 1 of 31 days carries over, not a whole month",
+		);
+		// Conservation, stated as value held: 30 consumed days of the old cycle
+		// (967) plus one fresh cycle on the new plan (1_000) is exactly the
+		// 1_967 spent. Under the bug the carry paid out a whole month instead
+		// of one day, so `spent` came to 1_000 and 967 credits were minted.
+		assert!(
+			spent >= PLAN_PRICE,
+			"a plan change must never refund the days already consumed: spent {spent}",
+		);
+		// Anchored to the 31st, so the first anniversary clamps to Feb 28.
+		assert_eq!(due_day(&user), day_2026(2, 28), "the new plan starts a cycle today");
+	});
+}
+
+/// The same conservation rule across the whole `pay_upfront` range and at
+/// several points within the first cycle. Anything a user can reach through
+/// the ordinary buy-then-upgrade flow has to hold the line.
+#[test]
+fn no_upfront_length_lets_a_plan_change_return_more_than_was_paid() {
+	for cycles in [1u128, 2, 3, 12, 24] {
+		for change_day in [1u8, 10, 20, 31] {
+			new_test_ext_at(ms_2026(1, 1)).execute_with(|| {
+				let solo = add_plan(b"solo", PLAN_PRICE);
+				let other = add_plan(b"other", PLAN_PRICE);
+				let user = account(11);
+				deposit_credits(&user, 1_000_000);
+
+				let start = Credits::get_free_credits(&user);
+				purchase_upfront(&user, solo, cycles);
+				assert_eq!(start - Credits::get_free_credits(&user), cycles * PLAN_PRICE);
+
+				pallet_timestamp::Now::<Runtime>::put(ms_2026(1, change_day));
+				assert_ok!(Marketplace::change_storage_plan(
+					RuntimeOrigin::signed(backend()),
+					user.clone(),
+					other,
+					None,
+					None,
+					None,
+				));
+
+				// Days consumed on the old plan are gone; one fresh cycle on
+				// the new plan is owed in full. So out-of-pocket can never drop
+				// below the single cycle the user is now holding.
+				let spent = start - Credits::get_free_credits(&user);
+				assert!(
+					spent >= PLAN_PRICE,
+					"cycles={cycles} change_day={change_day}: spent {spent} is less than \
+					 the one cycle the user now holds — credits were minted",
+				);
+				// And bounded above independently of how many cycles were
+				// prepaid: every untouched cycle is refunded, so the most a
+				// user can be out of pocket is the old cycle they consumed
+				// plus the one new cycle they now hold. A bound that grew with
+				// `cycles` would let an unrefunded cycle hide inside it.
+				assert!(
+					spent <= 2 * PLAN_PRICE,
+					"cycles={cycles} change_day={change_day}: spent {spent} exceeds one \
+					 consumed cycle plus one new cycle — a prepaid cycle went unrefunded",
+				);
+			});
+		}
+	}
+}
+
 // ── Backfill ─────────────────────────────────────────────────────────────
 
 /// The backfill must be resumable: interrupting and resuming the cursor at any
