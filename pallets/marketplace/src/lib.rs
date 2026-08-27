@@ -226,6 +226,22 @@ pub mod pallet {
 		/// delays a referrer to the next sweep rather than skipping them.
 		#[pallet::constant]
 		type MaxReferralPayoutsPerSweep: Get<u32>;
+
+		/// Max accounts charged in a single renewal drain, bounding its weight.
+		///
+		/// This is the number that makes the weight returned by `on_initialize`
+		/// a promise rather than a report. Nothing upstream rejects an
+		/// overweight hook — the block is simply produced heavier — so the cap
+		/// has to be applied before the work, not measured after it.
+		///
+		/// Counted in *accounts* because the weight formula is per-account.
+		/// Accounts not reached stay in the day's bucket for the next tick.
+		#[pallet::constant]
+		type MaxSubscriptionChargesPerRun: Get<u32>;
+
+		/// Max accounts the one-time due-index backfill walks per tick.
+		#[pallet::constant]
+		type MaxBackfillAccountsPerRun: Get<u32>;
     }
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -717,10 +733,94 @@ pub mod pallet {
 
 	/// Unix-day marker (unix_ms / 86_400_000) of the last time we ran the monthly subscription charge.
 	///
-	/// This prevents double-charging on the 1st of the month when `on_initialize` runs multiple times.
+	/// Superseded by [`DueDayCursor`] and no longer read or written. A capped
+	/// drain takes many ticks to finish a day, so this once-per-day latch would
+	/// fire on the first partial tick and suppress the rest of that day's queue.
+	/// The key is left in place deliberately: an orphaned `StorageValue` costs
+	/// nothing and removing it would need a migration to buy nothing.
+	#[deprecated(note = "replaced by DueDayCursor; retained only so no migration is needed")]
 	#[pallet::storage]
 	#[pallet::getter(fn last_monthly_subscription_charge_day)]
 	pub type LastMonthlySubscriptionChargeDay<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+	/// Accounts with at least one active subscription due on a given unix day.
+	///
+	/// The whole point of date-to-date billing is that somebody is due every
+	/// day, which turns a monthly full-map sweep into a daily one. This index
+	/// is what keeps the work proportional to who is *actually* due instead of
+	/// to how many subscriptions exist.
+	///
+	/// **Keyed by account, not by subscription.** Charging is deliberately
+	/// ordered: `charge_due_subscriptions_individually` sorts an account's due
+	/// subscriptions by ascending id so a short-funded user deterministically
+	/// keeps the oldest. `iter_prefix` returns hash order, so a
+	/// subscription-keyed index would scatter one account's plans across the
+	/// drain — possibly across a cap boundary into a different block with a
+	/// different credit balance — and make which plan survives effectively
+	/// random. It would also fragment the referral commission, which is
+	/// computed once per account on the total it actually paid.
+	///
+	/// An account whose plans fall due on different days holds one entry under
+	/// each of those days.
+	///
+	/// Not a `StorageMap<u32, BoundedVec<_>>`: a bucket-per-day vector decodes,
+	/// mutates and re-encodes the entire day's list on every touch, and its
+	/// bound would become a hard ceiling on how many people may share a
+	/// renewal date. The double map reads only what it consumes.
+	#[pallet::storage]
+	pub type DueAccounts<T: Config> =
+		StorageDoubleMap<_, Blake2_128Concat, u32, Blake2_128Concat, T::AccountId, (), OptionQuery>;
+
+	/// Oldest unix day whose `DueAccounts` prefix has not yet been fully drained.
+	///
+	/// Reading only *today's* prefix would silently drop anyone due on a day
+	/// that did not finish draining or that the chain was down for. The cursor
+	/// advances only once its day is empty and never past today, which is what
+	/// `max_catchup_months` is doing in the current code and must survive.
+	///
+	/// `None` means "not yet initialised" — set to the first of the current
+	/// month when the backfill starts.
+	#[pallet::storage]
+	pub type DueDayCursor<T: Config> = StorageValue<_, u32, OptionQuery>;
+
+	/// Billing anchor (day-of-month, 1..=31) for subscriptions whose anchor
+	/// cannot be derived from their due date.
+	///
+	/// **Sparse on purpose.** For any anchor from 1 to 28 the day-of-month of
+	/// `next_charge_unix_day` *is* the anchor, in every month of the year, so
+	/// no entry is needed. Derivation only fails once a value has been clamped:
+	/// a 31st subscriber pushed to Feb 28 has lost the 31. Clamping can only
+	/// ever produce 28, 29 or 30, so an entry is written only when the anchor
+	/// exceeds 28 and read only when the derived day is 28, 29 or 30.
+	///
+	/// This is why there is no `anchor_day` field on `UserPlanSubscription`:
+	/// adding one would change the type of a live map holding every
+	/// subscription on the chain. `SubscriptionId` is a monotonic `u32` and a
+	/// stable standalone key, so this map needs nothing from that struct.
+	///
+	/// Starts completely empty — every existing subscription is anchored to the
+	/// 1st, and 1 derives correctly with no entry at all.
+	#[pallet::storage]
+	pub type SubscriptionAnchorDay<T: Config> =
+		StorageMap<_, Blake2_128Concat, SubscriptionId, u8, OptionQuery>;
+
+	/// Raw storage key the one-time due-index backfill resumes from.
+	///
+	/// Populating the index cannot be a migration: `pallet-migrations` is not
+	/// configured in this runtime, so it would have to be a single-block
+	/// `OnRuntimeUpgrade` iterating every subscription — the same unbounded
+	/// work this change exists to remove, relocated into the one block where
+	/// exceeding the budget breaks the upgrade itself.
+	#[pallet::storage]
+	pub type BackfillCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
+
+	/// Whether the due-index backfill has finished.
+	///
+	/// Until it is set the renewal sweep falls back to the pre-index full scan,
+	/// because an account in the untouched tail has no index entry and would
+	/// otherwise go uncharged. Retire the fallback one release after this ships.
+	#[pallet::storage]
+	pub type BackfillDone<T: Config> = StorageValue<_, bool, ValueQuery>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -1685,6 +1785,131 @@ pub mod pallet {
 			(Self::now_ms() / 86_400_000u64) as u32
 		}
 
+		/// The billing anchor (day-of-month) of a subscription.
+		///
+		/// Derived from the due date wherever that is unambiguous, which is
+		/// almost always: clamping can only ever produce 28, 29 or 30, so any
+		/// other day-of-month *is* the anchor and no lookup happens. Only those
+		/// three values might be a clamped 29/30/31, and only then is the sparse
+		/// map consulted.
+		///
+		/// Absence therefore has to mean "derive it" — see
+		/// [`SubscriptionAnchorDay`], which is why an entry is written whenever
+		/// the anchor exceeds 28 and deleted with the subscription.
+		fn anchor_of(sub: &UserPlanSubscription<T>) -> u8 {
+			let Some(due_day) = sub.next_charge_unix_day else {
+				// No due date to derive from. The 1st is what the legacy `None`
+				// path already means, and the backfill writes it explicitly.
+				return 1;
+			};
+			let derived = pallet_calendar::Pallet::<T>::day_of_month(due_day);
+			if (28..=30).contains(&derived) {
+				SubscriptionAnchorDay::<T>::get(sub.id).unwrap_or(derived)
+			} else if derived == 0 {
+				1
+			} else {
+				derived
+			}
+		}
+
+		/// Record an anchor only when it cannot be derived from the due date.
+		///
+		/// Keeping the map sparse is not an optimisation, it is the contract:
+		/// absence means "derive it", so writing a derivable anchor would be
+		/// redundant while writing nothing for a non-derivable one is a bug.
+		fn set_anchor(subscription_id: SubscriptionId, anchor: u8) {
+			if anchor > 28 {
+				SubscriptionAnchorDay::<T>::insert(subscription_id, anchor);
+			} else {
+				SubscriptionAnchorDay::<T>::remove(subscription_id);
+			}
+		}
+
+		/// The unix day a subscription should next be charged on, for indexing.
+		///
+		/// A legacy `None` means "due from the 1st of the current month", which
+		/// is exactly how the pre-index sweep reads it.
+		fn effective_due_day(sub: &UserPlanSubscription<T>) -> u32 {
+			sub.next_charge_unix_day
+				.unwrap_or_else(|| pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(0))
+		}
+
+		/// Distinct days an account's active subscriptions are due on.
+		///
+		/// `MaxActiveSubscriptions` is 5, so this is a handful of entries and a
+		/// linear scan beats any set machinery.
+		fn due_days_of(subs: &[UserPlanSubscription<T>]) -> Vec<u32> {
+			let mut days: Vec<u32> = Vec::new();
+			for sub in subs.iter().filter(|s| s.active) {
+				let day = Self::effective_due_day(sub);
+				if !days.contains(&day) {
+					days.push(day);
+				}
+			}
+			days
+		}
+
+		/// The one and only way to write `UserAllSubscriptionPlans`.
+		///
+		/// The due-day index is a denormalisation, so the failure mode is
+		/// drift, and the dangerous direction is a *missing* entry: a due
+		/// subscription nothing ever charges is silently free service with no
+		/// event to notice. Rather than defend that by remembering to call
+		/// something at each of the six write sites, every write goes through
+		/// here and the index is reconciled from the diff — so the invariant
+		/// cannot be broken by forgetting.
+		///
+		/// Reconciling per *account* rather than per subscription is what makes
+		/// this correct: an account holds one index key per distinct due day, so
+		/// moving one subscription off day D must not delete that key while a
+		/// sibling is still due there. Only the days that actually changed are
+		/// touched.
+		///
+		/// Also the single point where cancelled subscriptions are reclaimed —
+		/// entry, index key and anchor row go together, and the account's map
+		/// entry disappears once its last subscription does.
+		fn commit_subscriptions(
+			who: &T::AccountId,
+			before: &[UserPlanSubscription<T>],
+			after: Vec<UserPlanSubscription<T>>,
+		) {
+			// Drop deactivated rows. Nothing downstream reads them: cancellation
+			// history lives in events and `PointTransactions`, and leaving them
+			// costs weight on *every* tick, because the sweep's own skip path
+			// has to decode the whole vector before it can decide to skip it.
+			let after: Vec<UserPlanSubscription<T>> =
+				after.into_iter().filter(|sub| sub.active).collect();
+
+			// Anchors for subscriptions that no longer exist. `SubscriptionId`
+			// is monotonic so a stale row would not be re-used, but it would sit
+			// there forever.
+			for sub in before.iter() {
+				if !after.iter().any(|s| s.id == sub.id) {
+					SubscriptionAnchorDay::<T>::remove(sub.id);
+				}
+			}
+
+			let before_days = Self::due_days_of(before);
+			let after_days = Self::due_days_of(&after);
+
+			for day in before_days.iter() {
+				if !after_days.contains(day) {
+					DueAccounts::<T>::remove(day, who);
+				}
+			}
+			for day in after_days.iter() {
+				if !before_days.contains(day) {
+					DueAccounts::<T>::insert(day, who, ());
+				}
+			}
+
+			if after.is_empty() {
+				UserAllSubscriptionPlans::<T>::remove(who);
+			} else {
+				UserAllSubscriptionPlans::<T>::insert(who, after);
+			}
+		}
+
 		/// Refund credits for unused prepaid *full* months.
 		///
 		/// We do NOT refund the current (possibly prorated) month. We only refund whole months
@@ -1748,28 +1973,20 @@ pub mod pallet {
 		fn do_delete_storage_subscription_with_refund(account_id: &T::AccountId) -> DispatchResult {
 			let now = <frame_system::Pallet<T>>::block_number();
 			let mut refunded: u128 = 0;
-			let mut removed_any = false;
 
-			UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
-				let original_len = subscriptions.len();
-
-				for sub in subscriptions.iter() {
-					if sub.package.is_any_storage() && sub.active {
-						refunded =
-							refunded.saturating_add(Self::unused_prepaid_refund_credits(sub));
-					}
+			let before = UserAllSubscriptionPlans::<T>::get(account_id);
+			for sub in before.iter() {
+				if sub.package.is_any_storage() && sub.active {
+					refunded = refunded.saturating_add(Self::unused_prepaid_refund_credits(sub));
 				}
+			}
 
-				*subscriptions = subscriptions
-					.iter()
-					.filter(|sub| !sub.package.is_any_storage())
-					.cloned()
-					.collect();
+			let after: Vec<UserPlanSubscription<T>> =
+				before.iter().filter(|sub| !sub.package.is_any_storage()).cloned().collect();
 
-				removed_any = subscriptions.len() < original_len;
-			});
+			ensure!(after.len() < before.len(), Error::<T>::NoActiveSubscription);
 
-			ensure!(removed_any, Error::<T>::NoActiveSubscription);
+			Self::commit_subscriptions(account_id, &before, after);
 
 			if refunded > 0 {
 				Self::refund_credits_with_batch(account_id, refunded)?;
@@ -1922,7 +2139,8 @@ pub mod pallet {
 			// plan is blocked only by another active S3 plan, never by the Drive
 			// plan whose bytes it does not cover.
 			let flavour = plan.storage_flavour();
-			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+			let before = UserAllSubscriptionPlans::<T>::get(&who);
+			let mut subscriptions = before.clone();
 			ensure!(
 				!subscriptions.iter().any(|s| s.active && s.package.storage_flavour() == flavour),
 				Error::<T>::AlreadyHasActiveSubscription
@@ -2012,8 +2230,8 @@ pub mod pallet {
 			// Add the new subscription (cap validated before any charging).
 			subscriptions.push(subscription);
 
-			// Save the updated subscriptions list
-			UserAllSubscriptionPlans::<T>::insert(&who, subscriptions);
+			// Save the updated subscriptions list, reconciling the due-day index.
+			Self::commit_subscriptions(&who, &before, subscriptions);
 
 			Ok(())
 		}
@@ -2097,7 +2315,8 @@ pub mod pallet {
 			// be bought, they cannot be switched into either.
 			ensure!(Self::is_purchase_plan_enabled(), Error::<T>::PlanOperationDisabled);
 
-			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(account_id);
+			let before = UserAllSubscriptionPlans::<T>::get(account_id);
+			let mut subscriptions = before.clone();
 
 			// Exactly one active subscription *of this flavour*.
 			// `do_purchase_storage_plan` enforces that invariant on the way in, so
@@ -2210,7 +2429,7 @@ pub mod pallet {
 				_phantom: PhantomData,
 			};
 
-			UserAllSubscriptionPlans::<T>::insert(account_id, subscriptions);
+			Self::commit_subscriptions(account_id, &before, subscriptions);
 
 			let event = match flavour {
 				StorageFlavour::Drive => Event::StoragePlanChanged {
@@ -2258,7 +2477,8 @@ pub mod pallet {
 			// dispatch storage layer would roll a late failure back anyway,
 			// but failing fast wastes no work and keeps the flow safe for
 			// any future non-dispatch caller.
-			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+			let before = UserAllSubscriptionPlans::<T>::get(&who);
+			let mut subscriptions = before.clone();
 			let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
 			ensure!(
 				active_count < T::MaxActiveSubscriptions::get(),
@@ -2359,8 +2579,8 @@ pub mod pallet {
 			// Add the new subscription (cap validated before any charging).
 			subscriptions.push(subscription);
 
-			// Save the updated subscriptions list
-			UserAllSubscriptionPlans::<T>::insert(&who, subscriptions);
+			// Save the updated subscriptions list, reconciling the due-day index.
+			Self::commit_subscriptions(&who, &before, subscriptions);
 
 			Ok(())
 		}
@@ -2468,7 +2688,8 @@ pub mod pallet {
 			for (account_id, subscriptions) in UserAllSubscriptionPlans::<T>::iter() {
 				users_seen = users_seen.saturating_add(1);
 				// Work on a local copy so we can do catch-up charging deterministically.
-				let mut subs = subscriptions;
+				let before = subscriptions;
+				let mut subs = before.clone();
 
 				// If no active subs, skip.
 				if !subs.iter().any(|s| s.active) {
@@ -2636,7 +2857,7 @@ pub mod pallet {
 				}
 
 				// Persist any advances/deactivations for this account.
-				UserAllSubscriptionPlans::<T>::insert(&account_id, subs);
+				Self::commit_subscriptions(&account_id, &before, subs);
 			}
 
 			// Conservative weight accounting:
@@ -2805,19 +3026,22 @@ pub mod pallet {
 			let mut cancelled = false;
 			let mut was_storage = false;
 
-			UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
-				for sub in subscriptions.iter_mut() {
-					if sub.id == subscription_id && sub.active {
-						refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
-						was_storage = sub.package.is_any_storage();
-						sub.active = false;
-						cancelled = true;
-						break; // Stop looping after finding the subscription
-					}
+			let before = UserAllSubscriptionPlans::<T>::get(account_id);
+			let mut after = before.clone();
+			for sub in after.iter_mut() {
+				if sub.id == subscription_id && sub.active {
+					refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
+					was_storage = sub.package.is_any_storage();
+					sub.active = false;
+					cancelled = true;
+					break; // Stop looping after finding the subscription
 				}
-			});
+			}
 
 			ensure!(cancelled, Error::<T>::SubscriptionNotFound);
+
+			// Drops the row along with its index key and anchor entry.
+			Self::commit_subscriptions(account_id, &before, after);
 
 			if refund > 0 {
 				Self::refund_credits_with_batch(account_id, refund)?;

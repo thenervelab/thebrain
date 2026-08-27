@@ -1059,6 +1059,22 @@ parameter_types! {
 	/// 12_000 owed referrers a day, far ahead of any plausible backlog, while
 	/// keeping a single block's payout work bounded.
 	pub const MaxReferralPayoutsPerSweep: u32 = 250;
+	/// Accounts charged per renewal drain.
+	///
+	/// Derived from the budget, not picked: `RocksDbWeight` prices a read at
+	/// 25µs and a write at 100µs, `MAXIMUM_BLOCK_WEIGHT` is 2000ms, and
+	/// `BlockWeights::with_sensible_defaults` assumes `on_initialize` costs 10%
+	/// of that — so ~200ms a tick. The pallet's own per-charge estimate is 16
+	/// reads and 10 writes, i.e. 1.4ms per account, which puts 500 charges at
+	/// ~3.5x the budget and even 150 over it. 128 comes to ~179ms with real
+	/// headroom.
+	///
+	/// Throughput was never the constraint: 128 every 8 blocks still clears
+	/// ~230_000 charges a day. Raise this only against a benchmark.
+	pub const MaxSubscriptionChargesPerRun: u32 = 128;
+	/// Accounts the one-time due-index backfill walks per tick. Read-only over
+	/// the subscription map, so it is cheaper per account than a charge.
+	pub const MaxBackfillAccountsPerRun: u32 = 256;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1080,6 +1096,8 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxReferralCodesPerCall = MaxReferralCodesPerCall;
 	type ReferralPayoutInterval = ReferralPayoutInterval;
 	type MaxReferralPayoutsPerSweep = MaxReferralPayoutsPerSweep;
+	type MaxSubscriptionChargesPerRun = MaxSubscriptionChargesPerRun;
+	type MaxBackfillAccountsPerRun = MaxBackfillAccountsPerRun;
 }
 
 parameter_types! {
