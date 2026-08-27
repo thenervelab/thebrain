@@ -67,6 +67,15 @@ pub trait WeightInfo {
 	/// charge, the transaction record, the referral accrual and the
 	/// last-charged marker.
 	fn hourly_charge() -> Weight;
+
+	/// Looking at one deposit batch in the alpha-release sweep and finding
+	/// nothing to do — not frozen, nothing pending, or not yet matured. Almost
+	/// every batch takes this path, and the map is never pruned on spend, so
+	/// this is the cost that grows with the chain's whole deposit history.
+	fn alpha_release_probe() -> Weight;
+
+	/// The *additional* cost of actually releasing one matured batch.
+	fn alpha_release() -> Weight;
 }
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
@@ -129,6 +138,18 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(RocksDbWeight::get().reads(13))
 			.saturating_add(RocksDbWeight::get().writes(11))
 	}
+
+	/// Estimated: one map read, which is what the skip path costs.
+	fn alpha_release_probe() -> Weight {
+		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(1))
+	}
+
+	/// Estimated: the alpha balance, the backing tally and the batch row.
+	fn alpha_release() -> Weight {
+		Weight::from_parts(0, 0)
+			.saturating_add(RocksDbWeight::get().reads(2))
+			.saturating_add(RocksDbWeight::get().writes(4))
+	}
 }
 
 /// For tests and mocks: same shape, same relative costs, no database pricing.
@@ -168,5 +189,15 @@ impl WeightInfo for () {
 		Weight::from_parts(0, 0)
 			.saturating_add(RocksDbWeight::get().reads(13))
 			.saturating_add(RocksDbWeight::get().writes(11))
+	}
+
+	fn alpha_release_probe() -> Weight {
+		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(1))
+	}
+
+	fn alpha_release() -> Weight {
+		Weight::from_parts(0, 0)
+			.saturating_add(RocksDbWeight::get().reads(2))
+			.saturating_add(RocksDbWeight::get().writes(4))
 	}
 }

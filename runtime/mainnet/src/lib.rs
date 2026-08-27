@@ -1094,6 +1094,14 @@ parameter_types! {
 	/// The two budgets are separate rather than shared so an upgrade-window
 	/// backfill cannot starve the sweep that runs every tick.
 	pub HourlyWeightBudget: Perbill = Perbill::from_percent(3);
+	/// Share of a block the matured-alpha release sweep may spend in one tick.
+	///
+	/// 1% of 2000ms is 20ms — ~800 batch probes a tick. Deliberately the
+	/// smallest of the three: what it guards is a 15-day maturity timer, so
+	/// falling a few ticks behind costs nothing, and the three budgets together
+	/// (5% + 3% + 1%) stay inside the ~10% `AVERAGE_ON_INITIALIZE_RATIO`
+	/// assumes for all hook work.
+	pub AlphaReleaseWeightBudget: Perbill = Perbill::from_percent(1);
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1119,6 +1127,7 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxBackfillAccountsPerRun = MaxBackfillAccountsPerRun;
 	type RenewalWeightBudget = RenewalWeightBudget;
 	type HourlyWeightBudget = HourlyWeightBudget;
+	type AlphaReleaseWeightBudget = AlphaReleaseWeightBudget;
 	type WeightInfo = pallet_marketplace::weights::SubstrateWeight<Runtime>;
 }
 

@@ -160,16 +160,12 @@ pub mod pallet {
 				weight_used = weight_used.saturating_add(
 					Self::handle_all_subscription_charging(current_block, &mut meter),
 				);
-				if let Err(e) = Self::release_matured_pending_alpha(current_block) {
-					log::error!(
-						target: "runtime::marketplace",
-						"release_matured_pending_alpha failed at block {:?}: {:?}",
-						current_block,
-						e
-					);
-				}
-				// Conservative: iterating batches is unbounded; charge at least one read.
-				weight_used = weight_used.saturating_add(T::DbWeight::get().reads_writes(1, 0));
+				// Paged and metered like the sweeps above. It used to walk every
+				// batch the chain has ever created on every tick and declare a
+				// single read for it — and `Batches` is only pruned by
+				// chargeback, so that walk grows with the whole deposit history.
+				weight_used = weight_used
+					.saturating_add(Self::release_matured_pending_alpha(current_block));
 			}
 
 			weight_used
@@ -304,6 +300,15 @@ pub mod pallet {
 		/// assumes for all hook work.
 		#[pallet::constant]
 		type HourlyWeightBudget: Get<Perbill>;
+
+		/// Share of a block's maximum weight the matured-alpha release sweep may
+		/// spend in one tick.
+		///
+		/// Small on purpose: the work it guards is a 15-day timer, so delaying a
+		/// release by a few ticks costs nothing, while the map it walks is the
+		/// chain's entire deposit history and never shrinks on spend.
+		#[pallet::constant]
+		type AlphaReleaseWeightBudget: Get<Perbill>;
 
 		/// Measured cost of the units the billing hook meters itself in.
 		type WeightInfo: crate::weights::WeightInfo;
@@ -876,6 +881,14 @@ pub mod pallet {
 	/// otherwise go uncharged. Retire the fallback one release after this ships.
 	#[pallet::storage]
 	pub type BackfillDone<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	/// Resume point for the matured-alpha release sweep.
+	///
+	/// `Batches` is only pruned by chargeback, so a batch spent down to zero
+	/// credits stays forever and the map grows with every deposit the chain has
+	/// ever taken. The sweep runs on every tick, so it has to be paged.
+	#[pallet::storage]
+	pub type AlphaReleaseCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
 	/// Resume point for the hourly pay-as-you-go sweep.
 	///
@@ -2194,15 +2207,52 @@ pub mod pallet {
 			day
 		}
 
-		#[transactional]
-		fn release_matured_pending_alpha(current_block: BlockNumberFor<T>) -> DispatchResult {
-			for (batch_id, mut batch) in Batches::<T>::iter() {
+		/// Release matured alpha from frozen deposit batches, a bounded page at
+		/// a time.
+		///
+		/// No longer `#[transactional]`: that attribute rolls the body back on
+		/// `Err`, and this body has no fallible call to produce one — it was
+		/// already doing nothing. Each batch's release is independent of every
+		/// other, so a page that stops early leaves no half-applied state.
+		fn release_matured_pending_alpha(current_block: BlockNumberFor<T>) -> Weight {
+			let mut meter = WeightMeter::with_limit(
+				T::AlphaReleaseWeightBudget::get()
+					* <T as frame_system::Config>::BlockWeights::get().max_block,
+			);
+			let probe = <T as Config>::WeightInfo::alpha_release_probe();
+			let release = <T as Config>::WeightInfo::alpha_release();
+
+			// Sized for the case where every batch in the page turns out to be
+			// matured. Almost none will be — the release_time is a 15-day timer
+			// — but a bound has to hold in the case it is bounding.
+			let affordable = Self::accounts_affordable(&meter, probe.saturating_add(release));
+			if affordable == 0 {
+				return meter.consumed();
+			}
+
+			let page: Vec<(u64, Batch<T::AccountId, BlockNumberFor<T>>)> =
+				match AlphaReleaseCursor::<T>::get() {
+					Some(key) => Batches::<T>::iter_from(key).take(affordable).collect(),
+					None => Batches::<T>::iter().take(affordable).collect(),
+				};
+
+			if page.is_empty() {
+				AlphaReleaseCursor::<T>::kill();
+				return meter.consumed();
+			}
+
+			let exhausted = page.len() < affordable;
+			let resume_from = Batches::<T>::hashed_key_for(page[page.len() - 1].0);
+
+			for (batch_id, mut batch) in page {
+				meter.consume(probe);
 				if !batch.is_frozen || batch.pending_alpha == 0 {
 					continue;
 				}
 				if current_block < batch.release_time {
 					continue;
 				}
+				meter.consume(release);
 
 				batch.is_frozen = false;
 
@@ -2218,7 +2268,13 @@ pub mod pallet {
 				Batches::<T>::insert(batch_id, batch);
 			}
 
-			Ok(())
+			if exhausted {
+				AlphaReleaseCursor::<T>::kill();
+			} else {
+				AlphaReleaseCursor::<T>::put(resume_from);
+			}
+
+			meter.consumed()
 		}
 
 		pub fn account_id() -> T::AccountId {
