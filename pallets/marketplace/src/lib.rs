@@ -1921,8 +1921,13 @@ pub mod pallet {
 
 		/// Refund credits for unused prepaid *full* months.
 		///
-		/// We do NOT refund the current (possibly prorated) month. We only refund whole months
-		/// that start in the future, up to (but excluding) `next_charge_unix_day`.
+		/// We do NOT refund the cycle currently in progress — the user is using
+		/// it. We refund only whole cycles that start in the future, up to (but
+		/// excluding) `next_charge_unix_day`.
+		///
+		/// Four callers, all of which move money: the bulk storage delete, the
+		/// plan change, the failed monthly charge, and the cancel. The last two
+		/// refund on a path nobody thinks of as a refund.
 		fn unused_prepaid_refund_credits(sub: &UserPlanSubscription<T>) -> u128 {
 			let Some(due_day) = sub.next_charge_unix_day else {
 				return 0;
@@ -1933,18 +1938,29 @@ pub mod pallet {
 				return 0;
 			}
 
-			// Count how many "1st of month" boundaries are still in the future before `due_day`.
-			// We start from next month's 1st; that makes "current month" non-refundable.
-			let mut months_remaining: u128 = 0;
-			for n in 1u32..=24u32 {
-				let d = pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(n);
-				if d == 0 || d >= due_day {
+			// Count the whole cycles between the end of the current one and
+			// `due_day`. Walking *backwards* from the due date is what keeps
+			// this in step with the charge path: both use `add_months_clamped`
+			// with the same anchor, so a clamped month cannot make the refund
+			// disagree with what was actually billed.
+			//
+			// The cycle containing `today` is deliberately not refunded — the
+			// user is using it — which is the same rule the 1st-of-month version
+			// applied to the current calendar month.
+			let anchor = Self::anchor_of(sub);
+			let mut cycles_remaining: u128 = 0;
+			let mut boundary = due_day;
+			for _ in 0..24u32 {
+				let previous =
+					pallet_calendar::Pallet::<T>::add_months_clamped(boundary, anchor, -1);
+				if previous == 0 || previous <= today || previous >= boundary {
 					break;
 				}
-				months_remaining = months_remaining.saturating_add(1);
+				cycles_remaining = cycles_remaining.saturating_add(1);
+				boundary = previous;
 			}
 
-			times(Credits::new(sub.paid_per_month), months_remaining).get()
+			times(Credits::new(sub.paid_per_month), cycles_remaining).get()
 		}
 
 		fn refund_credits_with_batch(account_id: &T::AccountId, amount: u128) -> DispatchResult {
