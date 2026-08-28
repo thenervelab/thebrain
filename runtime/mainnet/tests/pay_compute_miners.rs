@@ -165,13 +165,15 @@ fn the_same_epoch_cannot_be_paid_twice() {
 	});
 }
 
-/// Register an Arion storage family with one weighted child — needed only to
-/// prove the shared 24-hour budget spans both payouts.
+/// Register an Arion storage family with one data-carrying child — needed only
+/// to prove the shared 24-hour budget spans both payouts.
 ///
-/// `pay_storage_miners` reads Arion (`FamilyChildren` + `NodeWeightByChild`),
-/// not the ranking pallet, so seeding a ranked node here would leave the
-/// storage payout with no eligible miners.
-fn seed_arion_storage_family(family: &AccountId, child: &AccountId, weight: u16) {
+/// `pay_storage_miners` reads Arion (`FamilyChildren` + `NodeQualityByChild`,
+/// the family aggregate), not the ranking pallet and not the per-child
+/// `NodeWeightByChild` scores, so the child must carry enough bytes to clear
+/// the family scoring floor.
+fn seed_arion_storage_family(family: &AccountId, child: &AccountId, tib: u128) {
+	const TIB: u128 = 1024 * 1024 * 1024 * 1024;
 	let node_id: [u8; 32] = child.clone().into();
 	pallet_arion::ChildRegistrations::<Runtime>::insert(
 		child,
@@ -187,8 +189,17 @@ fn seed_arion_storage_family(family: &AccountId, child: &AccountId, weight: u16)
 		v.try_push(child.clone()).expect("under MaxChildrenPerFamily");
 	});
 	pallet_arion::FamilyActiveChildren::<Runtime>::mutate(family, |n| *n += 1);
-	// Reported in the current bucket, so the weight is fresh.
-	pallet_arion::NodeWeightByChild::<Runtime>::insert(child, weight);
+	pallet_arion::NodeQualityByChild::<Runtime>::insert(
+		child,
+		pallet_arion::NodeQuality {
+			shard_data_bytes: tib * TIB,
+			bandwidth_bytes: 0,
+			uptime_permille: 1000,
+			strikes: 0,
+			integrity_fails: 0,
+		},
+	);
+	// Reported in the current bucket, so the quality is fresh.
 	pallet_arion::NodeWeightLastBucket::<Runtime>::insert(
 		child,
 		pallet_arion::CurrentWeightBucket::<Runtime>::get(),
@@ -413,7 +424,7 @@ fn the_daily_cap_is_shared_with_storage_payouts() {
 		));
 		assert_ok!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::signed(admin()), admin()));
 
-		seed_arion_storage_family(&storage_family, &account(31), 100);
+		seed_arion_storage_family(&storage_family, &account(31), 1);
 		seed_compute_child(10, &family_a, &account(20), 7, 100, ChildStatus::Active);
 		close_epoch(7);
 
