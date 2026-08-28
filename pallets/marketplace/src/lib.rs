@@ -119,6 +119,12 @@ pub mod pallet {
 					.saturating_add(T::DbWeight::get().reads_writes(1, result.unique as u64));
 			}
 
+			// Drain any pending plan reprice every block, not on an interval:
+			// until it finishes, subscriptions on that plan disagree with the
+			// price in `Plans`, so the window is worth keeping short. Costs a
+			// single read when the queue is empty, which is almost always.
+			weight_used = weight_used.saturating_add(Self::process_pending_repricing());
+
 			// Referral commissions accrued by hourly billing are swept out on
 			// their own cadence, independent of the charge interval that earns
 			// them: billing writes the balance, this pays it.
@@ -254,6 +260,13 @@ pub mod pallet {
 		/// delays a referrer to the next sweep rather than skipping them.
 		#[pallet::constant]
 		type MaxReferralPayoutsPerSweep: Get<u32>;
+
+		/// Max accounts whose subscription snapshots are repriced in a single
+		/// block, bounding the weight of the walk `set_plan_price` schedules.
+		/// The walk resumes from `RepricingCursor`, so a lower value spreads a
+		/// reprice over more blocks rather than dropping accounts.
+		#[pallet::constant]
+		type MaxRepricedAccountsPerBlock: Get<u32>;
 
 		/// Max accounts charged in a single renewal drain, bounding its weight.
 		///
@@ -420,6 +433,28 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type ReferralPayoutCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
+	/// Plans whose price changed but whose existing subscriptions have not been
+	/// rewritten yet, oldest first. Drained by `on_initialize`.
+	///
+	/// Only the id is queued, never the price: each batch re-reads the current
+	/// price from [`Plans`], so repricing the same plan twice in quick
+	/// succession converges on the latest value instead of replaying a stale
+	/// one, and needs no second queue entry.
+	#[pallet::storage]
+	pub type RepricingQueue<T: Config> = StorageValue<_, Vec<T::Hash>, ValueQuery>;
+
+	/// Resume point for the reprice at the head of [`RepricingQueue`].
+	/// `None` means "start from the beginning of the map".
+	#[pallet::storage]
+	pub type RepricingCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
+
+	/// Subscriptions rewritten so far by the reprice at the head of
+	/// [`RepricingQueue`]. The walk spans blocks, so the per-block count would
+	/// under-report; this accumulates it for `PlanRepricingCompleted` and is
+	/// cleared when the job retires.
+	#[pallet::storage]
+	pub type RepricedSoFar<T: Config> = StorageValue<_, u32, ValueQuery>;
+
 	/// Tracks the last block a user cancelled any subscription, to enforce resubscribe cooldowns.
 	#[pallet::storage]
 	#[pallet::getter(fn last_subscription_cancelled_at)]
@@ -565,6 +600,11 @@ pub mod pallet {
 			os_name: Vec<u8>,
 			url: Vec<u8>,
 		},
+		/// A plan was repriced by sudo. [plan_id, new_price]
+		///
+		/// Existing subscriptions still carry the old price at this point; they
+		/// are rewritten over the following blocks and finish with
+		/// `PlanRepricingCompleted`.
 		PlanPriceUpdated(T::Hash, u128),
 		/// Specific miner request fee updated
 		SpecificMinerRequestFeeUpdated {
@@ -697,6 +737,15 @@ pub mod pallet {
 			subscription_id: SubscriptionId,
 			charged_credits: u128,
 			refunded_credits: u128,
+		},
+		/// Every existing subscription on `plan_id` now carries `new_price`, so
+		/// the reprice is fully applied and the next monthly charge uses it.
+		PlanRepricingCompleted {
+			plan_id: T::Hash,
+			new_price: u128,
+			/// Subscriptions actually rewritten. Zero is normal — a plan nobody
+			/// holds, or one already repriced.
+			subscriptions_updated: u32,
 		},
 	}
 
@@ -981,6 +1030,49 @@ pub mod pallet {
 			// Insert the new plan into storage
 			Plans::<T>::insert(plan_id.clone(), new_plan);
 
+			Ok(())
+		}
+
+		/// Sudo function to set the price of an existing plan.
+		///
+		/// Repricing the plan in [`Plans`] only covers purchases and plan changes
+		/// made from here on: every live subscription carries its own copy of the
+		/// plan taken at purchase time, and the monthly charge reads the price
+		/// from that copy. So this also queues a walk over the existing
+		/// subscriptions to rewrite those copies, which `on_initialize` drains a
+		/// bounded number of accounts at a time.
+		///
+		/// The walk is what makes the new price reach existing subscribers, and
+		/// it is not instant — until `PlanRepricingCompleted` is emitted, some
+		/// subscriptions still carry the old price. It finishes in
+		/// `accounts / MaxRepricedAccountsPerBlock` blocks.
+		#[pallet::call_index(32)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn set_plan_price(
+			origin: OriginFor<T>,
+			plan_id: T::Hash,
+			new_price: u128,
+		) -> DispatchResult {
+			// Ensure the caller is sudo
+			ensure_root(origin)?;
+
+			Plans::<T>::try_mutate(plan_id.clone(), |maybe_plan| -> DispatchResult {
+				let plan = maybe_plan.as_mut().ok_or(Error::<T>::PlanNotFound)?;
+				plan.price = new_price;
+				Ok(())
+			})?;
+
+			// Queue the snapshot rewrite. A plan already queued needs no second
+			// entry: the pending job re-reads the price when it runs, so it
+			// carries this change too. Re-queuing it would instead restart a
+			// half-finished walk from the top of the map.
+			RepricingQueue::<T>::mutate(|queue| {
+				if !queue.contains(&plan_id) {
+					queue.push(plan_id.clone());
+				}
+			});
+
+			Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
 			Ok(())
 		}
 
@@ -1748,6 +1840,123 @@ pub mod pallet {
 				added_credits: commission,
 				accrued_credits: accrued,
 			});
+		}
+
+		/// Apply the queued plan reprice at the head of [`RepricingQueue`] to the
+		/// subscriptions that carry it, a bounded number of accounts per block.
+		///
+		/// Every subscription stores its own copy of the plan, taken at purchase
+		/// time, and the monthly charge reads the price out of that copy — so a
+		/// price change only reaches existing subscribers once their copy is
+		/// rewritten. Rewriting them from inside `set_plan_price` would mean an
+		/// unbounded walk over every account in a dispatchable, so the walk lives
+		/// here and resumes from [`RepricingCursor`] across blocks.
+		///
+		/// `paid_per_month` is deliberately left untouched. It records what the
+		/// holder actually paid for months they have already prepaid, and the
+		/// refund path is computed from it; repricing a plan changes the going
+		/// rate, not what was already paid. The two are meant to differ after a
+		/// reprice.
+		fn process_pending_repricing() -> Weight {
+			let limit = T::MaxRepricedAccountsPerBlock::get() as usize;
+			if limit == 0 {
+				return T::DbWeight::get().reads(1);
+			}
+
+			let queue = RepricingQueue::<T>::get();
+			let Some(plan_id) = queue.first().cloned() else {
+				// Nothing pending — the common case, one read.
+				return T::DbWeight::get().reads(1);
+			};
+
+			// Read the price now rather than carrying it on the queue, so a plan
+			// repriced again mid-walk finishes on the newer value. A plan removed
+			// from `Plans` while queued has no price left to copy, so the job is
+			// dropped instead of writing a stale one over live subscriptions.
+			let Some(plan) = Plans::<T>::get(&plan_id) else {
+				Self::finish_repricing_job();
+				return T::DbWeight::get().reads_writes(3, 2);
+			};
+			let new_price = plan.price;
+
+			// Snapshot the batch before writing: mutating the map under a live
+			// iterator is not worth risking, same as the referral sweep.
+			let batch: Vec<(T::AccountId, Vec<UserPlanSubscription<T>>)> =
+				match RepricingCursor::<T>::get() {
+					Some(key) => {
+						UserAllSubscriptionPlans::<T>::iter_from(key).take(limit).collect()
+					},
+					None => UserAllSubscriptionPlans::<T>::iter().take(limit).collect(),
+				};
+
+			// Ran off the end of the map exactly on a batch boundary last block.
+			if batch.is_empty() {
+				let updated = Self::finish_repricing_job();
+				Self::deposit_event(Event::PlanRepricingCompleted {
+					plan_id,
+					new_price,
+					subscriptions_updated: updated,
+				});
+				return T::DbWeight::get().reads_writes(4, 2);
+			}
+
+			// A short batch means the map ended inside it, so this is the last
+			// pass for this plan. Unlike the referral sweep, which round-robins
+			// forever, this walk is a one-shot job: reaching the end finishes it
+			// rather than restarting from the top.
+			let exhausted = batch.len() < limit;
+			let resume_from =
+				UserAllSubscriptionPlans::<T>::hashed_key_for(&batch[batch.len() - 1].0);
+
+			let mut accounts_written: u64 = 0;
+			let mut subscriptions_updated: u32 = 0;
+			for (account_id, mut subs) in batch {
+				let mut changed = false;
+				for sub in subs.iter_mut() {
+					// Match on the plan the subscription was bought from, and skip
+					// a copy that already agrees, so an account holding an
+					// unrelated plan is never rewritten.
+					if sub.package.id == plan_id && sub.package.price != new_price {
+						sub.package.price = new_price;
+						subscriptions_updated = subscriptions_updated.saturating_add(1);
+						changed = true;
+					}
+				}
+				if changed {
+					UserAllSubscriptionPlans::<T>::insert(&account_id, subs);
+					accounts_written = accounts_written.saturating_add(1);
+				}
+			}
+
+			RepricedSoFar::<T>::mutate(|n| *n = n.saturating_add(subscriptions_updated));
+
+			if exhausted {
+				let updated = Self::finish_repricing_job();
+				Self::deposit_event(Event::PlanRepricingCompleted {
+					plan_id,
+					new_price,
+					subscriptions_updated: updated,
+				});
+			} else {
+				RepricingCursor::<T>::put(resume_from);
+			}
+
+			T::DbWeight::get().reads_writes(
+				(limit as u64).saturating_add(4),
+				accounts_written.saturating_add(3),
+			)
+		}
+
+		/// Retire the finished job: drop it from the queue, reset the cursor and
+		/// the running tally, and report how many subscriptions it rewrote.
+		fn finish_repricing_job() -> u32 {
+			RepricingQueue::<T>::mutate(|queue| {
+				if !queue.is_empty() {
+					queue.remove(0);
+				}
+			});
+			RepricingCursor::<T>::kill();
+			RepricedSoFar::<T>::take()
 		}
 
 		/// Pay out accrued hourly commissions, at most

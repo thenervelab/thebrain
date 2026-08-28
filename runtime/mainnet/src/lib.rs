@@ -592,7 +592,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92009,
+	spec_version: 92010,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1102,6 +1102,11 @@ parameter_types! {
 	/// (5% + 3% + 1%) stay inside the ~10% `AVERAGE_ON_INITIALIZE_RATIO`
 	/// assumes for all hook work.
 	pub AlphaReleaseWeightBudget: Perbill = Perbill::from_percent(1);
+	/// Accounts whose subscription snapshots are repriced per block after a
+	/// `set_plan_price`. Runs every block, so this clears 250 accounts a block
+	/// — a reprice over 100k accounts settles in ~7 minutes — while keeping the
+	/// added per-block work bounded and well clear of the block limit.
+	pub const MaxRepricedAccountsPerBlock: u32 = 250;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1123,6 +1128,7 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxReferralCodesPerCall = MaxReferralCodesPerCall;
 	type ReferralPayoutInterval = ReferralPayoutInterval;
 	type MaxReferralPayoutsPerSweep = MaxReferralPayoutsPerSweep;
+	type MaxRepricedAccountsPerBlock = MaxRepricedAccountsPerBlock;
 	type MaxSubscriptionChargesPerRun = MaxSubscriptionChargesPerRun;
 	type MaxBackfillAccountsPerRun = MaxBackfillAccountsPerRun;
 	type RenewalWeightBudget = RenewalWeightBudget;
