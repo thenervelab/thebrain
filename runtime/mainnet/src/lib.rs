@@ -1061,6 +1061,11 @@ parameter_types! {
 	/// 12_000 owed referrers a day, far ahead of any plausible backlog, while
 	/// keeping a single block's payout work bounded.
 	pub const MaxReferralPayoutsPerSweep: u32 = 250;
+	/// Accounts whose subscription snapshots are repriced per block after a
+	/// `set_plan_price`. Runs every block, so this clears 250 accounts a block
+	/// — a reprice over 100k accounts settles in ~7 minutes — while keeping the
+	/// added per-block work bounded and well clear of the block limit.
+	pub const MaxRepricedAccountsPerBlock: u32 = 250;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1082,6 +1087,7 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxReferralCodesPerCall = MaxReferralCodesPerCall;
 	type ReferralPayoutInterval = ReferralPayoutInterval;
 	type MaxReferralPayoutsPerSweep = MaxReferralPayoutsPerSweep;
+	type MaxRepricedAccountsPerBlock = MaxRepricedAccountsPerBlock;
 }
 
 parameter_types! {
