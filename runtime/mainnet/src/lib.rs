@@ -174,11 +174,13 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 /// so it is also where the payout set comes from.
 ///
 /// The payee is the **family** (the operator account that put up the child
-/// deposits), not a child node account, and the family's weight is the sum of
-/// its eligible children's `NodeWeightByChild` — so a family's share of a
-/// payout is its summed node weight over the network's, and the family
-/// carrying the most weight is paid the most. Eligibility (Active
-/// registration + a non-stale weight) and the aggregation live in
+/// deposits), not a child node account. The family's payout weight is the
+/// SAME fragmentation-neutral aggregate that feeds `FamilyWeight` — one
+/// log2 over the family's summed bytes and bandwidth — read raw (no EMA, no
+/// delta clamp) so payouts track the validator's measurements without
+/// smoothing lag. Splitting the same data across more children does not
+/// change a family's share. Eligibility (owned + Active registration + a
+/// non-stale weight) and the aggregation live in
 /// `pallet_arion::Pallet::active_family_weights`, which also guarantees the
 /// bank's "one payee, one entry" contract: `FamilyChildren` is keyed by
 /// family, so no family can appear twice.
@@ -592,7 +594,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92009,
+	spec_version: 92010,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
