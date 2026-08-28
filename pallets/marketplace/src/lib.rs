@@ -1064,13 +1064,31 @@ pub mod pallet {
 
 			// Queue the snapshot rewrite. A plan already queued needs no second
 			// entry: the pending job re-reads the price when it runs, so it
-			// carries this change too. Re-queuing it would instead restart a
-			// half-finished walk from the top of the map.
-			RepricingQueue::<T>::mutate(|queue| {
-				if !queue.contains(&plan_id) {
-					queue.push(plan_id.clone());
+			// carries this change too.
+			let queued = RepricingQueue::<T>::mutate(|queue| {
+				if queue.contains(&plan_id) {
+					return true;
 				}
+				queue.push(plan_id.clone());
+				false
 			});
+
+			// Re-reading the price only helps the accounts the walk has not
+			// reached yet. If this plan is the one being walked *right now*, the
+			// prefix behind the cursor already carries the previous price and
+			// would keep it forever — `Plans` holds the new one, the job retires
+			// when it reaches the end of the map, and `PlanRepricingCompleted`
+			// reports success over a map that is split between two prices. Since
+			// the monthly charge bills `sub.package.price`, that half goes on
+			// paying the superseded figure with nothing left on chain to say so.
+			//
+			// So restart the walk from the top. Rows the first pass already
+			// settled are skipped by the `price != new_price` guard, making the
+			// re-walk cost weight and nothing else.
+			if queued && RepricingQueue::<T>::get().first() == Some(&plan_id) {
+				RepricingCursor::<T>::kill();
+				RepricedSoFar::<T>::kill();
+			}
 
 			Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
 			Ok(())
@@ -3028,6 +3046,44 @@ pub mod pallet {
 		/// subscriptions but not all of them keeps the ones it can pay for
 		/// instead of losing every subscription on that side. Ascending id order
 		/// makes which ones survive deterministic — oldest first.
+		/// Move one subscription onto its next anniversary, a settled cycle
+		/// behind it.
+		///
+		/// Called for every cycle that completes, whether or not any credits
+		/// changed hands: a zero-priced cycle is settled the moment it is
+		/// reached, and has to advance for the same reason a paid one does.
+		fn advance_subscription_cycle(
+			sub: &mut UserPlanSubscription<T>,
+			today: u32,
+			current_block: BlockNumberFor<T>,
+		) {
+			sub.last_charged_at = current_block;
+			// Record what this renewal actually cost, which is the face price:
+			// the referral discount is a purchase-time incentive and is
+			// deliberately not applied to renewals.
+			//
+			// Leaving the purchase-time figure here would let it go stale the
+			// moment a discounted subscription renews, and it is not a
+			// decorative field — the refund and carry-credit paths value a cycle
+			// from it, so a referred user changing plans later would be credited
+			// 95% of a cycle they had paid 100% for. Kept in step with
+			// `charge_due_subscriptions_individually`, which charges this same
+			// `package.price`.
+			sub.paid_per_month = sub.package.price;
+			// Advance to the next anniversary of the billing anchor, from the
+			// previous due date rather than from "now" — otherwise arrears would
+			// drag the anniversary later on every late charge.
+			//
+			// For a subscription anchored to the 1st, which is every one that
+			// predates this change, this is exactly
+			// `unix_day_of_first_of_month_after` and the schedule is
+			// bit-for-bit unchanged.
+			let prev_next = sub.next_charge_unix_day.unwrap_or(today);
+			let anchor = Self::anchor_of(sub);
+			sub.next_charge_unix_day =
+				Some(pallet_calendar::Pallet::<T>::add_months_clamped(prev_next, anchor, 1));
+		}
+
 		fn charge_due_subscriptions_individually(
 			account_id: &T::AccountId,
 			due: &[UserPlanSubscription<T>],
@@ -3144,8 +3200,35 @@ pub mod pallet {
 						.iter()
 						.fold(0u128, |acc, sub| acc.saturating_add(sub.package.price));
 
+					// Nothing to collect this cycle — every due subscription is
+					// priced at zero. The cycle still has to move on.
+					//
+					// Leaving `next_charge_unix_day` where it is used to strand
+					// the account permanently. The drain removes its `DueAccounts`
+					// entry *before* calling us, and `commit_subscriptions` only
+					// files days that changed, so an unmoved due day is re-filed
+					// by nobody; the day cursor then walks past and never comes
+					// back. The account stays active and due forever, is never
+					// charged again — not even after the plan is repriced above
+					// zero — and holding an active plan also exempts it from
+					// hourly pay-as-you-go billing. A free promo tier is an
+					// ordinary thing for root to configure, and ending one would
+					// have silently written off every account that held it.
+					//
+					// Advancing keeps the account on its anniversary and lands it
+					// at least a month ahead of the cursor, which is the same
+					// invariant the paid path relies on to re-file safely.
 					if total_storage_charge == 0 && total_compute_charge == 0 {
-						break;
+						for sub in subs.iter_mut() {
+							if !sub.active {
+								continue;
+							}
+							if !sub.next_charge_unix_day.map_or(true, |d| today >= d) {
+								continue;
+							}
+							Self::advance_subscription_cycle(sub, today, current_block);
+						}
+						continue;
 					}
 					users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
 
@@ -3190,37 +3273,7 @@ pub mod pallet {
 						}
 
 						if !subs_to_deactivate.contains(&sub.id) {
-							sub.last_charged_at = current_block;
-							// Record what this renewal actually cost, which is
-							// the face price: the referral discount is a
-							// purchase-time incentive and is deliberately not
-							// applied to renewals.
-							//
-							// Leaving the purchase-time figure here would let it
-							// go stale the moment a discounted subscription
-							// renews, and it is not a decorative field — the
-							// refund and carry-credit paths value a cycle from
-							// it, so a referred user changing plans later would
-							// be credited 95% of a cycle they had paid 100% for.
-							// Kept in step with `charge_due_subscriptions_individually`,
-							// which charges this same `package.price`.
-							sub.paid_per_month = sub.package.price;
-							// Advance to the next anniversary of the billing
-							// anchor, from the previous due date rather than
-							// from "now" — otherwise arrears would drag the
-							// anniversary later on every late charge.
-							//
-							// For a subscription anchored to the 1st, which is
-							// every one that predates this change, this is
-							// exactly `unix_day_of_first_of_month_after` and
-							// the schedule is bit-for-bit unchanged.
-							let prev_next = sub.next_charge_unix_day.unwrap_or(today);
-							let anchor = Self::anchor_of(sub);
-							sub.next_charge_unix_day = Some(
-								pallet_calendar::Pallet::<T>::add_months_clamped(
-									prev_next, anchor, 1,
-								),
-							);
+							Self::advance_subscription_cycle(sub, today, current_block);
 						}
 					}
 
@@ -3631,6 +3684,12 @@ pub mod pallet {
 		/// two byte counts come from different backends and are billed as separate
 		/// line items, so a partial GiB on each side is a partial GiB of each.
 		fn handle_hourly_storage_charging(current_block: BlockNumberFor<T>) -> Weight {
+			// Hours of arrears one visit may settle. Bounds the arithmetic a
+			// single very stale account can pull into a tick; the balance of
+			// what it owes survives in `StorageLastChargedAt` and is billed on
+			// the following visits.
+			const MAX_CATCHUP_HOURS: u32 = 24;
+
 			let mut meter = WeightMeter::with_limit(
 				T::HourlyWeightBudget::get()
 					* <T as frame_system::Config>::BlockWeights::get().max_block,
@@ -3654,9 +3713,11 @@ pub mod pallet {
 			// Paged: this map only grows, and the sweep runs on every tick
 			// rather than on an anniversary, so it is the loop that reaches the
 			// block limit first. The cursor round-robins, so a user the current
-			// tick cannot afford is reached by a later one; an hourly charge
-			// stays owed until it is taken, and `StorageLastChargedAt` means a
-			// delayed charge bills the elapsed time rather than losing it.
+			// tick cannot afford is reached by a later one — and because the
+			// charge settles every hour elapsed since `StorageLastChargedAt`
+			// rather than a flat one, arriving late costs the user nothing and
+			// the chain nothing. Falling behind defers revenue; it no longer
+			// forgives it.
 			let batch: Vec<(T::AccountId, u128)> = match HourlyChargeCursor::<T>::get() {
 				Some(key) => {
 					UserTotalDriveFilesSize::<T>::iter_from(key).take(affordable).collect()
@@ -3695,10 +3756,41 @@ pub mod pallet {
 					continue;
 				}
 
-				// Check if the time difference is greater than 1 hour
-				let last_charged_at = StorageLastChargedAt::<T>::get(user.clone());
+				// How many whole hours have gone unbilled for this user.
+				//
+				// Paging is what makes this a count rather than a yes/no: the
+				// cursor reaches a given user only once per pass over the map,
+				// so on a large map that is every several hours, not every
+				// tick. Billing a flat hour and moving the marker to `now`
+				// would forgive every hour in between — the charge has to
+				// settle all of them.
+				let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
+				if blocks_per_hour.is_zero() {
+					continue;
+				}
+
+				// A user the sweep has never charged has no marker, and
+				// `ValueQuery` reads that absence as block zero. Anchor them one
+				// hour back so first sight bills a single hour, rather than
+				// every hour since genesis.
+				let stored_last_charged_at = StorageLastChargedAt::<T>::get(user.clone());
+				let last_charged_at = if stored_last_charged_at.is_zero() {
+					current_block.saturating_sub(blocks_per_hour)
+				} else {
+					stored_last_charged_at
+				};
+
 				let block_difference = current_block.saturating_sub(last_charged_at);
-				if block_difference > T::BlocksPerHour::get().into() {
+				let elapsed_hours: u32 =
+					(block_difference / blocks_per_hour).saturated_into::<u32>();
+
+				// Cap the catch-up so one very stale account cannot spend the
+				// whole tick's budget, mirroring `max_catchup_months` on the
+				// monthly path. Hours beyond the cap are not forgiven: the
+				// marker advances by exactly what is billed, so the remainder
+				// stays owed and is collected on later visits.
+				let periods = elapsed_hours.min(MAX_CATCHUP_HOURS);
+				if periods > 0 {
 					let s3_file_size = UserTotalS3FilesSize::<T>::get(&user).unwrap_or(0);
 
 					let billable_drive = if has_drive_plan { 0 } else { drive_file_size };
@@ -3714,8 +3806,11 @@ pub mod pallet {
 
 					let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
 
-					// Bill in whole GiB, rounding any partial GiB up.
-					let charge_amount =
+					// One hour of storage, billed in whole GiB per side. The
+					// arrears are priced at the current size and rate rather
+					// than at each missed hour's own — the historical sizes are
+					// not recoverable, and metering only ever wrote the latest.
+					let per_period =
 						times(Credits::new(price_per_gb), gibs_ceil(Bytes::new(billable_drive)))
 							.get()
 							.saturating_add(
@@ -3726,7 +3821,32 @@ pub mod pallet {
 								.get(),
 							);
 
-					if user_free_credits >= charge_amount {
+					// A free tier, or a rounding floor of zero: nothing to bill,
+					// but the clock still moves so the hours do not pile up as
+					// phantom arrears against a later non-zero price.
+					if per_period == 0 {
+						let _ = Self::advance_storage_last_charged_at(
+							&user,
+							last_charged_at
+								.saturating_add(blocks_per_hour.saturating_mul(periods.into())),
+						);
+						continue;
+					}
+
+					// Settle as many whole hours as the balance covers. Paying
+					// down part of the arrears beats the all-or-nothing charge:
+					// a user who cannot afford the full backlog stays behind on
+					// the remainder instead of being billed nothing at all
+					// while the debt keeps growing.
+					let affordable_periods = sp_std::cmp::min(
+						periods as u128,
+						user_free_credits.checked_div(per_period).unwrap_or(0),
+					) as u32;
+
+					if affordable_periods > 0 {
+						let charge_amount =
+							per_period.saturating_mul(affordable_periods as u128);
+
 						meter.consume(charge);
 						// Decrease user credits
 						let charge_result = Self::consume_credits(user.clone(), charge_amount);
@@ -3743,7 +3863,16 @@ pub mod pallet {
 								NativeTransactionType::Subscription,
 								charge_amount.into(),
 							);
-							let ts_result = Self::update_storage_last_charged_at(&user);
+							// Advance by exactly the hours billed, not to
+							// `now`. Anything short of the full arrears leaves
+							// the marker behind, which is what keeps the
+							// unbilled remainder owed.
+							let ts_result = Self::advance_storage_last_charged_at(
+								&user,
+								last_charged_at.saturating_add(
+									blocks_per_hour.saturating_mul(affordable_periods.into()),
+								),
+							);
 							if tx_result.is_ok() && ts_result.is_ok() {
 								users_charged_or_removed =
 									users_charged_or_removed.saturating_add(1);
@@ -3860,12 +3989,19 @@ pub mod pallet {
 		}
 
 		/// Helper function to update the last charged timestamp for a user
-		pub fn update_storage_last_charged_at(who: &T::AccountId) -> DispatchResult {
-			// Get the current timestamp from the timestamp pallet
-			let now = <frame_system::Pallet<T>>::block_number();
-
-			// Update the last charged timestamp for the user
-			StorageLastChargedAt::<T>::insert(who, now);
+		/// Move a user's hourly billing marker to `charged_through`, the block
+		/// their paid-up hours actually run out at.
+		///
+		/// Takes the block rather than reading `now` on purpose. The sweep bills
+		/// whole hours and can only reach a user every few passes, so the marker
+		/// has to land on `last_charged_at + billed_hours * BlocksPerHour`:
+		/// setting it to the current block would forgive the elapsed remainder,
+		/// and setting it past the hours actually paid for would bill them twice.
+		pub fn advance_storage_last_charged_at(
+			who: &T::AccountId,
+			charged_through: BlockNumberFor<T>,
+		) -> DispatchResult {
+			StorageLastChargedAt::<T>::insert(who, charged_through);
 
 			Ok(())
 		}

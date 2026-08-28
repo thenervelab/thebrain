@@ -666,3 +666,162 @@ fn the_surviving_plan_still_suppresses_its_half_of_hourly_billing() {
 		);
 	});
 }
+
+/// A sweep that arrives late must bill every hour it missed, not just the one
+/// that made the user due.
+///
+/// This is the property paging broke. The old charge was a flat hour with the
+/// marker moved to `now`, which was lossless only because the pre-paging sweep
+/// visited every user on every tick. Once the sweep pages, a user is reached
+/// once per pass over the map — several hours apart on a large map — and a flat
+/// hour silently forgives the rest. The failure is invisible from
+/// "everyone was billed": each user shows spend, just far too little of it.
+#[test]
+fn a_late_visit_bills_every_hour_it_missed() {
+	new_test_ext().execute_with(|| {
+		let user = account(21);
+		deposit_credits(&user, 10_000_000);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		// First sight bills a single hour and pins the marker at 608.
+		run_one_hour();
+		let after_first = Credits::get_free_credits(&user);
+
+		// Ten hours pass with no tick reaching this user, then one does.
+		let late = HOURLY_STEP + 10 * 600;
+		System::set_block_number(late);
+		Marketplace::on_initialize(late);
+
+		let spent = after_first.saturating_sub(Credits::get_free_credits(&user));
+		assert_eq!(
+			spent,
+			BOTH_SIDES_CHARGE * 10,
+			"ten elapsed hours must settle as ten hours, not one",
+		);
+
+		// The marker lands on the hours actually paid for, so the next tick an
+		// instant later has nothing to bill.
+		let settled = Credits::get_free_credits(&user);
+		let next = late + 8;
+		System::set_block_number(next);
+		Marketplace::on_initialize(next);
+		assert_eq!(
+			Credits::get_free_credits(&user),
+			settled,
+			"catch-up must not leave the marker behind and re-bill the same hours",
+		);
+	});
+}
+
+/// Arrears past the per-visit cap stay owed rather than being forgiven.
+///
+/// The cap bounds what one very stale account can pull into a single tick. It
+/// would be worthless if the marker then jumped to `now` — that would just move
+/// the old bug behind a threshold. The remainder has to survive in
+/// `StorageLastChargedAt` and come out on the following visits.
+#[test]
+fn arrears_beyond_the_catch_up_cap_are_deferred_not_dropped() {
+	new_test_ext().execute_with(|| {
+		let user = account(22);
+		deposit_credits(&user, 10_000_000);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		run_one_hour();
+		let after_first = Credits::get_free_credits(&user);
+
+		// Thirty hours of arrears against a 24-hour cap.
+		let late = HOURLY_STEP + 30 * 600;
+		System::set_block_number(late);
+		Marketplace::on_initialize(late);
+		assert_eq!(
+			after_first.saturating_sub(Credits::get_free_credits(&user)),
+			BOTH_SIDES_CHARGE * 24,
+			"one visit settles at most the cap",
+		);
+
+		// The six hours the cap held back are billed next time round.
+		let after_cap = Credits::get_free_credits(&user);
+		let next = late + 8;
+		System::set_block_number(next);
+		Marketplace::on_initialize(next);
+		assert_eq!(
+			after_cap.saturating_sub(Credits::get_free_credits(&user)),
+			BOTH_SIDES_CHARGE * 6,
+			"the hours the cap deferred must still be collected",
+		);
+	});
+}
+
+/// A user who cannot afford the whole backlog pays down what they can and
+/// stays behind on the rest.
+///
+/// All-or-nothing was the old shape: the charge was skipped entirely when the
+/// balance fell short, so a user who could cover most of their bill paid none
+/// of it while the debt kept growing. Partial settlement also has to move the
+/// marker by exactly the hours paid — no more, or the unpaid hours are
+/// forgiven; no less, or they are billed twice.
+#[test]
+fn a_short_balance_pays_down_the_hours_it_can_cover() {
+	new_test_ext().execute_with(|| {
+		let user = account(23);
+		// One hour for first sight, then exactly three hours of headroom.
+		deposit_credits(&user, BOTH_SIDES_CHARGE * 4);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		run_one_hour();
+		assert_eq!(Credits::get_free_credits(&user), BOTH_SIDES_CHARGE * 3);
+
+		// Ten hours owed against three hours of credits.
+		let late = HOURLY_STEP + 10 * 600;
+		System::set_block_number(late);
+		Marketplace::on_initialize(late);
+		assert_eq!(
+			Credits::get_free_credits(&user),
+			0,
+			"a short balance must pay down what it covers, not refuse the charge",
+		);
+
+		// Funded again, the seven unpaid hours are still owed and come out.
+		deposit_credits(&user, 10_000_000);
+		let funded = Credits::get_free_credits(&user);
+		let next = late + 8;
+		System::set_block_number(next);
+		Marketplace::on_initialize(next);
+		assert_eq!(
+			funded.saturating_sub(Credits::get_free_credits(&user)),
+			BOTH_SIDES_CHARGE * 7,
+			"the hours the balance could not cover stay owed",
+		);
+	});
+}
+
+/// A user the sweep has never charged is billed one hour, not every hour since
+/// genesis.
+///
+/// `StorageLastChargedAt` is `ValueQuery`, so an absent marker reads as block
+/// zero. Multiplying by elapsed hours without anchoring that would hand a
+/// brand-new account a bill for the chain's entire history the first time it is
+/// seen.
+#[test]
+fn first_sight_bills_a_single_hour() {
+	new_test_ext().execute_with(|| {
+		let user = account(24);
+		deposit_credits(&user, 10_000_000);
+
+		// Report only after the chain is many hours old.
+		let late = 40 * 600;
+		System::set_block_number(late);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		let before = Credits::get_free_credits(&user);
+		let tick = late + 8;
+		System::set_block_number(tick);
+		Marketplace::on_initialize(tick);
+
+		assert_eq!(
+			before.saturating_sub(Credits::get_free_credits(&user)),
+			BOTH_SIDES_CHARGE,
+			"an unmarked account must start its clock, not be billed since genesis",
+		);
+	});
+}

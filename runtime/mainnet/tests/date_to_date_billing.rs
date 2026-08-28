@@ -1324,3 +1324,77 @@ fn charging_falls_back_to_the_full_scan_until_the_backfill_completes() {
 		);
 	});
 }
+
+// ── INDEX-COMPLETE, for cycles that collect nothing ──────────────────────
+
+/// A cycle that collects nothing still has to advance, or the account leaves
+/// the index and never comes back.
+///
+/// `INDEX-COMPLETE` in the "missing entry" direction, reached without any
+/// failure: the drain removes an account's entry *before* charging and leaves
+/// `commit_subscriptions` to re-file it, but that only writes days that
+/// changed. A due day that does not move is therefore re-filed by nobody, the
+/// cursor walks past, and the account is stranded — active, due, and
+/// unreachable. A plan priced at zero is the way in, and root sets one up
+/// whenever it runs a free tier.
+#[test]
+fn a_zero_priced_cycle_advances_and_stays_indexed() {
+	new_test_ext_at(ms_2026(1, 15)).execute_with(|| {
+		let plan = add_plan(b"promo", 0);
+		let user = account(11);
+		deposit_credits(&user, 100_000);
+		purchase(&user, plan);
+		finish_backfill();
+
+		let first_due = due_day(&user);
+		assert_eq!(first_due, day_2026(2, 15));
+		assert!(is_indexed_at(first_due, &user), "a free plan is still indexed");
+
+		tick_on(2, 15);
+
+		let next_due = due_day(&user);
+		assert_eq!(next_due, day_2026(3, 15), "a free cycle advances like a paid one");
+		assert!(is_indexed_at(next_due, &user), "and is re-filed at its new day");
+		assert!(!is_indexed_at(first_due, &user), "leaving nothing behind at the old one");
+	});
+}
+
+/// Ending a free promotion must not have written off everyone who took it.
+///
+/// This is the whole point of the previous test, played out: the stranding is
+/// silent while the plan is free — nobody notices an account not being charged
+/// zero — and only shows up as permanent free service once the price goes back
+/// up. Repricing rewrites the snapshot but touches neither the index nor the
+/// cursor, so an account that fell out while the plan was free never returns on
+/// its own.
+#[test]
+fn ending_a_free_promo_bills_its_holders_again() {
+	new_test_ext_at(ms_2026(1, 15)).execute_with(|| {
+		let plan = add_plan(b"promo", 0);
+		let user = account(11);
+		deposit_credits(&user, 100_000);
+		purchase(&user, plan);
+		finish_backfill();
+
+		// Two free cycles — enough that a stranded account would have been
+		// dropped by the cursor well before the promotion ends.
+		tick_on(2, 15);
+		tick_on(3, 15);
+		assert_eq!(due_day(&user), day_2026(4, 15));
+
+		// The promotion ends. The walk rewrites the price this account renews on.
+		assert_ok!(Marketplace::set_plan_price(RuntimeOrigin::root(), plan, PLAN_PRICE));
+		for _ in 0..8 {
+			tick_again();
+		}
+		assert_eq!(only_sub(&user).package.price, PLAN_PRICE, "the reprice reached the snapshot");
+
+		let before = Credits::get_free_credits(&user);
+		tick_on(4, 15);
+		assert_eq!(
+			before.saturating_sub(Credits::get_free_credits(&user)),
+			PLAN_PRICE,
+			"a holder of an ended promotion is charged on the next anniversary",
+		);
+	});
+}
