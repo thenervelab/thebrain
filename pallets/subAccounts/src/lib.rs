@@ -149,7 +149,7 @@ pub mod pallet {
 		///
 		/// Emits `SubAccountAdded` event when successful.
 		///
-		/// Weight: `O(1)` TODO: Add correct weight
+		/// Weight is sourced from benchmark measurements via `T::WeightInfo::add_sub_account()`.
 		#[pallet::call_index(0)]
 		pub fn add_sub_account(
 			origin: OriginFor<T>,
@@ -211,7 +211,7 @@ pub mod pallet {
 		///
 		/// Emits `SubAccountRemoved` event when successful.
 		///
-		/// Weight: `O(1)` TODO: Add correct weight
+		/// Weight is sourced from benchmark measurements via `T::WeightInfo::remove_sub_account()`.
 		#[pallet::call_index(1)]
 		pub fn remove_sub_account(
 			origin: OriginFor<T>,
