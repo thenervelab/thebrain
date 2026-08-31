@@ -86,22 +86,34 @@ pub trait WeightInfo {
 pub struct SubstrateWeight<T>(PhantomData<T>);
 
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-	/// Measured: 156.2µs, 7 reads, 11 writes, 1309 bytes of proof.
+	/// Measured: 526.9µs, 7 reads, 21 writes, 1341 bytes of proof.
 	///
-	/// `hippius benchmark pallet --chain benchmark --pallet pallet_marketplace
+	/// `hippius benchmark pallet --chain dev --pallet pallet_marketplace
 	/// --extrinsic charge_account_due`, against an account holding
-	/// `MaxActiveSubscriptions` subscriptions all due and all payable.
+	/// `MaxActiveSubscriptions` subscriptions, all due, all payable, and far
+	/// enough in arrears that the catch-up loop runs its full
+	/// `max_catchup_months`.
 	///
-	/// Worth noting against the estimate it replaces (16 reads / 10 writes,
-	/// costed at ~1.4ms): the totals nearly agree, at ~1.43ms, but the shape
-	/// does not. The real charge does fewer reads and *more* writes than the
-	/// code claimed, and carries 156µs of compute the read/write count could
-	/// not see at all. The estimate was low — the direction that lets a block
-	/// run heavy — which is the argument for measuring rather than reasoning.
+	/// The arrears are why this figure nearly doubled. The first measurement
+	/// posed the account merely *due*, which charges one cycle and pushes the
+	/// due date a month out, so the catch-up loop broke after a single pass:
+	/// 156.2µs / 7r / 11w, about 1.43ms all in. But the drain charges this flat
+	/// figure for an account whose loop may run three times, and the arrears
+	/// case is not exotic — it is exactly what a chain meets on the tick after
+	/// downtime, when the drain is busiest. Posed that way the same account
+	/// costs 2.80ms, with `PointTransactions` alone taking 15 writes
+	/// (`MaxActiveSubscriptions` × `max_catchup_months`) instead of 5.
+	///
+	/// The old number was therefore about half of the real worst case, in the
+	/// direction that lets a block run heavy. The cost of fixing it is
+	/// throughput: the meter now charges 2.80ms for *every* account, including
+	/// the steady-state ones that only ever cost ~1.43ms, so a tick admits
+	/// roughly 35 accounts rather than 69. That is the price of a bound that
+	/// holds in the case it exists for.
 	fn charge_account_due() -> Weight {
-		Weight::from_parts(156_200_000, 1309)
+		Weight::from_parts(526_900_000, 1341)
 			.saturating_add(RocksDbWeight::get().reads(7))
-			.saturating_add(RocksDbWeight::get().writes(11))
+			.saturating_add(RocksDbWeight::get().writes(21))
 	}
 
 	/// Read the account's subscriptions once, then one index write per

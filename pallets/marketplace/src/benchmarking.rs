@@ -40,7 +40,7 @@ use frame_benchmarking::v2::*;
 use frame_support::pallet_prelude::{Get, PhantomData};
 use frame_system::pallet_prelude::BlockNumberFor;
 use pallet_credits::Pallet as CreditsPallet;
-use sp_runtime::traits::{Hash, Saturating};
+use sp_runtime::traits::{Hash, SaturatedConversion, Saturating};
 use sp_std::vec;
 use sp_std::vec::Vec;
 
@@ -54,6 +54,21 @@ const FUNDING: u128 = 1_000_000_000_000;
 /// Plan price small relative to `FUNDING`, so the worst case stays the
 /// full-charge path however many subscriptions the account holds.
 const PLAN_PRICE: u128 = 1_000;
+
+/// `max_catchup_months` in `charge_account_due`. Kept here as a named constant
+/// because the benchmark's whole shape depends on it: the clock is placed far
+/// enough past the due date that the catch-up loop runs its full count, and if
+/// the cap ever changes this figure has to move with it or the measurement
+/// silently starts pricing fewer cycles than the drain can actually run.
+const MAX_CATCHUP_MONTHS: u32 = 3;
+
+/// Unix day the benchmark's clock is placed on.
+///
+/// Subscriptions are seeded due on day 0, whose day-of-month is the 1st, so the
+/// catch-up cycles land on days 31, 59 and 90. Day 120 is past all three, which
+/// makes every iteration of the catch-up loop do real charging work and lets
+/// `MAX_CATCHUP_MONTHS` — not the calendar — be what stops it.
+const CLOCK_UNIX_DAY: u64 = 120;
 
 fn plan_of<T: Config>(index: u32, is_storage_plan: bool) -> Plan<T::Hash> {
 	let name: Vec<u8> = vec![b'p', index as u8];
@@ -115,8 +130,10 @@ fn due_account<T: Config>(count: u32) -> T::AccountId {
 			active: true,
 			last_charged_at: BlockNumberFor::<T>::from(0u32),
 			selected_image_name: None,
-			// Day 0 with the clock at genesis: `today >= due_day` holds, so
-			// every one of these is due in the measured block.
+			// Due on day 0 while the benchmark puts the clock on
+			// `CLOCK_UNIX_DAY`, so each of these is not merely due but months
+			// in arrears — which is what makes the catch-up loop run its full
+			// `MAX_CATCHUP_MONTHS` inside the measured block.
 			next_charge_unix_day: Some(0),
 			paid_per_month: PLAN_PRICE,
 			_phantom: PhantomData,
@@ -132,26 +149,47 @@ mod benchmarks {
 	use super::*;
 
 	/// One account's renewal, posed at the worst case the drain can meet:
-	/// `MaxActiveSubscriptions` subscriptions, all due, all payable.
+	/// `MaxActiveSubscriptions` subscriptions, all due, all payable, and far
+	/// enough in arrears to run the catch-up loop to its cap.
 	///
 	/// Payable is the worst case and not a convenience. A charge that succeeds
 	/// takes credits, records a transaction, advances the due date and re-files
 	/// the index entry; one that fails deactivates and refunds instead, which
 	/// touches less. Pricing the cheaper path would under-fund the meter.
+	///
+	/// The arrears matter for the same reason and were missing at first. With
+	/// the clock left at genesis the first cycle pushes the due date a month
+	/// out, the catch-up loop's `today >= due` test fails immediately, and the
+	/// measurement covers exactly one cycle — while the drain charges that flat
+	/// figure for an account the loop may run `max_catchup_months` times. The
+	/// gap only opens after downtime, which is precisely when the drain is
+	/// busiest and the meter matters most, so the benchmark has to pose it.
 	#[benchmark]
 	fn charge_account_due() {
 		let subs = T::MaxActiveSubscriptions::get().max(1);
 		let who = due_account::<T>(subs);
 		let block = BlockNumberFor::<T>::from(1u32);
 
+		// Past every catch-up anniversary, so the loop is bounded by its own
+		// cap rather than by running out of due cycles.
+		let now_ms: T::Moment = (CLOCK_UNIX_DAY.saturating_mul(86_400_000)).saturated_into();
+		pallet_timestamp::Now::<T>::put(now_ms);
+
+		let before = CreditsPallet::<T>::get_free_credits(&who);
+
 		#[block]
 		{
 			Marketplace::<T>::charge_account_due(&who, block);
 		}
 
-		// The account was actually charged — a benchmark that measured a
-		// no-op would report a fraction of the real cost and the meter would
-		// let far too many accounts through.
-		assert!(CreditsPallet::<T>::get_free_credits(&who) < FUNDING);
+		// Every subscription was charged for every catch-up cycle. A weaker
+		// "some credits moved" assertion is what let the single-cycle version
+		// look correct: it passes just as happily when the loop breaks after
+		// one pass, which is the whole failure being guarded against here.
+		let spent = before.saturating_sub(CreditsPallet::<T>::get_free_credits(&who));
+		let expected = PLAN_PRICE
+			.saturating_mul(subs as u128)
+			.saturating_mul(MAX_CATCHUP_MONTHS as u128);
+		assert_eq!(spent, expected);
 	}
 }

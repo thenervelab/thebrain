@@ -541,7 +541,12 @@ fn churn_leaves_nothing_behind() {
 		assert_eq!(
 			pallet_marketplace::SubscriptionAnchorDay::<Runtime>::iter().count(),
 			0,
-			"no anchor entries survive — a recycled id must not inherit one",
+			// Not because an id could be reused — `NextSubscriptionId` only ever
+			// counts up, so a stale anchor could never be inherited. It is that
+			// an anchor is only written for the 29th–31st, so a churning
+			// month-end subscriber would leave one entry per cancelled
+			// subscription in a map nothing prunes and nothing reads.
+			"no anchor entries survive — the map must not grow with churn",
 		);
 	});
 }
@@ -1278,6 +1283,70 @@ fn the_backfill_normalises_legacy_none_due_dates() {
 			is_indexed_at(day_2026(4, 1), &user),
 			"and the account is represented in the index",
 		);
+	});
+}
+
+/// `NO-ORPHANS` as a global sweep rather than a single-account case.
+///
+/// The other tests each assert the invariant for the one account they set up.
+/// This one poses a mixed population — legacy `None` rows, ordinary dated rows,
+/// an inactive row, and an account that churns during the run — then walks the
+/// *entire* map afterwards and asserts that every active subscription both
+/// carries a due date and is reachable through the index.
+///
+/// The reachability half is the point. A due date with no matching index key is
+/// still silent free service: the charge path reads it as due, but the drain
+/// only ever visits accounts it finds through keys, so nothing would ever ask.
+#[test]
+fn no_active_subscription_is_left_unreachable_after_the_backfill() {
+	new_test_ext_at(ms_2026(3, 9)).execute_with(|| {
+		let plan = add_plan(b"drive", PLAN_PRICE);
+		let compute = add_compute_plan(b"compute", CHEAP_PRICE);
+
+		// A spread of shapes, all in one map.
+		for n in 0..12u32 {
+			let user = bulk_account(n);
+			deposit_credits(&user, 100_000);
+			purchase(&user, plan);
+			if n % 3 == 0 {
+				purchase(&user, compute);
+			}
+		}
+
+		// Legacy `None` on a third of them, and one fully dead row.
+		for n in (0..12u32).step_by(4) {
+			let user = bulk_account(n);
+			let mut subs = subs_of(&user);
+			subs[0].next_charge_unix_day = None;
+			pallet_marketplace::UserAllSubscriptionPlans::<Runtime>::insert(&user, subs);
+		}
+		let corpse = bulk_account(7);
+		let mut dead = subs_of(&corpse);
+		dead[0].active = false;
+		pallet_marketplace::UserAllSubscriptionPlans::<Runtime>::insert(&corpse, dead);
+
+		let _ = pallet_marketplace::DueAccounts::<Runtime>::clear(u32::MAX, None);
+		pallet_marketplace::BackfillDone::<Runtime>::put(false);
+		pallet_marketplace::BackfillCursor::<Runtime>::kill();
+		finish_backfill();
+
+		// Sweep the whole map, not one account.
+		let mut checked = 0;
+		for (who, subs) in pallet_marketplace::UserAllSubscriptionPlans::<Runtime>::iter() {
+			for sub in subs.iter().filter(|s| s.active) {
+				let due = sub.next_charge_unix_day.unwrap_or_else(|| {
+					panic!("NO-ORPHANS: {who:?} sub {} is active with no due date", sub.id)
+				});
+				assert!(
+					is_indexed_at(due, &who),
+					"NO-ORPHANS: {who:?} sub {} is due on day {due} with no index key — \
+					 the drain would never reach it",
+					sub.id,
+				);
+				checked += 1;
+			}
+		}
+		assert!(checked >= 12, "the sweep must actually have inspected the population");
 	});
 }
 

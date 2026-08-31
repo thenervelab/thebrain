@@ -1061,16 +1061,15 @@ parameter_types! {
 	pub const MaxReferralPayoutsPerSweep: u32 = 250;
 	/// Accounts charged per renewal drain.
 	///
-	/// Derived from the budget, not picked: `RocksDbWeight` prices a read at
-	/// 25µs and a write at 100µs, `MAXIMUM_BLOCK_WEIGHT` is 2000ms, and
-	/// `BlockWeights::with_sensible_defaults` assumes `on_initialize` costs 10%
-	/// of that — so ~200ms a tick. The pallet's own per-charge estimate is 16
-	/// reads and 10 writes, i.e. 1.4ms per account, which puts 500 charges at
-	/// ~3.5x the budget and even 150 over it. 128 comes to ~179ms with real
-	/// headroom.
+	/// A backstop, not the operative bound. `RenewalWeightBudget` binds first —
+	/// at the measured 2.80ms per account it admits ~35 a tick, well under this
+	/// — so what this figure does is cap the damage if the measurement is ever
+	/// wrong in the cheap direction, not decide the batch size.
 	///
-	/// Throughput was never the constraint: 128 every 8 blocks still clears
-	/// ~230_000 charges a day. Raise this only against a benchmark.
+	/// Left at 128 rather than lowered to match: a count that tracks the meter
+	/// would have to move with every re-measurement, and a backstop that only
+	/// engages when the meter is wrong is doing its job precisely by not being
+	/// reached. Raise it only against a benchmark.
 	pub const MaxSubscriptionChargesPerRun: u32 = 128;
 	/// Accounts the one-time due-index backfill walks per tick. Read-only over
 	/// the subscription map, so it is cheaper per account than a charge.
@@ -1081,10 +1080,25 @@ parameter_types! {
 	/// *all* hook work costs, and the drain shares `on_initialize` with hourly
 	/// billing, the backfill and the referral sweep — so it gets half of that
 	/// allowance rather than the whole of it. At 2000ms a block this is 100ms,
-	/// which at the pallet's own ~1.4ms per charged account is ~71 accounts:
-	/// below `MaxSubscriptionChargesPerRun`, so on a full day the meter is the
-	/// binding constraint and the count is the backstop. That is the intended
-	/// order — the count rests on an estimate, the meter does not.
+	/// which at the measured 2.80ms per charged account is ~35 accounts: well
+	/// below `MaxSubscriptionChargesPerRun`, so the meter is the binding
+	/// constraint and the count is the backstop. That is the intended order —
+	/// the count rests on an estimate, the meter does not.
+	///
+	/// **Throughput this implies, and why the 1st of the month is the number
+	/// that matters.** ~35 accounts every 8 blocks at 6s is ~63_000 renewals a
+	/// day. That is ample for a date-to-date population spread over 28 days,
+	/// but the spread is the part not to take on faith: every subscription
+	/// predating this change stays anchored to the 1st for life, and new
+	/// signups cluster on round dates rather than distributing evenly. The
+	/// index makes the other 27 days cheap; it does not make the 1st cheaper,
+	/// it only makes it drain safely across ticks instead of in one block.
+	///
+	/// So the figure to watch after launch is how many ticks the 1st takes to
+	/// clear. Under ~63_000 accounts due on it, the day clears within itself
+	/// and nothing is deferred. Past that the cursor simply carries the
+	/// remainder into the 2nd — correct, but a day of renewals arriving a day
+	/// late — and that is the point to raise this share rather than the count.
 	pub RenewalWeightBudget: Perbill = AVERAGE_ON_INITIALIZE_RATIO / 2;
 	/// Share of a block the hourly pay-as-you-go sweep may spend in one tick.
 	///

@@ -2193,6 +2193,26 @@ pub mod pallet {
 			let after: Vec<UserPlanSubscription<T>> =
 				after.into_iter().filter(|sub| sub.active).collect();
 
+			// `NO-ORPHANS`, enforced at the choke point rather than trusted.
+			//
+			// A `None` due date on an *active* row is the one shape this design
+			// cannot represent: the index is keyed by due day, so a row without
+			// one has no key, and the drain reaches accounts only through keys.
+			// The charge path still reads `None` as "always due", so such a row
+			// would not be mis-billed — it would simply never be visited again,
+			// which is silent free service rather than a loud failure.
+			//
+			// Every write to the subscription map comes through here, so this is
+			// the one place that can hold the invariant for all of them,
+			// including write sites that do not exist yet. A `debug_assert` and
+			// not a hard one on purpose: in production the fail-open read is a
+			// better outcome than halting a block, and the bound is
+			// `MaxActiveSubscriptions`, so the check costs nothing in tests.
+			debug_assert!(
+				after.iter().all(|sub| sub.next_charge_unix_day.is_some()),
+				"NO-ORPHANS: an active subscription must carry a due date",
+			);
+
 			// Anchors for subscriptions that no longer exist. `SubscriptionId`
 			// is monotonic so a stale row would not be re-used, but it would sit
 			// there forever.
