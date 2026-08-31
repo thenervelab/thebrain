@@ -3560,15 +3560,18 @@ pub mod pallet {
 			let resume_from =
 				UserAllSubscriptionPlans::<T>::hashed_key_for(&batch[batch.len() - 1].0);
 			let exhausted = batch.len() < limit;
-			let mut normalised: u64 = 0;
 
 			for (account_id, subs) in batch.iter() {
-				let before = subs.clone();
 				let mut after = subs.clone();
+				// Per account, not per batch. This decides whether *this*
+				// account's vector changed, so a counter accumulated across the
+				// whole batch would answer for whichever account happened to
+				// normalise first and rewrite every later one unchanged.
+				let mut normalised = false;
 				for sub in after.iter_mut() {
 					if sub.active && sub.next_charge_unix_day.is_none() {
 						sub.next_charge_unix_day = Some(cursor_start);
-						normalised = normalised.saturating_add(1);
+						normalised = true;
 					}
 				}
 
@@ -3583,9 +3586,17 @@ pub mod pallet {
 					DueAccounts::<T>::insert(day, account_id, ());
 				}
 
-				// Only rewrite the stored vector when a `None` was normalised;
-				// otherwise this stays a pure index write.
-				if normalised > 0 && before.iter().any(|s| s.next_charge_unix_day.is_none()) {
+				// Only rewrite the stored vector when this account actually had
+				// a `None` normalised; otherwise this stays a pure index write.
+				//
+				// An *inactive* row's `None` is deliberately not enough: it is
+				// never charged, never indexed, and `commit_subscriptions` drops
+				// it the next time the account is written. Legacy rows of
+				// exactly that shape are what the backfill meets on chain, so
+				// testing the vector for *any* `None` would rewrite a whole
+				// class of accounts with a value identical to the one already
+				// stored.
+				if normalised {
 					UserAllSubscriptionPlans::<T>::insert(account_id, after);
 				}
 			}

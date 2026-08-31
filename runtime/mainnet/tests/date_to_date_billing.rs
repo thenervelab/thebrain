@@ -868,6 +868,68 @@ fn a_short_funded_account_keeps_its_oldest_subscription() {
 	});
 }
 
+/// `INDEX-COMPLETE` across a partial payment — the one path that both moves a
+/// subscription forward and drops a sibling in the same write.
+///
+/// Two subscriptions share a due day, so the account holds a single index key
+/// for it. Charging deactivates one and advances the other, and
+/// `commit_subscriptions` has to reconcile that from the diff: the shared key
+/// must go and the survivor's new day must appear. Getting it wrong in the
+/// missing-entry direction leaves a paid-up subscription that nothing ever
+/// charges again — silent free service, with a successful charge in the same
+/// block to make it look healthy.
+#[test]
+fn a_partial_payment_reindexes_onto_the_surviving_subscriptions_day() {
+	new_test_ext_at(ms_2026(3, 9)).execute_with(|| {
+		let drive = add_plan(b"drive", PLAN_PRICE);
+		let compute = add_compute_plan(b"compute", CHEAP_PRICE);
+		let user = account(11);
+
+		deposit_credits(&user, PLAN_PRICE + CHEAP_PRICE);
+		purchase(&user, drive);
+		purchase(&user, compute);
+		finish_backfill();
+
+		// Both bought on the 9th, so both fall due on the same day and the
+		// account holds exactly one key for it.
+		assert!(is_indexed_at(day_2026(4, 9), &user), "both subscriptions share one due day");
+		assert_eq!(index_entries().len(), 1, "one account-day key, not one per subscription");
+
+		// Fund exactly one Drive cycle, so the compute side cannot be paid.
+		deposit_credits(&user, PLAN_PRICE);
+		tick_on(4, 9);
+
+		let survivors = subs_of(&user);
+		assert_eq!(survivors.len(), 1, "the unaffordable subscription is dropped");
+		assert!(survivors[0].package.is_storage_plan, "Drive is the one that survived");
+
+		assert!(
+			is_indexed_at(day_2026(5, 9), &user),
+			"INDEX-COMPLETE: the survivor is re-filed onto its next anniversary",
+		);
+		assert!(
+			!is_indexed_at(day_2026(4, 9), &user),
+			"and the day it was just charged for is released",
+		);
+		assert_eq!(
+			index_entries(),
+			vec![(day_2026(5, 9), user.clone())],
+			"the deactivated sibling leaves no key of its own behind",
+		);
+
+		// The survivor must still bill on that day, which is the guarantee the
+		// index exists to provide.
+		let before = Credits::get_free_credits(&user);
+		deposit_credits(&user, PLAN_PRICE);
+		tick_on(5, 9);
+		assert_eq!(
+			Credits::get_free_credits(&user),
+			before + PLAN_PRICE - PLAN_PRICE,
+			"the survivor is charged on its next anniversary, not skipped",
+		);
+	});
+}
+
 // ── Plan-change carry credit ─────────────────────────────────────────────
 
 /// Switching plans mid-cycle credits exactly the unused remainder of the old
@@ -1216,6 +1278,100 @@ fn the_backfill_normalises_legacy_none_due_dates() {
 			is_indexed_at(day_2026(4, 1), &user),
 			"and the account is represented in the index",
 		);
+	});
+}
+
+/// An *inactive* legacy row carrying a `None` due date is left entirely alone.
+///
+/// This shape is what the backfill actually meets on chain: the v2 migration
+/// carries `active` and `next_charge_unix_day` through verbatim, and the
+/// "drop deactivated rows" filter in `commit_subscriptions` only arrived with
+/// date-to-date billing — so cancelled subscriptions from before it are still
+/// sitting in stored vectors with whatever due date they had.
+///
+/// Two things must hold, and neither is implied by the active-row test above.
+/// A `None` on a dead row must not be normalised into a real due date, and it
+/// must not be filed in the index — either would resurrect a cancelled
+/// subscription into the charging path. The active account alongside it is
+/// deliberate: it shares the backfill batch, so anything that lets one
+/// account's normalisation leak into the decision made for another shows up
+/// here.
+#[test]
+fn the_backfill_leaves_an_inactive_legacy_row_alone() {
+	new_test_ext_at(ms_2026(3, 9)).execute_with(|| {
+		let plan = add_plan(b"drive", PLAN_PRICE);
+
+		let live = account(11);
+		deposit_credits(&live, 100_000);
+		purchase(&live, plan);
+
+		// Two dead rows, carrying the two due dates a cancelled subscription can
+		// be left holding. The `None` one probes normalisation; the *future*
+		// one probes indexing, and it has to be in the future to probe anything
+		// at all — a dead row filed on a past day would be swept straight back
+		// out by the drain in the same tick, erasing the evidence before the
+		// assertion runs.
+		let compute = add_compute_plan(b"compute", CHEAP_PRICE);
+		let dead = account(12);
+		deposit_credits(&dead, 100_000);
+		purchase(&dead, plan);
+		purchase(&dead, compute);
+
+		// Re-create the two legacy shapes side by side: an active row with no
+		// due date, and deactivated ones the old code left in the vector.
+		let mut live_subs = subs_of(&live);
+		live_subs[0].next_charge_unix_day = None;
+		pallet_marketplace::UserAllSubscriptionPlans::<Runtime>::insert(&live, live_subs);
+
+		let mut dead_subs = subs_of(&dead);
+		assert_eq!(dead_subs.len(), 2);
+		dead_subs[0].active = false;
+		dead_subs[0].next_charge_unix_day = None;
+		dead_subs[1].active = false;
+		dead_subs[1].next_charge_unix_day = Some(day_2026(4, 9));
+		pallet_marketplace::UserAllSubscriptionPlans::<Runtime>::insert(&dead, dead_subs);
+
+		let _ = pallet_marketplace::DueAccounts::<Runtime>::clear(u32::MAX, None);
+		pallet_marketplace::BackfillDone::<Runtime>::put(false);
+		pallet_marketplace::BackfillCursor::<Runtime>::kill();
+
+		let dead_credits_before = Credits::get_free_credits(&dead);
+		finish_backfill();
+
+		// The dead rows are untouched: same `active`, same due dates.
+		let after = pallet_marketplace::UserAllSubscriptionPlans::<Runtime>::get(&dead);
+		assert_eq!(after.len(), 2, "the backfill does not prune, it only indexes");
+		assert!(after.iter().all(|s| !s.active), "an inactive row stays inactive");
+		assert_eq!(
+			after[0].next_charge_unix_day, None,
+			"a dead row's None is not normalised — only active rows get a due date",
+		);
+
+		// Nothing will ever try to charge them. The future-dated row is the
+		// load-bearing half: the cursor is nowhere near April, so if the
+		// backfill had filed it the key would still be sitting there.
+		assert!(
+			!is_indexed_at(day_2026(4, 9), &dead),
+			"INDEX-COMPLETE covers active subscriptions only: a dead row is never filed",
+		);
+		assert!(
+			!pallet_marketplace::DueAccounts::<Runtime>::iter().any(|(_, who, _)| who == dead),
+			"and the account holds no index key at all",
+		);
+		assert_eq!(
+			Credits::get_free_credits(&dead),
+			dead_credits_before,
+			"and it is never charged",
+		);
+
+		// The active account in the same batch is still normalised and billed,
+		// so this is not passing because the backfill did nothing at all.
+		assert_eq!(
+			only_sub(&live).next_charge_unix_day,
+			Some(day_2026(4, 1)),
+			"the live row alongside it is still picked up",
+		);
+		assert!(is_indexed_at(day_2026(4, 1), &live), "and indexed");
 	});
 }
 
