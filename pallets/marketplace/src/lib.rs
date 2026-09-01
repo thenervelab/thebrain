@@ -2147,14 +2147,35 @@ pub mod pallet {
 				.unwrap_or_else(|| pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(0))
 		}
 
-		/// Distinct days an account's active subscriptions are due on.
+		/// Distinct days an account's active subscriptions are filed under,
+		/// clamped forward to `floor` — the drain's day cursor.
+		///
+		/// The backfill applies the same clamp for the same reason:
+		/// `DueDayCursor` is forward-only and advances only once a day's prefix
+		/// is empty, so an entry filed on a day the cursor has already walked
+		/// past is never visited again. The account keeps an active plan, is
+		/// never charged for it, and — because holding an active plan exempts
+		/// it — is not picked up by hourly billing either. Silent free service.
+		///
+		/// A re-file can land in the past honestly. `advance_subscription_cycle`
+		/// moves the due date on from the *previous* due date rather than from
+		/// now, which is what keeps the anniversary from drifting later on every
+		/// late charge — but it also means arrears are never caught up in one
+		/// step, and `max_catchup_months` bounds a visit to three cycles. A
+		/// subscription further behind than that is still behind the cursor when
+		/// it is re-filed. Pinning it to the cursor charges it again on the next
+		/// pass, the same outcome as being overdue, until it catches up.
+		///
+		/// Clamping to the cursor and not to `today` matters: the cursor walks
+		/// to a day one probe at a time under `MAX_DAY_PROBES`, so filing months
+		/// ahead of it would trade stranding for a very long walk.
 		///
 		/// `MaxActiveSubscriptions` is 5, so this is a handful of entries and a
 		/// linear scan beats any set machinery.
-		fn due_days_of(subs: &[UserPlanSubscription<T>]) -> Vec<u32> {
+		fn due_days_of(subs: &[UserPlanSubscription<T>], floor: u32) -> Vec<u32> {
 			let mut days: Vec<u32> = Vec::new();
 			for sub in subs.iter().filter(|s| s.active) {
-				let day = Self::effective_due_day(sub);
+				let day = Self::effective_due_day(sub).max(floor);
 				if !days.contains(&day) {
 					days.push(day);
 				}
@@ -2222,8 +2243,11 @@ pub mod pallet {
 				}
 			}
 
-			let before_days = Self::due_days_of(before);
-			let after_days = Self::due_days_of(&after);
+			// No cursor yet means the drain has never run, so there is no day
+			// it has walked past and nothing to clamp to.
+			let floor = DueDayCursor::<T>::get().unwrap_or(0);
+			let before_days = Self::due_days_of(before, floor);
+			let after_days = Self::due_days_of(&after, floor);
 
 			for day in before_days.iter() {
 				if !after_days.contains(day) {
@@ -2231,8 +2255,17 @@ pub mod pallet {
 				}
 			}
 			for day in after_days.iter() {
-				if !before_days.contains(day) {
-					DueAccounts::<T>::insert(day, who, ());
+				// Filing only the days that *changed* is a write-saving
+				// optimisation, and it assumes the entry it skips is still
+				// there. On a clamped day it is not: the drain removes the
+				// entry that led it here *before* charging, and a subscription
+				// too far in arrears for one visit to catch up is re-filed on
+				// the same clamped day it arrived on — so the diff sees no
+				// change and nobody puts the entry back. `day == floor` is
+				// exactly that case, plus rows genuinely due on the cursor's
+				// own day, which are equally worth one write to keep reachable.
+				if *day == floor || !before_days.contains(day) {
+					DueAccounts::<T>::insert(*day, who, ());
 				}
 			}
 
@@ -3419,7 +3452,11 @@ pub mod pallet {
 			}
 
 			let today = Self::current_unix_day();
-			let mut cursor = DueDayCursor::<T>::get().unwrap_or(today);
+			let stored_cursor = DueDayCursor::<T>::get();
+			let mut cursor = stored_cursor.unwrap_or(today);
+			// What `DueDayCursor` currently holds, so the per-day publish below
+			// only writes when it has actually moved.
+			let mut published = stored_cursor;
 			let mut accounts_charged: u64 = 0;
 			let mut accounts_seen: u64 = 0;
 			let mut day_probes: u32 = 0;
@@ -3453,6 +3490,24 @@ pub mod pallet {
 					day_probes = day_probes.saturating_add(1);
 					cursor = cursor.saturating_add(1);
 					continue;
+				}
+
+				// Publish the day being worked before working it.
+				// `commit_subscriptions` clamps its re-file to `DueDayCursor`,
+				// and the drain spans many days in a block — a value left at
+				// wherever this block started would let an account be re-filed
+				// on a day already walked past, which is the stranding the
+				// clamp exists to prevent.
+				//
+				// Once per non-empty day, and only when the day has moved: the
+				// empty days in between have nobody to re-file, and a day that
+				// takes several batches to drain publishes once. Metered
+				// explicitly because `drain_overhead` prices the single write
+				// at the end of the run, not one per day.
+				if published != Some(cursor) {
+					meter.consume(T::DbWeight::get().writes(1));
+					DueDayCursor::<T>::put(cursor);
+					published = Some(cursor);
 				}
 
 				for account_id in batch {
@@ -3782,11 +3837,6 @@ pub mod pallet {
 					has_s3_plan |= sub.package.is_s3_plan;
 				}
 
-				// Both sides covered — nothing left to meter for this user.
-				if has_drive_plan && has_s3_plan {
-					continue;
-				}
-
 				// How many whole hours have gone unbilled for this user.
 				//
 				// Paging is what makes this a count rather than a yes/no: the
@@ -3822,13 +3872,52 @@ pub mod pallet {
 				// stays owed and is collected on later visits.
 				let periods = elapsed_hours.min(MAX_CATCHUP_HOURS);
 				if periods > 0 {
-					let s3_file_size = UserTotalS3FilesSize::<T>::get(&user).unwrap_or(0);
-
+					// Read the S3 size only when that side is billable: a user
+					// whose S3 bytes are covered by a plan pays nothing for them
+					// whatever the number is, and this loop runs over every
+					// account the metric has ever reported on.
 					let billable_drive = if has_drive_plan { 0 } else { drive_file_size };
-					let billable_s3 = if has_s3_plan { 0 } else { s3_file_size };
+					let billable_s3 = if has_s3_plan {
+						0
+					} else {
+						UserTotalS3FilesSize::<T>::get(&user).unwrap_or(0)
+					};
 
-					// Skip if no files to charge
+					// Nothing billable this window — every side is either
+					// covered by a subscription or empty.
+					//
+					// The clock still has to move. Freezing the marker here is
+					// what turns a covered stretch into arrears the moment the
+					// user becomes billable again: on a cancelled plan, or on
+					// the first upload to a side that had no files, the sweep
+					// would bill forward from the last *pre-coverage* hour and
+					// charge the whole covered window over again, 24 hours at a
+					// time — a window the user had already paid a subscription
+					// for.
+					//
+					// Advancing by the whole hours elapsed rather than to
+					// `current_block` keeps the marker hour-aligned, and gives
+					// nothing away: by definition there was nothing to bill for
+					// the hours being settled. `elapsed_hours` and not `periods`
+					// for the same reason — `MAX_CATCHUP_HOURS` bounds the work
+					// of *charging* arrears, and there are none here, so
+					// settling in 24-hour steps would only leave a legacy frozen
+					// marker taking several passes to catch up.
+					//
+					// Only for a user who actually has a marker. An absent one
+					// reads as block zero, is not frozen at anything, and
+					// already fails safe to a single hour on first sight;
+					// writing one here would put a row on every account in the
+					// metric map, most of which never owe anything.
 					if billable_drive == 0 && billable_s3 == 0 {
+						if !stored_last_charged_at.is_zero() {
+							let _ = Self::advance_storage_last_charged_at(
+								&user,
+								last_charged_at.saturating_add(
+									blocks_per_hour.saturating_mul(elapsed_hours.into()),
+								),
+							);
+						}
 						continue;
 					}
 
@@ -4004,12 +4093,6 @@ pub mod pallet {
 				});
 			}
 			Ok(())
-		}
-
-		/// Helper function to remove the last charged timestamp for a user
-		pub fn remove_storage_last_charged_at(who: &T::AccountId) {
-			// Remove the last charged timestamp for the user
-			StorageLastChargedAt::<T>::remove(who);
 		}
 
 		/// Remove a specific account from BackupDeleteRequests if it exists

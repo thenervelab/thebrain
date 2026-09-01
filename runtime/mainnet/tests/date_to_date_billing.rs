@@ -841,6 +841,61 @@ fn a_subscription_still_in_arrears_is_not_stranded_behind_the_cursor() {
 	});
 }
 
+/// `INDEX-COMPLETE` for a subscription further behind than one visit can
+/// catch up.
+///
+/// `advance_subscription_cycle` moves the due date on from the *previous* due
+/// date, and `max_catchup_months` bounds a visit to three cycles, so a
+/// subscription more than three months overdue is *still* overdue when it is
+/// re-filed — on a day the forward-only cursor has already walked past, where
+/// nothing reads it again. Such an account would hold an active plan, never be
+/// charged for it, and — because an active plan exempts it — never be picked up
+/// by hourly billing either: free service, permanently, with no event to notice.
+///
+/// This is the shape an upgrade meets on chain: a legacy row whose stored due
+/// date is months older than the month the cursor starts in.
+#[test]
+fn a_subscription_past_the_catchup_cap_is_not_stranded_behind_the_cursor() {
+	new_test_ext_at(ms_2026(6, 15)).execute_with(|| {
+		let plan = add_plan(b"drive", PLAN_PRICE);
+		let user = account(11);
+		deposit_credits(&user, 100_000);
+		purchase(&user, plan);
+
+		// Five months of arrears, against a three-cycle cap and a cursor that
+		// starts on June 1 — one visit cannot bring the due date up to it.
+		let mut subs = subs_of(&user);
+		subs[0].next_charge_unix_day = Some(day_2026(1, 1));
+		pallet_marketplace::UserAllSubscriptionPlans::<Runtime>::insert(&user, subs);
+		let _ = pallet_marketplace::DueAccounts::<Runtime>::clear(u32::MAX, None);
+		pallet_marketplace::BackfillDone::<Runtime>::put(false);
+		pallet_marketplace::BackfillCursor::<Runtime>::kill();
+
+		let before = Credits::get_free_credits(&user);
+		finish_backfill();
+		for _ in 0..4 {
+			tick_again();
+		}
+
+		// January through June is six cycles owed, and every one is collected —
+		// three per visit, over as many visits as it takes.
+		assert_eq!(
+			before - Credits::get_free_credits(&user),
+			6 * PLAN_PRICE,
+			"the arrears keep being collected rather than being written off",
+		);
+		assert_eq!(
+			due_day(&user),
+			day_2026(7, 1),
+			"and the subscription ends up ahead of the cursor, on its own anniversary",
+		);
+		assert!(
+			is_indexed_at(day_2026(7, 1), &user),
+			"INDEX-COMPLETE: it is reachable again once it has caught up",
+		);
+	});
+}
+
 // ── Partial payment ──────────────────────────────────────────────────────
 
 /// An account with two due plans and credits for only one keeps the lower

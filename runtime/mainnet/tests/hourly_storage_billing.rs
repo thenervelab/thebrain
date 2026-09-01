@@ -139,6 +139,25 @@ fn run_one_hour() {
 	Marketplace::on_initialize(HOURLY_STEP);
 }
 
+/// Step one hour on from wherever the chain already is. `HOURLY_STEP` is a
+/// multiple of `BlockChargeCheckInterval`, so every step lands on a block the
+/// hook actually works on.
+fn advance_one_hour() {
+	let next = System::block_number().max(0) + HOURLY_STEP;
+	System::set_block_number(next);
+	Marketplace::on_initialize(next);
+}
+
+fn cancel_every_subscription(who: &AccountId) {
+	for sub in Marketplace::user_all_subscription_plans(who) {
+		assert_ok!(Marketplace::cancel_user_subscription(
+			RuntimeOrigin::signed(backend()),
+			who.clone(),
+			Some(sub.id),
+		));
+	}
+}
+
 /// Credits spent by `who` over one hourly tick, with a float large enough that
 /// nothing is refused for want of funds.
 fn hourly_spend(setup: impl FnOnce(&AccountId)) -> u128 {
@@ -822,6 +841,59 @@ fn first_sight_bills_a_single_hour() {
 			before.saturating_sub(Credits::get_free_credits(&user)),
 			BOTH_SIDES_CHARGE,
 			"an unmarked account must start its clock, not be billed since genesis",
+		);
+	});
+}
+
+/// A stretch a subscription paid for must not turn into hourly arrears the
+/// moment the subscription ends.
+///
+/// While a plan covers a side the sweep bills nothing for it, and it used to
+/// leave `StorageLastChargedAt` frozen at the last *pre-coverage* hour —
+/// nothing on the purchase path reset it and the covered pass returned before
+/// advancing it. On cancellation the sweep then billed forward from that frozen
+/// marker, `MAX_CATCHUP_HOURS` at a time, charging the user by the hour for the
+/// whole window they had already paid a subscription for. The longer the
+/// subscription was held, the larger the bill for ending it.
+#[test]
+fn cancelling_a_covered_plan_does_not_back_bill_the_covered_window() {
+	new_test_ext().execute_with(|| {
+		let drive_plan = add_plan(b"drive", false);
+		let s3_plan = add_plan(b"s3", true);
+		let user = account(11);
+		deposit_credits(&user, 1_000_000);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		// One uncovered hour first, so there is a real marker to freeze — a
+		// user the sweep has never charged has none, and reads as "bill one
+		// hour" anyway.
+		run_one_hour();
+
+		purchase(&user, drive_plan);
+		purchase(&user, s3_plan);
+
+		// Twenty hours with both sides covered. The subscription is what pays
+		// for these; the hourly sweep must take nothing.
+		let covered_from = Credits::get_free_credits(&user);
+		for _ in 0..20 {
+			advance_one_hour();
+		}
+		assert_eq!(
+			Credits::get_free_credits(&user),
+			covered_from,
+			"a fully covered user is billed nothing hourly",
+		);
+
+		cancel_every_subscription(&user);
+
+		// The first hour after coverage ends is one hour of usage — not the
+		// twenty the subscription already covered.
+		let before = Credits::get_free_credits(&user);
+		advance_one_hour();
+		assert_eq!(
+			before - Credits::get_free_credits(&user),
+			BOTH_SIDES_CHARGE,
+			"only the hour actually spent uncovered is billed",
 		);
 	});
 }

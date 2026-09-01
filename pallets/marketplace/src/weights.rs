@@ -110,10 +110,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// the steady-state ones that only ever cost ~1.43ms, so a tick admits
 	/// roughly 35 accounts rather than 69. That is the price of a bound that
 	/// holds in the case it exists for.
+	///
+	/// Carrying one read and one write over the measurement, pending a
+	/// re-measure: `commit_subscriptions` now reads `DueDayCursor` to clamp its
+	/// re-file, and re-files an arrears account on the cursor's own day where
+	/// the day-diff would have skipped the write. Added rather than folded into
+	/// the µs figure so the measured part stays the measured part, and in the
+	/// conservative direction either way.
 	fn charge_account_due() -> Weight {
 		Weight::from_parts(526_900_000, 1341)
-			.saturating_add(RocksDbWeight::get().reads(7))
-			.saturating_add(RocksDbWeight::get().writes(21))
+			.saturating_add(RocksDbWeight::get().reads(8))
+			.saturating_add(RocksDbWeight::get().writes(22))
 	}
 
 	/// Read the account's subscriptions once, then one index write per
@@ -138,9 +145,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 	/// Estimated: the 5 reads a visited user cost in the sweep's own prior
 	/// accounting — subscriptions, the last-charged marker, the S3 size, plus
-	/// slack.
+	/// slack — and one write.
+	///
+	/// The write is the marker settling on a user with nothing billable, which
+	/// every covered user does at most once an hour. It is not part of
+	/// `hourly_charge`: that one prices a user who is actually billed, and this
+	/// path bills nobody.
 	fn hourly_probe() -> Weight {
-		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(5))
+		Weight::from_parts(0, 0)
+			.saturating_add(RocksDbWeight::get().reads(5))
+			.saturating_add(RocksDbWeight::get().writes(1))
 	}
 
 	/// Estimated: the 13 reads and 11 writes a *charged* user cost in that same
@@ -194,7 +208,9 @@ impl WeightInfo for () {
 	}
 
 	fn hourly_probe() -> Weight {
-		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(5))
+		Weight::from_parts(0, 0)
+			.saturating_add(RocksDbWeight::get().reads(5))
+			.saturating_add(RocksDbWeight::get().writes(1))
 	}
 
 	fn hourly_charge() -> Weight {
