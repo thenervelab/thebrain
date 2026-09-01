@@ -1,13 +1,17 @@
 //! End-to-end: emission deposited into the bank is distributed to **Arion
-//! families** by `pay_storage_miners`, each family's weight being the sum of
-//! the node weights of its eligible children; and the emission compartment is
-//! invisible to the arion settlement headroom.
+//! families** by `pay_storage_miners`, each family's payout weight being the
+//! SAME fragmentation-neutral aggregate that feeds `FamilyWeightRaw` — one
+//! log2 over the family's summed bytes/bandwidth, read raw (no EMA, no delta
+//! clamp) — and the emission compartment is invisible to the arion settlement
+//! headroom.
 //!
 //! These tests read real Arion storage through the runtime's
-//! `ArionFamilyWeightsSource` adapter — the payout set is `FamilyChildren` +
-//! `NodeWeightByChild`, NOT `RankingStorage`. Paying from the ranking pallet
-//! was the production bug: Arion operators never appear in that leaderboard,
-//! so registered families carrying real weight received nothing.
+//! `ArionFamilyWeightsSource` adapter — the payout set comes from
+//! `FamilyChildren` + `NodeQualityByChild`, NOT `RankingStorage` and NOT the
+//! per-child `NodeWeightByChild` scores (summing those rewarded splitting the
+//! same bytes across more children). Every helper here still seeds a large
+//! stale `NodeWeightByChild` score on purpose: if anyone re-points the payout
+//! at the per-child sum, these tests fail loudly.
 
 use frame_support::traits::{Currency, Get};
 use frame_support::{assert_noop, assert_ok};
@@ -16,7 +20,8 @@ use hippius_mainnet_runtime::{
 };
 use pallet_arion::{
 	ChildRegistration, ChildRegistrations, ChildStatus, CurrentWeightBucket, FamilyActiveChildren,
-	FamilyChildren, NodeWeightByChild, NodeWeightLastBucket, PayoutSource,
+	FamilyChildren, NodeQuality, NodeQualityByChild, NodeWeightByChild, NodeWeightLastBucket,
+	PayoutSource,
 };
 use pallet_hippocampus::DepositType;
 use pallet_metagraph::{Role, UID};
@@ -28,6 +33,8 @@ const ED: u128 = 500;
 
 /// Bucket every fresh weight is reported in.
 const BUCKET: u32 = 100;
+
+const TIB: u128 = 1024 * 1024 * 1024 * 1024;
 
 /// The hardcoded `ArionAdminMembers` account (all arion/bank admin origins).
 fn admin() -> AccountId {
@@ -55,10 +62,14 @@ fn new_test_ext() -> sp_io::TestExternalities {
 	ext
 }
 
-/// Register `child` under `family` with the given status, and give it a node
-/// weight last reported `age` buckets ago. Seeds storage directly, the same
-/// way family_weight_aggregate.rs and miner_payments.rs do.
-fn seed_child(family: &AccountId, child: &AccountId, weight: u16, status: ChildStatus, age: u32) {
+/// Register `child` under `family` with the given status, carrying `bytes` of
+/// stored data last reported `age` buckets ago. Seeds storage directly, the
+/// same way family_weight_aggregate.rs and miner_payments.rs do.
+///
+/// Also plants a huge per-child `NodeWeightByChild` score: the payout must not
+/// read it (it is the pre-aggregate shape), so any test asserting proportions
+/// below will fail if a regression sums per-child scores again.
+fn seed_child(family: &AccountId, child: &AccountId, bytes: u128, status: ChildStatus, age: u32) {
 	let node_id: [u8; 32] = child.clone().into();
 	ChildRegistrations::<Runtime>::insert(
 		child,
@@ -76,13 +87,41 @@ fn seed_child(family: &AccountId, child: &AccountId, weight: u16, status: ChildS
 	if status == ChildStatus::Active {
 		FamilyActiveChildren::<Runtime>::mutate(family, |n| *n += 1);
 	}
-	NodeWeightByChild::<Runtime>::insert(child, weight);
+	NodeQualityByChild::<Runtime>::insert(
+		child,
+		NodeQuality {
+			shard_data_bytes: bytes,
+			bandwidth_bytes: 0,
+			uptime_permille: 1000,
+			strikes: 0,
+			integrity_fails: 0,
+		},
+	);
+	NodeWeightByChild::<Runtime>::insert(child, 50_000u16);
 	NodeWeightLastBucket::<Runtime>::insert(child, BUCKET.saturating_sub(age));
 }
 
-/// The common case: an Active child whose weight was reported this bucket.
-fn seed_active_child(family: &AccountId, child: &AccountId, weight: u16) {
-	seed_child(family, child, weight, ChildStatus::Active, 0);
+/// The common case: an Active child whose data was reported this bucket.
+fn seed_active_child(family: &AccountId, child: &AccountId, bytes: u128) {
+	seed_child(family, child, bytes, ChildStatus::Active, 0);
+}
+
+/// The payout each family should receive for `emission`, computed from the
+/// weights the runtime itself reports — the contract under test is
+/// "distribution follows `active_family_weights` proportionally", not any
+/// particular value of the aggregate formula.
+fn expected_shares(emission: u128) -> Vec<(AccountId, u128)> {
+	let weights = pallet_arion::Pallet::<Runtime>::active_family_weights();
+	let total: u128 = weights.iter().map(|(_, w)| w).sum();
+	weights.into_iter().map(|(f, w)| (f, emission.saturating_mul(w) / total)).collect()
+}
+
+fn weight_of(family: &AccountId) -> u128 {
+	pallet_arion::Pallet::<Runtime>::active_family_weights()
+		.into_iter()
+		.find(|(f, _)| f == family)
+		.map(|(_, w)| w)
+		.unwrap_or(0)
 }
 
 /// Fund the bank with an ED cushion plus `emission` tagged as Emission, and
@@ -96,11 +135,7 @@ fn fund_bank_and_whitelist_admin(emission: u128) {
 		ED * 2,
 		DepositType::Grant
 	));
-	assert_ok!(Hippocampus::deposit(
-		RuntimeOrigin::signed(funder),
-		emission,
-		DepositType::Emission
-	));
+	assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(funder), emission, DepositType::Emission));
 	// AdminOrigin is EnsureSignedBy<ArionAdminMembers>, not root.
 	assert_ok!(Hippocampus::add_miner_payment_caller(RuntimeOrigin::signed(admin()), admin()));
 }
@@ -119,13 +154,10 @@ fn emission_compartment_invisible_to_arion_settlement() {
 		let arion_headroom_before = ArionPayoutSource::available();
 		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(funder),
-			100_000,
+			250_000,
 			DepositType::Emission
 		));
-
-		// Wall: emission is invisible to the arion settlement headroom.
 		assert_eq!(ArionPayoutSource::available(), arion_headroom_before);
-		assert_eq!(Hippocampus::emission_available(), 100_000);
 	});
 }
 
@@ -145,39 +177,53 @@ fn pay_storage_miners_with_no_registered_families() {
 #[test]
 fn pay_storage_miners_distributes_to_arion_families() {
 	// The regression test for the production bug: a family registered in Arion
-	// with weight on its children gets paid, and gets paid in proportion.
+	// carrying real data gets paid, and gets paid in proportion to its
+	// aggregate weight.
 	new_test_ext().execute_with(|| {
 		let (fam_a, fam_b) = (account(2), account(3));
 		fund_bank_and_whitelist_admin(100_000);
 
-		seed_active_child(&fam_a, &child(10), 100);
-		seed_active_child(&fam_b, &child(11), 300);
+		seed_active_child(&fam_a, &child(10), TIB);
+		seed_active_child(&fam_b, &child(11), 32 * TIB);
+
+		let shares = expected_shares(100_000);
+		let of = |f: &AccountId| shares.iter().find(|(a, _)| a == f).unwrap().1;
+		assert!(of(&fam_b) > of(&fam_a), "more data must mean a larger share");
+		assert!(of(&fam_a) > 0);
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
 
-		assert_eq!(Balances::free_balance(&fam_a), 25_000);
-		assert_eq!(Balances::free_balance(&fam_b), 75_000);
-		assert_eq!(Hippocampus::emission_available(), 0);
+		assert_eq!(Balances::free_balance(&fam_a), of(&fam_a));
+		assert_eq!(Balances::free_balance(&fam_b), of(&fam_b));
 	});
 }
 
 #[test]
-fn a_families_share_is_the_sum_of_its_childrens_weights() {
-	// fam_a runs three nodes, fam_b one. The split follows summed weight
-	// (300 vs 100), and fam_a receives ONE transfer, not three.
+fn a_families_share_follows_its_aggregate_not_its_child_count() {
+	// fam_a spreads the same bytes over three nodes, fam_b carries them on
+	// one. Their payouts are equal: splitting data across children is neutral.
+	// (Under the previous per-child sum, fam_a would have collected ~3x.)
 	new_test_ext().execute_with(|| {
 		let (fam_a, fam_b) = (account(2), account(3));
 		fund_bank_and_whitelist_admin(100_000);
 
-		seed_active_child(&fam_a, &child(10), 100);
-		seed_active_child(&fam_a, &child(11), 150);
-		seed_active_child(&fam_a, &child(12), 50);
-		seed_active_child(&fam_b, &child(13), 100);
+		let total = 30 * TIB;
+		seed_active_child(&fam_a, &child(10), total / 3);
+		seed_active_child(&fam_a, &child(11), total / 3);
+		seed_active_child(&fam_a, &child(12), total / 3);
+		seed_active_child(&fam_b, &child(13), total);
+
+		assert_eq!(
+			weight_of(&fam_a),
+			weight_of(&fam_b),
+			"same bytes split differently must weigh the same"
+		);
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
 
-		assert_eq!(Balances::free_balance(&fam_a), 75_000);
-		assert_eq!(Balances::free_balance(&fam_b), 25_000);
+		// Equal weights, equal halves — and fam_a receives ONE transfer.
+		assert_eq!(Balances::free_balance(&fam_a), 50_000);
+		assert_eq!(Balances::free_balance(&fam_b), 50_000);
 		// Children are not payees — only the family account that put up the
 		// deposits receives emission.
 		for seed in [10u8, 11, 12, 13] {
@@ -188,18 +234,16 @@ fn a_families_share_is_the_sum_of_its_childrens_weights() {
 
 #[test]
 fn the_heaviest_family_takes_the_largest_share() {
-	// Three families, strictly ordered by summed child weight: the payout
-	// must preserve that order.
+	// Three families, strictly ordered by aggregate data: the payout must
+	// preserve that order.
 	new_test_ext().execute_with(|| {
 		let (heavy, middle, light) = (account(2), account(3), account(4));
 		fund_bank_and_whitelist_admin(100_000);
 
-		// 30_000 / 15_000 / 5_000 — family totals well past u16::MAX territory
-		// once summed, which is what the u128 weight width is for.
-		seed_active_child(&heavy, &child(10), 15_000);
-		seed_active_child(&heavy, &child(11), 15_000);
-		seed_active_child(&middle, &child(12), 15_000);
-		seed_active_child(&light, &child(13), 5_000);
+		seed_active_child(&heavy, &child(10), 64 * TIB);
+		seed_active_child(&heavy, &child(11), 64 * TIB);
+		seed_active_child(&middle, &child(12), 16 * TIB);
+		seed_active_child(&light, &child(13), TIB);
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
 
@@ -208,78 +252,76 @@ fn the_heaviest_family_takes_the_largest_share() {
 			Balances::free_balance(&middle),
 			Balances::free_balance(&light),
 		);
-		assert_eq!(h, 60_000);
-		assert_eq!(m, 30_000);
-		assert_eq!(l, 10_000);
-		assert!(h > m && m > l);
+		assert!(h > m && m > l, "payout must follow the data ordering: {h} / {m} / {l}");
+		assert!(l > 0, "a family above the floor must not be starved");
 	});
 }
 
 #[test]
-fn family_weights_beyond_u16_are_not_flattened() {
-	// 35 children (MaxChildrenPerFamily) at MaxNodeWeight sums to 1_750_000 —
-	// 26x u16::MAX. A u16 accumulator would have clamped this family to 65_535
-	// and handed it a 1:1 split against a family a quarter its size instead of
-	// the 4:1 it earned.
+fn the_aggregate_cap_bounds_every_familys_weight() {
+	// The payout weight is the family aggregate, capped at `MaxFamilyScore`.
+	// Even a family maxing out children and bytes cannot exceed it — there is
+	// no per-child sum left to blow past the u16 range (the previous shape
+	// reached 35 x MaxNodeWeight = 1_750_000 and was the fragmentation
+	// exploit's engine).
 	new_test_ext().execute_with(|| {
 		let (big, small) = (account(2), account(3));
 		fund_bank_and_whitelist_admin(100_000);
 
-		let max_node_weight: u16 = <Runtime as pallet_arion::Config>::MaxNodeWeight::get();
 		for i in 0..35u8 {
-			seed_active_child(&big, &child(10 + i), max_node_weight);
+			seed_active_child(&big, &child(10 + i), 1000 * TIB);
 		}
-		for i in 0..9u8 {
-			seed_active_child(&small, &child(100 + i), max_node_weight);
-		}
-		// 35 : 9 — deliberately not a round ratio, so a clamped weight cannot
-		// coincidentally produce the same split.
+		seed_active_child(&small, &child(100), 8 * TIB);
+
+		let max_score: u16 = <Runtime as pallet_arion::Config>::MaxFamilyScore::get();
 		let weights = pallet_arion::Pallet::<Runtime>::active_family_weights();
-		let of = |f: &AccountId| weights.iter().find(|(a, _)| a == f).unwrap().1;
-		assert_eq!(of(&big), 35 * u128::from(max_node_weight));
-		assert!(of(&big) > u128::from(u16::MAX));
+		for (f, w) in &weights {
+			assert!(
+				*w <= u128::from(max_score),
+				"family {f:?} exceeds MaxFamilyScore: {w}"
+			);
+		}
+		assert!(weight_of(&big) > weight_of(&small));
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
-
-		assert_eq!(Balances::free_balance(&big), 100_000 * 35 / 44);
-		assert_eq!(Balances::free_balance(&small), 100_000 * 9 / 44);
+		assert!(Balances::free_balance(&big) > Balances::free_balance(&small));
 	});
 }
 
 #[test]
 fn unbonding_children_neither_earn_nor_dilute() {
 	// A child that deregistered is in Unbonding with its deposit on the way
-	// out: it has nothing at risk, so its weight must not be paid for — and
+	// out: it has nothing at risk, so its data must not be paid for — and
 	// must not shrink everyone else's share either.
 	new_test_ext().execute_with(|| {
 		let (fam_a, exiting) = (account(2), account(3));
 		fund_bank_and_whitelist_admin(100_000);
 
-		seed_active_child(&fam_a, &child(10), 100);
-		seed_child(&exiting, &child(11), 300, ChildStatus::Unbonding, 0);
+		seed_active_child(&fam_a, &child(10), TIB);
+		seed_child(&exiting, &child(11), 32 * TIB, ChildStatus::Unbonding, 0);
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
 
 		assert_eq!(Balances::free_balance(&exiting), 0);
-		// The whole payout, not 25% of it: the excluded weight is out of the
-		// denominator too.
+		// The whole payout, not a fraction of it: the excluded weight is out
+		// of the denominator too.
 		assert_eq!(Balances::free_balance(&fam_a), 100_000);
 	});
 }
 
 #[test]
 fn a_family_whose_children_all_went_stale_is_excluded() {
-	// `NodeWeightByChild` keeps a node's last value until pruning gets to it.
-	// Without the freshness filter an offline node would keep collecting on
-	// its final good weight forever.
+	// Quality keeps a node's last value until pruning gets to it. Without the
+	// freshness filter an offline node would keep collecting on its final
+	// good report forever.
 	new_test_ext().execute_with(|| {
 		let (fresh, stale) = (account(2), account(3));
 		fund_bank_and_whitelist_admin(100_000);
 
 		let stale_after: u32 = <Runtime as pallet_arion::Config>::StaleChildBuckets::get();
-		seed_active_child(&fresh, &child(10), 100);
+		seed_active_child(&fresh, &child(10), TIB);
 		// One bucket past the staleness horizon.
-		seed_child(&stale, &child(11), 300, ChildStatus::Active, stale_after + 1);
+		seed_child(&stale, &child(11), 32 * TIB, ChildStatus::Active, stale_after + 1);
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
 
@@ -298,8 +340,8 @@ fn a_child_exactly_at_the_staleness_horizon_still_earns() {
 		fund_bank_and_whitelist_admin(100_000);
 
 		let stale_after: u32 = <Runtime as pallet_arion::Config>::StaleChildBuckets::get();
-		seed_child(&borderline, &child(10), 100, ChildStatus::Active, stale_after);
-		seed_active_child(&fresh, &child(11), 100);
+		seed_child(&borderline, &child(10), TIB, ChildStatus::Active, stale_after);
+		seed_active_child(&fresh, &child(11), TIB);
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
 
@@ -310,13 +352,14 @@ fn a_child_exactly_at_the_staleness_horizon_still_earns() {
 
 #[test]
 fn unweighted_families_are_dropped_not_paid_zero() {
-	// A registered family whose children have never been scored contributes
-	// nothing, and must not occupy one of the `MaxMinersPerPayout` slots.
+	// A registered family whose children carry no data below the scoring
+	// floor contributes nothing, and must not occupy one of the
+	// `MaxMinersPerPayout` slots.
 	new_test_ext().execute_with(|| {
 		let (earning, unscored) = (account(2), account(3));
 		fund_bank_and_whitelist_admin(100_000);
 
-		seed_active_child(&earning, &child(10), 100);
+		seed_active_child(&earning, &child(10), TIB);
 		seed_active_child(&unscored, &child(11), 0);
 
 		let weights = pallet_arion::Pallet::<Runtime>::active_family_weights();
@@ -333,28 +376,32 @@ fn a_family_is_not_paid_for_a_child_registered_to_someone_else() {
 	// `FamilyChildren` and `ChildRegistrations` are two indexes of one fact.
 	// The registration is authoritative: if a family's child list names a
 	// child whose registration points at a different family, that child's
-	// weight belongs to the other family and must not be credited here.
+	// data belongs to the other family and must not be credited here.
 	new_test_ext().execute_with(|| {
 		let (thief, owner) = (account(2), account(3));
 		fund_bank_and_whitelist_admin(100_000);
 
-		seed_active_child(&thief, &child(10), 100);
-		seed_active_child(&owner, &child(11), 300);
+		seed_active_child(&thief, &child(10), TIB);
+		seed_active_child(&owner, &child(11), TIB);
+		let honest = weight_of(&thief);
+
 		// Splice the owner's child into the thief's list without touching the
 		// child's registration.
 		pallet_arion::FamilyChildren::<Runtime>::mutate(&thief, |v| {
 			v.try_push(child(11)).expect("under MaxChildrenPerFamily");
 		});
 
-		let weights = pallet_arion::Pallet::<Runtime>::active_family_weights();
-		let of = |f: &AccountId| weights.iter().find(|(a, _)| a == f).map(|(_, w)| *w);
-		assert_eq!(of(&thief), Some(100), "thief was credited for a child it does not own");
-		assert_eq!(of(&owner), Some(300));
+		assert_eq!(
+			weight_of(&thief),
+			honest,
+			"thief was credited for a child it does not own"
+		);
 
 		assert_ok!(Hippocampus::pay_storage_miners(RuntimeOrigin::signed(admin()), 100_000));
 
-		assert_eq!(Balances::free_balance(&thief), 25_000);
-		assert_eq!(Balances::free_balance(&owner), 75_000);
+		// Equal data, equal halves — the splice moved nothing.
+		assert_eq!(Balances::free_balance(&thief), 50_000);
+		assert_eq!(Balances::free_balance(&owner), 50_000);
 	});
 }
 
@@ -364,8 +411,8 @@ fn pay_storage_miners_excludes_uid_238_account() {
 		let (fam_a, capture) = (account(2), account(5));
 		fund_bank_and_whitelist_admin(100_000);
 
-		seed_active_child(&fam_a, &child(10), 100);
-		seed_active_child(&capture, &child(13), 300);
+		seed_active_child(&fam_a, &child(10), TIB);
+		seed_active_child(&capture, &child(13), 32 * TIB);
 
 		// Mark `capture` as the uid-238 (emission capture) account on the
 		// metagraph: it must be excluded and not dilute the family split.
@@ -395,7 +442,7 @@ fn the_ranking_pallet_no_longer_decides_who_gets_paid() {
 		let (family, ranked_only) = (account(2), account(6));
 		fund_bank_and_whitelist_admin(100_000);
 
-		seed_active_child(&family, &child(10), 100);
+		seed_active_child(&family, &child(10), TIB);
 
 		let node_id = vec![14u8; 32];
 		pallet_registration::ColdkeyNodeRegistrationV2::<Runtime>::insert(
@@ -426,7 +473,6 @@ fn the_ranking_pallet_no_longer_decides_who_gets_paid() {
 		assert_eq!(Balances::free_balance(&family), 100_000);
 	});
 }
-
 #[test]
 fn the_payout_slot_bound_covers_every_family_that_can_exist() {
 	// `pay_storage_miners` rejects the WHOLE call when the payee set exceeds

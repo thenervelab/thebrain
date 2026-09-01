@@ -1,6 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-pub mod family_weights;
 pub mod weights;
 pub use weights::WeightInfo;
 
@@ -2210,9 +2209,16 @@ pub mod pallet {
 			let mut strikes_total: u32 = 0;
 			let mut integrity_total: u32 = 0;
 			for c in children.iter() {
+				// The child's OWN registration must name the family whose list it
+				// was found under. `FamilyChildren` and `ChildRegistrations` are two
+				// indexes of one fact, kept in step by `register_child` /
+				// `deregister_child`; checking it here makes "a family is only
+				// scored for children it owns" enforced rather than assumed of
+				// every future writer, and keeps this aggregate aligned with the
+				// payout-side eligibility filter.
 				let active = matches!(
 					ChildRegistrations::<T>::get(c),
-					Some(reg) if reg.status == ChildStatus::Active
+					Some(reg) if reg.family == *family && reg.status == ChildStatus::Active
 				);
 				if !active {
 					continue;
@@ -2317,25 +2323,28 @@ pub mod pallet {
 		/// at most `MaxFamilies` keys scanned and `MaxChildrenTotal` children
 		/// read across all of them (3 reads each).
 		pub fn active_family_weights() -> Vec<(T::AccountId, u128)> {
+			// One rule, two readers: this is the SAME aggregate that feeds
+			// `FamilyWeight`, read raw (no EMA, no delta clamp) so payouts track
+			// the validator's measurements without smoothing lag. Summing the
+			// per-child scores instead (the previous shape) rewarded splitting
+			// the same bytes across more children: log2(a) + log2(b) > log2(a+b),
+			// so an operator could multiply its payout weight by fragmenting,
+			// which is exactly the exploit the aggregate closed for scoring.
+			//
+			// Zero-weight families are dropped, not returned as zeros:
+			// `pay_storage_miners` bounds its recipient list by
+			// `MaxMinersPerPayout` and overflowing it fails the whole call.
 			let bucket = CurrentWeightBucket::<T>::get();
-			let stale = T::StaleChildBuckets::get();
-			crate::family_weights::sum_family_weights(
-				FamilyChildren::<T>::iter(),
-				|family, child| {
-					let Some(reg) = ChildRegistrations::<T>::get(child) else { return false };
-					// The child's OWN registration must name the family whose
-					// list it was found under. `FamilyChildren` and
-					// `ChildRegistrations` are two indexes of one fact, kept in
-					// step by `register_child` / `deregister_child`; this makes
-					// "a family is only paid for children it owns" enforced
-					// here rather than assumed of every future writer. The read
-					// is already needed for the status check, so it is free.
-					reg.family == *family
-						&& reg.status == ChildStatus::Active
-						&& bucket.saturating_sub(NodeWeightLastBucket::<T>::get(child)) <= stale
-				},
-				|child| NodeWeightByChild::<T>::get(child),
-			)
+			FamilyChildren::<T>::iter()
+				.filter_map(|(family, _children)| {
+					let w = Self::compute_family_weight_from_nodes(&family, bucket);
+					if w > 0 {
+						Some((family, w as u128))
+					} else {
+						None
+					}
+				})
+				.collect()
 		}
 
 		pub fn get_total_family_weight() -> u128 {
