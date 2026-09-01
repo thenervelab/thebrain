@@ -594,7 +594,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92011,
+	spec_version: 92013,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1061,6 +1061,63 @@ parameter_types! {
 	/// 12_000 owed referrers a day, far ahead of any plausible backlog, while
 	/// keeping a single block's payout work bounded.
 	pub const MaxReferralPayoutsPerSweep: u32 = 250;
+	/// Accounts charged per renewal drain.
+	///
+	/// A backstop, not the operative bound. `RenewalWeightBudget` binds first —
+	/// at the measured 2.80ms per account it admits ~35 a tick, well under this
+	/// — so what this figure does is cap the damage if the measurement is ever
+	/// wrong in the cheap direction, not decide the batch size.
+	///
+	/// Left at 128 rather than lowered to match: a count that tracks the meter
+	/// would have to move with every re-measurement, and a backstop that only
+	/// engages when the meter is wrong is doing its job precisely by not being
+	/// reached. Raise it only against a benchmark.
+	pub const MaxSubscriptionChargesPerRun: u32 = 128;
+	/// Accounts the one-time due-index backfill walks per tick. Read-only over
+	/// the subscription map, so it is cheaper per account than a charge.
+	pub const MaxBackfillAccountsPerRun: u32 = 256;
+	/// Share of a block the renewal drain may spend in one tick.
+	///
+	/// `AVERAGE_ON_INITIALIZE_RATIO` is the 10% of a block the builder assumes
+	/// *all* hook work costs, and the drain shares `on_initialize` with hourly
+	/// billing, the backfill and the referral sweep — so it gets half of that
+	/// allowance rather than the whole of it. At 2000ms a block this is 100ms,
+	/// which at the measured 2.80ms per charged account is ~35 accounts: well
+	/// below `MaxSubscriptionChargesPerRun`, so the meter is the binding
+	/// constraint and the count is the backstop. That is the intended order —
+	/// the count rests on an estimate, the meter does not.
+	///
+	/// **Throughput this implies, and why the 1st of the month is the number
+	/// that matters.** ~35 accounts every 8 blocks at 6s is ~63_000 renewals a
+	/// day. That is ample for a date-to-date population spread over 28 days,
+	/// but the spread is the part not to take on faith: every subscription
+	/// predating this change stays anchored to the 1st for life, and new
+	/// signups cluster on round dates rather than distributing evenly. The
+	/// index makes the other 27 days cheap; it does not make the 1st cheaper,
+	/// it only makes it drain safely across ticks instead of in one block.
+	///
+	/// So the figure to watch after launch is how many ticks the 1st takes to
+	/// clear. Under ~63_000 accounts due on it, the day clears within itself
+	/// and nothing is deferred. Past that the cursor simply carries the
+	/// remainder into the 2nd — correct, but a day of renewals arriving a day
+	/// late — and that is the point to raise this share rather than the count.
+	pub RenewalWeightBudget: Perbill = AVERAGE_ON_INITIALIZE_RATIO / 2;
+	/// Share of a block the hourly pay-as-you-go sweep may spend in one tick.
+	///
+	/// 3% of 2000ms is 60ms, which alongside the renewal drain's 100ms keeps
+	/// both inside the ~200ms `AVERAGE_ON_INITIALIZE_RATIO` allows for all hook
+	/// work, with room left for the referral sweep and the request-count clear.
+	/// The two budgets are separate rather than shared so an upgrade-window
+	/// backfill cannot starve the sweep that runs every tick.
+	pub HourlyWeightBudget: Perbill = Perbill::from_percent(3);
+	/// Share of a block the matured-alpha release sweep may spend in one tick.
+	///
+	/// 1% of 2000ms is 20ms — ~800 batch probes a tick. Deliberately the
+	/// smallest of the three: what it guards is a 15-day maturity timer, so
+	/// falling a few ticks behind costs nothing, and the three budgets together
+	/// (5% + 3% + 1%) stay inside the ~10% `AVERAGE_ON_INITIALIZE_RATIO`
+	/// assumes for all hook work.
+	pub AlphaReleaseWeightBudget: Perbill = Perbill::from_percent(1);
 	/// Accounts whose subscription snapshots are repriced per block after a
 	/// `set_plan_price`. Runs every block, so this clears 250 accounts a block
 	/// — a reprice over 100k accounts settles in ~7 minutes — while keeping the
@@ -1088,6 +1145,12 @@ impl pallet_marketplace::Config for Runtime {
 	type ReferralPayoutInterval = ReferralPayoutInterval;
 	type MaxReferralPayoutsPerSweep = MaxReferralPayoutsPerSweep;
 	type MaxRepricedAccountsPerBlock = MaxRepricedAccountsPerBlock;
+	type MaxSubscriptionChargesPerRun = MaxSubscriptionChargesPerRun;
+	type MaxBackfillAccountsPerRun = MaxBackfillAccountsPerRun;
+	type RenewalWeightBudget = RenewalWeightBudget;
+	type HourlyWeightBudget = HourlyWeightBudget;
+	type AlphaReleaseWeightBudget = AlphaReleaseWeightBudget;
+	type WeightInfo = pallet_marketplace::weights::SubstrateWeight<Runtime>;
 }
 
 parameter_types! {
@@ -2888,6 +2951,7 @@ mod benches {
 		[pallet_timestamp, Timestamp]
 		[pallet_alpha_bridge, AlphaBridge]
 		[pallet_compute_scoring, ComputeScoring]
+		[pallet_marketplace, Marketplace]
 	);
 }
 

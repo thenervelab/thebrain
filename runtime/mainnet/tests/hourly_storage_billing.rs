@@ -139,6 +139,25 @@ fn run_one_hour() {
 	Marketplace::on_initialize(HOURLY_STEP);
 }
 
+/// Step one hour on from wherever the chain already is. `HOURLY_STEP` is a
+/// multiple of `BlockChargeCheckInterval`, so every step lands on a block the
+/// hook actually works on.
+fn advance_one_hour() {
+	let next = System::block_number().max(0) + HOURLY_STEP;
+	System::set_block_number(next);
+	Marketplace::on_initialize(next);
+}
+
+fn cancel_every_subscription(who: &AccountId) {
+	for sub in Marketplace::user_all_subscription_plans(who) {
+		assert_ok!(Marketplace::cancel_user_subscription(
+			RuntimeOrigin::signed(backend()),
+			who.clone(),
+			Some(sub.id),
+		));
+	}
+}
+
 /// Credits spent by `who` over one hourly tick, with a float large enough that
 /// nothing is refused for want of funds.
 fn hourly_spend(setup: impl FnOnce(&AccountId)) -> u128 {
@@ -150,6 +169,125 @@ fn hourly_spend(setup: impl FnOnce(&AccountId)) -> u128 {
 	report_usage(&user, DRIVE_BYTES, S3_BYTES);
 	run_one_hour();
 	before.saturating_sub(Credits::get_free_credits(&user))
+}
+
+/// The hourly sweep is bounded per tick and round-robins, so it cannot grow
+/// into a heavy block as the user base does.
+///
+/// This is the loop that reaches the block limit first: it visits every user
+/// the validator metric has ever reported on, that key set only grows, and it
+/// runs on *every* tick rather than on an anniversary. Unbounded it is fine at
+/// a hundred users and fatal at ten thousand, with nothing in between to
+/// signal the change — `on_initialize` is never rejected for being overweight,
+/// the block is just produced heavier.
+#[test]
+fn the_hourly_sweep_is_bounded_per_tick_and_reaches_everyone() {
+	new_test_ext().execute_with(|| {
+		// Enough users that one tick cannot afford them all.
+		let total = 300u32;
+		for n in 0..total {
+			let mut raw = [0u8; 32];
+			raw[0] = 0xC0;
+			raw[1..5].copy_from_slice(&n.to_le_bytes());
+			let user = AccountId32::new(raw);
+			deposit_credits(&user, 1_000_000);
+			report_usage(&user, DRIVE_BYTES, S3_BYTES);
+		}
+
+		let budget = <Runtime as pallet_marketplace::Config>::HourlyWeightBudget::get()
+			* <Runtime as frame_system::Config>::BlockWeights::get().max_block;
+
+		// One tick must not spend more than the sweep's budget, and must park a
+		// cursor because it cannot have finished.
+		System::set_block_number(HOURLY_STEP);
+		let consumed = Marketplace::on_initialize(HOURLY_STEP);
+		assert!(
+			consumed.ref_time() <= budget.ref_time() * 2,
+			"one hourly tick spent {} against a budget of {}",
+			consumed.ref_time(),
+			budget.ref_time(),
+		);
+		assert!(
+			pallet_marketplace::HourlyChargeCursor::<Runtime>::get().is_some(),
+			"300 users cannot fit in one metered tick — the sweep must park a cursor",
+		);
+
+		// The cursor comes back around: every user is billed, none skipped.
+		for _ in 0..40 {
+			let next = System::block_number() + HOURLY_STEP;
+			System::set_block_number(next);
+			Marketplace::on_initialize(next);
+		}
+		for n in 0..total {
+			let mut raw = [0u8; 32];
+			raw[0] = 0xC0;
+			raw[1..5].copy_from_slice(&n.to_le_bytes());
+			let user = AccountId32::new(raw);
+			assert!(
+				Credits::get_free_credits(&user) < 1_000_000,
+				"user {n} was reached by the paged sweep",
+			);
+		}
+	});
+}
+
+/// Paging must not turn one hour's bill into several. Within a single hour,
+/// each user is charged exactly once no matter how many ticks the sweep needs
+/// to work through them.
+///
+/// This is the property the cursor can actually break, and the one that
+/// "everyone was reached" does not check: a sweep that restarted from the top
+/// each tick would bill the head of the map repeatedly and never reach the
+/// tail, and every user would still show *some* spend. Asserting the exact
+/// amount is what separates the two.
+///
+/// Ticks here are 8 blocks apart rather than `HOURLY_STEP`, so all of them fall
+/// inside one `BlocksPerHour` window — after a user's first charge their
+/// `StorageLastChargedAt` makes them ineligible for the rest of it.
+#[test]
+fn a_paged_sweep_bills_each_user_exactly_once_an_hour() {
+	new_test_ext().execute_with(|| {
+		let total = 300u32;
+		let user_of = |n: u32| {
+			let mut raw = [0u8; 32];
+			raw[0] = 0xD0;
+			raw[1..5].copy_from_slice(&n.to_le_bytes());
+			AccountId32::new(raw)
+		};
+
+		for n in 0..total {
+			let user = user_of(n);
+			deposit_credits(&user, 1_000_000);
+			report_usage(&user, DRIVE_BYTES, S3_BYTES);
+		}
+		let before: Vec<u128> = (0..total).map(|n| Credits::get_free_credits(&user_of(n))).collect();
+
+		// First tick is past `BlocksPerHour`, so everyone starts eligible.
+		// Subsequent ticks are 8 blocks apart and stay inside that same hour.
+		let mut block = HOURLY_STEP;
+		System::set_block_number(block);
+		Marketplace::on_initialize(block);
+		for _ in 0..20 {
+			block += 8;
+			System::set_block_number(block);
+			Marketplace::on_initialize(block);
+		}
+
+		// Note the cursor is deliberately *not* asserted empty here. Once a pass
+		// completes the sweep restarts from the top and keeps walking — cheaply,
+		// since everyone is now within their hour and takes the probe path — so
+		// it parks a cursor again. That re-walking is the cost of having no
+		// index over "who owes something", which is the follow-on work; what
+		// matters here is that it is bounded and that it does not re-charge.
+		for n in 0..total {
+			let user = user_of(n);
+			assert_eq!(
+				before[n as usize] - Credits::get_free_credits(&user),
+				BOTH_SIDES_CHARGE,
+				"user {n} was billed for exactly one hour, not zero and not twice",
+			);
+		}
+	});
 }
 
 #[test]
@@ -504,12 +642,17 @@ fn an_affordable_storage_plan_survives_when_its_sibling_cannot_be_paid() {
 
 		run_monthly_charge_at_feb1();
 
+		// A lapsed subscription is pruned outright rather than left in the
+		// vector with `active = false`: dead rows are decoded on every tick,
+		// so the sweep would keep paying for them forever.
 		let subs = Marketplace::user_all_subscription_plans(&user);
 		let drive_sub = subs.iter().find(|s| s.package.id == drive).expect("drive sub");
-		let s3_sub = subs.iter().find(|s| s.package.id == s3).expect("s3 sub");
 
 		assert!(drive_sub.active, "the plan the user could pay for is kept");
-		assert!(!s3_sub.active, "only the unaffordable plan is deactivated");
+		assert!(
+			!subs.iter().any(|s| s.package.id == s3),
+			"only the unaffordable plan is dropped, and it is dropped entirely",
+		);
 		assert_eq!(Credits::get_free_credits(&user), 0, "the cheaper renewal was collected");
 	});
 }
@@ -539,6 +682,218 @@ fn the_surviving_plan_still_suppresses_its_half_of_hourly_billing() {
 			before - Credits::get_free_credits(&user),
 			ONE_SIDE_CHARGE,
 			"the surviving Drive plan still covers the Drive bytes",
+		);
+	});
+}
+
+/// A sweep that arrives late must bill every hour it missed, not just the one
+/// that made the user due.
+///
+/// This is the property paging broke. The old charge was a flat hour with the
+/// marker moved to `now`, which was lossless only because the pre-paging sweep
+/// visited every user on every tick. Once the sweep pages, a user is reached
+/// once per pass over the map — several hours apart on a large map — and a flat
+/// hour silently forgives the rest. The failure is invisible from
+/// "everyone was billed": each user shows spend, just far too little of it.
+#[test]
+fn a_late_visit_bills_every_hour_it_missed() {
+	new_test_ext().execute_with(|| {
+		let user = account(21);
+		deposit_credits(&user, 10_000_000);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		// First sight bills a single hour and pins the marker at 608.
+		run_one_hour();
+		let after_first = Credits::get_free_credits(&user);
+
+		// Ten hours pass with no tick reaching this user, then one does.
+		let late = HOURLY_STEP + 10 * 600;
+		System::set_block_number(late);
+		Marketplace::on_initialize(late);
+
+		let spent = after_first.saturating_sub(Credits::get_free_credits(&user));
+		assert_eq!(
+			spent,
+			BOTH_SIDES_CHARGE * 10,
+			"ten elapsed hours must settle as ten hours, not one",
+		);
+
+		// The marker lands on the hours actually paid for, so the next tick an
+		// instant later has nothing to bill.
+		let settled = Credits::get_free_credits(&user);
+		let next = late + 8;
+		System::set_block_number(next);
+		Marketplace::on_initialize(next);
+		assert_eq!(
+			Credits::get_free_credits(&user),
+			settled,
+			"catch-up must not leave the marker behind and re-bill the same hours",
+		);
+	});
+}
+
+/// Arrears past the per-visit cap stay owed rather than being forgiven.
+///
+/// The cap bounds what one very stale account can pull into a single tick. It
+/// would be worthless if the marker then jumped to `now` — that would just move
+/// the old bug behind a threshold. The remainder has to survive in
+/// `StorageLastChargedAt` and come out on the following visits.
+#[test]
+fn arrears_beyond_the_catch_up_cap_are_deferred_not_dropped() {
+	new_test_ext().execute_with(|| {
+		let user = account(22);
+		deposit_credits(&user, 10_000_000);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		run_one_hour();
+		let after_first = Credits::get_free_credits(&user);
+
+		// Thirty hours of arrears against a 24-hour cap.
+		let late = HOURLY_STEP + 30 * 600;
+		System::set_block_number(late);
+		Marketplace::on_initialize(late);
+		assert_eq!(
+			after_first.saturating_sub(Credits::get_free_credits(&user)),
+			BOTH_SIDES_CHARGE * 24,
+			"one visit settles at most the cap",
+		);
+
+		// The six hours the cap held back are billed next time round.
+		let after_cap = Credits::get_free_credits(&user);
+		let next = late + 8;
+		System::set_block_number(next);
+		Marketplace::on_initialize(next);
+		assert_eq!(
+			after_cap.saturating_sub(Credits::get_free_credits(&user)),
+			BOTH_SIDES_CHARGE * 6,
+			"the hours the cap deferred must still be collected",
+		);
+	});
+}
+
+/// A user who cannot afford the whole backlog pays down what they can and
+/// stays behind on the rest.
+///
+/// All-or-nothing was the old shape: the charge was skipped entirely when the
+/// balance fell short, so a user who could cover most of their bill paid none
+/// of it while the debt kept growing. Partial settlement also has to move the
+/// marker by exactly the hours paid — no more, or the unpaid hours are
+/// forgiven; no less, or they are billed twice.
+#[test]
+fn a_short_balance_pays_down_the_hours_it_can_cover() {
+	new_test_ext().execute_with(|| {
+		let user = account(23);
+		// One hour for first sight, then exactly three hours of headroom.
+		deposit_credits(&user, BOTH_SIDES_CHARGE * 4);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		run_one_hour();
+		assert_eq!(Credits::get_free_credits(&user), BOTH_SIDES_CHARGE * 3);
+
+		// Ten hours owed against three hours of credits.
+		let late = HOURLY_STEP + 10 * 600;
+		System::set_block_number(late);
+		Marketplace::on_initialize(late);
+		assert_eq!(
+			Credits::get_free_credits(&user),
+			0,
+			"a short balance must pay down what it covers, not refuse the charge",
+		);
+
+		// Funded again, the seven unpaid hours are still owed and come out.
+		deposit_credits(&user, 10_000_000);
+		let funded = Credits::get_free_credits(&user);
+		let next = late + 8;
+		System::set_block_number(next);
+		Marketplace::on_initialize(next);
+		assert_eq!(
+			funded.saturating_sub(Credits::get_free_credits(&user)),
+			BOTH_SIDES_CHARGE * 7,
+			"the hours the balance could not cover stay owed",
+		);
+	});
+}
+
+/// A user the sweep has never charged is billed one hour, not every hour since
+/// genesis.
+///
+/// `StorageLastChargedAt` is `ValueQuery`, so an absent marker reads as block
+/// zero. Multiplying by elapsed hours without anchoring that would hand a
+/// brand-new account a bill for the chain's entire history the first time it is
+/// seen.
+#[test]
+fn first_sight_bills_a_single_hour() {
+	new_test_ext().execute_with(|| {
+		let user = account(24);
+		deposit_credits(&user, 10_000_000);
+
+		// Report only after the chain is many hours old.
+		let late = 40 * 600;
+		System::set_block_number(late);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		let before = Credits::get_free_credits(&user);
+		let tick = late + 8;
+		System::set_block_number(tick);
+		Marketplace::on_initialize(tick);
+
+		assert_eq!(
+			before.saturating_sub(Credits::get_free_credits(&user)),
+			BOTH_SIDES_CHARGE,
+			"an unmarked account must start its clock, not be billed since genesis",
+		);
+	});
+}
+
+/// A stretch a subscription paid for must not turn into hourly arrears the
+/// moment the subscription ends.
+///
+/// While a plan covers a side the sweep bills nothing for it, and it used to
+/// leave `StorageLastChargedAt` frozen at the last *pre-coverage* hour —
+/// nothing on the purchase path reset it and the covered pass returned before
+/// advancing it. On cancellation the sweep then billed forward from that frozen
+/// marker, `MAX_CATCHUP_HOURS` at a time, charging the user by the hour for the
+/// whole window they had already paid a subscription for. The longer the
+/// subscription was held, the larger the bill for ending it.
+#[test]
+fn cancelling_a_covered_plan_does_not_back_bill_the_covered_window() {
+	new_test_ext().execute_with(|| {
+		let drive_plan = add_plan(b"drive", false);
+		let s3_plan = add_plan(b"s3", true);
+		let user = account(11);
+		deposit_credits(&user, 1_000_000);
+		report_usage(&user, DRIVE_BYTES, S3_BYTES);
+
+		// One uncovered hour first, so there is a real marker to freeze — a
+		// user the sweep has never charged has none, and reads as "bill one
+		// hour" anyway.
+		run_one_hour();
+
+		purchase(&user, drive_plan);
+		purchase(&user, s3_plan);
+
+		// Twenty hours with both sides covered. The subscription is what pays
+		// for these; the hourly sweep must take nothing.
+		let covered_from = Credits::get_free_credits(&user);
+		for _ in 0..20 {
+			advance_one_hour();
+		}
+		assert_eq!(
+			Credits::get_free_credits(&user),
+			covered_from,
+			"a fully covered user is billed nothing hourly",
+		);
+
+		cancel_every_subscription(&user);
+
+		// The first hour after coverage ends is one hour of usage — not the
+		// twenty the subscription already covered.
+		let before = Credits::get_free_credits(&user);
+		advance_one_hour();
+		assert_eq!(
+			before - Credits::get_free_credits(&user),
+			BOTH_SIDES_CHARGE,
+			"only the hour actually spent uncovered is billed",
 		);
 	});
 }

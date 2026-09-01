@@ -702,6 +702,15 @@ fn monthly_renewal_pays_commission_in_tokens() {
 		let sub = storage_subscription(&buyer);
 		assert!(sub.active);
 		assert_eq!(sub.next_charge_unix_day, Some(MAR1_2026_DAY));
+		// The discount was purchase-only, so once this subscription renews it
+		// is no longer a discounted one and must stop claiming to be. The field
+		// is what the refund and carry-credit paths value a cycle by, so a
+		// stale `PAID_PER_MONTH` here would credit the buyer 9_499 for a cycle
+		// they just paid 9_999 for.
+		assert_eq!(
+			sub.paid_per_month, PLAN_PRICE,
+			"a renewal records the face price it actually charged",
+		);
 	});
 }
 
@@ -731,8 +740,11 @@ fn failed_renewal_deactivates_subscription_and_pays_no_commission() {
 
 		run_monthly_charge_at_feb1();
 
-		let sub = storage_subscription(&buyer);
-		assert!(!sub.active, "unpayable subscription is deactivated");
+		// The lapsed subscription is pruned, not merely flagged inactive.
+		assert!(
+			Marketplace::user_all_subscription_plans(&buyer).is_empty(),
+			"unpayable subscription is deactivated and reclaimed",
+		);
 		// Commission accrues only on money actually collected.
 		assert_eq!(Balances::free_balance(&referrer), ED + PURCHASE_COMMISSION);
 	});
@@ -1211,17 +1223,21 @@ fn a_backlog_past_the_per_sweep_bound_resumes_on_the_next_sweep() {
 		const OWED: u32 = 251;
 		const LIMIT: usize = 250;
 
-		assert_ok!(Marketplace::set_price_per_gb(RuntimeOrigin::root(), PRICE_PER_GB));
+		// Seed the backlog directly rather than driving it through an hour of
+		// billing. What is under test is `sweep_referral_commissions`'s
+		// pagination, and the hourly sweep that would otherwise build the
+		// backlog is itself paged now — so accruing 251 balances through it
+		// would take several ticks and re-charge the early users along the way,
+		// making the setup a test of the wrong thing.
 		for i in 0..OWED {
 			let referrer = account32(i);
-			let user = account32(1_000_000 + i);
-			let code = new_referral_code(&referrer);
 			fund_ed(&referrer);
-			deposit_credits(&user, 2 * HOURLY_CHARGE, Some(code));
-			pallet_marketplace::UserTotalDriveFilesSize::<Runtime>::insert(&user, FILE_BYTES);
+			pallet_marketplace::AccruedReferralCommission::<Runtime>::insert(
+				&referrer,
+				HOURLY_COMMISSION,
+			);
 		}
 
-		run_hours(1..=1);
 		assert_eq!(
 			pallet_marketplace::AccruedReferralCommission::<Runtime>::iter().count(),
 			OWED as usize,

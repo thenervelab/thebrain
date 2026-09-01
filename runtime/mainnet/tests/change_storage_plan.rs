@@ -32,11 +32,12 @@ use sp_runtime::{
 
 type Hashed = <Runtime as frame_system::Config>::Hash;
 
-/// 2026-01-01T00:00:00Z. January has 31 days, so a purchase on the 1st
-/// prorates to exactly one full month — the arithmetic-free baseline.
+/// 2026-01-01T00:00:00Z. Anchored to the 1st, so this account bills on the
+/// same days it would have before date-to-date billing — the legacy baseline.
 const JAN1_2026_MS: u64 = 1_767_225_600_000;
-/// 2026-01-16T12:00:00Z — 16 of 31 days remain (inclusive of today), the
-/// mid-month case where proration actually rounds.
+/// 2026-01-16T12:00:00Z — a mid-month purchase, which under date-to-date
+/// billing starts a full-price cycle running Jan 16 → Feb 16 rather than a
+/// prorated stub ending on the 1st.
 const JAN16_2026_MS: u64 = JAN1_2026_MS + 15 * 86_400_000 + 12 * 3_600_000;
 
 const FEB1_2026_DAY: u32 = 20_485;
@@ -45,11 +46,6 @@ const APR1_2026_DAY: u32 = 20_544;
 /// Plan ladder. Prices are round so the netting assertions read directly.
 const SOLO_PRICE: u128 = 1_000;
 const MAX_PRICE: u128 = 3_000;
-
-/// Mid-month (16/31) prorations, ceil-rounded: ⌈1_000×16/31⌉ = 517,
-/// ⌈3_000×16/31⌉ = 1_549.
-const SOLO_PRORATED: u128 = 517;
-const MAX_PRORATED: u128 = 1_549;
 
 const ED: u128 = 500;
 const BANK_FUND: u128 = 1_000_000;
@@ -218,13 +214,17 @@ fn mid_month_upgrade_never_bills_the_remaining_days_twice() {
 
 		deposit_credits(&user, 10_000, None);
 		purchase(&user, solo, None);
-		assert_eq!(Credits::get_free_credits(&user), 10_000 - SOLO_PRORATED);
+		// A mid-cycle purchase is charged in full, not prorated to the 1st: the
+		// user is buying a whole Jan 16 → Feb 16 cycle.
+		assert_eq!(Credits::get_free_credits(&user), 10_000 - SOLO_PRICE);
 
 		assert_ok!(change_plan(&user, max));
 
-		// Total out of pocket for January is exactly one prorated Max month:
-		// the 517 already paid for Solo carries over as a credit.
-		assert_eq!(Credits::get_free_credits(&user), 10_000 - MAX_PRORATED);
+		// Upgrading on the same day carries the entire unused Solo cycle over as
+		// credit — 31 of 31 days remain — so the whole 1_000 comes back and the
+		// full 3_000 Max cycle is charged against it. Total out of pocket is
+		// exactly one Max cycle, never the two overlapping ones.
+		assert_eq!(Credits::get_free_credits(&user), 10_000 - MAX_PRICE);
 	});
 }
 

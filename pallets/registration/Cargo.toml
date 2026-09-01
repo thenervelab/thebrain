@@ -44,7 +44,16 @@ sp-runtime = { default-features = false, workspace = true }
 
 [features]
 default = ["std"]
-runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+runtime-benchmarks = [
+	"frame-benchmarking/runtime-benchmarks",
+	# `pallet-staking` gates its `StakingUnchecked::migrate_to_direct_staker`
+	# impl behind its own `runtime-benchmarks`, while `sp-staking` adds the
+	# method to the trait under that same feature. Enabling the trait side
+	# without the impl side leaves `impl StakingUnchecked for Pallet` missing a
+	# method, which is why nothing in this workspace could be built with
+	# `--features runtime-benchmarks` before this line existed.
+	"pallet-staking/runtime-benchmarks",
+]
 std = [
 	"codec/std",
 	"scale-info/std",

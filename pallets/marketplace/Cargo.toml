@@ -47,6 +47,7 @@ sp-io = { git = "https://github.com/paritytech/polkadot-sdk", branch = "stable24
 default = ["std"]
 std = [
     "codec/std",
+    "frame-benchmarking?/std",
     "frame-support/std",
     "frame-system/std",
     "scale-info/std",
@@ -71,5 +72,10 @@ std = [
     "pallet-hippocampus/std",
     "payment-math/std",
 ]
-runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+runtime-benchmarks = [
+    "frame-benchmarking/runtime-benchmarks",
+    "frame-support/runtime-benchmarks",
+    "frame-system/runtime-benchmarks",
+    "pallet-registration/runtime-benchmarks",
+]
 try-runtime = ["frame-support/try-runtime"]

@@ -2,8 +2,11 @@
 pub use pallet::*;
 pub use types::*;
 
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
 pub mod migrations;
 mod types;
+pub mod weights;
 use sp_core::offchain::KeyTypeId;
 // use frame_system::offchain::SignedPayload;
 
@@ -53,6 +56,8 @@ pub mod pallet {
 	use super::*;
 	use frame_support::traits::ExistenceRequirement;
 	use frame_support::traits::Len;
+	use crate::weights::WeightInfo;
+	use frame_support::weights::WeightMeter;
 	use frame_support::{
 		pallet_prelude::*,
 		traits::OnRuntimeUpgrade,
@@ -79,7 +84,7 @@ pub mod pallet {
 	use sp_runtime::traits::Zero;
 	use sp_runtime::{
 		traits::{AccountIdConversion, AtLeast32BitUnsigned, Hash, SaturatedConversion},
-		Saturating,
+		Perbill, Saturating,
 	};
 	use sp_std::{vec, vec::Vec};
 	#[pallet::pallet]
@@ -89,6 +94,13 @@ pub mod pallet {
 
 	/// The current storage version.
 	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+
+	/// How many empty due-days the renewal drain may skip past in one tick.
+	///
+	/// The cursor only advances over a drained day, so after downtime it has to
+	/// walk forward to today. Bounding the walk keeps the probe cost declarable
+	/// while still closing a two-month gap in a handful of ticks.
+	const MAX_DAY_PROBES: u32 = 64;
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -124,26 +136,42 @@ pub mod pallet {
 			if current_block % T::BlockChargeCheckInterval::get().into() == 0u32.into() {
 				weight_used =
 					weight_used.saturating_add(Self::handle_hourly_storage_charging(current_block));
-				// Monthly subscription charging:
-				// - recurring charges happen only on the 1st day of the calendar month
-				// - guarded by a unix-day marker so we only run once per day even if multiple blocks hit this interval
-				if let Some(unix_day) = Self::should_run_monthly_subscription_charge() {
-					weight_used = weight_used
-						.saturating_add(Self::handle_all_subscription_charging(current_block));
-					// Mark as run for today only after charging completes, to allow retry
-					// if future changes introduce abortable failure paths.
-					LastMonthlySubscriptionChargeDay::<T>::put(unix_day);
-				}
-				if let Err(e) = Self::release_matured_pending_alpha(current_block) {
-					log::error!(
-						target: "runtime::marketplace",
-						"release_matured_pending_alpha failed at block {:?}: {:?}",
-						current_block,
-						e
-					);
-				}
-				// Conservative: iterating batches is unbounded; charge at least one read.
-				weight_used = weight_used.saturating_add(T::DbWeight::get().reads_writes(1, 0));
+
+				// One budget shared by the two paged sweeps below, rather than
+				// one each. During the upgrade window both are live at once —
+				// the backfill building the index and the fallback scan
+				// charging from it — and separate budgets would bound each of
+				// them while leaving their *sum* free to overrun the hook's
+				// whole allowance, which is what a budget is for.
+				//
+				// The backfill draws first on purpose: until the index exists
+				// every tick pays for an unindexed scan, so finishing it is
+				// worth more than the charges it delays by a tick.
+				let mut meter = WeightMeter::with_limit(
+					T::RenewalWeightBudget::get()
+						* <T as frame_system::Config>::BlockWeights::get().max_block,
+				);
+
+				// Populate the due-day index for subscriptions that predate it.
+				// Ordinary bounded hook work, not a migration — see
+				// `BackfillCursor`. No-op once finished.
+				weight_used =
+					weight_used.saturating_add(Self::backfill_due_index(&mut meter));
+
+				// Subscription renewals: drain the accounts actually due, up to
+				// the per-run cap. Every day has someone due under date-to-date
+				// billing, so this runs every tick rather than once a month —
+				// which is only affordable because it reads the due-day prefix
+				// instead of walking every account.
+				weight_used = weight_used.saturating_add(
+					Self::handle_all_subscription_charging(current_block, &mut meter),
+				);
+				// Paged and metered like the sweeps above. It used to walk every
+				// batch the chain has ever created on every tick and declare a
+				// single read for it — and `Batches` is only pruned by
+				// chargeback, so that walk grows with the whole deposit history.
+				weight_used = weight_used
+					.saturating_add(Self::release_matured_pending_alpha(current_block));
 			}
 
 			weight_used
@@ -239,6 +267,64 @@ pub mod pallet {
 		/// reprice over more blocks rather than dropping accounts.
 		#[pallet::constant]
 		type MaxRepricedAccountsPerBlock: Get<u32>;
+
+		/// Max accounts charged in a single renewal drain, bounding its weight.
+		///
+		/// This is the number that makes the weight returned by `on_initialize`
+		/// a promise rather than a report. Nothing upstream rejects an
+		/// overweight hook — the block is simply produced heavier — so the cap
+		/// has to be applied before the work, not measured after it.
+		///
+		/// Counted in *accounts* because the weight formula is per-account.
+		/// Accounts not reached stay in the day's bucket for the next tick.
+		#[pallet::constant]
+		type MaxSubscriptionChargesPerRun: Get<u32>;
+
+		/// Max accounts the one-time due-index backfill walks per tick.
+		#[pallet::constant]
+		type MaxBackfillAccountsPerRun: Get<u32>;
+
+		/// Share of a block's maximum weight the renewal drain may spend in one
+		/// tick.
+		///
+		/// This is the bound that actually holds, as opposed to
+		/// `MaxSubscriptionChargesPerRun`, which bounds a count of accounts
+		/// against an *estimate* of what an account costs. Nothing upstream
+		/// rejects an overweight `on_initialize` — the block is simply produced
+		/// heavier — so the hook has to stop itself, and it can only do that
+		/// against a weight budget rather than against a headcount.
+		///
+		/// The drain shares `on_initialize` with hourly billing, the backfill
+		/// and the referral sweep, so this should be a fraction of the ~10%
+		/// `AVERAGE_ON_INITIALIZE_RATIO` the block builder assumes for all hook
+		/// work, not the whole of it.
+		#[pallet::constant]
+		type RenewalWeightBudget: Get<Perbill>;
+
+		/// Share of a block's maximum weight the hourly pay-as-you-go sweep may
+		/// spend in one tick.
+		///
+		/// Separate from [`Config::RenewalWeightBudget`] rather than shared with
+		/// it, because the two have different shapes: the hourly sweep runs on
+		/// *every* tick and must not be starved by an upgrade-window backfill,
+		/// while the renewal drain has a day of slack. Separate budgets only
+		/// bound the total because they are sized to fit together — keep their
+		/// sum inside the ~10% `AVERAGE_ON_INITIALIZE_RATIO` the block builder
+		/// assumes for all hook work.
+		#[pallet::constant]
+		type HourlyWeightBudget: Get<Perbill>;
+
+		/// Share of a block's maximum weight the matured-alpha release sweep may
+		/// spend in one tick.
+		///
+		/// Small on purpose: the work it guards is a 15-day timer, so delaying a
+		/// release by a few ticks costs nothing, while the map it walks is the
+		/// chain's entire deposit history and never shrinks on spend.
+		#[pallet::constant]
+		type AlphaReleaseWeightBudget: Get<Perbill>;
+
+		/// Measured cost of the units the billing hook meters itself in.
+		type WeightInfo: crate::weights::WeightInfo;
     }
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -261,13 +347,12 @@ pub mod pallet {
 		StorageMap<_, Blake2_128Concat, T::AccountId, BlockNumberFor<T>, ValueQuery>;
 
 	#[pallet::storage]
-	#[pallet::getter(fn user_plan_subscription)]
-	pub(super) type UserPlanSubscriptions<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, UserPlanSubscription<T>, OptionQuery>;
-
-	#[pallet::storage]
 	#[pallet::getter(fn user_all_subscription_plans)]
-	pub(super) type UserAllSubscriptionPlans<T: Config> =
+	// `pub` rather than `pub(super)`: the getter returns `Vec` through
+	// `ValueQuery`, so an absent key and an empty one read identically through
+	// it. Tests asserting that a cancelled account's entry is *removed* need
+	// the map itself. Every other index this pallet maintains is already `pub`.
+	pub type UserAllSubscriptionPlans<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, Vec<UserPlanSubscription<T>>, ValueQuery>;
 
 	// Storage for OS Disk Image URLs
@@ -478,14 +563,6 @@ pub mod pallet {
 			amount: BalanceOf<T>,
 		},
 		PackageSuspensionSet(T::Hash, bool),
-		StoragePlanPriceUpdated {
-			plan_id: T::Hash,
-			new_price_per_gb: u32,
-		},
-		ComputePlanPriceUpdated {
-			plan_id: T::Hash,
-			new_price_per_block: u32,
-		},
 		PointTransactionRecorded {
 			who: T::AccountId,
 			transaction_type: NativeTransactionType,
@@ -766,10 +843,119 @@ pub mod pallet {
 
 	/// Unix-day marker (unix_ms / 86_400_000) of the last time we ran the monthly subscription charge.
 	///
-	/// This prevents double-charging on the 1st of the month when `on_initialize` runs multiple times.
+	/// Superseded by [`DueDayCursor`] and no longer read or written. A capped
+	/// drain takes many ticks to finish a day, so this once-per-day latch would
+	/// fire on the first partial tick and suppress the rest of that day's queue.
+	/// The key is left in place deliberately: an orphaned `StorageValue` costs
+	/// nothing and removing it would need a migration to buy nothing.
 	#[pallet::storage]
 	#[pallet::getter(fn last_monthly_subscription_charge_day)]
 	pub type LastMonthlySubscriptionChargeDay<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+	/// Accounts with at least one active subscription due on a given unix day.
+	///
+	/// The whole point of date-to-date billing is that somebody is due every
+	/// day, which turns a monthly full-map sweep into a daily one. This index
+	/// is what keeps the work proportional to who is *actually* due instead of
+	/// to how many subscriptions exist.
+	///
+	/// **Keyed by account, not by subscription.** Charging is deliberately
+	/// ordered: `charge_due_subscriptions_individually` sorts an account's due
+	/// subscriptions by ascending id so a short-funded user deterministically
+	/// keeps the oldest. `iter_prefix` returns hash order, so a
+	/// subscription-keyed index would scatter one account's plans across the
+	/// drain — possibly across a cap boundary into a different block with a
+	/// different credit balance — and make which plan survives effectively
+	/// random. It would also fragment the referral commission, which is
+	/// computed once per account on the total it actually paid.
+	///
+	/// An account whose plans fall due on different days holds one entry under
+	/// each of those days.
+	///
+	/// Not a `StorageMap<u32, BoundedVec<_>>`: a bucket-per-day vector decodes,
+	/// mutates and re-encodes the entire day's list on every touch, and its
+	/// bound would become a hard ceiling on how many people may share a
+	/// renewal date. The double map reads only what it consumes.
+	#[pallet::storage]
+	pub type DueAccounts<T: Config> =
+		StorageDoubleMap<_, Blake2_128Concat, u32, Blake2_128Concat, T::AccountId, (), OptionQuery>;
+
+	/// Oldest unix day whose `DueAccounts` prefix has not yet been fully drained.
+	///
+	/// Reading only *today's* prefix would silently drop anyone due on a day
+	/// that did not finish draining or that the chain was down for. The cursor
+	/// advances only once its day is empty and never past today, which is what
+	/// `max_catchup_months` is doing in the current code and must survive.
+	///
+	/// `None` means "not yet initialised" — set to the first of the current
+	/// month when the backfill starts.
+	#[pallet::storage]
+	pub type DueDayCursor<T: Config> = StorageValue<_, u32, OptionQuery>;
+
+	/// Billing anchor (day-of-month, 1..=31) for subscriptions whose anchor
+	/// cannot be derived from their due date.
+	///
+	/// **Sparse on purpose.** For any anchor from 1 to 28 the day-of-month of
+	/// `next_charge_unix_day` *is* the anchor, in every month of the year, so
+	/// no entry is needed. Derivation only fails once a value has been clamped:
+	/// a 31st subscriber pushed to Feb 28 has lost the 31. Clamping can only
+	/// ever produce 28, 29 or 30, so an entry is written only when the anchor
+	/// exceeds 28 and read only when the derived day is 28, 29 or 30.
+	///
+	/// This is why there is no `anchor_day` field on `UserPlanSubscription`:
+	/// adding one would change the type of a live map holding every
+	/// subscription on the chain. `SubscriptionId` is a monotonic `u32` and a
+	/// stable standalone key, so this map needs nothing from that struct.
+	///
+	/// Starts completely empty — every existing subscription is anchored to the
+	/// 1st, and 1 derives correctly with no entry at all.
+	#[pallet::storage]
+	pub type SubscriptionAnchorDay<T: Config> =
+		StorageMap<_, Blake2_128Concat, SubscriptionId, u8, OptionQuery>;
+
+	/// Raw storage key the one-time due-index backfill resumes from.
+	///
+	/// Populating the index cannot be a migration: `pallet-migrations` is not
+	/// configured in this runtime, so it would have to be a single-block
+	/// `OnRuntimeUpgrade` iterating every subscription — the same unbounded
+	/// work this change exists to remove, relocated into the one block where
+	/// exceeding the budget breaks the upgrade itself.
+	#[pallet::storage]
+	pub type BackfillCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
+
+	/// Whether the due-index backfill has finished.
+	///
+	/// Until it is set the renewal sweep falls back to the pre-index full scan,
+	/// because an account in the untouched tail has no index entry and would
+	/// otherwise go uncharged. Retire the fallback one release after this ships.
+	#[pallet::storage]
+	pub type BackfillDone<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	/// Resume point for the matured-alpha release sweep.
+	///
+	/// `Batches` is only pruned by chargeback, so a batch spent down to zero
+	/// credits stays forever and the map grows with every deposit the chain has
+	/// ever taken. The sweep runs on every tick, so it has to be paged.
+	#[pallet::storage]
+	pub type AlphaReleaseCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
+
+	/// Resume point for the hourly pay-as-you-go sweep.
+	///
+	/// The sweep visits every user the validator metric has ever reported on,
+	/// which is unbounded and grows forever, so it is paged like every other
+	/// walk in this hook. Unlike the due-day drain there is no index to make the
+	/// work proportional to who owes something — that is Workstream B — so for
+	/// now the cursor is what keeps a tick affordable.
+	#[pallet::storage]
+	pub type HourlyChargeCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
+
+	/// Resume point for the transitional pre-index full scan.
+	///
+	/// The scan is live for the whole backfill window, so it has to be paged
+	/// like everything else in the hook. Retires together with
+	/// `full_scan_subscription_charging` and [`BackfillDone`].
+	#[pallet::storage]
+	pub type FullScanCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -878,13 +1064,31 @@ pub mod pallet {
 
 			// Queue the snapshot rewrite. A plan already queued needs no second
 			// entry: the pending job re-reads the price when it runs, so it
-			// carries this change too. Re-queuing it would instead restart a
-			// half-finished walk from the top of the map.
-			RepricingQueue::<T>::mutate(|queue| {
-				if !queue.contains(&plan_id) {
-					queue.push(plan_id.clone());
+			// carries this change too.
+			let queued = RepricingQueue::<T>::mutate(|queue| {
+				if queue.contains(&plan_id) {
+					return true;
 				}
+				queue.push(plan_id.clone());
+				false
 			});
+
+			// Re-reading the price only helps the accounts the walk has not
+			// reached yet. If this plan is the one being walked *right now*, the
+			// prefix behind the cursor already carries the previous price and
+			// would keep it forever — `Plans` holds the new one, the job retires
+			// when it reaches the end of the map, and `PlanRepricingCompleted`
+			// reports success over a map that is split between two prices. Since
+			// the monthly charge bills `sub.package.price`, that half goes on
+			// paying the superseded figure with nothing left on chain to say so.
+			//
+			// So restart the walk from the top. Rows the first pass already
+			// settled are skipped by the `price != new_price` guard, making the
+			// re-walk cost weight and nothing else.
+			if queued && RepricingQueue::<T>::get().first() == Some(&plan_id) {
+				RepricingCursor::<T>::kill();
+				RepricedSoFar::<T>::kill();
+			}
 
 			Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
 			Ok(())
@@ -1656,27 +1860,6 @@ pub mod pallet {
 			});
 		}
 
-		/// Pay out accrued hourly commissions, at most
-		/// `MaxReferralPayoutsPerSweep` referrers per call.
-		///
-		/// Runs on a fixed `ReferralPayoutInterval` cadence with no threshold
-		/// to reach: whatever a referrer has earned goes out on the next sweep.
-		/// Each balance is settled by exactly what the bank released, so a bank
-		/// that is dry or at its `ReferralBankFloor` leaves the remainder
-		/// accrued for the next sweep rather than dropping it.
-		///
-		/// The one balance left to accumulate is the one that would leave the
-		/// referrer *still* below the existential deposit afterwards. That is not
-		/// a payout threshold on the commission: ED is the account-**creation**
-		/// rule, not the transfer rule, and `request_payment` spends its
-		/// `KeepAlive` on the bank, not the destination. A referrer who already
-		/// holds ED can therefore receive any positive amount, exactly as the
-		/// purchase path already relies on — `PURCHASE_COMMISSION` is 475 against
-		/// an ED of 500 and lands today. Skipping on the commission alone would
-		/// strand live referrers for hours, and for longer the smaller
-		/// `price_per_gb` is. Only a transfer that cannot create the account is
-		/// skipped, which also keeps unfunded destinations from emitting a
-		/// failure event every sweep forever.
 		/// Apply the queued plan reprice at the head of [`RepricingQueue`] to the
 		/// subscriptions that carry it, a bounded number of accounts per block.
 		///
@@ -1794,6 +1977,27 @@ pub mod pallet {
 			RepricedSoFar::<T>::take()
 		}
 
+		/// Pay out accrued hourly commissions, at most
+		/// `MaxReferralPayoutsPerSweep` referrers per call.
+		///
+		/// Runs on a fixed `ReferralPayoutInterval` cadence with no threshold
+		/// to reach: whatever a referrer has earned goes out on the next sweep.
+		/// Each balance is settled by exactly what the bank released, so a bank
+		/// that is dry or at its `ReferralBankFloor` leaves the remainder
+		/// accrued for the next sweep rather than dropping it.
+		///
+		/// The one balance left to accumulate is the one that would leave the
+		/// referrer *still* below the existential deposit afterwards. That is not
+		/// a payout threshold on the commission: ED is the account-**creation**
+		/// rule, not the transfer rule, and `request_payment` spends its
+		/// `KeepAlive` on the bank, not the destination. A referrer who already
+		/// holds ED can therefore receive any positive amount, exactly as the
+		/// purchase path already relies on — `PURCHASE_COMMISSION` is 475 against
+		/// an ED of 500 and lands today. Skipping on the commission alone would
+		/// strand live referrers for hours, and for longer the smaller
+		/// `price_per_gb` is. Only a transfer that cannot create the account is
+		/// skipped, which also keeps unfunded destinations from emitting a
+		/// failure event every sweep forever.
 		fn sweep_referral_commissions() -> Weight {
 			let limit = T::MaxReferralPayoutsPerSweep::get() as usize;
 			if limit == 0 {
@@ -1894,32 +2098,263 @@ pub mod pallet {
 			(Self::now_ms() / 86_400_000u64) as u32
 		}
 
+		/// The billing anchor (day-of-month) of a subscription.
+		///
+		/// Derived from the due date wherever that is unambiguous, which is
+		/// almost always: clamping can only ever produce 28, 29 or 30, so any
+		/// other day-of-month *is* the anchor and no lookup happens. Only those
+		/// three values might be a clamped 29/30/31, and only then is the sparse
+		/// map consulted.
+		///
+		/// Absence therefore has to mean "derive it" — see
+		/// [`SubscriptionAnchorDay`], which is why an entry is written whenever
+		/// the anchor exceeds 28 and deleted with the subscription.
+		fn anchor_of(sub: &UserPlanSubscription<T>) -> u8 {
+			let Some(due_day) = sub.next_charge_unix_day else {
+				// No due date to derive from. The 1st is what the legacy `None`
+				// path already means, and the backfill writes it explicitly.
+				return 1;
+			};
+			let derived = pallet_calendar::Pallet::<T>::day_of_month(due_day);
+			if (28..=30).contains(&derived) {
+				SubscriptionAnchorDay::<T>::get(sub.id).unwrap_or(derived)
+			} else if derived == 0 {
+				1
+			} else {
+				derived
+			}
+		}
+
+		/// Record an anchor only when it cannot be derived from the due date.
+		///
+		/// Keeping the map sparse is not an optimisation, it is the contract:
+		/// absence means "derive it", so writing a derivable anchor would be
+		/// redundant while writing nothing for a non-derivable one is a bug.
+		fn set_anchor(subscription_id: SubscriptionId, anchor: u8) {
+			if anchor > 28 {
+				SubscriptionAnchorDay::<T>::insert(subscription_id, anchor);
+			} else {
+				SubscriptionAnchorDay::<T>::remove(subscription_id);
+			}
+		}
+
+		/// The unix day a subscription should next be charged on, for indexing.
+		///
+		/// A legacy `None` means "due from the 1st of the current month", which
+		/// is exactly how the pre-index sweep reads it.
+		fn effective_due_day(sub: &UserPlanSubscription<T>) -> u32 {
+			sub.next_charge_unix_day
+				.unwrap_or_else(|| pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(0))
+		}
+
+		/// Distinct days an account's active subscriptions are filed under,
+		/// clamped forward to `floor` — the drain's day cursor.
+		///
+		/// The backfill applies the same clamp for the same reason:
+		/// `DueDayCursor` is forward-only and advances only once a day's prefix
+		/// is empty, so an entry filed on a day the cursor has already walked
+		/// past is never visited again. The account keeps an active plan, is
+		/// never charged for it, and — because holding an active plan exempts
+		/// it — is not picked up by hourly billing either. Silent free service.
+		///
+		/// A re-file can land in the past honestly. `advance_subscription_cycle`
+		/// moves the due date on from the *previous* due date rather than from
+		/// now, which is what keeps the anniversary from drifting later on every
+		/// late charge — but it also means arrears are never caught up in one
+		/// step, and `max_catchup_months` bounds a visit to three cycles. A
+		/// subscription further behind than that is still behind the cursor when
+		/// it is re-filed. Pinning it to the cursor charges it again on the next
+		/// pass, the same outcome as being overdue, until it catches up.
+		///
+		/// Clamping to the cursor and not to `today` matters: the cursor walks
+		/// to a day one probe at a time under `MAX_DAY_PROBES`, so filing months
+		/// ahead of it would trade stranding for a very long walk.
+		///
+		/// `MaxActiveSubscriptions` is 5, so this is a handful of entries and a
+		/// linear scan beats any set machinery.
+		fn due_days_of(subs: &[UserPlanSubscription<T>], floor: u32) -> Vec<u32> {
+			let mut days: Vec<u32> = Vec::new();
+			for sub in subs.iter().filter(|s| s.active) {
+				let day = Self::effective_due_day(sub).max(floor);
+				if !days.contains(&day) {
+					days.push(day);
+				}
+			}
+			days
+		}
+
+		/// The one and only way to write `UserAllSubscriptionPlans`.
+		///
+		/// The due-day index is a denormalisation, so the failure mode is
+		/// drift, and the dangerous direction is a *missing* entry: a due
+		/// subscription nothing ever charges is silently free service with no
+		/// event to notice. Rather than defend that by remembering to call
+		/// something at each of the six write sites, every write goes through
+		/// here and the index is reconciled from the diff — so the invariant
+		/// cannot be broken by forgetting.
+		///
+		/// Reconciling per *account* rather than per subscription is what makes
+		/// this correct: an account holds one index key per distinct due day, so
+		/// moving one subscription off day D must not delete that key while a
+		/// sibling is still due there. Only the days that actually changed are
+		/// touched.
+		///
+		/// Also the single point where cancelled subscriptions are reclaimed —
+		/// entry, index key and anchor row go together, and the account's map
+		/// entry disappears once its last subscription does.
+		fn commit_subscriptions(
+			who: &T::AccountId,
+			before: &[UserPlanSubscription<T>],
+			after: Vec<UserPlanSubscription<T>>,
+		) {
+			// Drop deactivated rows. Nothing downstream reads them: cancellation
+			// history lives in events and `PointTransactions`, and leaving them
+			// costs weight on *every* tick, because the sweep's own skip path
+			// has to decode the whole vector before it can decide to skip it.
+			let after: Vec<UserPlanSubscription<T>> =
+				after.into_iter().filter(|sub| sub.active).collect();
+
+			// `NO-ORPHANS`, enforced at the choke point rather than trusted.
+			//
+			// A `None` due date on an *active* row is the one shape this design
+			// cannot represent: the index is keyed by due day, so a row without
+			// one has no key, and the drain reaches accounts only through keys.
+			// The charge path still reads `None` as "always due", so such a row
+			// would not be mis-billed — it would simply never be visited again,
+			// which is silent free service rather than a loud failure.
+			//
+			// Every write to the subscription map comes through here, so this is
+			// the one place that can hold the invariant for all of them,
+			// including write sites that do not exist yet. A `debug_assert` and
+			// not a hard one on purpose: in production the fail-open read is a
+			// better outcome than halting a block, and the bound is
+			// `MaxActiveSubscriptions`, so the check costs nothing in tests.
+			debug_assert!(
+				after.iter().all(|sub| sub.next_charge_unix_day.is_some()),
+				"NO-ORPHANS: an active subscription must carry a due date",
+			);
+
+			// Anchors for subscriptions that no longer exist. `SubscriptionId`
+			// is monotonic so a stale row would not be re-used, but it would sit
+			// there forever.
+			for sub in before.iter() {
+				if !after.iter().any(|s| s.id == sub.id) {
+					SubscriptionAnchorDay::<T>::remove(sub.id);
+				}
+			}
+
+			// No cursor yet means the drain has never run, so there is no day
+			// it has walked past and nothing to clamp to.
+			let floor = DueDayCursor::<T>::get().unwrap_or(0);
+			let before_days = Self::due_days_of(before, floor);
+			let after_days = Self::due_days_of(&after, floor);
+
+			for day in before_days.iter() {
+				if !after_days.contains(day) {
+					DueAccounts::<T>::remove(day, who);
+				}
+			}
+			for day in after_days.iter() {
+				// Filing only the days that *changed* is a write-saving
+				// optimisation, and it assumes the entry it skips is still
+				// there. On a clamped day it is not: the drain removes the
+				// entry that led it here *before* charging, and a subscription
+				// too far in arrears for one visit to catch up is re-filed on
+				// the same clamped day it arrived on — so the diff sees no
+				// change and nobody puts the entry back. `day == floor` is
+				// exactly that case, plus rows genuinely due on the cursor's
+				// own day, which are equally worth one write to keep reachable.
+				if *day == floor || !before_days.contains(day) {
+					DueAccounts::<T>::insert(*day, who, ());
+				}
+			}
+
+			// Write only on an actual change. Every path that *reads* an
+			// account routes through here, including the sweep passing over an
+			// account with nothing due — so writing unconditionally would put a
+			// storage write on every account on every tick, whether or not
+			// anything about it moved.
+			if after.is_empty() {
+				if !before.is_empty() {
+					UserAllSubscriptionPlans::<T>::remove(who);
+				}
+			} else if after.as_slice() != before {
+				UserAllSubscriptionPlans::<T>::insert(who, after);
+			}
+		}
+
+		/// Where `today` sits in the subscription's prepaid span:
+		/// `(cycle_start, cycle_end, whole_cycles_ahead)`.
+		///
+		/// `cycle_start <= today < cycle_end` is the cycle the user is
+		/// *currently in*, and `whole_cycles_ahead` counts the untouched cycles
+		/// between `cycle_end` and `next_charge_unix_day`.
+		///
+		/// Both money paths that split a prepaid span have to agree on which
+		/// cycle is current, or they double-count the days in it: the refund
+		/// returns whole cycles starting at or after `cycle_end`, and the carry
+		/// credit values the unexpired part of `[today, cycle_end)`. Deriving
+		/// both from this one walk is what makes them disjoint by construction.
+		///
+		/// Walking *backwards* from the due date with `add_months_clamped` and
+		/// the subscription's own anchor is also what keeps them in step with
+		/// the charge path, which walks the same anniversaries forwards — a
+		/// clamped month cannot make either disagree with what was billed.
+		///
+		/// `None` when there is no due date or the subscription is already due,
+		/// in which case there is nothing prepaid to split.
+		fn cycle_position(sub: &UserPlanSubscription<T>) -> Option<(u32, u32, u128)> {
+			let due_day = sub.next_charge_unix_day?;
+			let today = Self::current_unix_day();
+			if today >= due_day {
+				return None;
+			}
+
+			// `pay_upfront` is capped at 24 cycles, so a due date is at most 24
+			// anniversaries out and the walk needs at most that many steps to
+			// reach the current cycle. The extra step is slack, not need.
+			const MAX_CYCLE_WALK: u32 = 25;
+
+			let anchor = Self::anchor_of(sub);
+			let mut whole_cycles_ahead: u128 = 0;
+			let mut cycle_end = due_day;
+			for _ in 0..MAX_CYCLE_WALK {
+				let previous =
+					pallet_calendar::Pallet::<T>::add_months_clamped(cycle_end, anchor, -1);
+				// Date math out of range, or not actually moving backwards.
+				// Neither is reachable for a due date this pallet can write.
+				if previous == 0 || previous >= cycle_end {
+					return None;
+				}
+				if previous <= today {
+					return Some((previous, cycle_end, whole_cycles_ahead));
+				}
+				whole_cycles_ahead = whole_cycles_ahead.saturating_add(1);
+				cycle_end = previous;
+			}
+
+			// A due date further out than any purchase can produce. Refusing to
+			// place the cycle refunds and credits nothing, which is the safe
+			// direction — the alternative is paying out against a span we could
+			// not account for.
+			None
+		}
+
 		/// Refund credits for unused prepaid *full* months.
 		///
-		/// We do NOT refund the current (possibly prorated) month. We only refund whole months
-		/// that start in the future, up to (but excluding) `next_charge_unix_day`.
+		/// We do NOT refund the cycle currently in progress — the user is using
+		/// it. We refund only whole cycles that start in the future, up to (but
+		/// excluding) `next_charge_unix_day`.
+		///
+		/// Four callers, all of which move money: the bulk storage delete, the
+		/// plan change, the failed monthly charge, and the cancel. The last two
+		/// refund on a path nobody thinks of as a refund.
 		fn unused_prepaid_refund_credits(sub: &UserPlanSubscription<T>) -> u128 {
-			let Some(due_day) = sub.next_charge_unix_day else {
+			let Some((_, _, whole_cycles_ahead)) = Self::cycle_position(sub) else {
 				return 0;
 			};
 
-			let today = Self::current_unix_day();
-			if today >= due_day {
-				return 0;
-			}
-
-			// Count how many "1st of month" boundaries are still in the future before `due_day`.
-			// We start from next month's 1st; that makes "current month" non-refundable.
-			let mut months_remaining: u128 = 0;
-			for n in 1u32..=24u32 {
-				let d = pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(n);
-				if d == 0 || d >= due_day {
-					break;
-				}
-				months_remaining = months_remaining.saturating_add(1);
-			}
-
-			times(Credits::new(sub.paid_per_month), months_remaining).get()
+			times(Credits::new(sub.paid_per_month), whole_cycles_ahead).get()
 		}
 
 		fn refund_credits_with_batch(account_id: &T::AccountId, amount: u128) -> DispatchResult {
@@ -1957,28 +2392,20 @@ pub mod pallet {
 		fn do_delete_storage_subscription_with_refund(account_id: &T::AccountId) -> DispatchResult {
 			let now = <frame_system::Pallet<T>>::block_number();
 			let mut refunded: u128 = 0;
-			let mut removed_any = false;
 
-			UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
-				let original_len = subscriptions.len();
-
-				for sub in subscriptions.iter() {
-					if sub.package.is_any_storage() && sub.active {
-						refunded =
-							refunded.saturating_add(Self::unused_prepaid_refund_credits(sub));
-					}
+			let before = UserAllSubscriptionPlans::<T>::get(account_id);
+			for sub in before.iter() {
+				if sub.package.is_any_storage() && sub.active {
+					refunded = refunded.saturating_add(Self::unused_prepaid_refund_credits(sub));
 				}
+			}
 
-				*subscriptions = subscriptions
-					.iter()
-					.filter(|sub| !sub.package.is_any_storage())
-					.cloned()
-					.collect();
+			let after: Vec<UserPlanSubscription<T>> =
+				before.iter().filter(|sub| !sub.package.is_any_storage()).cloned().collect();
 
-				removed_any = subscriptions.len() < original_len;
-			});
+			ensure!(after.len() < before.len(), Error::<T>::NoActiveSubscription);
 
-			ensure!(removed_any, Error::<T>::NoActiveSubscription);
+			Self::commit_subscriptions(account_id, &before, after);
 
 			if refunded > 0 {
 				Self::refund_credits_with_batch(account_id, refunded)?;
@@ -1989,75 +2416,123 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Returns `Some(unix_day)` when monthly charging should run.
-		///
-		/// IMPORTANT: this function is side-effect free; the caller should write the day marker
-		/// only after the charging work completes, to avoid skipping the month if charging aborts.
-		fn should_run_monthly_subscription_charge() -> Option<u32> {
-			let today = Self::current_unix_day();
-			if LastMonthlySubscriptionChargeDay::<T>::get() == today {
-				return None;
-			}
-
-			// Catch-up behavior: if the chain misses the 1st-of-month tick, run on the first
-			// available day after restart as long as there exist due subscriptions.
-			//
-			// Legacy subs (`next_charge_unix_day == None`) are considered due from the 1st of the
-			// current month.
-			let current_month_first =
-				pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(0);
-			let any_due = UserAllSubscriptionPlans::<T>::iter().any(|(_who, subs)| {
-				subs.iter().any(|sub| {
-					if !sub.active {
-						return false;
-					}
-					match sub.next_charge_unix_day {
-						Some(d) => today >= d,
-						None => current_month_first > 0 && today >= current_month_first,
-					}
-				})
-			});
-
-			if any_due {
-				Some(today)
-			} else {
-				None
-			}
-		}
-
 		/// Helper function to get the current price per GB
 		pub fn get_storage_price_per_miner() -> u128 {
 			StoragePricePerMiner::<T>::get()
 		}
 
-		fn prorated_monthly_price(monthly_price: u128) -> u128 {
-			// days_remaining is inclusive of today; crate ceil-rounds and clamps
-			// days_remaining to days_in_month so a part never exceeds a full month.
-			prorate_first_month(
-				Credits::new(monthly_price),
-				u32::from(pallet_calendar::Pallet::<T>::days_remaining_in_current_month()),
-				u32::from(pallet_calendar::Pallet::<T>::days_in_current_month()),
-			)
-			.get()
+		/// What the unexpired remainder of a subscription's **current cycle** is
+		/// worth, at `monthly_price`.
+		///
+		/// Under 1st-of-month billing "the rest of what you paid for" and "the
+		/// rest of the calendar month" were the same span, so a single
+		/// calendar-month proration could stand in for both. Under anniversaries
+		/// they diverge: a user due on the 14th has a cycle running the 14th to
+		/// the 14th, and valuing their remainder against the calendar month
+		/// would silently over- or under-credit every plan change.
+		///
+		/// Measured against the subscription's own due date: `due - today` days
+		/// remaining out of `due - previous_anniversary(due)` in the cycle. Both
+		/// ends come from the same `add_months_clamped` the charge path uses, so
+		/// the two cannot drift apart.
+		fn remaining_cycle_value(sub: &UserPlanSubscription<T>, monthly_price: u128) -> u128 {
+			// The cycle *containing today*, not the last cycle before the due
+			// date. Those are the same only when a single cycle remains: on a
+			// subscription that prepaid `n` cycles the due date is `n`
+			// anniversaries out, and measuring against it would value the whole
+			// prepaid span as one cycle — which `prorate_first_month` then
+			// clamps to a full month's price, handing back days the user has
+			// already used *and* the whole-cycle refund on top of them.
+			let Some((cycle_start, cycle_end, _)) = Self::cycle_position(sub) else {
+				return 0;
+			};
+			let today = Self::current_unix_day();
+
+			// A cycle is never shorter than 28 days; a zero here would mean the
+			// date math failed, and falling back to the month length keeps the
+			// credit finite rather than dividing by nothing.
+			let cycle_days = cycle_end.saturating_sub(cycle_start);
+			let cycle_days = if cycle_days == 0 {
+				u32::from(pallet_calendar::Pallet::<T>::days_in_month_of_day(cycle_end)).max(1)
+			} else {
+				cycle_days
+			};
+
+			// `cycle_end - today` is inclusive of today in the same sense the
+			// calendar-month version was: on the last day of a cycle it is 1,
+			// and on the boundary itself it is 0 because a charge is imminent.
+			let days_remaining = cycle_end.saturating_sub(today);
+
+			// Guaranteed by `cycle_start <= today < cycle_end`. If it ever
+			// fails, the clamp inside `prorate_first_month` silently pays out a
+			// full month instead — which is exactly how the multi-cycle
+			// over-credit stayed invisible.
+			debug_assert!(
+				days_remaining <= cycle_days,
+				"carry credit must value at most one cycle",
+			);
+
+			prorate_first_month(Credits::new(monthly_price), days_remaining, cycle_days).get()
 		}
 
-		/// Total upfront charge when buying `upfront_months` starting mid-month:
-		/// `1 prorated month + (upfront_months - 1) full months`.
-		fn upfront_prorated_total(monthly_price: u128, upfront_months: u128) -> u128 {
-			let first = Self::prorated_monthly_price(monthly_price);
-			let remaining_full_months = upfront_months.saturating_sub(1);
-			first.saturating_add(times(Credits::new(monthly_price), remaining_full_months).get())
+		/// Due date after paying for `cycles` whole billing cycles from `from_day`.
+		///
+		/// Clamped at **each** step rather than once at the end, which is what
+		/// makes three months from Jan 31 land on Apr 30 instead of Apr 3.
+		fn advance_cycles(from_day: u32, anchor: u8, cycles: u32) -> u32 {
+			let mut day = from_day;
+			for _ in 0..cycles.max(1) {
+				day = pallet_calendar::Pallet::<T>::add_months_clamped(day, anchor, 1);
+			}
+			day
 		}
 
-		#[transactional]
-		fn release_matured_pending_alpha(current_block: BlockNumberFor<T>) -> DispatchResult {
-			for (batch_id, mut batch) in Batches::<T>::iter() {
+		/// Release matured alpha from frozen deposit batches, a bounded page at
+		/// a time.
+		///
+		/// No longer `#[transactional]`: that attribute rolls the body back on
+		/// `Err`, and this body has no fallible call to produce one — it was
+		/// already doing nothing. Each batch's release is independent of every
+		/// other, so a page that stops early leaves no half-applied state.
+		fn release_matured_pending_alpha(current_block: BlockNumberFor<T>) -> Weight {
+			let mut meter = WeightMeter::with_limit(
+				T::AlphaReleaseWeightBudget::get()
+					* <T as frame_system::Config>::BlockWeights::get().max_block,
+			);
+			let probe = <T as Config>::WeightInfo::alpha_release_probe();
+			let release = <T as Config>::WeightInfo::alpha_release();
+
+			// Sized for the case where every batch in the page turns out to be
+			// matured. Almost none will be — the release_time is a 15-day timer
+			// — but a bound has to hold in the case it is bounding.
+			let affordable = Self::accounts_affordable(&meter, probe.saturating_add(release));
+			if affordable == 0 {
+				return meter.consumed();
+			}
+
+			let page: Vec<(u64, Batch<T::AccountId, BlockNumberFor<T>>)> =
+				match AlphaReleaseCursor::<T>::get() {
+					Some(key) => Batches::<T>::iter_from(key).take(affordable).collect(),
+					None => Batches::<T>::iter().take(affordable).collect(),
+				};
+
+			if page.is_empty() {
+				AlphaReleaseCursor::<T>::kill();
+				return meter.consumed();
+			}
+
+			let exhausted = page.len() < affordable;
+			let resume_from = Batches::<T>::hashed_key_for(page[page.len() - 1].0);
+
+			for (batch_id, mut batch) in page {
+				meter.consume(probe);
 				if !batch.is_frozen || batch.pending_alpha == 0 {
 					continue;
 				}
 				if current_block < batch.release_time {
 					continue;
 				}
+				meter.consume(release);
 
 				batch.is_frozen = false;
 
@@ -2073,7 +2548,13 @@ pub mod pallet {
 				Batches::<T>::insert(batch_id, batch);
 			}
 
-			Ok(())
+			if exhausted {
+				AlphaReleaseCursor::<T>::kill();
+			} else {
+				AlphaReleaseCursor::<T>::put(resume_from);
+			}
+
+			meter.consumed()
 		}
 
 		pub fn account_id() -> T::AccountId {
@@ -2131,7 +2612,8 @@ pub mod pallet {
 			// plan is blocked only by another active S3 plan, never by the Drive
 			// plan whose bytes it does not cover.
 			let flavour = plan.storage_flavour();
-			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+			let before = UserAllSubscriptionPlans::<T>::get(&who);
+			let mut subscriptions = before.clone();
 			ensure!(
 				!subscriptions.iter().any(|s| s.active && s.package.storage_flavour() == flavour),
 				Error::<T>::AlreadyHasActiveSubscription
@@ -2142,18 +2624,19 @@ pub mod pallet {
 				Error::<T>::TooManyActiveSubscriptions
 			);
 
-			// Determine the (monthly) price for the plan.
-			// If the user purchases mid-month, charge a pro-rated amount based on remaining days
-			// in the current month (inclusive of today).
-			let mut plan_price_native = Self::prorated_monthly_price(plan.price);
+			// Whole cycles at full price. Billing runs from the purchase date to
+			// the same day next month, so there is no partial first month to
+			// prorate — a user who pays on the 14th is paid up to the 14th.
+			let cycles: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
+			let cycles = cycles.max(1);
+			let plan_price_native = times(Credits::new(plan.price), u128::from(cycles)).get();
 
-			if let Some(upfront_months) = pay_upfront {
-				plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
-			}
-
-			let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
-			let next_charge_unix_day =
-				Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
+			// The anchor is this purchase's day-of-month, and the due date is it
+			// advanced `cycles` times — clamped at each step, so three months
+			// from Jan 31 lands on Apr 30 rather than Apr 3.
+			let today = Self::current_unix_day();
+			let anchor = pallet_calendar::Pallet::<T>::day_of_month(today).max(1);
+			let next_charge_unix_day = Some(Self::advance_cycles(today, anchor, cycles));
 
 			// Apply referral discount ONLY at subscription purchase time (not on renewals).
 			let (referral_discount, ref_owner) =
@@ -2180,6 +2663,7 @@ pub mod pallet {
 				*id = id.saturating_add(1);
 				current_id
 			});
+			Self::set_anchor(subscription_id, anchor);
 
 			Self::consume_credits(who.clone(), charged_credits)?;
 
@@ -2221,8 +2705,8 @@ pub mod pallet {
 			// Add the new subscription (cap validated before any charging).
 			subscriptions.push(subscription);
 
-			// Save the updated subscriptions list
-			UserAllSubscriptionPlans::<T>::insert(&who, subscriptions);
+			// Save the updated subscriptions list, reconciling the due-day index.
+			Self::commit_subscriptions(&who, &before, subscriptions);
 
 			Ok(())
 		}
@@ -2306,7 +2790,8 @@ pub mod pallet {
 			// be bought, they cannot be switched into either.
 			ensure!(Self::is_purchase_plan_enabled(), Error::<T>::PlanOperationDisabled);
 
-			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(account_id);
+			let before = UserAllSubscriptionPlans::<T>::get(account_id);
+			let mut subscriptions = before.clone();
 
 			// Exactly one active subscription *of this flavour*.
 			// `do_purchase_storage_plan` enforces that invariant on the way in, so
@@ -2335,23 +2820,21 @@ pub mod pallet {
 			// Unused prepaid full months on the old plan — the cancel refund, unchanged.
 			let refund_credits = Self::unused_prepaid_refund_credits(&old_sub);
 
-			// Value of the remaining days of the current month on the old plan. Only
-			// counts while the old subscription is actually paid through the current
-			// month; a lapsed subscription, or a legacy one with no
-			// `next_charge_unix_day`, carries nothing forward. `paid_per_month` is
-			// the discounted price actually billed, so the carry never exceeds what
-			// the user paid for those days.
-			let paid_through_this_month = old_sub
-				.next_charge_unix_day
-				.is_some_and(|due_day| due_day > Self::current_unix_day());
-			let carry_credits = if paid_through_this_month {
-				Self::prorated_monthly_price(old_sub.paid_per_month)
-			} else {
-				0
-			};
+			// Value of the unexpired remainder of the old plan's **current
+			// cycle**. Measured against the old subscription's own due date, not
+			// against the calendar month: under anniversaries those are
+			// different spans, and using the wrong one silently over- or
+			// under-credits every plan change. A lapsed subscription, or a
+			// legacy one with no `next_charge_unix_day`, carries nothing
+			// forward. `paid_per_month` is the discounted price actually billed,
+			// so the carry never exceeds what the user paid for those days.
+			let carry_credits = Self::remaining_cycle_value(&old_sub, old_sub.paid_per_month);
 
-			// New plan's first month, prorated and discounted like a fresh purchase.
-			let new_plan_price = Self::prorated_monthly_price(new_plan.price);
+			// The new plan starts a fresh cycle today at full price, exactly as a
+			// new purchase would, and is discounted the same way.
+			let today = Self::current_unix_day();
+			let anchor = pallet_calendar::Pallet::<T>::day_of_month(today).max(1);
+			let new_plan_price = new_plan.price;
 			let (referral_discount, ref_owner) =
 				Self::referral_discount_and_owner(account_id, new_plan_price);
 			let charged_credits =
@@ -2392,6 +2875,7 @@ pub mod pallet {
 				*id = id.saturating_add(1);
 				current_id
 			});
+			Self::set_anchor(subscription_id, anchor);
 
 			// 95% of face price for referred users — the same conserved split the
 			// purchase paths record, so future refunds keep valuing a month correctly.
@@ -2412,14 +2896,12 @@ pub mod pallet {
 				active: true,
 				last_charged_at: <frame_system::Pallet<T>>::block_number(),
 				selected_image_name: None,
-				next_charge_unix_day: Some(
-					pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(1),
-				),
+				next_charge_unix_day: Some(Self::advance_cycles(today, anchor, 1)),
 				paid_per_month,
 				_phantom: PhantomData,
 			};
 
-			UserAllSubscriptionPlans::<T>::insert(account_id, subscriptions);
+			Self::commit_subscriptions(account_id, &before, subscriptions);
 
 			let event = match flavour {
 				StorageFlavour::Drive => Event::StoragePlanChanged {
@@ -2467,7 +2949,8 @@ pub mod pallet {
 			// dispatch storage layer would roll a late failure back anyway,
 			// but failing fast wastes no work and keeps the flow safe for
 			// any future non-dispatch caller.
-			let mut subscriptions = UserAllSubscriptionPlans::<T>::get(&who);
+			let before = UserAllSubscriptionPlans::<T>::get(&who);
+			let mut subscriptions = before.clone();
 			let active_count = subscriptions.iter().filter(|s| s.active).count() as u32;
 			ensure!(
 				active_count < T::MaxActiveSubscriptions::get(),
@@ -2487,16 +2970,14 @@ pub mod pallet {
 				);
 			}
 
-			// Determine the (monthly) price (pro-rated if purchased mid-month).
-			let mut plan_price_native = Self::prorated_monthly_price(plan.price);
+			// Whole cycles at full price — see `do_purchase_storage_plan`.
+			let cycles: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
+			let cycles = cycles.max(1);
+			let plan_price_native = times(Credits::new(plan.price), u128::from(cycles)).get();
 
-			if let Some(upfront_months) = pay_upfront {
-				plan_price_native = Self::upfront_prorated_total(plan.price, upfront_months);
-			}
-
-			let months_paid: u32 = pay_upfront.unwrap_or(1).min(u128::from(u32::MAX)) as u32;
-			let next_charge_unix_day =
-				Some(pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(months_paid));
+			let today = Self::current_unix_day();
+			let anchor = pallet_calendar::Pallet::<T>::day_of_month(today).max(1);
+			let next_charge_unix_day = Some(Self::advance_cycles(today, anchor, cycles));
 
 			// Apply referral discount ONLY at subscription purchase time (not on renewals).
 			let (referral_discount, ref_owner) =
@@ -2528,6 +3009,7 @@ pub mod pallet {
 				*id = id.saturating_add(1);
 				current_id
 			});
+			Self::set_anchor(subscription_id, anchor);
 
 			Self::consume_credits(who.clone(), charged_credits)?;
 
@@ -2568,8 +3050,8 @@ pub mod pallet {
 			// Add the new subscription (cap validated before any charging).
 			subscriptions.push(subscription);
 
-			// Save the updated subscriptions list
-			UserAllSubscriptionPlans::<T>::insert(&who, subscriptions);
+			// Save the updated subscriptions list, reconciling the due-day index.
+			Self::commit_subscriptions(&who, &before, subscriptions);
 
 			Ok(())
 		}
@@ -2617,6 +3099,44 @@ pub mod pallet {
 		/// subscriptions but not all of them keeps the ones it can pay for
 		/// instead of losing every subscription on that side. Ascending id order
 		/// makes which ones survive deterministic — oldest first.
+		/// Move one subscription onto its next anniversary, a settled cycle
+		/// behind it.
+		///
+		/// Called for every cycle that completes, whether or not any credits
+		/// changed hands: a zero-priced cycle is settled the moment it is
+		/// reached, and has to advance for the same reason a paid one does.
+		fn advance_subscription_cycle(
+			sub: &mut UserPlanSubscription<T>,
+			today: u32,
+			current_block: BlockNumberFor<T>,
+		) {
+			sub.last_charged_at = current_block;
+			// Record what this renewal actually cost, which is the face price:
+			// the referral discount is a purchase-time incentive and is
+			// deliberately not applied to renewals.
+			//
+			// Leaving the purchase-time figure here would let it go stale the
+			// moment a discounted subscription renews, and it is not a
+			// decorative field — the refund and carry-credit paths value a cycle
+			// from it, so a referred user changing plans later would be credited
+			// 95% of a cycle they had paid 100% for. Kept in step with
+			// `charge_due_subscriptions_individually`, which charges this same
+			// `package.price`.
+			sub.paid_per_month = sub.package.price;
+			// Advance to the next anniversary of the billing anchor, from the
+			// previous due date rather than from "now" — otherwise arrears would
+			// drag the anniversary later on every late charge.
+			//
+			// For a subscription anchored to the 1st, which is every one that
+			// predates this change, this is exactly
+			// `unix_day_of_first_of_month_after` and the schedule is
+			// bit-for-bit unchanged.
+			let prev_next = sub.next_charge_unix_day.unwrap_or(today);
+			let anchor = Self::anchor_of(sub);
+			sub.next_charge_unix_day =
+				Some(pallet_calendar::Pallet::<T>::add_months_clamped(prev_next, anchor, 1));
+		}
+
 		fn charge_due_subscriptions_individually(
 			account_id: &T::AccountId,
 			due: &[UserPlanSubscription<T>],
@@ -2665,25 +3185,32 @@ pub mod pallet {
 		///
 		/// Runs at most `max_catchup_months` cycles per account so a chain that
 		/// missed several month boundaries catches up without an unbounded loop.
-		fn handle_all_subscription_charging(current_block: BlockNumberFor<T>) -> Weight {
-			let mut users_seen: u64 = 0;
-			let mut users_with_active_subs: u64 = 0;
+		// `pub(crate)` so the benchmark can measure it directly. It is the unit
+		// the drain meters itself in, so the number that bounds the hook has to
+		// come from measuring this exact function rather than an extrinsic that
+		// resembles it.
+		pub(crate) fn charge_account_due(
+			account_id: &T::AccountId,
+			current_block: BlockNumberFor<T>,
+		) -> bool {
 			let mut users_charged_or_cancelled: u64 = 0;
 			let today = Self::current_unix_day();
 			// Cap catch-up to avoid heavy loops after long downtime.
 			let max_catchup_months: u32 = 3;
 
-			// Iterate through all users with subscriptions once
-			for (account_id, subscriptions) in UserAllSubscriptionPlans::<T>::iter() {
-				users_seen = users_seen.saturating_add(1);
-				// Work on a local copy so we can do catch-up charging deterministically.
-				let mut subs = subscriptions;
+			{
+				// Re-read the subscription rather than trusting the index entry
+				// that led us here. A drain spans blocks, so a user can cancel
+				// between their day opening and their entry being reached — and
+				// this is also what makes a stale index entry cost one wasted
+				// read instead of charging a cancelled plan.
+				let before = UserAllSubscriptionPlans::<T>::get(account_id);
+				let mut subs = before.clone();
 
 				// If no active subs, skip.
 				if !subs.iter().any(|s| s.active) {
-					continue;
+					return false;
 				}
-				users_with_active_subs = users_with_active_subs.saturating_add(1);
 
 				for _ in 0..max_catchup_months {
 					let active_subs: Vec<UserPlanSubscription<T>> =
@@ -2726,8 +3253,35 @@ pub mod pallet {
 						.iter()
 						.fold(0u128, |acc, sub| acc.saturating_add(sub.package.price));
 
+					// Nothing to collect this cycle — every due subscription is
+					// priced at zero. The cycle still has to move on.
+					//
+					// Leaving `next_charge_unix_day` where it is used to strand
+					// the account permanently. The drain removes its `DueAccounts`
+					// entry *before* calling us, and `commit_subscriptions` only
+					// files days that changed, so an unmoved due day is re-filed
+					// by nobody; the day cursor then walks past and never comes
+					// back. The account stays active and due forever, is never
+					// charged again — not even after the plan is repriced above
+					// zero — and holding an active plan also exempts it from
+					// hourly pay-as-you-go billing. A free promo tier is an
+					// ordinary thing for root to configure, and ending one would
+					// have silently written off every account that held it.
+					//
+					// Advancing keeps the account on its anniversary and lands it
+					// at least a month ahead of the cursor, which is the same
+					// invariant the paid path relies on to re-file safely.
 					if total_storage_charge == 0 && total_compute_charge == 0 {
-						break;
+						for sub in subs.iter_mut() {
+							if !sub.active {
+								continue;
+							}
+							if !sub.next_charge_unix_day.map_or(true, |d| today >= d) {
+								continue;
+							}
+							Self::advance_subscription_cycle(sub, today, current_block);
+						}
+						continue;
 					}
 					users_charged_or_cancelled = users_charged_or_cancelled.saturating_add(1);
 
@@ -2772,13 +3326,7 @@ pub mod pallet {
 						}
 
 						if !subs_to_deactivate.contains(&sub.id) {
-							sub.last_charged_at = current_block;
-							let prev_next = sub.next_charge_unix_day.unwrap_or(today);
-							sub.next_charge_unix_day = Some(
-								pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_after(
-									prev_next,
-								),
-							);
+							Self::advance_subscription_cycle(sub, today, current_block);
 						}
 					}
 
@@ -2845,18 +3393,366 @@ pub mod pallet {
 				}
 
 				// Persist any advances/deactivations for this account.
-				UserAllSubscriptionPlans::<T>::insert(&account_id, subs);
+				Self::commit_subscriptions(account_id, &before, subs);
 			}
 
-			// Conservative weight accounting:
-			// - `iter()` reads each user's subscription entry once.
-			// - for users we charge/cancel, we likely write back to subscriptions and touch credits/tx records.
-			// Use intentionally-high multipliers to avoid undercounting as state grows.
-			let reads = users_seen
-				.saturating_add(users_with_active_subs.saturating_mul(5))
-				.saturating_add(users_charged_or_cancelled.saturating_mul(10));
-			let writes = users_charged_or_cancelled.saturating_mul(10);
-			T::DbWeight::get().reads_writes(reads, writes)
+			users_charged_or_cancelled > 0
+		}
+
+		/// Renewal sweep: drain the accounts actually due, up to the per-run cap.
+		///
+		/// This replaces a full walk of `UserAllSubscriptionPlans` on every tick.
+		/// Date-to-date billing means somebody is due every day rather than only
+		/// on the 1st, so the old monthly sweep would have become a daily one —
+		/// running an unbounded loop 30x more often, which is strictly worse
+		/// than what it replaced. Reading only the due-day prefix makes the work
+		/// proportional to who is due instead of to how many subscriptions exist.
+		///
+		/// The cap is what lets the returned weight be a promise rather than a
+		/// report: nothing upstream rejects an overweight `on_initialize`, the
+		/// block is simply produced heavier, so the bound has to be applied
+		/// before the work rather than measured after it.
+		fn handle_all_subscription_charging(
+			current_block: BlockNumberFor<T>,
+			meter: &mut WeightMeter,
+		) -> Weight {
+			let cap = T::MaxSubscriptionChargesPerRun::get() as usize;
+			if cap == 0 {
+				return T::DbWeight::get().reads(1);
+			}
+
+			// `cap` bounds a headcount against an estimate of what an account
+			// costs; the meter bounds the work itself, so the returned weight is
+			// something the hook enforced rather than something it reported
+			// afterwards. Nothing upstream would reject an overweight hook, so
+			// stopping is ours to do. The meter is shared with the backfill and
+			// arrives partly spent.
+			let spent_before = meter.consumed();
+
+			// Until the backfill has populated the index, an account in its
+			// untouched tail has no entry and would go uncharged. Fall back to
+			// the pre-index full scan; this branch retires one release later.
+			//
+			// It gets the same meter. The backfill runs for
+			// `accounts / MaxBackfillAccountsPerRun` ticks and this branch is
+			// live for every one of them, so an unbounded scan here is not a
+			// small transitional cost — it is a full walk of every account on
+			// every tick for the entire upgrade window, which is precisely when
+			// a chain can least afford one.
+			if !BackfillDone::<T>::get() {
+				return Self::full_scan_subscription_charging(current_block, meter);
+			}
+			let per_account = <T as Config>::WeightInfo::charge_account_due();
+			let per_probe = <T as Config>::WeightInfo::day_probe();
+
+			// Can't even afford to read and re-write the cursor: do nothing at
+			// all rather than half of it.
+			if meter.try_consume(<T as Config>::WeightInfo::drain_overhead()).is_err() {
+				return meter.consumed().saturating_sub(spent_before);
+			}
+
+			let today = Self::current_unix_day();
+			let stored_cursor = DueDayCursor::<T>::get();
+			let mut cursor = stored_cursor.unwrap_or(today);
+			// What `DueDayCursor` currently holds, so the per-day publish below
+			// only writes when it has actually moved.
+			let mut published = stored_cursor;
+			let mut accounts_charged: u64 = 0;
+			let mut accounts_seen: u64 = 0;
+			let mut day_probes: u32 = 0;
+
+			// Walking a cursor rather than reading only `today` is what stops a
+			// day that did not finish draining — or that the chain was down for
+			// — from being silently skipped. This is the role
+			// `max_catchup_months` plays in the old code and it has to survive.
+			while cursor <= today && (accounts_seen as usize) < cap && day_probes < MAX_DAY_PROBES {
+				// Size the batch by what we can afford as well as by what is
+				// left of the cap, so a batch is never *read* and then abandoned
+				// unpaid — the read costs weight whether or not we charge it.
+				let affordable = Self::accounts_affordable(meter, per_account);
+				let take = cap.saturating_sub(accounts_seen as usize).min(affordable);
+				if take == 0 {
+					break;
+				}
+
+				let batch: Vec<T::AccountId> =
+					DueAccounts::<T>::iter_key_prefix(cursor).take(take).collect();
+
+				if batch.is_empty() {
+					// Day fully drained. Advancing only on an empty prefix is
+					// what keeps the cursor from stranding a day's charges
+					// permanently; a charge always moves the due date forward by
+					// at least 28 days, so re-filed entries can never land
+					// behind it.
+					if meter.try_consume(per_probe).is_err() {
+						break;
+					}
+					day_probes = day_probes.saturating_add(1);
+					cursor = cursor.saturating_add(1);
+					continue;
+				}
+
+				// Publish the day being worked before working it.
+				// `commit_subscriptions` clamps its re-file to `DueDayCursor`,
+				// and the drain spans many days in a block — a value left at
+				// wherever this block started would let an account be re-filed
+				// on a day already walked past, which is the stranding the
+				// clamp exists to prevent.
+				//
+				// Once per non-empty day, and only when the day has moved: the
+				// empty days in between have nobody to re-file, and a day that
+				// takes several batches to drain publishes once. Metered
+				// explicitly because `drain_overhead` prices the single write
+				// at the end of the run, not one per day.
+				if published != Some(cursor) {
+					meter.consume(T::DbWeight::get().writes(1));
+					DueDayCursor::<T>::put(cursor);
+					published = Some(cursor);
+				}
+
+				for account_id in batch {
+					// Charged up front: the account is about to be worked
+					// whether or not it turns out to owe anything, and the meter
+					// has to reflect what was spent, not what was collected.
+					meter.consume(per_account);
+
+					// Drop the entry that led us here *before* charging, so the
+					// day always makes progress. A stale entry — one whose
+					// subscription is no longer due, or no longer exists — would
+					// otherwise keep the prefix non-empty forever and wedge the
+					// cursor. `commit_subscriptions` re-files the account under
+					// whatever days its subscriptions actually hold.
+					DueAccounts::<T>::remove(cursor, &account_id);
+					accounts_seen = accounts_seen.saturating_add(1);
+					if Self::charge_account_due(&account_id, current_block) {
+						accounts_charged = accounts_charged.saturating_add(1);
+					}
+				}
+			}
+
+			DueDayCursor::<T>::put(cursor);
+
+			// Only this sweep's share of the shared meter — the backfill already
+			// reported its own, and double-counting it would overstate the
+			// hook's weight rather than understate it, but wrong either way.
+			meter.consumed().saturating_sub(spent_before)
+		}
+
+		/// How many more accounts the meter can pay for at `per_account`.
+		///
+		/// Both dimensions of `Weight` bind, so this takes the smaller of the
+		/// two. A zero cost in a dimension means that dimension does not
+		/// constrain — `usize::MAX` rather than a division by zero — which
+		/// leaves `cap` as the bound, exactly as before the meter existed.
+		fn accounts_affordable(meter: &WeightMeter, per_account: Weight) -> usize {
+			let remaining = meter.remaining();
+			let by_time = if per_account.ref_time() == 0 {
+				usize::MAX
+			} else {
+				(remaining.ref_time() / per_account.ref_time()) as usize
+			};
+			let by_size = if per_account.proof_size() == 0 {
+				usize::MAX
+			} else {
+				(remaining.proof_size() / per_account.proof_size()) as usize
+			};
+			by_time.min(by_size)
+		}
+
+		/// Populate the due-day index for subscriptions that predate it.
+		///
+		/// This cannot be a migration. `pallet-migrations` is not configured in
+		/// this runtime — there is no `MultiBlockMigrator` and every existing
+		/// migration is a single-block `OnRuntimeUpgrade` — so iterating every
+		/// subscription there is the same unbounded work this change removes,
+		/// relocated into the one block where exceeding the budget breaks the
+		/// upgrade itself. Ordinary paginated hook work is bounded by
+		/// construction and costs nothing once finished.
+		///
+		/// Read-only over `UserAllSubscriptionPlans` except for one case: a
+		/// legacy `None` due date is written out as the 1st of the current
+		/// month, which is precisely what the old sweep already read it to mean.
+		/// An index has no key for `None`, so normalising it here is what stops
+		/// a survivor from silently never being billed again. That is a value
+		/// written through the existing type, not a change of shape.
+		fn backfill_due_index(meter: &mut WeightMeter) -> Weight {
+			if BackfillDone::<T>::get() {
+				return T::DbWeight::get().reads(1);
+			}
+
+			let cap = T::MaxBackfillAccountsPerRun::get() as usize;
+			if cap == 0 {
+				return T::DbWeight::get().reads(1);
+			}
+
+			// Bounded by weight as well as by count. `MaxBackfillAccountsPerRun`
+			// is 256 and each account can cost up to `MaxActiveSubscriptions`
+			// index writes, so the count alone permits ~134ms of declared work —
+			// most of the hook's whole allowance, before the charging sweep that
+			// runs alongside it has spent anything.
+			let spent_before = meter.consumed();
+			let per_account = <T as Config>::WeightInfo::backfill_account();
+			let affordable = Self::accounts_affordable(meter, per_account);
+			let limit = cap.min(affordable);
+			if limit == 0 {
+				return meter.consumed().saturating_sub(spent_before);
+			}
+
+			// Fix the floor once, on the first tick, so a run that spans days
+			// files every account against the same reference point.
+			let cursor_start = match DueDayCursor::<T>::get() {
+				Some(day) => day,
+				None => {
+					let start = pallet_calendar::Pallet::<T>::unix_day_of_first_of_month_in(0);
+					DueDayCursor::<T>::put(start);
+					start
+				},
+			};
+
+			let batch: Vec<(T::AccountId, Vec<UserPlanSubscription<T>>)> =
+				match BackfillCursor::<T>::get() {
+					Some(key) => {
+						UserAllSubscriptionPlans::<T>::iter_from(key).take(limit).collect()
+					},
+					None => UserAllSubscriptionPlans::<T>::iter().take(limit).collect(),
+				};
+
+			if batch.is_empty() {
+				BackfillDone::<T>::put(true);
+				BackfillCursor::<T>::kill();
+				log::info!(
+					target: "runtime::marketplace",
+					"due-day index backfill complete; cursor at day {}",
+					cursor_start,
+				);
+				return T::DbWeight::get().reads_writes(2, 2);
+			}
+
+			// Charged for what the batch will cost before it is applied, so the
+			// sweep sharing this meter sees an honest remainder.
+			meter.consume(per_account.saturating_mul(batch.len() as u64));
+
+			let resume_from =
+				UserAllSubscriptionPlans::<T>::hashed_key_for(&batch[batch.len() - 1].0);
+			let exhausted = batch.len() < limit;
+
+			for (account_id, subs) in batch.iter() {
+				let mut after = subs.clone();
+				// Per account, not per batch. This decides whether *this*
+				// account's vector changed, so a counter accumulated across the
+				// whole batch would answer for whichever account happened to
+				// normalise first and rewrite every later one unchanged.
+				let mut normalised = false;
+				for sub in after.iter_mut() {
+					if sub.active && sub.next_charge_unix_day.is_none() {
+						sub.next_charge_unix_day = Some(cursor_start);
+						normalised = true;
+					}
+				}
+
+				// File each account no earlier than the cursor. An overdue row
+				// — one whose day already passed while the chain was down —
+				// would otherwise sit behind the cursor where the drain can
+				// never reach it. Clamping it up to the cursor charges it on the
+				// next tick, which is the same outcome as being overdue, and
+				// `max_catchup_months` still bounds the arrears.
+				for sub in after.iter().filter(|s| s.active) {
+					let day = Self::effective_due_day(sub).max(cursor_start);
+					DueAccounts::<T>::insert(day, account_id, ());
+				}
+
+				// Only rewrite the stored vector when this account actually had
+				// a `None` normalised; otherwise this stays a pure index write.
+				//
+				// An *inactive* row's `None` is deliberately not enough: it is
+				// never charged, never indexed, and `commit_subscriptions` drops
+				// it the next time the account is written. Legacy rows of
+				// exactly that shape are what the backfill meets on chain, so
+				// testing the vector for *any* `None` would rewrite a whole
+				// class of accounts with a value identical to the one already
+				// stored.
+				if normalised {
+					UserAllSubscriptionPlans::<T>::insert(account_id, after);
+				}
+			}
+
+			if exhausted {
+				BackfillDone::<T>::put(true);
+				BackfillCursor::<T>::kill();
+				log::info!(target: "runtime::marketplace", "due-day index backfill complete");
+			} else {
+				BackfillCursor::<T>::put(resume_from);
+			}
+
+			meter.consumed().saturating_sub(spent_before)
+		}
+
+		/// Pre-index behaviour, kept alive only until `BackfillDone` is set.
+		///
+		/// Paged rather than exhaustive. The original walked every account on
+		/// every tick, which was tolerable only if the fallback were momentary —
+		/// and it is not: the backfill takes `accounts /
+		/// MaxBackfillAccountsPerRun` ticks, and this runs on all of them. On a
+		/// chain of any size that is a full scan every tick for hours, starting
+		/// the moment the upgrade lands.
+		///
+		/// So it spends the drain's meter and resumes from [`FullScanCursor`],
+		/// round-robin like `sweep_referral_commissions`. An account the current
+		/// tick cannot afford is reached by a later one; nothing is skipped,
+		/// because a charge is due until it is taken and the cursor always comes
+		/// back around.
+		///
+		/// Delete along with the `BackfillDone` gate and `FullScanCursor` one
+		/// release after the backfill has completed on every network.
+		fn full_scan_subscription_charging(
+			current_block: BlockNumberFor<T>,
+			meter: &mut WeightMeter,
+		) -> Weight {
+			let spent_before = meter.consumed();
+			let per_account = <T as Config>::WeightInfo::charge_account_due();
+			if meter.try_consume(<T as Config>::WeightInfo::drain_overhead()).is_err() {
+				return meter.consumed().saturating_sub(spent_before);
+			}
+
+			let affordable = Self::accounts_affordable(meter, per_account);
+			if affordable == 0 {
+				return meter.consumed().saturating_sub(spent_before);
+			}
+
+			let batch: Vec<T::AccountId> = match FullScanCursor::<T>::get() {
+				Some(key) => UserAllSubscriptionPlans::<T>::iter_keys_from(key)
+					.take(affordable)
+					.collect(),
+				None => UserAllSubscriptionPlans::<T>::iter_keys().take(affordable).collect(),
+			};
+
+			// End of the map: start the next sweep from the top. Parking the
+			// cursor at the end instead would make every subsequent tick find
+			// nothing and charge nobody for the rest of the backfill window.
+			if batch.is_empty() {
+				FullScanCursor::<T>::kill();
+				return meter.consumed().saturating_sub(spent_before);
+			}
+
+			// A short batch means the map ended inside it, so the next sweep
+			// starts from the top; otherwise resume after the last key looked
+			// at, charged or not.
+			let exhausted = batch.len() < affordable;
+			let resume_from =
+				UserAllSubscriptionPlans::<T>::hashed_key_for(&batch[batch.len() - 1]);
+
+			for account_id in batch {
+				meter.consume(per_account);
+				Self::charge_account_due(&account_id, current_block);
+			}
+
+			if exhausted {
+				FullScanCursor::<T>::kill();
+			} else {
+				FullScanCursor::<T>::put(resume_from);
+			}
+
+			meter.consumed().saturating_sub(spent_before)
 		}
 
 		/// Hourly pay-as-you-go billing for users with no subscription covering
@@ -2874,13 +3770,63 @@ pub mod pallet {
 		/// two byte counts come from different backends and are billed as separate
 		/// line items, so a partial GiB on each side is a partial GiB of each.
 		fn handle_hourly_storage_charging(current_block: BlockNumberFor<T>) -> Weight {
-			let mut users_seen: u64 = 0;
-			let mut users_charged_or_removed: u64 = 0;
+			// Hours of arrears one visit may settle. Bounds the arithmetic a
+			// single very stale account can pull into a tick; the balance of
+			// what it owes survives in `StorageLastChargedAt` and is billed on
+			// the following visits.
+			const MAX_CATCHUP_HOURS: u32 = 24;
+
+			let mut meter = WeightMeter::with_limit(
+				T::HourlyWeightBudget::get()
+					* <T as frame_system::Config>::BlockWeights::get().max_block,
+			);
+			let probe = <T as Config>::WeightInfo::hourly_probe();
+			let charge = <T as Config>::WeightInfo::hourly_charge();
+
+			// Size the batch assuming every user in it turns out to owe
+			// something. Most will not, so the sweep usually finishes its batch
+			// with budget to spare — but a bound has to hold in the case it is
+			// bounding, not the average one.
+			let affordable = Self::accounts_affordable(&meter, probe.saturating_add(charge));
+			if affordable == 0 {
+				return meter.consumed();
+			}
+
 			// Every user the validator metric has ever reported on. Both usage
 			// extrinsics write all four Drive/S3 maps together, so this key set
 			// covers S3-only users too — their Drive row is simply zero.
-			for (user, drive_file_size) in UserTotalDriveFilesSize::<T>::iter() {
+			//
+			// Paged: this map only grows, and the sweep runs on every tick
+			// rather than on an anniversary, so it is the loop that reaches the
+			// block limit first. The cursor round-robins, so a user the current
+			// tick cannot afford is reached by a later one — and because the
+			// charge settles every hour elapsed since `StorageLastChargedAt`
+			// rather than a flat one, arriving late costs the user nothing and
+			// the chain nothing. Falling behind defers revenue; it no longer
+			// forgives it.
+			let batch: Vec<(T::AccountId, u128)> = match HourlyChargeCursor::<T>::get() {
+				Some(key) => {
+					UserTotalDriveFilesSize::<T>::iter_from(key).take(affordable).collect()
+				},
+				None => UserTotalDriveFilesSize::<T>::iter().take(affordable).collect(),
+			};
+
+			// End of the map: restart from the top next tick. Parking the cursor
+			// at the end instead would leave every later tick finding nothing.
+			if batch.is_empty() {
+				HourlyChargeCursor::<T>::kill();
+				return meter.consumed();
+			}
+
+			let exhausted = batch.len() < affordable;
+			let resume_from =
+				UserTotalDriveFilesSize::<T>::hashed_key_for(&batch[batch.len() - 1].0);
+
+			let mut users_seen: u64 = 0;
+			let mut users_charged_or_removed: u64 = 0;
+			for (user, drive_file_size) in batch {
 				users_seen = users_seen.saturating_add(1);
+				meter.consume(probe);
 
 				// Which halves of the bill a subscription already covers.
 				let subscriptions = UserAllSubscriptionPlans::<T>::get(&user);
@@ -2891,22 +3837,87 @@ pub mod pallet {
 					has_s3_plan |= sub.package.is_s3_plan;
 				}
 
-				// Both sides covered — nothing left to meter for this user.
-				if has_drive_plan && has_s3_plan {
+				// How many whole hours have gone unbilled for this user.
+				//
+				// Paging is what makes this a count rather than a yes/no: the
+				// cursor reaches a given user only once per pass over the map,
+				// so on a large map that is every several hours, not every
+				// tick. Billing a flat hour and moving the marker to `now`
+				// would forgive every hour in between — the charge has to
+				// settle all of them.
+				let blocks_per_hour: BlockNumberFor<T> = T::BlocksPerHour::get().into();
+				if blocks_per_hour.is_zero() {
 					continue;
 				}
 
-				// Check if the time difference is greater than 1 hour
-				let last_charged_at = StorageLastChargedAt::<T>::get(user.clone());
+				// A user the sweep has never charged has no marker, and
+				// `ValueQuery` reads that absence as block zero. Anchor them one
+				// hour back so first sight bills a single hour, rather than
+				// every hour since genesis.
+				let stored_last_charged_at = StorageLastChargedAt::<T>::get(user.clone());
+				let last_charged_at = if stored_last_charged_at.is_zero() {
+					current_block.saturating_sub(blocks_per_hour)
+				} else {
+					stored_last_charged_at
+				};
+
 				let block_difference = current_block.saturating_sub(last_charged_at);
-				if block_difference > T::BlocksPerHour::get().into() {
-					let s3_file_size = UserTotalS3FilesSize::<T>::get(&user).unwrap_or(0);
+				let elapsed_hours: u32 =
+					(block_difference / blocks_per_hour).saturated_into::<u32>();
 
+				// Cap the catch-up so one very stale account cannot spend the
+				// whole tick's budget, mirroring `max_catchup_months` on the
+				// monthly path. Hours beyond the cap are not forgiven: the
+				// marker advances by exactly what is billed, so the remainder
+				// stays owed and is collected on later visits.
+				let periods = elapsed_hours.min(MAX_CATCHUP_HOURS);
+				if periods > 0 {
+					// Read the S3 size only when that side is billable: a user
+					// whose S3 bytes are covered by a plan pays nothing for them
+					// whatever the number is, and this loop runs over every
+					// account the metric has ever reported on.
 					let billable_drive = if has_drive_plan { 0 } else { drive_file_size };
-					let billable_s3 = if has_s3_plan { 0 } else { s3_file_size };
+					let billable_s3 = if has_s3_plan {
+						0
+					} else {
+						UserTotalS3FilesSize::<T>::get(&user).unwrap_or(0)
+					};
 
-					// Skip if no files to charge
+					// Nothing billable this window — every side is either
+					// covered by a subscription or empty.
+					//
+					// The clock still has to move. Freezing the marker here is
+					// what turns a covered stretch into arrears the moment the
+					// user becomes billable again: on a cancelled plan, or on
+					// the first upload to a side that had no files, the sweep
+					// would bill forward from the last *pre-coverage* hour and
+					// charge the whole covered window over again, 24 hours at a
+					// time — a window the user had already paid a subscription
+					// for.
+					//
+					// Advancing by the whole hours elapsed rather than to
+					// `current_block` keeps the marker hour-aligned, and gives
+					// nothing away: by definition there was nothing to bill for
+					// the hours being settled. `elapsed_hours` and not `periods`
+					// for the same reason — `MAX_CATCHUP_HOURS` bounds the work
+					// of *charging* arrears, and there are none here, so
+					// settling in 24-hour steps would only leave a legacy frozen
+					// marker taking several passes to catch up.
+					//
+					// Only for a user who actually has a marker. An absent one
+					// reads as block zero, is not frozen at anything, and
+					// already fails safe to a single hour on first sight;
+					// writing one here would put a row on every account in the
+					// metric map, most of which never owe anything.
 					if billable_drive == 0 && billable_s3 == 0 {
+						if !stored_last_charged_at.is_zero() {
+							let _ = Self::advance_storage_last_charged_at(
+								&user,
+								last_charged_at.saturating_add(
+									blocks_per_hour.saturating_mul(elapsed_hours.into()),
+								),
+							);
+						}
 						continue;
 					}
 
@@ -2915,8 +3926,11 @@ pub mod pallet {
 
 					let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
 
-					// Bill in whole GiB, rounding any partial GiB up.
-					let charge_amount =
+					// One hour of storage, billed in whole GiB per side. The
+					// arrears are priced at the current size and rate rather
+					// than at each missed hour's own — the historical sizes are
+					// not recoverable, and metering only ever wrote the latest.
+					let per_period =
 						times(Credits::new(price_per_gb), gibs_ceil(Bytes::new(billable_drive)))
 							.get()
 							.saturating_add(
@@ -2927,7 +3941,33 @@ pub mod pallet {
 								.get(),
 							);
 
-					if user_free_credits >= charge_amount {
+					// A free tier, or a rounding floor of zero: nothing to bill,
+					// but the clock still moves so the hours do not pile up as
+					// phantom arrears against a later non-zero price.
+					if per_period == 0 {
+						let _ = Self::advance_storage_last_charged_at(
+							&user,
+							last_charged_at
+								.saturating_add(blocks_per_hour.saturating_mul(periods.into())),
+						);
+						continue;
+					}
+
+					// Settle as many whole hours as the balance covers. Paying
+					// down part of the arrears beats the all-or-nothing charge:
+					// a user who cannot afford the full backlog stays behind on
+					// the remainder instead of being billed nothing at all
+					// while the debt keeps growing.
+					let affordable_periods = sp_std::cmp::min(
+						periods as u128,
+						user_free_credits.checked_div(per_period).unwrap_or(0),
+					) as u32;
+
+					if affordable_periods > 0 {
+						let charge_amount =
+							per_period.saturating_mul(affordable_periods as u128);
+
+						meter.consume(charge);
 						// Decrease user credits
 						let charge_result = Self::consume_credits(user.clone(), charge_amount);
 
@@ -2943,7 +3983,16 @@ pub mod pallet {
 								NativeTransactionType::Subscription,
 								charge_amount.into(),
 							);
-							let ts_result = Self::update_storage_last_charged_at(&user);
+							// Advance by exactly the hours billed, not to
+							// `now`. Anything short of the full arrears leaves
+							// the marker behind, which is what keeps the
+							// unbilled remainder owed.
+							let ts_result = Self::advance_storage_last_charged_at(
+								&user,
+								last_charged_at.saturating_add(
+									blocks_per_hour.saturating_mul(affordable_periods.into()),
+								),
+							);
 							if tx_result.is_ok() && ts_result.is_ok() {
 								users_charged_or_removed =
 									users_charged_or_removed.saturating_add(1);
@@ -2966,18 +4015,22 @@ pub mod pallet {
 				}
 			}
 
-			// Conservative weight accounting:
-			// - iterating `UserTotalDriveFilesSize` and reading
-			//   `UserAllSubscriptionPlans`, `UserTotalS3FilesSize` and
-			//   `StorageLastChargedAt` per user
-			// - charged/removed paths do writes and call into other pallets
-			// - a charged user also walks the referral lookup and writes one
-			//   accrual row; paying it out is the sweep's weight, not ours
-			let reads = users_seen
-				.saturating_mul(5)
-				.saturating_add(users_charged_or_removed.saturating_mul(13));
-			let writes = users_charged_or_removed.saturating_mul(11);
-			T::DbWeight::get().reads_writes(reads, writes)
+			if exhausted {
+				HourlyChargeCursor::<T>::kill();
+			} else {
+				HourlyChargeCursor::<T>::put(resume_from);
+			}
+
+			log::trace!(
+				target: "runtime::marketplace",
+				"hourly sweep: {} seen, {} charged, {} of budget spent",
+				users_seen,
+				users_charged_or_removed,
+				meter.consumed().ref_time(),
+			);
+
+			// What the meter recorded, which was bounded before any of it ran.
+			meter.consumed()
 		}
 
 		/// Helper function to get the current price per GB
@@ -2988,18 +4041,6 @@ pub mod pallet {
 		/// Helper function to get the current price per GB
 		pub fn get_price_per_bandwidth() -> u128 {
 			PricePerBandwidth::<T>::get()
-		}
-
-		/// Retrieve active compute subscriptions specifically
-		fn get_active_compute_subscriptions() -> Vec<(T::AccountId, UserPlanSubscription<T>)> {
-			UserAllSubscriptionPlans::<T>::iter()
-				.flat_map(|(account_id, subscriptions)| {
-					subscriptions
-						.into_iter()
-						.filter(|sub| sub.active && !sub.package.is_any_storage())
-						.map(move |sub| (account_id.clone(), sub))
-				})
-				.collect()
 		}
 
 		/// Cancel a specific subscription by ID (storage or compute).
@@ -3014,19 +4055,22 @@ pub mod pallet {
 			let mut cancelled = false;
 			let mut was_storage = false;
 
-			UserAllSubscriptionPlans::<T>::mutate(account_id, |subscriptions| {
-				for sub in subscriptions.iter_mut() {
-					if sub.id == subscription_id && sub.active {
-						refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
-						was_storage = sub.package.is_any_storage();
-						sub.active = false;
-						cancelled = true;
-						break; // Stop looping after finding the subscription
-					}
+			let before = UserAllSubscriptionPlans::<T>::get(account_id);
+			let mut after = before.clone();
+			for sub in after.iter_mut() {
+				if sub.id == subscription_id && sub.active {
+					refund = refund.saturating_add(Self::unused_prepaid_refund_credits(sub));
+					was_storage = sub.package.is_any_storage();
+					sub.active = false;
+					cancelled = true;
+					break; // Stop looping after finding the subscription
 				}
-			});
+			}
 
 			ensure!(cancelled, Error::<T>::SubscriptionNotFound);
+
+			// Drops the row along with its index key and anchor entry.
+			Self::commit_subscriptions(account_id, &before, after);
 
 			if refund > 0 {
 				Self::refund_credits_with_batch(account_id, refund)?;
@@ -3051,12 +4095,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Helper function to remove the last charged timestamp for a user
-		pub fn remove_storage_last_charged_at(who: &T::AccountId) {
-			// Remove the last charged timestamp for the user
-			StorageLastChargedAt::<T>::remove(who);
-		}
-
 		/// Remove a specific account from BackupDeleteRequests if it exists
 		pub fn remove_user_from_backup_delete_requests(user_id: &T::AccountId) {
 			BackupDeleteRequests::<T>::mutate(|delete_requests| {
@@ -3065,12 +4103,19 @@ pub mod pallet {
 		}
 
 		/// Helper function to update the last charged timestamp for a user
-		pub fn update_storage_last_charged_at(who: &T::AccountId) -> DispatchResult {
-			// Get the current timestamp from the timestamp pallet
-			let now = <frame_system::Pallet<T>>::block_number();
-
-			// Update the last charged timestamp for the user
-			StorageLastChargedAt::<T>::insert(who, now);
+		/// Move a user's hourly billing marker to `charged_through`, the block
+		/// their paid-up hours actually run out at.
+		///
+		/// Takes the block rather than reading `now` on purpose. The sweep bills
+		/// whole hours and can only reach a user every few passes, so the marker
+		/// has to land on `last_charged_at + billed_hours * BlocksPerHour`:
+		/// setting it to the current block would forgive the elapsed remainder,
+		/// and setting it past the hours actually paid for would bill them twice.
+		pub fn advance_storage_last_charged_at(
+			who: &T::AccountId,
+			charged_through: BlockNumberFor<T>,
+		) -> DispatchResult {
+			StorageLastChargedAt::<T>::insert(who, charged_through);
 
 			Ok(())
 		}
