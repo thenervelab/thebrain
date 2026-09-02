@@ -606,6 +606,22 @@ pub mod pallet {
 		/// are rewritten over the following blocks and finish with
 		/// `PlanRepricingCompleted`.
 		PlanPriceUpdated(T::Hash, u128),
+		/// A plan's descriptive fields were updated by sudo.
+		///
+		/// Carries no field values: the fields are variable-length blobs and the
+		/// current state is one `Plans` read away, so the event says which plan
+		/// moved rather than duplicating it into every block's event log.
+		PlanUpdated {
+			plan_id: T::Hash,
+		},
+		/// A plan was removed from the catalogue by sudo.
+		///
+		/// Nobody was cancelled: existing subscriptions carry their own copy of
+		/// the plan and keep billing from it. This only means the plan can no
+		/// longer be bought or switched onto.
+		PlanRemoved {
+			plan_id: T::Hash,
+		},
 		/// Specific miner request fee updated
 		SpecificMinerRequestFeeUpdated {
 			fee: BalanceOf<T>,
@@ -1091,6 +1107,135 @@ pub mod pallet {
 			}
 
 			Self::deposit_event(Event::PlanPriceUpdated(plan_id, new_price));
+			Ok(())
+		}
+
+		/// Sudo function to update the descriptive fields of an existing plan.
+		///
+		/// Each field is `None` to leave it unchanged. `storage_limit` is
+		/// `Option<Option<u128>>` so that `Some(None)` clears the limit while
+		/// `None` leaves whatever is there.
+		///
+		/// Deliberately *not* updatable here:
+		/// - `price`, which has to go through [`Pallet::set_plan_price`]: every
+		///   live subscription carries its own copy of the plan and the monthly
+		///   charge bills out of that copy, so a price written straight into
+		///   [`Plans`] would never reach existing subscribers. That call queues
+		///   the paged walk that rewrites them; this one has no such machinery.
+		/// - `is_storage_plan` / `is_s3_plan`. The flavour decides which
+		///   per-account slot a subscription occupies and which bytes it exempts
+		///   from hourly per-GB billing, and existing subscriptions keep the
+		///   flavour they were bought under. Flipping it would let an account end
+		///   up holding two subscriptions of the same flavour — one from the old
+		///   snapshot, one bought after the change — which is exactly what
+		///   `do_purchase_storage_plan` refuses to create.
+		/// - `is_suspended`, which is [`Pallet::set_package_suspension`].
+		///
+		/// Renaming does **not** move the plan: the id was derived from the
+		/// original name at creation but it is the storage key, and rewriting the
+		/// key would orphan every subscription pointing at it. So after a rename
+		/// the id no longer hashes to `plan_name`, and `add_new_plan` can still
+		/// reject a *new* plan taking the old name — it collides on the id this
+		/// plan continues to hold.
+		///
+		/// As with a reprice, existing subscription snapshots keep the old text.
+		/// Nothing on chain reads those fields, so this is cosmetic: a consumer
+		/// wanting current metadata should look the plan up in [`Plans`] by
+		/// `sub.package.id` rather than render the snapshot.
+		#[pallet::call_index(33)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn update_plan(
+			origin: OriginFor<T>,
+			plan_id: T::Hash,
+			plan_name: Option<Vec<u8>>,
+			plan_description: Option<Vec<u8>>,
+			plan_technical_description: Option<Vec<u8>>,
+			storage_limit: Option<Option<u128>>,
+		) -> DispatchResult {
+			// Ensure the caller is sudo
+			ensure_root(origin)?;
+
+			// An all-`None` call would emit an event claiming an update that did
+			// not happen, so refuse it rather than write the plan back unchanged.
+			ensure!(
+				plan_name.is_some() ||
+					plan_description.is_some() ||
+					plan_technical_description.is_some() ||
+					storage_limit.is_some(),
+				Error::<T>::InvalidInput
+			);
+
+			Plans::<T>::try_mutate(plan_id, |maybe_plan| -> DispatchResult {
+				let plan = maybe_plan.as_mut().ok_or(Error::<T>::PlanNotFound)?;
+
+				if let Some(name) = plan_name {
+					plan.plan_name = name;
+				}
+				if let Some(description) = plan_description {
+					plan.plan_description = description;
+				}
+				if let Some(technical) = plan_technical_description {
+					plan.plan_technical_description = technical;
+				}
+				if let Some(limit) = storage_limit {
+					plan.storage_limit = limit;
+				}
+
+				Ok(())
+			})?;
+
+			Self::deposit_event(Event::PlanUpdated { plan_id });
+			Ok(())
+		}
+
+		/// Sudo function to remove a plan from the catalogue.
+		///
+		/// This delists the plan: [`Plans`] is the only thing `purchase_plan`,
+		/// `do_purchase_storage_plan` and the plan-change calls read to find a
+		/// plan, so once it is gone nothing can be bought into or switched onto
+		/// it.
+		///
+		/// It does **not** cancel anyone. Every live subscription carries its own
+		/// copy of the plan and the monthly charge bills out of that copy, so
+		/// existing holders keep their subscription and keep being charged at the
+		/// snapshot price until they cancel or change plans — which they still
+		/// can, since a change reads the *target* plan, not the one being left.
+		/// Checking for holders here is not an option: that is a walk over every
+		/// account in [`UserAllSubscriptionPlans`], unbounded and not something a
+		/// dispatchable can do. So the safe sequence for retiring a plan is
+		/// `set_package_suspension` first — which stops new purchases while
+		/// leaving the plan readable — and this once it has drained.
+		///
+		/// A queued reprice for this plan is dropped, since there is no price
+		/// left to copy. `process_pending_repricing` already handles
+		/// finding its head plan gone, but leaving the entry would stall the
+		/// queue behind a job that can only be retired by a block that reaches
+		/// it, so it is cleared here instead.
+		#[pallet::call_index(34)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn remove_plan(origin: OriginFor<T>, plan_id: T::Hash) -> DispatchResult {
+			// Ensure the caller is sudo
+			ensure_root(origin)?;
+
+			ensure!(Plans::<T>::contains_key(plan_id), Error::<T>::PlanNotFound);
+			Plans::<T>::remove(plan_id);
+
+			// Drop any queued reprice for the plan. If it was the *head*, the
+			// cursor and the running tally belong to it and would otherwise be
+			// inherited by whichever job is promoted — resuming it from a
+			// half-walked position and reporting the wrong count in
+			// `PlanRepricingCompleted`. So the promoted job starts clean.
+			let was_head = RepricingQueue::<T>::mutate(|queue| {
+				let was_head = queue.first() == Some(&plan_id);
+				queue.retain(|queued| queued != &plan_id);
+				was_head
+			});
+			if was_head {
+				RepricingCursor::<T>::kill();
+				RepricedSoFar::<T>::kill();
+			}
+
+			Self::deposit_event(Event::PlanRemoved { plan_id });
 			Ok(())
 		}
 
