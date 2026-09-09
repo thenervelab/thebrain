@@ -34,8 +34,13 @@ const PRICE_PER_GB: u128 = 2_713;
 /// difference is what pins the per-line rounding.
 const DRIVE_BYTES: u128 = payment_math::GIB + 1;
 const S3_BYTES: u128 = payment_math::GIB + 1;
+/// A separate S3 rate, deliberately not a multiple of `PRICE_PER_GB`: a bill
+/// computed off the wrong side cannot land on the expected total by accident.
+const S3_PRICE_PER_GB: u128 = 9_011;
 /// `2_713 × 2` — one hour of one side.
 const ONE_SIDE_CHARGE: u128 = 5_426;
+/// `9_011 × 2` — one hour of S3 at its own rate.
+const S3_SIDE_CHARGE_AT_OWN_RATE: u128 = 18_022;
 /// Both sides billed: `5_426 × 2`.
 const BOTH_SIDES_CHARGE: u128 = 10_852;
 
@@ -895,5 +900,90 @@ fn cancelling_a_covered_plan_does_not_back_bill_the_covered_window() {
 			BOTH_SIDES_CHARGE,
 			"only the hour actually spent uncovered is billed",
 		);
+	});
+}
+
+/// Until root prices S3 separately, both sides bill at `PricePerGbs` — the
+/// behaviour that was in force before the rates were split.
+///
+/// This is what makes `S3PricePerGbs` an `OptionQuery`: a defaulted
+/// `ValueQuery` would read the absent value as zero on every chain that
+/// upgraded into the item, and silently stop billing S3 until someone noticed
+/// the missing revenue.
+#[test]
+fn s3_bills_at_the_drive_rate_until_a_separate_one_is_set() {
+	new_test_ext().execute_with(|| {
+		assert_eq!(Marketplace::get_s3_price_per_gb(), PRICE_PER_GB);
+		assert_eq!(hourly_spend(|_| {}), BOTH_SIDES_CHARGE);
+	});
+}
+
+#[test]
+fn s3_bills_at_its_own_rate_once_root_sets_one() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Marketplace::set_s3_price_per_gb(RuntimeOrigin::root(), S3_PRICE_PER_GB));
+
+		// Drive stays on `PRICE_PER_GB`; only the S3 line item moves.
+		assert_eq!(hourly_spend(|_| {}), ONE_SIDE_CHARGE + S3_SIDE_CHARGE_AT_OWN_RATE);
+	});
+}
+
+/// Zero is a price, not an unset value: it makes S3 free while Drive keeps
+/// billing. `clear_s3_price_per_gb` is the only way back to the Drive rate.
+#[test]
+fn a_zero_s3_price_frees_s3_without_touching_drive() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Marketplace::set_s3_price_per_gb(RuntimeOrigin::root(), 0));
+		assert_eq!(hourly_spend(|_| {}), ONE_SIDE_CHARGE, "only the Drive side is billed");
+	});
+}
+
+/// Clearing does not pin S3 to whatever Drive happened to cost at the time —
+/// it puts S3 back to tracking the Drive rate as that rate moves.
+#[test]
+fn clearing_the_s3_price_puts_it_back_on_the_drive_rate() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Marketplace::set_s3_price_per_gb(RuntimeOrigin::root(), S3_PRICE_PER_GB));
+		assert_ok!(Marketplace::clear_s3_price_per_gb(RuntimeOrigin::root()));
+		assert_eq!(Marketplace::get_s3_price_per_gb(), PRICE_PER_GB);
+
+		// Move Drive after the clear: a clear that had *stored* the old Drive
+		// number would still read 2_713 here.
+		let raised = PRICE_PER_GB * 3;
+		assert_ok!(Marketplace::set_price_per_gb(RuntimeOrigin::root(), raised));
+		assert_eq!(Marketplace::get_s3_price_per_gb(), raised);
+
+		assert_eq!(hourly_spend(|_| {}), raised * 4, "both sides at the raised Drive rate");
+	});
+}
+
+/// Only root may move the S3 rate.
+#[test]
+fn a_signed_origin_cannot_set_or_clear_the_s3_price() {
+	new_test_ext().execute_with(|| {
+		assert!(Marketplace::set_s3_price_per_gb(
+			RuntimeOrigin::signed(account(11)),
+			S3_PRICE_PER_GB,
+		)
+		.is_err());
+		assert!(
+			Marketplace::clear_s3_price_per_gb(RuntimeOrigin::signed(account(11))).is_err()
+		);
+		assert_eq!(Marketplace::get_s3_price_per_gb(), PRICE_PER_GB);
+	});
+}
+
+/// A plan-covered S3 side is free whatever the separate rate says, and the
+/// Drive side keeps billing at its own.
+#[test]
+fn an_s3_plan_still_exempts_s3_when_the_rates_differ() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Marketplace::set_s3_price_per_gb(RuntimeOrigin::root(), S3_PRICE_PER_GB));
+
+		let spent = hourly_spend(|user| {
+			let s3 = add_plan(b"s3", true);
+			purchase(user, s3);
+		});
+		assert_eq!(spent, ONE_SIDE_CHARGE, "the covered side is not billed at any rate");
 	});
 }

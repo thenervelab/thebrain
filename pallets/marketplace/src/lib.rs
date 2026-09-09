@@ -335,8 +335,22 @@ pub mod pallet {
 	pub type Plans<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::Hash, Plan<T::Hash>, OptionQuery>;
 
+	/// Price of one GiB-hour of **Drive** storage, and the fallback for S3.
 	#[pallet::storage]
 	pub(super) type PricePerGbs<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// Price of one GiB-hour of **S3** storage, when it differs from Drive's.
+	///
+	/// `OptionQuery` and not a defaulted `ValueQuery`: the two sides were billed
+	/// off `PricePerGbs` alone until this item existed, so a chain upgrading into
+	/// it has nothing stored here, and a zero default would silently turn every
+	/// S3 bill free until root got around to setting one. Absent therefore means
+	/// "same as Drive" — the behaviour that was already in force — and only an
+	/// explicit `set_s3_price_per_gb` splits the two apart. Root can put the
+	/// sides back together with `clear_s3_price_per_gb`; storing Drive's current
+	/// number instead would pin S3 to today's rate and quietly stop tracking it.
+	#[pallet::storage]
+	pub(super) type S3PricePerGbs<T: Config> = StorageValue<_, u128, OptionQuery>;
 
 	#[pallet::storage]
 	pub(super) type PricePerBandwidth<T: Config> = StorageValue<_, u128, ValueQuery>;
@@ -579,6 +593,12 @@ pub mod pallet {
 		PricePerGbUpdated {
 			price: u128,
 		},
+		/// S3 storage now prices separately from Drive, at this rate per GiB-hour.
+		S3PricePerGbUpdated {
+			price: u128,
+		},
+		/// The separate S3 rate was removed; S3 bills at the Drive rate again.
+		S3PricePerGbCleared,
 		PricePerBandwidthUpdated {
 			price: u128,
 		},
@@ -1336,7 +1356,10 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Sudo function to set the price per GB for storage
+		/// Sudo function to set the price per GB-hour of Drive storage.
+		///
+		/// Also the rate S3 bills at while no separate one is set — see
+		/// `set_s3_price_per_gb`.
 		#[pallet::call_index(8)]
 		#[pallet::weight((10_000, Pays::No))]
 		pub fn set_price_per_gb(origin: OriginFor<T>, price: u128) -> DispatchResult {
@@ -1348,6 +1371,41 @@ pub mod pallet {
 
 			// Emit an event for the price update
 			Self::deposit_event(Event::PricePerGbUpdated { price });
+
+			Ok(())
+		}
+
+		/// Sudo function to price S3 storage per GB-hour separately from Drive.
+		///
+		/// Takes effect on the next hourly sweep. Arrears are priced at the rate
+		/// in force when they are collected rather than at each missed hour's
+		/// own — the same rule the Drive side has always followed — so a change
+		/// here reprices any unbilled hours along with the current one.
+		///
+		/// A price of zero is a real setting, not a reset: it makes S3 free while
+		/// Drive keeps charging. `clear_s3_price_per_gb` is the reset.
+		#[pallet::call_index(35)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn set_s3_price_per_gb(origin: OriginFor<T>, price: u128) -> DispatchResult {
+			ensure_root(origin)?;
+
+			S3PricePerGbs::<T>::put(price);
+
+			Self::deposit_event(Event::S3PricePerGbUpdated { price });
+
+			Ok(())
+		}
+
+		/// Sudo function to drop the separate S3 rate, putting S3 back on the
+		/// Drive price and keeping it there as that price moves.
+		#[pallet::call_index(36)]
+		#[pallet::weight((10_000, Pays::No))]
+		pub fn clear_s3_price_per_gb(origin: OriginFor<T>) -> DispatchResult {
+			ensure_root(origin)?;
+
+			S3PricePerGbs::<T>::kill();
+
+			Self::deposit_event(Event::S3PricePerGbCleared);
 
 			Ok(())
 		}
@@ -3914,6 +3972,9 @@ pub mod pallet {
 		/// Each half rounds up to whole GiB on its own, which is deliberate: the
 		/// two byte counts come from different backends and are billed as separate
 		/// line items, so a partial GiB on each side is a partial GiB of each.
+		/// They price independently for the same reason — Drive at `PricePerGbs`
+		/// and S3 at `S3PricePerGbs`, which falls back to the Drive rate until
+		/// root sets one.
 		fn handle_hourly_storage_charging(current_block: BlockNumberFor<T>) -> Weight {
 			// Hours of arrears one visit may settle. Bounds the arithmetic a
 			// single very stale account can pull into a tick; the balance of
@@ -4066,8 +4127,12 @@ pub mod pallet {
 						continue;
 					}
 
-					// Get the current price per GB from the marketplace pallet
-					let price_per_gb = Self::get_price_per_gb();
+					// Each side at its own rate. S3 falls back to the Drive
+					// price while no separate one is set, so a chain that has
+					// never called `set_s3_price_per_gb` bills exactly as it did
+					// before the two were split.
+					let drive_price_per_gb = Self::get_price_per_gb();
+					let s3_price_per_gb = Self::get_s3_price_per_gb();
 
 					let user_free_credits = CreditsPallet::<T>::get_free_credits(&user);
 
@@ -4075,16 +4140,15 @@ pub mod pallet {
 					// arrears are priced at the current size and rate rather
 					// than at each missed hour's own — the historical sizes are
 					// not recoverable, and metering only ever wrote the latest.
-					let per_period =
-						times(Credits::new(price_per_gb), gibs_ceil(Bytes::new(billable_drive)))
-							.get()
-							.saturating_add(
-								times(
-									Credits::new(price_per_gb),
-									gibs_ceil(Bytes::new(billable_s3)),
-								)
-								.get(),
-							);
+					let per_period = times(
+						Credits::new(drive_price_per_gb),
+						gibs_ceil(Bytes::new(billable_drive)),
+					)
+					.get()
+					.saturating_add(
+						times(Credits::new(s3_price_per_gb), gibs_ceil(Bytes::new(billable_s3)))
+							.get(),
+					);
 
 					// A free tier, or a rounding floor of zero: nothing to bill,
 					// but the clock still moves so the hours do not pile up as
@@ -4178,9 +4242,15 @@ pub mod pallet {
 			meter.consumed()
 		}
 
-		/// Helper function to get the current price per GB
+		/// Helper function to get the current price per GB of Drive storage
 		pub fn get_price_per_gb() -> u128 {
 			PricePerGbs::<T>::get()
+		}
+
+		/// The current price per GB of S3 storage: its own rate once root has set
+		/// one, and the Drive rate until then.
+		pub fn get_s3_price_per_gb() -> u128 {
+			S3PricePerGbs::<T>::get().unwrap_or_else(PricePerGbs::<T>::get)
 		}
 
 		/// Helper function to get the current price per GB
