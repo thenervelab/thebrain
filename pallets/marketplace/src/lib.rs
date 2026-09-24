@@ -57,6 +57,8 @@ pub mod pallet {
 	use frame_support::traits::ExistenceRequirement;
 	use frame_support::traits::Len;
 	use crate::weights::WeightInfo;
+	use frame_support::dispatch::WithPostDispatchInfo;
+	use frame_support::storage::with_transaction;
 	use frame_support::weights::WeightMeter;
 	use frame_support::{
 		pallet_prelude::*,
@@ -84,7 +86,7 @@ pub mod pallet {
 	use sp_runtime::traits::Zero;
 	use sp_runtime::{
 		traits::{AccountIdConversion, AtLeast32BitUnsigned, Hash, SaturatedConversion},
-		Perbill, Saturating,
+		Perbill, Saturating, TransactionOutcome,
 	};
 	use sp_std::{vec, vec::Vec};
 	#[pallet::pallet]
@@ -175,6 +177,26 @@ pub mod pallet {
 			}
 
 			weight_used
+		}
+
+		/// Leftover block weight prunes compute usage records nobody can
+		/// replay any more. Nothing depends on it running promptly: an
+		/// unpruned record is only storage, never a wrong answer.
+		fn on_idle(_n: BlockNumberFor<T>, remaining_weight: Weight) -> Weight {
+			Self::prune_compute_usage(remaining_weight)
+		}
+
+		fn integrity_test() {
+			// A pruned period must already be refused, or deleting its record
+			// would let the same hour be charged twice.
+			assert!(
+				T::MaxComputeBillingLag::get() < T::ComputeUsageRetention::get(),
+				"MaxComputeBillingLag must be below ComputeUsageRetention"
+			);
+			assert!(
+				T::MaxComputeUsageRowsPerCall::get() > 0,
+				"MaxComputeUsageRowsPerCall must allow at least one row"
+			);
 		}
 	}
 
@@ -322,6 +344,27 @@ pub mod pallet {
 		/// chain's entire deposit history and never shrinks on spend.
 		#[pallet::constant]
 		type AlphaReleaseWeightBudget: Get<Perbill>;
+
+		/// Max rows a single `submit_compute_usage` or `settle_compute_arrears`
+		/// call may carry. The backend splits a larger hour across several
+		/// calls; per-row idempotency makes that split safe to retry.
+		#[pallet::constant]
+		type MaxComputeUsageRowsPerCall: Get<u32>;
+
+		/// How many closed periods behind the current one a compute usage
+		/// submission may still be for. Older periods are refused outright.
+		///
+		/// This is what lets `ComputeUsageCharged` be pruned at all: a pruned
+		/// period can no longer be proven already-charged, so it must already
+		/// be unsubmittable. `integrity_test` holds it strictly below
+		/// `ComputeUsageRetention`.
+		#[pallet::constant]
+		type MaxComputeBillingLag: Get<u64>;
+
+		/// How many periods of `ComputeUsageCharged` are kept before `on_idle`
+		/// prunes them.
+		#[pallet::constant]
+		type ComputeUsageRetention: Get<u64>;
 
 		/// Measured cost of the units the billing hook meters itself in.
 		type WeightInfo: crate::weights::WeightInfo;
@@ -783,6 +826,86 @@ pub mod pallet {
 			/// holds, or one already repriced.
 			subscriptions_updated: u32,
 		},
+		/// Root replaced the compute billing authority list.
+		ComputeBillingAuthoritiesSet {
+			authorities: Vec<T::AccountId>,
+		},
+		/// Root changed the compute charge caps.
+		ComputeChargeCapsUpdated {
+			per_account_per_period: u128,
+			per_call: u128,
+		},
+		/// One period of compute usage was debited from `who`'s credits.
+		///
+		/// `amount` is the period's usage; `arrears_collected` is older unpaid
+		/// usage settled by the same debit. The credits actually taken are
+		/// their sum.
+		ComputeUsageCharged {
+			who: T::AccountId,
+			period: u64,
+			amount: u128,
+			arrears_collected: u128,
+			usage_hash: H256,
+		},
+		/// `who` could not cover a period of compute usage. Nothing was debited;
+		/// `amount` was added to their arrears.
+		///
+		/// `required` is what the charge needed — the period plus any arrears
+		/// already owed — and `available` the free credits at the time.
+		ComputeUsageChargeFailed {
+			who: T::AccountId,
+			period: u64,
+			amount: u128,
+			required: u128,
+			available: u128,
+			usage_hash: H256,
+		},
+		/// The exact row was already accepted for this period; nothing changed.
+		ComputeUsageDuplicate {
+			who: T::AccountId,
+			period: u64,
+			usage_hash: H256,
+		},
+		/// A different row was already accepted for this `(period, account)`.
+		/// The new one was rejected and the recorded one stands.
+		ComputeUsageConflict {
+			who: T::AccountId,
+			period: u64,
+			recorded_amount: u128,
+			recorded_hash: H256,
+			submitted_amount: u128,
+			submitted_hash: H256,
+		},
+		/// A row was refused by a cap and left unrecorded, so it can be
+		/// resubmitted once the cap allows it.
+		ComputeUsageRefused {
+			who: T::AccountId,
+			period: u64,
+			amount: u128,
+			reason: ComputeUsageRefusal,
+		},
+		/// Summary of one `submit_compute_usage` call. `total_accepted` is the
+		/// sum of the period amounts charged or moved to arrears.
+		ComputeUsageSubmitted {
+			period: u64,
+			charged: u32,
+			arrears: u32,
+			duplicates: u32,
+			conflicts: u32,
+			refused: u32,
+			total_accepted: u128,
+		},
+		/// `who`'s compute arrears were paid in full.
+		ComputeArrearsSettled {
+			who: T::AccountId,
+			amount: u128,
+		},
+		/// `who` still cannot cover their compute arrears; nothing was debited.
+		ComputeArrearsSettleFailed {
+			who: T::AccountId,
+			required: u128,
+			available: u128,
+		},
 	}
 
 	#[pallet::error]
@@ -841,6 +964,15 @@ pub mod pallet {
 		SubscriptionCancellationNotAuthorized,
 		WhitelistedCallerNotAuthorized,
 		TooManyUpdates,
+		/// The caller is not in `ComputeBillingAuthorities`.
+		NotComputeBillingAuthority,
+		/// More than `MAX_COMPUTE_BILLING_AUTHORITIES` authorities.
+		TooManyComputeBillingAuthorities,
+		/// The period has not ended yet. Only closed hours can be billed.
+		ComputeBillingPeriodNotClosed,
+		/// The period is more than `MaxComputeBillingLag` behind the current
+		/// one.
+		ComputeBillingPeriodTooOld,
 	}
 
 	#[pallet::storage]
@@ -992,6 +1124,68 @@ pub mod pallet {
 	/// `full_scan_subscription_charging` and [`BackfillDone`].
 	#[pallet::storage]
 	pub type FullScanCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
+
+	/// Accounts allowed to submit hourly compute usage and settle compute
+	/// arrears. Set by root with `set_compute_billing_authorities`.
+	///
+	/// Its own list rather than `WhitelistedCallers`: those keys can create
+	/// subscriptions and move storage plans, and this one can debit any
+	/// account's credits, so compromising either should not hand over the
+	/// other.
+	#[pallet::storage]
+	pub type ComputeBillingAuthorities<T: Config> = StorageValue<_, Vec<T::AccountId>, ValueQuery>;
+
+	/// What was accepted for each `(period, account)` compute usage row.
+	///
+	/// This is the idempotency record that makes a resubmitted hour harmless:
+	/// the same row again is a duplicate, a different row for the same key is a
+	/// conflict, and neither debits anything. Pruned by `on_idle` once a period
+	/// is `ComputeUsageRetention` behind the current one.
+	#[pallet::storage]
+	pub type ComputeUsageCharged<T: Config> = StorageDoubleMap<
+		_,
+		Twox64Concat,
+		u64,
+		Blake2_128Concat,
+		T::AccountId,
+		ComputeUsageRecord,
+		OptionQuery,
+	>;
+
+	/// Compute usage an account was billed for but could not pay, in credits.
+	///
+	/// Folded into the account's next compute charge, or collected by
+	/// `settle_compute_arrears` once it tops up. Never partially paid: a
+	/// charge either clears all of it or leaves it growing.
+	#[pallet::storage]
+	pub type ComputeArrears<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// The latest period any compute usage has been accepted for. Only moves
+	/// forward; `None` until the first submission.
+	#[pallet::storage]
+	pub type LastComputeBillingPeriod<T: Config> = StorageValue<_, u64, OptionQuery>;
+
+	/// Oldest period that may still hold `ComputeUsageCharged` entries, i.e.
+	/// where the pruning in `on_idle` resumes. `None` when there is nothing to
+	/// prune.
+	#[pallet::storage]
+	pub type ComputeUsagePruneFrom<T: Config> = StorageValue<_, u64, OptionQuery>;
+
+	/// Largest amount one account may be charged for one period, in credits.
+	///
+	/// Defaults to zero, so until root sets it every non-zero row is refused:
+	/// a billing key cannot move money before someone has decided how much it
+	/// may move. Together with `MaxComputeChargePerCall` this bounds what a
+	/// stolen authority key can take.
+	#[pallet::storage]
+	pub type MaxComputeChargePerAccountPerPeriod<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// Largest total one `submit_compute_usage` call may accept across its
+	/// rows, in credits. Zero by default, for the same reason as
+	/// `MaxComputeChargePerAccountPerPeriod`.
+	#[pallet::storage]
+	pub type MaxComputeChargePerCall<T: Config> = StorageValue<_, u128, ValueQuery>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -1939,6 +2133,236 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		/// Charge one closed hour of compute usage, for up to
+		/// `MaxComputeUsageRowsPerCall` accounts. Each row is
+		/// `(account, amount_in_credits, usage_hash)`, where the hash commits to
+		/// the backend's itemised lines for that account and hour.
+		///
+		/// Rows are independent: each one is charged, moved to arrears,
+		/// skipped as a duplicate, rejected as a conflict or refused by a cap on
+		/// its own, and one row's failure never reverts another's. The call as a
+		/// whole only fails for a bad origin, too many rows, or a period that is
+		/// not billable — not yet closed, or more than `MaxComputeBillingLag`
+		/// periods old.
+		///
+		/// Resubmitting is always safe. `ComputeUsageCharged` records every
+		/// accepted row, so the same row again is a no-op and a different one
+		/// for the same `(period, account)` is rejected rather than charged a
+		/// second time. That is what lets the backend retry after an expired
+		/// era, or split an hour across calls, without tracking which rows
+		/// landed.
+		///
+		/// An account that cannot cover the period *plus* any arrears it
+		/// already owes is debited nothing and the period is added to
+		/// `ComputeArrears`. Collection is all-or-nothing so arrears stay one
+		/// number, not a partially paid history.
+		///
+		/// Feeless: the authority holds no tokens. What bounds a stolen key is
+		/// the caps and the idempotency record — at most
+		/// `MaxComputeChargePerAccountPerPeriod` per account per period, over
+		/// the `MaxComputeBillingLag` periods still open — and debited credits
+		/// are burned as revenue, never paid to the caller.
+		#[pallet::call_index(37)]
+		#[pallet::weight((
+			<T as Config>::WeightInfo::submit_compute_usage(
+				u32::try_from(rows.len()).unwrap_or(u32::MAX)
+			),
+			DispatchClass::Normal,
+			Pays::No
+		))]
+		pub fn submit_compute_usage(
+			origin: OriginFor<T>,
+			period: u64,
+			rows: Vec<(T::AccountId, u128, H256)>,
+		) -> DispatchResultWithPostInfo {
+			let early_exit_weight = <T as Config>::WeightInfo::submit_compute_usage(0);
+			let caller = ensure_signed(origin)?;
+			Self::ensure_compute_billing_authority(&caller)
+				.map_err(|e| e.with_weight(early_exit_weight))?;
+			ensure!(
+				rows.len() <= T::MaxComputeUsageRowsPerCall::get() as usize,
+				Error::<T>::TooManyUpdates.with_weight(early_exit_weight)
+			);
+			Self::ensure_compute_period_billable(period)
+				.map_err(|e| e.with_weight(early_exit_weight))?;
+
+			let per_account_cap = MaxComputeChargePerAccountPerPeriod::<T>::get();
+			let per_call_cap = MaxComputeChargePerCall::<T>::get();
+
+			let mut summary = ComputeUsageSummary::default();
+			for (who, amount, usage_hash) in rows {
+				match Self::apply_compute_usage_row(
+					period,
+					&who,
+					amount,
+					usage_hash,
+					per_account_cap,
+					per_call_cap.saturating_sub(summary.total_accepted),
+				) {
+					ComputeRowResult::Charged => {
+						summary.charged = summary.charged.saturating_add(1);
+						summary.total_accepted = summary.total_accepted.saturating_add(amount);
+					},
+					ComputeRowResult::Arrears => {
+						summary.arrears = summary.arrears.saturating_add(1);
+						summary.total_accepted = summary.total_accepted.saturating_add(amount);
+					},
+					ComputeRowResult::Duplicate => {
+						summary.duplicates = summary.duplicates.saturating_add(1)
+					},
+					ComputeRowResult::Conflict => {
+						summary.conflicts = summary.conflicts.saturating_add(1)
+					},
+					ComputeRowResult::Refused => {
+						summary.refused = summary.refused.saturating_add(1)
+					},
+				}
+			}
+
+			if summary.charged > 0 || summary.arrears > 0 {
+				LastComputeBillingPeriod::<T>::mutate(|last| {
+					*last = Some(last.map_or(period, |l| l.max(period)))
+				});
+				ComputeUsagePruneFrom::<T>::mutate(|from| {
+					*from = Some(from.map_or(period, |f| f.min(period)))
+				});
+			}
+
+			Self::deposit_event(Event::ComputeUsageSubmitted {
+				period,
+				charged: summary.charged,
+				arrears: summary.arrears,
+				duplicates: summary.duplicates,
+				conflicts: summary.conflicts,
+				refused: summary.refused,
+				total_accepted: summary.total_accepted,
+			});
+
+			Ok(().into())
+		}
+
+		/// Root replaces the list of accounts allowed to call
+		/// `submit_compute_usage` and `settle_compute_arrears`. An empty list
+		/// switches compute billing off.
+		///
+		/// Each authority needs an existential deposit to submit at all — a
+		/// feeless call still passes the nonce check, which rejects accounts
+		/// that do not exist — but nothing beyond it.
+		#[pallet::call_index(38)]
+		#[pallet::weight((T::DbWeight::get().writes(1), DispatchClass::Operational, Pays::No))]
+		pub fn set_compute_billing_authorities(
+			origin: OriginFor<T>,
+			authorities: Vec<T::AccountId>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			ensure!(
+				authorities.len() <= MAX_COMPUTE_BILLING_AUTHORITIES as usize,
+				Error::<T>::TooManyComputeBillingAuthorities
+			);
+
+			let mut authorities = authorities;
+			authorities.sort();
+			authorities.dedup();
+
+			ComputeBillingAuthorities::<T>::put(&authorities);
+			Self::deposit_event(Event::ComputeBillingAuthoritiesSet { authorities });
+			Ok(())
+		}
+
+		/// Debit the full compute arrears of each listed account that can now
+		/// cover them. Called by the backend after it sees a deposit.
+		///
+		/// Accounts with no arrears are skipped, and one that still cannot pay
+		/// is left as it was — neither reverts the others.
+		#[pallet::call_index(39)]
+		#[pallet::weight((
+			<T as Config>::WeightInfo::settle_compute_arrears(
+				u32::try_from(accounts.len()).unwrap_or(u32::MAX)
+			),
+			DispatchClass::Normal,
+			Pays::No
+		))]
+		pub fn settle_compute_arrears(
+			origin: OriginFor<T>,
+			accounts: Vec<T::AccountId>,
+		) -> DispatchResultWithPostInfo {
+			let early_exit_weight = <T as Config>::WeightInfo::settle_compute_arrears(0);
+			let caller = ensure_signed(origin)?;
+			Self::ensure_compute_billing_authority(&caller)
+				.map_err(|e| e.with_weight(early_exit_weight))?;
+			ensure!(
+				accounts.len() <= T::MaxComputeUsageRowsPerCall::get() as usize,
+				Error::<T>::TooManyUpdates.with_weight(early_exit_weight)
+			);
+
+			// A repeated account would only repeat its debit attempt — a no-op
+			// after a success, a second full batch walk after a failure.
+			let mut accounts = accounts;
+			accounts.sort();
+			accounts.dedup();
+
+			for who in accounts {
+				let owed = ComputeArrears::<T>::get(&who);
+				if owed == 0 {
+					continue;
+				}
+				if Self::collect_compute_credits(&who, owed) {
+					Self::deposit_event(Event::ComputeArrearsSettled { who, amount: owed });
+				} else {
+					let available = CreditsPallet::<T>::get_free_credits(&who);
+					Self::deposit_event(Event::ComputeArrearsSettleFailed {
+						who,
+						required: owed,
+						available,
+					});
+				}
+			}
+
+			Ok(().into())
+		}
+
+		/// Root sets the compute charge caps, in credits: the most one account
+		/// may be charged for one period, and the most one
+		/// `submit_compute_usage` call may accept across all its rows.
+		///
+		/// Both start at zero, which refuses every non-zero row.
+		#[pallet::call_index(40)]
+		#[pallet::weight((T::DbWeight::get().writes(2), DispatchClass::Operational, Pays::No))]
+		pub fn set_compute_charge_caps(
+			origin: OriginFor<T>,
+			per_account_per_period: u128,
+			per_call: u128,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			MaxComputeChargePerAccountPerPeriod::<T>::put(per_account_per_period);
+			MaxComputeChargePerCall::<T>::put(per_call);
+			Self::deposit_event(Event::ComputeChargeCapsUpdated {
+				per_account_per_period,
+				per_call,
+			});
+			Ok(())
+		}
+	}
+
+	/// Per-call tally for `ComputeUsageSubmitted`.
+	#[derive(Default)]
+	struct ComputeUsageSummary {
+		charged: u32,
+		arrears: u32,
+		duplicates: u32,
+		conflicts: u32,
+		refused: u32,
+		total_accepted: u128,
+	}
+
+	/// What `apply_compute_usage_row` did with one row.
+	enum ComputeRowResult {
+		Charged,
+		Arrears,
+		Duplicate,
+		Conflict,
+		Refused,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -2061,6 +2485,234 @@ pub mod pallet {
 				added_credits: commission,
 				accrued_credits: accrued,
 			});
+		}
+
+		fn ensure_compute_billing_authority(who: &T::AccountId) -> DispatchResult {
+			ensure!(
+				ComputeBillingAuthorities::<T>::get().contains(who),
+				Error::<T>::NotComputeBillingAuthority
+			);
+			Ok(())
+		}
+
+		/// The period the chain clock is in now. It is still open, so the
+		/// latest billable period is the one before it.
+		pub fn current_compute_period() -> u64 {
+			Self::now_ms() / COMPUTE_BILLING_PERIOD_MS
+		}
+
+		/// A period is billable once it has closed and until it falls more than
+		/// `MaxComputeBillingLag` periods behind.
+		fn ensure_compute_period_billable(period: u64) -> DispatchResult {
+			let current = Self::current_compute_period();
+			ensure!(period < current, Error::<T>::ComputeBillingPeriodNotClosed);
+			ensure!(
+				current - period <= T::MaxComputeBillingLag::get(),
+				Error::<T>::ComputeBillingPeriodTooOld
+			);
+			Ok(())
+		}
+
+		/// Settle or record one compute usage row. `call_headroom` is what the
+		/// call may still accept under `MaxComputeChargePerCall`.
+		fn apply_compute_usage_row(
+			period: u64,
+			who: &T::AccountId,
+			amount: u128,
+			usage_hash: H256,
+			per_account_cap: u128,
+			call_headroom: u128,
+		) -> ComputeRowResult {
+			// Idempotency before anything else, caps included: a row that was
+			// accepted before is settled whatever the caps say now, so a cap
+			// lowered between a submit and its retry cannot turn the retry's
+			// duplicates into refusals the backend would try to resubmit.
+			if let Some(recorded) = ComputeUsageCharged::<T>::get(period, who) {
+				if recorded.amount == amount && recorded.usage_hash == usage_hash {
+					Self::deposit_event(Event::ComputeUsageDuplicate {
+						who: who.clone(),
+						period,
+						usage_hash,
+					});
+					return ComputeRowResult::Duplicate;
+				}
+				Self::deposit_event(Event::ComputeUsageConflict {
+					who: who.clone(),
+					period,
+					recorded_amount: recorded.amount,
+					recorded_hash: recorded.usage_hash,
+					submitted_amount: amount,
+					submitted_hash: usage_hash,
+				});
+				return ComputeRowResult::Conflict;
+			}
+
+			let refusal = if amount > per_account_cap {
+				Some(ComputeUsageRefusal::AccountCapExceeded)
+			} else if amount > call_headroom {
+				Some(ComputeUsageRefusal::CallCapExceeded)
+			} else {
+				None
+			};
+			if let Some(reason) = refusal {
+				Self::deposit_event(Event::ComputeUsageRefused {
+					who: who.clone(),
+					period,
+					amount,
+					reason,
+				});
+				return ComputeRowResult::Refused;
+			}
+
+			let arrears = ComputeArrears::<T>::get(who);
+			// Checked, not saturating: a saturated sum would record the whole
+			// row as accepted while adding less than all of it to the debt. And
+			// checked before the commitment is drawn, so a refusal never spends
+			// allowance.
+			if arrears.checked_add(amount).is_none() {
+				Self::deposit_event(Event::ComputeUsageRefused {
+					who: who.clone(),
+					period,
+					amount,
+					reason: ComputeUsageRefusal::ArrearsOverflow,
+				});
+				return ComputeRowResult::Refused;
+			}
+			let billable = Self::draw_compute_commitment(who, amount);
+			// `billable <= amount`, so the check above covers this sum.
+			let owed = arrears.saturating_add(billable);
+
+			// Nothing new to bill leaves any arrears for `settle_compute_arrears`
+			// rather than attempting them on every idle hour.
+			let outcome = if billable == 0 || Self::collect_compute_credits(who, owed) {
+				Self::deposit_event(Event::ComputeUsageCharged {
+					who: who.clone(),
+					period,
+					amount,
+					arrears_collected: if billable == 0 { 0 } else { arrears },
+					usage_hash,
+				});
+				ComputeChargeOutcome::Charged
+			} else {
+				ComputeArrears::<T>::insert(who, owed);
+				Self::deposit_event(Event::ComputeUsageChargeFailed {
+					who: who.clone(),
+					period,
+					amount,
+					required: owed,
+					available: CreditsPallet::<T>::get_free_credits(who),
+					usage_hash,
+				});
+				ComputeChargeOutcome::Arrears
+			};
+
+			ComputeUsageCharged::<T>::insert(
+				period,
+				who,
+				ComputeUsageRecord { amount, usage_hash, outcome },
+			);
+
+			match outcome {
+				ComputeChargeOutcome::Charged => ComputeRowResult::Charged,
+				ComputeChargeOutcome::Arrears => ComputeRowResult::Arrears,
+			}
+		}
+
+		/// The part of `amount` left to charge to credits after `who`'s monthly
+		/// compute commitment has covered what it can.
+		///
+		/// Commitments do not exist yet, so nothing is covered. When they land
+		/// this is where the allowance is drawn down — once per accepted row,
+		/// since duplicates and conflicts return before reaching it.
+		fn draw_compute_commitment(_who: &T::AccountId, amount: u128) -> u128 {
+			amount
+		}
+
+		/// Debit exactly `owed` compute credits from `who`, clearing their
+		/// arrears, or debit nothing. Returns whether the debit happened.
+		///
+		/// Its own storage layer, so a failure part-way through the debit, the
+		/// arrears clear or the referral accrual reverts all of them and nothing
+		/// else the calling extrinsic has already done.
+		fn collect_compute_credits(who: &T::AccountId, owed: u128) -> bool {
+			with_transaction(|| match Self::consume_credits(who.clone(), owed) {
+				Ok(()) => {
+					ComputeArrears::<T>::remove(who);
+					Self::accrue_hourly_referral_commission(who, owed);
+					TransactionOutcome::Commit(Ok::<(), DispatchError>(()))
+				},
+				Err(e) => TransactionOutcome::Rollback(Err(e)),
+			})
+			.is_ok()
+		}
+
+		/// Drop `ComputeUsageCharged` periods that have fallen more than
+		/// `ComputeUsageRetention` behind, within `limit`.
+		///
+		/// Safe because such a period is already refused by
+		/// `MaxComputeBillingLag` (held below the retention by
+		/// `integrity_test`), so its record can never be needed to reject a
+		/// replay. Resumes from `ComputeUsagePruneFrom`; a period too large for
+		/// one block is finished on the next.
+		pub(crate) fn prune_compute_usage(limit: Weight) -> Weight {
+			// Hours without any submission still cost a probe each, so a long
+			// billing outage is walked across several blocks, not one.
+			const MAX_PERIODS_PER_RUN: u32 = 24;
+
+			// `DbWeight` carries no proof size, so each access adds an estimate
+			// of its own: a `ComputeUsageCharged` key and value plus trie path.
+			const PROOF_PER_ACCESS: u64 = 600;
+			let db = T::DbWeight::get();
+			let access = |reads: u64, writes: u64| {
+				db.reads_writes(reads, writes)
+					.saturating_add(Weight::from_parts(0, PROOF_PER_ACCESS.saturating_mul(reads)))
+			};
+			let mut meter = WeightMeter::with_limit(limit);
+			// `ComputeUsagePruneFrom`, the clock and `LastComputeBillingPeriod`
+			// in, the cursor out.
+			let overhead = access(3, 1);
+			if meter.try_consume(overhead).is_err() {
+				return Weight::zero();
+			}
+
+			let Some(mut from) = ComputeUsagePruneFrom::<T>::get() else {
+				return meter.consumed();
+			};
+			let cutoff =
+				Self::current_compute_period().saturating_sub(T::ComputeUsageRetention::get());
+			let last = LastComputeBillingPeriod::<T>::get().unwrap_or(0);
+			let per_key = access(1, 1);
+
+			for _ in 0..MAX_PERIODS_PER_RUN {
+				if from >= cutoff || from > last {
+					break;
+				}
+				// One read for the prefix probe, even when it finds nothing.
+				if meter.try_consume(access(1, 0)).is_err() {
+					break;
+				}
+				let affordable = Self::accounts_affordable(&meter, per_key);
+				if affordable == 0 {
+					break;
+				}
+				let removed = ComputeUsageCharged::<T>::clear_prefix(
+					from,
+					u32::try_from(affordable).unwrap_or(u32::MAX),
+					None,
+				);
+				meter.consume(per_key.saturating_mul(u64::from(removed.loops)));
+				if removed.maybe_cursor.is_some() {
+					break;
+				}
+				from = from.saturating_add(1);
+			}
+
+			if from > last {
+				ComputeUsagePruneFrom::<T>::kill();
+			} else {
+				ComputeUsagePruneFrom::<T>::put(from);
+			}
+			meter.consumed()
 		}
 
 		/// Apply the queued plan reprice at the head of [`RepricingQueue`] to the

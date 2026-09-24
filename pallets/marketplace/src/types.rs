@@ -240,3 +240,48 @@ pub struct Batch<AccountId, BlockNumberFor> {
 	pub is_frozen: bool,              // Freezes Alpha distribution, not credit use
 	pub release_time: BlockNumberFor, // When Alpha can be distributed
 }
+
+/// Milliseconds in one compute billing period. A period is a unix hour:
+/// period `p` covers `[p * 3_600_000, (p + 1) * 3_600_000)` in unix millis.
+pub const COMPUTE_BILLING_PERIOD_MS: u64 = 3_600_000;
+
+/// Ceiling on `ComputeBillingAuthorities`. The list is read on every
+/// submission, so it is kept small; one key per backend deployment is the
+/// expected shape.
+pub const MAX_COMPUTE_BILLING_AUTHORITIES: u32 = 8;
+
+/// What became of one accepted `(period, account)` compute usage row.
+#[derive(Clone, Copy, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub enum ComputeChargeOutcome {
+	/// The row, and any arrears folded into it, were debited from credits.
+	Charged,
+	/// The account could not cover what it owed; nothing was debited and the
+	/// row's amount was added to `ComputeArrears`.
+	Arrears,
+}
+
+/// The idempotency record for one `(period, account)` compute usage row.
+///
+/// Written only for rows that were accepted — charged or moved to arrears. A
+/// refused row leaves no record, so the same row can be resubmitted once the
+/// cap that refused it is raised.
+#[derive(Clone, Copy, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub struct ComputeUsageRecord {
+	/// The usage amount submitted for the period, in credits. Excludes any
+	/// arrears collected alongside it.
+	pub amount: u128,
+	/// The backend's hash of the period's usage lines.
+	pub usage_hash: sp_core::H256,
+	pub outcome: ComputeChargeOutcome,
+}
+
+/// Why a compute usage row was refused without being recorded.
+#[derive(Clone, Copy, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub enum ComputeUsageRefusal {
+	/// The row's amount exceeds `MaxComputeChargePerAccountPerPeriod`.
+	AccountCapExceeded,
+	/// Accepting the row would take the call past `MaxComputeChargePerCall`.
+	CallCapExceeded,
+	/// The account's arrears plus the row would overflow `u128`.
+	ArrearsOverflow,
+}

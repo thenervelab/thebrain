@@ -594,7 +594,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92015,
+	spec_version: 92016,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1123,6 +1123,15 @@ parameter_types! {
 	/// — a reprice over 100k accounts settles in ~7 minutes — while keeping the
 	/// added per-block work bounded and well clear of the block limit.
 	pub const MaxRepricedAccountsPerBlock: u32 = 250;
+	/// Rows per `submit_compute_usage` / `settle_compute_arrears` call. An hour
+	/// with more billed accounts is split across calls.
+	pub const MaxComputeUsageRowsPerCall: u32 = 250;
+	/// Closed hours a compute usage submission may still be for: three days
+	/// of catch-up after a backend outage.
+	pub const MaxComputeBillingLag: u64 = 72;
+	/// Hours of compute usage records kept for replay protection. A week,
+	/// comfortably past `MaxComputeBillingLag`, which it must exceed.
+	pub const ComputeUsageRetention: u64 = 168;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1150,6 +1159,9 @@ impl pallet_marketplace::Config for Runtime {
 	type RenewalWeightBudget = RenewalWeightBudget;
 	type HourlyWeightBudget = HourlyWeightBudget;
 	type AlphaReleaseWeightBudget = AlphaReleaseWeightBudget;
+	type MaxComputeUsageRowsPerCall = MaxComputeUsageRowsPerCall;
+	type MaxComputeBillingLag = MaxComputeBillingLag;
+	type ComputeUsageRetention = ComputeUsageRetention;
 	type WeightInfo = pallet_marketplace::weights::SubstrateWeight<Runtime>;
 }
 

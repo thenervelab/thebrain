@@ -1,14 +1,18 @@
-//! Benchmarks for the date-to-date billing hook.
+//! Benchmarks for the date-to-date billing hook and the hourly compute billing
+//! calls.
 //!
-//! Scope is one function: `charge_account_due`. That is deliberate — it is the
-//! unit the renewal drain meters itself in and the unit
-//! `MaxSubscriptionChargesPerRun` counts, so it is the only number in this
-//! pallet whose accuracy decides whether `on_initialize` stays inside its
-//! budget. The other three `WeightInfo` entries are single storage operations
-//! whose conservative estimates are already within a rounding error of any
-//! measurement.
+//! `charge_account_due` is the unit the renewal drain meters itself in and the
+//! unit `MaxSubscriptionChargesPerRun` counts, so it decides whether
+//! `on_initialize` stays inside its budget. The other hook entries in
+//! `WeightInfo` are single storage operations whose conservative estimates are
+//! already within a rounding error of any measurement.
 //!
-//! It is measured with `#[block]` rather than `#[extrinsic_call]` because
+//! `submit_compute_usage` and `settle_compute_arrears` are feeless, so their
+//! declared weight is the only thing that stops a full call from being
+//! under-counted against the block. They are measured per row, each row posed
+//! at its most expensive path.
+//!
+//! `charge_account_due` is measured with `#[block]` rather than `#[extrinsic_call]` because
 //! `charge_account_due` is not an extrinsic and should not become one to be
 //! measurable — a benchmark-only call in the dispatch enum is a permanent piece
 //! of surface added for a temporary purpose.
@@ -28,7 +32,7 @@
 //! ./target/release/hippius benchmark pallet \
 //!     --chain benchmark \
 //!     --pallet pallet_marketplace \
-//!     --extrinsic 'charge_account_due' \
+//!     --extrinsic 'charge_account_due,submit_compute_usage,settle_compute_arrears' \
 //!     --steps 50 --repeat 20
 //! ```
 
@@ -39,6 +43,7 @@ use crate::pallet::Pallet as Marketplace;
 use frame_benchmarking::v2::*;
 use frame_support::pallet_prelude::{Get, PhantomData};
 use frame_system::pallet_prelude::BlockNumberFor;
+use frame_system::RawOrigin;
 use pallet_credits::Pallet as CreditsPallet;
 use sp_runtime::traits::{Hash, SaturatedConversion, Saturating};
 use sp_std::vec;
@@ -144,6 +149,118 @@ fn due_account<T: Config>(count: u32) -> T::AccountId {
 	who
 }
 
+/// Hour the compute billing benchmarks bill. The clock is placed one hour
+/// after it, so the period is closed and within `MaxComputeBillingLag`.
+const COMPUTE_PERIOD: u64 = 500_000;
+
+/// Period amount each benchmarked row carries, and the arrears each account
+/// already owes. Both far below `FUNDING`, so every debit succeeds.
+const COMPUTE_AMOUNT: u128 = 1_000;
+const COMPUTE_ARREARS: u128 = 500;
+
+/// Point the chain clock inside the period after `COMPUTE_PERIOD`, so that
+/// period is the most recent closed one.
+fn close_compute_period<T: Config>() {
+	let now_ms: T::Moment = COMPUTE_PERIOD
+		.saturating_add(1)
+		.saturating_mul(COMPUTE_BILLING_PERIOD_MS)
+		.saturated_into();
+	pallet_timestamp::Now::<T>::put(now_ms);
+}
+
+/// Deposit batches each benchmarked account holds.
+///
+/// `consume_credits` walks an account's batches oldest first, exhausted ones
+/// included, and nothing prunes them — so the per-row cost grows with the
+/// account's deposit history. At the time of writing the busiest mainnet
+/// account holds 12 batches (p99 8, of 779 accounts); this is set above that,
+/// and has to be raised, or the walk bounded, before accounts outgrow it.
+pub const COMPUTE_BENCH_BATCHES: u32 = 16;
+
+/// Registers the caller as the last of a full authority list, so the
+/// membership check scans all of it, and lifts the caps so no benchmarked row
+/// is refused.
+fn compute_billing_authority<T: Config>() -> T::AccountId {
+	let caller: T::AccountId = whitelisted_caller();
+	let mut authorities: Vec<T::AccountId> = (1..MAX_COMPUTE_BILLING_AUTHORITIES)
+		.map(|i| account("authority", i, SEED))
+		.collect();
+	authorities.push(caller.clone());
+	ComputeBillingAuthorities::<T>::put(authorities);
+	MaxComputeChargePerAccountPerPeriod::<T>::put(u128::MAX);
+	MaxComputeChargePerCall::<T>::put(u128::MAX);
+	caller
+}
+
+fn push_batch<T: Config>(who: &T::AccountId, batch: Batch<T::AccountId, BlockNumberFor<T>>) -> u64 {
+	let batch_id = NextBatchId::<T>::get();
+	Batches::<T>::insert(batch_id, batch);
+	UserBatches::<T>::append(who, batch_id);
+	NextBatchId::<T>::put(batch_id.saturating_add(1));
+	batch_id
+}
+
+/// Account `index`, posed at the most expensive path a compute row can take:
+///
+/// - `COMPUTE_BENCH_BATCHES - 1` spent batches ahead of the funded one, each
+///   read and rewritten by the walk;
+/// - a funded batch that matured while frozen with alpha still pending and
+///   partly unbacked, so the debit takes the unfreeze branch and touches the
+///   alpha balance, the unbacked marker and the backing tally twice each;
+/// - arrears the charge folds in and clears;
+/// - a referrer, so the charge also accrues a commission.
+///
+/// The cheaper paths — a duplicate, a conflict, a refusal, or a failed debit
+/// that only grows the arrears — touch a subset of what this one does.
+fn compute_debtor<T: Config>(index: u32) -> T::AccountId {
+	let who: T::AccountId = account("compute", index, SEED);
+	let zero = BlockNumberFor::<T>::from(0u32);
+
+	for _ in 1..COMPUTE_BENCH_BATCHES {
+		push_batch::<T>(
+			&who,
+			Batch {
+				owner: who.clone(),
+				credit_amount: FUNDING,
+				alpha_amount: FUNDING,
+				remaining_credits: 0,
+				remaining_alpha: 0,
+				pending_alpha: 0,
+				is_frozen: false,
+				release_time: zero,
+			},
+		);
+	}
+	let funded = push_batch::<T>(
+		&who,
+		Batch {
+			owner: who.clone(),
+			credit_amount: FUNDING,
+			alpha_amount: FUNDING,
+			remaining_credits: FUNDING,
+			remaining_alpha: FUNDING,
+			pending_alpha: FUNDING / 2,
+			is_frozen: true,
+			release_time: zero,
+		},
+	);
+	UnbackedBatchAlpha::<T>::insert(funded, FUNDING / 4);
+	TotalUndistributedBacking::<T>::mutate(|t| *t = t.saturating_add(FUNDING.saturating_mul(2)));
+	pallet_credits::AlphaBalances::<T>::mutate(&who, |a| {
+		*a = a.saturating_add(FUNDING.saturating_mul(2))
+	});
+	let _ = CreditsPallet::<T>::do_mint(who.clone(), FUNDING, None);
+
+	ComputeArrears::<T>::insert(&who, COMPUTE_ARREARS);
+
+	let referrer: T::AccountId = account("referrer", index, SEED);
+	let code: Vec<u8> = [b"ref".as_slice(), &index.to_le_bytes()].concat();
+	pallet_credits::ReferralCodes::<T>::insert(&code, referrer);
+	pallet_credits::ReferredUsers::<T>::insert(&who, code);
+
+	who
+}
+
 #[benchmarks]
 mod benchmarks {
 	use super::*;
@@ -191,5 +308,56 @@ mod benchmarks {
 			.saturating_mul(subs as u128)
 			.saturating_mul(MAX_CATCHUP_MONTHS as u128);
 		assert_eq!(spent, expected);
+	}
+
+	/// `n` rows, each charged in full together with arrears it already owed,
+	/// with a referral commission accrued on the lot.
+	#[benchmark]
+	fn submit_compute_usage(n: Linear<1, { T::MaxComputeUsageRowsPerCall::get() }>) {
+		let caller = compute_billing_authority::<T>();
+		close_compute_period::<T>();
+		ReferralCommissionRateBps::<T>::put(500);
+		let rows: Vec<(T::AccountId, u128, sp_core::H256)> = (0..n)
+			.map(|i| (compute_debtor::<T>(i), COMPUTE_AMOUNT, sp_core::H256::repeat_byte(i as u8)))
+			.collect();
+		let debtors: Vec<T::AccountId> = rows.iter().map(|(who, _, _)| who.clone()).collect();
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(caller), COMPUTE_PERIOD, rows);
+
+		// Every row took the charged path, arrears included, and the debit
+		// went through the unfreeze branch. A row that fell into arrears
+		// instead would be cheaper, and a benchmark that let that happen would
+		// price the wrong thing without failing.
+		for who in debtors {
+			let funded = *UserBatches::<T>::get(&who).unwrap_or_default().last().unwrap();
+			assert!(!Batches::<T>::get(funded).unwrap().is_frozen);
+			assert_eq!(ComputeArrears::<T>::get(&who), 0);
+			assert_eq!(
+				ComputeUsageCharged::<T>::get(COMPUTE_PERIOD, &who).map(|r| r.outcome),
+				Some(ComputeChargeOutcome::Charged)
+			);
+			assert_eq!(
+				CreditsPallet::<T>::get_free_credits(&who),
+				FUNDING - COMPUTE_AMOUNT - COMPUTE_ARREARS
+			);
+		}
+	}
+
+	/// `n` accounts, each paying off its arrears in full.
+	#[benchmark]
+	fn settle_compute_arrears(n: Linear<1, { T::MaxComputeUsageRowsPerCall::get() }>) {
+		let caller = compute_billing_authority::<T>();
+		ReferralCommissionRateBps::<T>::put(500);
+		let accounts: Vec<T::AccountId> = (0..n).map(compute_debtor::<T>).collect();
+		let debtors = accounts.clone();
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(caller), accounts);
+
+		for who in debtors {
+			assert_eq!(ComputeArrears::<T>::get(&who), 0);
+			assert_eq!(CreditsPallet::<T>::get_free_credits(&who), FUNDING - COMPUTE_ARREARS);
+		}
 	}
 }
