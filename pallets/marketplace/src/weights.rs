@@ -304,11 +304,13 @@ impl WeightInfo for () {
 ///
 /// The 200µs of execution is roughly six times what one subscription charge
 /// costs inside the measured `charge_account_due` (526.9µs for 15), for a
-/// debit that walks 16 batches instead of one. Proof size is 16 batches of
-/// ~200 bytes plus the fixed keys, rounded up. At these figures a full
-/// 250-row call is ~0.8s, inside the normal-class share of a 2s block.
+/// debit that walks 16 batches instead of one. Proof size allows ~2.6 KB per
+/// distinct key read — FRAME's allowance for an entry of an unbounded map,
+/// trie path included — over the 25 the path actually reads. At these
+/// figures a full 250-row call is ~0.8s, inside the normal-class share of a
+/// 2s block.
 fn compute_row() -> Weight {
-	Weight::from_parts(200_000_000, 5_000)
+	Weight::from_parts(200_000_000, 66_000)
 		.saturating_add(RocksDbWeight::get().reads(28))
 		.saturating_add(RocksDbWeight::get().writes(24))
 }

@@ -2659,9 +2659,10 @@ pub mod pallet {
 			// billing outage is walked across several blocks, not one.
 			const MAX_PERIODS_PER_RUN: u32 = 24;
 
-			// `DbWeight` carries no proof size, so each access adds an estimate
-			// of its own: a `ComputeUsageCharged` key and value plus trie path.
-			const PROOF_PER_ACCESS: u64 = 600;
+			// `DbWeight` carries no proof size, so each read adds its own: the
+			// allowance FRAME gives one entry of an unbounded map, trie path
+			// included, which is what `ComputeUsageCharged` is to the proof.
+			const PROOF_PER_ACCESS: u64 = 2_600;
 			let db = T::DbWeight::get();
 			let access = |reads: u64, writes: u64| {
 				db.reads_writes(reads, writes)

@@ -719,6 +719,30 @@ fn pruning_stays_within_the_weight_it_is_given() {
 }
 
 #[test]
+fn pruning_also_stays_within_a_proof_size_budget() {
+	/// `PROOF_PER_ACCESS` in the pallet: charged per read.
+	const PROOF_PER_READ: u64 = 2_600;
+
+	let users: Vec<AccountId> = (10..20).map(account).collect();
+	let mut ext = new_test_ext();
+	ext.execute_with(|| {
+		submit(PERIOD, users.iter().map(|u| (u.clone(), 0, hash(1))).collect());
+	});
+	ext.commit_all().unwrap();
+	ext.execute_with(|| {
+		set_current_period(PERIOD + RETENTION + 1);
+
+		// Unlimited time, proof for the overhead's three reads, the probe and
+		// three keys.
+		let limit = Weight::from_parts(u64::MAX, PROOF_PER_READ * (3 + 1 + 3));
+		let used = Marketplace::on_idle(System::block_number(), limit);
+
+		assert!(used.all_lte(limit));
+		assert_eq!(users.iter().filter(|u| record(PERIOD, u).is_some()).count(), 7);
+	});
+}
+
+#[test]
 fn a_pruned_period_can_never_be_charged_again() {
 	new_test_ext().execute_with(|| {
 		let user = account(10);
