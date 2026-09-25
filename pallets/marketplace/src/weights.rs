@@ -26,6 +26,12 @@
 //! ```
 //!
 //! The remaining three are single storage operations and stay as estimates.
+//!
+//! The two feeless compute billing calls, `submit_compute_usage` and
+//! `settle_compute_arrears`, are the exception to "not a weight table for the
+//! extrinsics": a feeless call's declared weight is the only thing that keeps a
+//! full one from being under-counted against the block. They are priced per
+//! row off `compute_row`, which is still an estimate — see there.
 
 #![allow(unused_parens)]
 
@@ -76,6 +82,14 @@ pub trait WeightInfo {
 
 	/// The *additional* cost of actually releasing one matured batch.
 	fn alpha_release() -> Weight;
+
+	/// `submit_compute_usage` carrying `n` rows, every one of them posed at
+	/// the most expensive path a row can take.
+	fn submit_compute_usage(n: u32) -> Weight;
+
+	/// `settle_compute_arrears` over `n` accounts, every one of them owing
+	/// arrears it can now pay.
+	fn settle_compute_arrears(n: u32) -> Weight;
 }
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
@@ -176,6 +190,26 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(RocksDbWeight::get().reads(2))
 			.saturating_add(RocksDbWeight::get().writes(4))
 	}
+
+	/// Estimated, pending a benchmark run — see `compute_row`.
+	///
+	/// Fixed part: the authority list, both caps and the clock in; the
+	/// high-water mark, the prune cursor and the summary event out.
+	fn submit_compute_usage(n: u32) -> Weight {
+		Weight::from_parts(50_000_000, 2_000)
+			.saturating_add(RocksDbWeight::get().reads(4))
+			.saturating_add(RocksDbWeight::get().writes(3))
+			.saturating_add(compute_row().saturating_mul(n.into()))
+	}
+
+	/// Estimated, pending a benchmark run — see `compute_row`. The fixed part
+	/// is the authority list; a settled row does everything a charged row
+	/// does except touch `ComputeUsageCharged`, so it is priced the same.
+	fn settle_compute_arrears(n: u32) -> Weight {
+		Weight::from_parts(50_000_000, 2_000)
+			.saturating_add(RocksDbWeight::get().reads(1))
+			.saturating_add(compute_row().saturating_mul(n.into()))
+	}
 }
 
 /// For tests and mocks: same shape, same relative costs, no database pricing.
@@ -228,4 +262,55 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().reads(2))
 			.saturating_add(RocksDbWeight::get().writes(4))
 	}
+
+	/// Estimated, pending a benchmark run — see `compute_row`.
+	///
+	/// Fixed part: the authority list, both caps and the clock in; the
+	/// high-water mark, the prune cursor and the summary event out.
+	fn submit_compute_usage(n: u32) -> Weight {
+		Weight::from_parts(50_000_000, 2_000)
+			.saturating_add(RocksDbWeight::get().reads(4))
+			.saturating_add(RocksDbWeight::get().writes(3))
+			.saturating_add(compute_row().saturating_mul(n.into()))
+	}
+
+	/// Estimated, pending a benchmark run — see `compute_row`. The fixed part
+	/// is the authority list; a settled row does everything a charged row
+	/// does except touch `ComputeUsageCharged`, so it is priced the same.
+	fn settle_compute_arrears(n: u32) -> Weight {
+		Weight::from_parts(50_000_000, 2_000)
+			.saturating_add(RocksDbWeight::get().reads(1))
+			.saturating_add(compute_row().saturating_mul(n.into()))
+	}
+}
+
+/// One compute billing row at its most expensive path: charged in full with
+/// arrears folded in, a referral accrued, and the debit walking
+/// `COMPUTE_BENCH_BATCHES` (16) deposit batches, the last of them unfreezing.
+///
+/// **Estimated from counted storage access, not measured.** The benchmark
+/// that poses this case exists (`submit_compute_usage` /
+/// `settle_compute_arrears` in `benchmarking.rs`); replace this figure with
+/// its output on the next benchmark run. Counted as distinct keys, the way
+/// the benchmark reports them:
+///
+/// - reads (28): the idempotency record, the arrears, `UserBatches`, 16
+///   `Batches`, `FreeCredits`, `AlphaBalances`, `UnbackedBatchAlpha`, the
+///   backing tally, the commission rate, `ReferredUsers`, `ReferralCodes`,
+///   `AccruedReferralCommission`, plus one of slack;
+/// - writes (24): the record, the arrears, 16 `Batches`, `FreeCredits`,
+///   `AlphaBalances`, `UnbackedBatchAlpha`, the backing tally, the accrued
+///   commission, plus one of slack.
+///
+/// The 200µs of execution is roughly six times what one subscription charge
+/// costs inside the measured `charge_account_due` (526.9µs for 15), for a
+/// debit that walks 16 batches instead of one. Proof size allows ~2.6 KB per
+/// distinct key read — FRAME's allowance for an entry of an unbounded map,
+/// trie path included — over the 25 the path actually reads. At these
+/// figures a full 250-row call is ~0.8s, inside the normal-class share of a
+/// 2s block.
+fn compute_row() -> Weight {
+	Weight::from_parts(200_000_000, 66_000)
+		.saturating_add(RocksDbWeight::get().reads(28))
+		.saturating_add(RocksDbWeight::get().writes(24))
 }
