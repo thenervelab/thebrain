@@ -14,6 +14,7 @@ sp-runtime = { version = "39.0.0", default-features = false }
 
 # Pin transitive deps to versions compatible with rustc 1.85.0
 time = { version = ">=0.3.0, <0.3.37", default-features = false, optional = true }
+substrate-bip39 = { version = "=0.6.0", default-features = false, optional = true }
 
 [dev-dependencies]
 ink_e2e = { version = "5.1.1" }

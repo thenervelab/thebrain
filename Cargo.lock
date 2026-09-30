@@ -1084,6 +1084,7 @@ dependencies = [
  "sp-core 34.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "sp-io 38.0.2",
  "sp-runtime 39.0.5",
+ "substrate-bip39 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "time",
 ]
 
