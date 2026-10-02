@@ -182,8 +182,12 @@ pub mod pallet {
 		/// Leftover block weight prunes compute usage records nobody can
 		/// replay any more. Nothing depends on it running promptly: an
 		/// unpruned record is only storage, never a wrong answer.
+		///
+		/// The one-time spent-batch cleanup takes what the compute pruning
+		/// leaves; it is no more urgent.
 		fn on_idle(_n: BlockNumberFor<T>, remaining_weight: Weight) -> Weight {
-			Self::prune_compute_usage(remaining_weight)
+			let used = Self::prune_compute_usage(remaining_weight);
+			used.saturating_add(Self::prune_spent_user_batches(remaining_weight.saturating_sub(used)))
 		}
 
 		fn integrity_test() {
@@ -1107,6 +1111,20 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type AlphaReleaseCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
+	/// Raw `UserBatches` key the one-time spent-batch cleanup resumes from.
+	///
+	/// `consume_credits` now drops a batch from its owner's list once it is
+	/// fully spent, but lists written before that still carry every spent
+	/// batch the account ever had. Not a migration for the same reason as
+	/// [`BackfillCursor`]: `pallet-migrations` is not configured here.
+	#[pallet::storage]
+	pub type SpentBatchPruneCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
+
+	/// Whether the spent-batch cleanup has walked every `UserBatches` entry.
+	/// Retire it, the cursor and the pass one release after this ships.
+	#[pallet::storage]
+	pub type SpentBatchPruneDone<T: Config> = StorageValue<_, bool, ValueQuery>;
+
 	/// Resume point for the hourly pay-as-you-go sweep.
 	///
 	/// The sweep visits every user the validator metric has ever reported on,
@@ -1625,7 +1643,12 @@ pub mod pallet {
 		/// allows manual retries when the bank or sudo account is ready.
 		/// Correctly walled from miner settlement; only affects sudo account refunds.
 		#[pallet::call_index(10)]
-		#[pallet::weight((10_000, Pays::No))]
+		#[pallet::weight((
+			// `PendingSudoRefunds` taken and maybe put back, `SudoKey` read.
+			<<T as pallet_hippocampus::Config>::WeightInfo as pallet_hippocampus::WeightInfo>::request_payment()
+				.saturating_add(T::DbWeight::get().reads_writes(2, 1)),
+			Pays::No,
+		))]
 		pub fn retry_pending_sudo_refunds(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -1758,7 +1781,14 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(15)]
-		#[pallet::weight((0, Pays::No))]
+		#[pallet::weight((
+			// The refund through the bank, plus the batch, its alpha and
+			// backing ledgers, the refund carry-over, the owner's batch list
+			// and credits, and the purchase total, each read and written.
+			<<T as pallet_hippocampus::Config>::WeightInfo as pallet_hippocampus::WeightInfo>::request_payment()
+				.saturating_add(T::DbWeight::get().reads_writes(10, 9)),
+			Pays::No,
+		))]
 		pub fn chargeback(origin: OriginFor<T>, batch_id: u64) -> DispatchResult {
 			// Ensure the caller is a signed origin (admin check)
 			ensure_root(origin)?;
@@ -2646,6 +2676,88 @@ pub mod pallet {
 			.is_ok()
 		}
 
+		/// Drop fully spent batch ids from `UserBatches` lists written before
+		/// `consume_credits` started doing so itself, within `limit`.
+		///
+		/// Ordinary paged hook work like [`Self::backfill_due_index`], resuming
+		/// from [`SpentBatchPruneCursor`]; a no-op once [`SpentBatchPruneDone`]
+		/// is set. Only ids are removed — the `Batches` rows stay, since
+		/// chargeback looks them up by id. Idle weight is enough: an unpruned
+		/// list only costs its owner's debits a little more, never a wrong charge.
+		pub(crate) fn prune_spent_user_batches(limit: Weight) -> Weight {
+			// Bounds the page read up front, so a block with a lot of idle
+			// weight does not decode thousands of lists it will not get to.
+			const MAX_ACCOUNTS_PER_RUN: usize = 64;
+
+			// Same accounting as `prune_compute_usage`: `DbWeight` carries no
+			// proof size, so each read adds an unbounded-map entry's allowance.
+			const PROOF_PER_ACCESS: u64 = 2_600;
+			let db = T::DbWeight::get();
+			let access = |reads: u64, writes: u64| {
+				db.reads_writes(reads, writes)
+					.saturating_add(Weight::from_parts(0, PROOF_PER_ACCESS.saturating_mul(reads)))
+			};
+			let mut meter = WeightMeter::with_limit(limit);
+			if meter.try_consume(access(1, 0)).is_err() {
+				return Weight::zero();
+			}
+			if SpentBatchPruneDone::<T>::get() {
+				return meter.consumed();
+			}
+			// The cursor in and out, and the done flag out.
+			if meter.try_consume(access(1, 2)).is_err() {
+				return Weight::zero();
+			}
+
+			// Reading the list is paid for when the page is taken; walking its
+			// batches and writing it back is paid per account, below, once the
+			// list's length is known. The page is sized assuming each account
+			// walks at least one batch, so reading it cannot leave nothing to
+			// walk it with.
+			let probe = access(1, 0);
+			let page_size = Self::accounts_affordable(&meter, probe.saturating_add(access(1, 1)))
+				.min(MAX_ACCOUNTS_PER_RUN);
+			if page_size == 0 {
+				return meter.consumed();
+			}
+			let page: Vec<(T::AccountId, Vec<u64>)> = match SpentBatchPruneCursor::<T>::get() {
+				Some(key) => UserBatches::<T>::iter_from(key).take(page_size).collect(),
+				None => UserBatches::<T>::iter().take(page_size).collect(),
+			};
+			meter.consume(probe.saturating_mul(page.len() as u64));
+
+			let mut last_done: Option<&T::AccountId> = None;
+			let mut processed = 0usize;
+			for (who, ids) in page.iter() {
+				let walk = access(ids.len() as u64, 1);
+				if meter.try_consume(walk).is_err() {
+					break;
+				}
+				let kept: Vec<u64> = ids
+					.iter()
+					.copied()
+					.filter(|id| Batches::<T>::get(id).is_some_and(|b| !Self::batch_is_spent(&b)))
+					.collect();
+				if kept.is_empty() {
+					UserBatches::<T>::remove(who);
+				} else if kept.len() < ids.len() {
+					UserBatches::<T>::insert(who, kept);
+				}
+				last_done = Some(who);
+				processed += 1;
+			}
+
+			if processed == page.len() && page.len() < page_size {
+				SpentBatchPruneDone::<T>::put(true);
+				SpentBatchPruneCursor::<T>::kill();
+				log::info!(target: "runtime::marketplace", "spent batch cleanup complete");
+			} else if let Some(who) = last_done {
+				SpentBatchPruneCursor::<T>::put(UserBatches::<T>::hashed_key_for(who));
+			}
+
+			meter.consumed()
+		}
+
 		/// Drop `ComputeUsageCharged` periods that have fallen more than
 		/// `ComputeUsageRetention` behind, within `limit`.
 		///
@@ -2921,12 +3033,18 @@ pub mod pallet {
 			}
 
 			// One read per key inspected, plus the bank reserve ledgers and a
-			// balance write for each referrer actually paid.
+			// balance write for each referrer actually paid, plus the bank's
+			// own measured cost for each payment it made.
 			let inspected = batch.len() as u64;
-			T::DbWeight::get().reads_writes(
-				inspected.saturating_add(paid_count.saturating_mul(8)).saturating_add(2),
-				paid_count.saturating_mul(4).saturating_add(1),
-			)
+			T::DbWeight::get()
+				.reads_writes(
+					inspected.saturating_add(paid_count.saturating_mul(8)).saturating_add(2),
+					paid_count.saturating_mul(4).saturating_add(1),
+				)
+				.saturating_add(
+					<<T as pallet_hippocampus::Config>::WeightInfo as pallet_hippocampus::WeightInfo>::request_payment()
+						.saturating_mul(paid_count),
+				)
 		}
 
 		fn referral_discount_and_owner(
@@ -5076,87 +5194,123 @@ pub mod pallet {
 			let mut remaining = credits;
 
 			if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
-				for batch_id in batch_ids {
+				// Ids to drop from the list once the walk is done: batches this
+				// debit found (or left) fully spent, and ids whose batch is gone.
+				// Without this every later debit walks them again, so the cost
+				// of a debit grew with the account's whole deposit history.
+				let mut spent: Vec<u64> = Vec::new();
+
+				for batch_id in batch_ids.iter().copied() {
 					if remaining == 0 {
 						break;
 					}
 
-					if let Some(mut batch) = Batches::<T>::get(batch_id) {
-						ensure!(batch.owner == sender, Error::<T>::NotAuthorized);
+					let Some(mut batch) = Batches::<T>::get(batch_id) else {
+						spent.push(batch_id);
+						continue;
+					};
+					ensure!(batch.owner == sender, Error::<T>::NotAuthorized);
 
-						let credits_to_take = remaining.min(batch.remaining_credits);
-						let current = CreditsPallet::<T>::get_free_credits(&batch.owner);
-						ensure!(current >= credits_to_take, Error::<T>::InsufficientFreeCredits);
+					let credits_to_take = remaining.min(batch.remaining_credits);
 
-						// Decrease user credits (post-discount total is allocated across batches).
-						CreditsPallet::<T>::decrease_user_credits(&batch.owner, credits_to_take);
+					// Nothing to take. The body below would only rewrite the
+					// batch unchanged and emit a zero burn — unless the batch
+					// is frozen and has just matured, where it is what
+					// releases the pending alpha, so that case falls through.
+					let matured_while_frozen =
+						batch.is_frozen && block_number >= batch.release_time;
+					if credits_to_take == 0 && !matured_while_frozen {
+						if Self::batch_is_spent(&batch) {
+							spent.push(batch_id);
+						}
+						continue;
+					}
 
-						// FIXED: Use remaining amounts for accurate alpha calculation
-						// This ensures the ratio reflects the current batch state
-						let credits_to_take_u256 = U256::from(credits_to_take);
-						let remaining_alpha_u256 = U256::from(batch.remaining_alpha);
-						let remaining_credits_u256 = U256::from(batch.remaining_credits.max(1));
+					let current = CreditsPallet::<T>::get_free_credits(&batch.owner);
+					ensure!(current >= credits_to_take, Error::<T>::InsufficientFreeCredits);
 
-						// Calculate alpha based on remaining proportion
-						let alpha_to_release =
-							(credits_to_take_u256 * remaining_alpha_u256) / remaining_credits_u256;
+					// Decrease user credits (post-discount total is allocated across batches).
+					CreditsPallet::<T>::decrease_user_credits(&batch.owner, credits_to_take);
 
-						// Safety: Ensure we don't release more alpha than remaining
-						let alpha_to_release_u128 =
-							alpha_to_release.min(U256::from(batch.remaining_alpha)).as_u128();
+					// FIXED: Use remaining amounts for accurate alpha calculation
+					// This ensures the ratio reflects the current batch state
+					let credits_to_take_u256 = U256::from(credits_to_take);
+					let remaining_alpha_u256 = U256::from(batch.remaining_alpha);
+					let remaining_credits_u256 = U256::from(batch.remaining_credits.max(1));
 
-						// Update batch credits first (needed for future calculations in this batch)
-						batch.remaining_credits =
-							batch.remaining_credits.saturating_sub(credits_to_take);
+					// Calculate alpha based on remaining proportion
+					let alpha_to_release =
+						(credits_to_take_u256 * remaining_alpha_u256) / remaining_credits_u256;
 
-						// Handle frozen/unfrozen logic
-						if batch.is_frozen && block_number < batch.release_time {
-							// Batch is still frozen - add to pending
-							batch.pending_alpha =
-								batch.pending_alpha.saturating_add(alpha_to_release_u128);
-						} else {
-							// Check if batch just unfroze in this block
-							if batch.is_frozen && block_number >= batch.release_time {
-								// Batch just unfroze - distribute all pending alpha first
-								batch.is_frozen = false;
+					// Safety: Ensure we don't release more alpha than remaining
+					let alpha_to_release_u128 =
+						alpha_to_release.min(U256::from(batch.remaining_alpha)).as_u128();
 
-								if batch.pending_alpha > 0 {
-									AlphaBalances::<T>::mutate(&batch.owner, |alpha| {
-										*alpha = alpha.saturating_sub(batch.pending_alpha)
-									});
+					// Update batch credits first (needed for future calculations in this batch)
+					batch.remaining_credits =
+						batch.remaining_credits.saturating_sub(credits_to_take);
 
-									// Alpha stays in bank, no distribution. Track backed portion and release TUB.
-									let backed =
-										Self::take_backed_portion(batch_id, batch.pending_alpha);
-									TotalUndistributedBacking::<T>::mutate(|t| {
-										*t = t.saturating_sub(backed)
-									});
+					// Handle frozen/unfrozen logic
+					if batch.is_frozen && block_number < batch.release_time {
+						// Batch is still frozen - add to pending
+						batch.pending_alpha =
+							batch.pending_alpha.saturating_add(alpha_to_release_u128);
+					} else {
+						// Check if batch just unfroze in this block
+						if batch.is_frozen && block_number >= batch.release_time {
+							// Batch just unfroze - distribute all pending alpha first
+							batch.is_frozen = false;
 
-									batch.pending_alpha = 0;
-								}
-							}
-
-							// Release current alpha - stays in bank
-							if alpha_to_release_u128 > 0 {
+							if batch.pending_alpha > 0 {
 								AlphaBalances::<T>::mutate(&batch.owner, |alpha| {
-									*alpha = alpha.saturating_sub(alpha_to_release_u128)
+									*alpha = alpha.saturating_sub(batch.pending_alpha)
 								});
 
 								// Alpha stays in bank, no distribution. Track backed portion and release TUB.
 								let backed =
-									Self::take_backed_portion(batch_id, alpha_to_release_u128);
+									Self::take_backed_portion(batch_id, batch.pending_alpha);
 								TotalUndistributedBacking::<T>::mutate(|t| {
 									*t = t.saturating_sub(backed)
 								});
+
+								batch.pending_alpha = 0;
 							}
 						}
 
-						// Update remaining alpha after all operations
-						batch.remaining_alpha =
-							batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
-						// Save updated batch
-						Batches::<T>::insert(batch_id, batch);
-						remaining = remaining.saturating_sub(credits_to_take);
+						// Release current alpha - stays in bank
+						if alpha_to_release_u128 > 0 {
+							AlphaBalances::<T>::mutate(&batch.owner, |alpha| {
+								*alpha = alpha.saturating_sub(alpha_to_release_u128)
+							});
+
+							// Alpha stays in bank, no distribution. Track backed portion and release TUB.
+							let backed =
+								Self::take_backed_portion(batch_id, alpha_to_release_u128);
+							TotalUndistributedBacking::<T>::mutate(|t| {
+								*t = t.saturating_sub(backed)
+							});
+						}
+					}
+
+					// Update remaining alpha after all operations
+					batch.remaining_alpha =
+						batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
+					if Self::batch_is_spent(&batch) {
+						spent.push(batch_id);
+					}
+					// Save updated batch. The row stays even when spent:
+					// chargeback looks batches up by id.
+					Batches::<T>::insert(batch_id, batch);
+					remaining = remaining.saturating_sub(credits_to_take);
+				}
+
+				if !spent.is_empty() {
+					let kept: Vec<u64> =
+						batch_ids.into_iter().filter(|id| !spent.contains(id)).collect();
+					if kept.is_empty() {
+						UserBatches::<T>::remove(&sender);
+					} else {
+						UserBatches::<T>::insert(&sender, kept);
 					}
 				}
 			}
@@ -5166,6 +5320,13 @@ pub mod pallet {
 			Self::deposit_event(Event::CreditsConsumed { owner: sender, credits });
 
 			Ok(())
+		}
+
+		/// A batch with nothing left to give: no credits to spend and no alpha
+		/// to release, now or when it unfreezes. Its id has no further use in
+		/// `UserBatches`; the `Batches` row is kept for chargeback.
+		pub(crate) fn batch_is_spent(batch: &Batch<T::AccountId, BlockNumberFor<T>>) -> bool {
+			batch.remaining_credits == 0 && batch.remaining_alpha == 0 && batch.pending_alpha == 0
 		}
 
 		/// Consume a release of `released` alpha from `batch_id`: split off the
@@ -5287,6 +5448,9 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// The account's batches that can still pay or still release alpha.
+		/// Fully spent batches leave `UserBatches` and so are not returned;
+		/// [`Self::get_batch_by_id`] still finds them.
 		pub fn get_batches_for_user(
 			user: T::AccountId,
 		) -> Vec<Batch<T::AccountId, BlockNumberFor<T>>> {
