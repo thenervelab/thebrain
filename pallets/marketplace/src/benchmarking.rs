@@ -203,7 +203,9 @@ fn push_batch<T: Config>(who: &T::AccountId, batch: Batch<T::AccountId, BlockNum
 /// Account `index`, posed at the most expensive path a compute row can take:
 ///
 /// - `COMPUTE_BENCH_BATCHES - 1` spent batches ahead of the funded one, each
-///   read and rewritten by the walk;
+///   read by the walk and then dropped from `UserBatches` in one rewrite. A
+///   list in this shape only survives from before debits pruned their own,
+///   until the idle cleanup reaches it, but it is still the longest walk;
 /// - a funded batch that matured while frozen with alpha still pending and
 ///   partly unbacked, so the debit takes the unfreeze branch and touches the
 ///   alpha balance, the unbacked marker and the backing tally twice each;
