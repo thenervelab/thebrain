@@ -1643,7 +1643,12 @@ pub mod pallet {
 		/// allows manual retries when the bank or sudo account is ready.
 		/// Correctly walled from miner settlement; only affects sudo account refunds.
 		#[pallet::call_index(10)]
-		#[pallet::weight((10_000, Pays::No))]
+		#[pallet::weight((
+			// `PendingSudoRefunds` taken and maybe put back, `SudoKey` read.
+			<<T as pallet_hippocampus::Config>::WeightInfo as pallet_hippocampus::WeightInfo>::request_payment()
+				.saturating_add(T::DbWeight::get().reads_writes(2, 1)),
+			Pays::No,
+		))]
 		pub fn retry_pending_sudo_refunds(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
 
@@ -1776,7 +1781,14 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(15)]
-		#[pallet::weight((0, Pays::No))]
+		#[pallet::weight((
+			// The refund through the bank, plus the batch, its alpha and
+			// backing ledgers, the refund carry-over, the owner's batch list
+			// and credits, and the purchase total, each read and written.
+			<<T as pallet_hippocampus::Config>::WeightInfo as pallet_hippocampus::WeightInfo>::request_payment()
+				.saturating_add(T::DbWeight::get().reads_writes(10, 9)),
+			Pays::No,
+		))]
 		pub fn chargeback(origin: OriginFor<T>, batch_id: u64) -> DispatchResult {
 			// Ensure the caller is a signed origin (admin check)
 			ensure_root(origin)?;
@@ -3021,12 +3033,18 @@ pub mod pallet {
 			}
 
 			// One read per key inspected, plus the bank reserve ledgers and a
-			// balance write for each referrer actually paid.
+			// balance write for each referrer actually paid, plus the bank's
+			// own measured cost for each payment it made.
 			let inspected = batch.len() as u64;
-			T::DbWeight::get().reads_writes(
-				inspected.saturating_add(paid_count.saturating_mul(8)).saturating_add(2),
-				paid_count.saturating_mul(4).saturating_add(1),
-			)
+			T::DbWeight::get()
+				.reads_writes(
+					inspected.saturating_add(paid_count.saturating_mul(8)).saturating_add(2),
+					paid_count.saturating_mul(4).saturating_add(1),
+				)
+				.saturating_add(
+					<<T as pallet_hippocampus::Config>::WeightInfo as pallet_hippocampus::WeightInfo>::request_payment()
+						.saturating_mul(paid_count),
+				)
 		}
 
 		fn referral_discount_and_owner(

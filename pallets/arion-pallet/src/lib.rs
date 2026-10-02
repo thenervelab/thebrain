@@ -3,6 +3,9 @@
 pub mod weights;
 pub use weights::WeightInfo;
 
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
+
 // `pallet-arion`
 //
 // Minimal scaffold for Arion’s **on-chain CRUSH map** + **periodic miner stats**.
@@ -115,6 +118,23 @@ pub mod pallet {
 		fn available() -> Balance {
 			Zero::zero()
 		}
+	}
+
+	/// Runtime-side setup the benchmarks cannot do generically: the payout
+	/// source and the token price are runtime adapters, so only the runtime
+	/// knows how to fund the one and set the other.
+	#[cfg(feature = "runtime-benchmarks")]
+	pub trait BenchmarkHelper<AccountId> {
+		/// Let [`PayoutSource`] release up to `amount` to `requester`.
+		fn fund_payout_source(requester: &AccountId, amount: u128);
+		/// Make [`Config::TokenPriceUsd`] return `price`.
+		fn set_token_price(price: u128);
+	}
+
+	#[cfg(feature = "runtime-benchmarks")]
+	impl<AccountId> BenchmarkHelper<AccountId> for () {
+		fn fund_payout_source(_: &AccountId, _: u128) {}
+		fn set_token_price(_: u128) {}
 	}
 
 	/// CRUSH map parameters that affect deterministic placement.
@@ -777,6 +797,10 @@ pub mod pallet {
 		/// Run miner payment settlement every N blocks (`0` = disabled).
 		#[pallet::constant]
 		type SettlementInterval: Get<BlockNumberFor<Self>>;
+
+		/// See [`BenchmarkHelper`].
+		#[cfg(feature = "runtime-benchmarks")]
+		type BenchmarkHelper: BenchmarkHelper<Self::AccountId>;
 	}
 
 	/// Storage version 1: `MinerUidToChild` reverse index (uid uniqueness).
@@ -1786,7 +1810,7 @@ pub mod pallet {
 		/// aggregate per family, pull funds from the payout source, distribute
 		/// pro-rata on shortfall (delta → [`FamilyArrears`]) and bond each
 		/// payout as stake on the family account.
-		fn settle_miner_payments(now: BlockNumberFor<T>) {
+		pub(crate) fn settle_miner_payments(now: BlockNumberFor<T>) {
 			let price = UsdPerGibBlock::new(MinerPriceUsdPerGbBlock::<T>::get());
 			if price.get() == 0 {
 				Self::deposit_event(Event::MinerPaymentSkipped {
