@@ -207,6 +207,8 @@ runtime-benchmarks = [
     # Hippius
     "pallet-alpha-bridge/runtime-benchmarks",
     "pallet-marketplace/runtime-benchmarks",
+    "pallet-arion/runtime-benchmarks",
+    "pallet-hippocampus/runtime-benchmarks",
 
     "xcm-builder/runtime-benchmarks",
 ]

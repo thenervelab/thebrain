@@ -451,6 +451,27 @@ impl pallet_arion::Config for Runtime {
 	type Staking = Staking;
 	type TokenPriceUsd = AlphaTokenPriceUsd;
 	type SettlementInterval = ArionSettlementInterval;
+	#[cfg(feature = "runtime-benchmarks")]
+	type BenchmarkHelper = ArionBenchmarkHelper;
+}
+
+/// Funds the bank and sets the alpha price for the Arion settlement benchmark.
+#[cfg(feature = "runtime-benchmarks")]
+pub struct ArionBenchmarkHelper;
+#[cfg(feature = "runtime-benchmarks")]
+impl pallet_arion::BenchmarkHelper<AccountId> for ArionBenchmarkHelper {
+	fn fund_payout_source(requester: &AccountId, amount: u128) {
+		let bank = pallet_hippocampus::Pallet::<Runtime>::account_id();
+		let _ = <Balances as frame_support::traits::Currency<AccountId>>::deposit_creating(
+			&bank, amount,
+		);
+		pallet_hippocampus::WhitelistedRequesters::<Runtime>::insert(requester, ());
+		pallet_hippocampus::DistributionEnabled::<Runtime>::put(true);
+	}
+
+	fn set_token_price(price: u128) {
+		pallet_credits::AlphaPrice::<Runtime>::put(price);
+	}
 }
 
 parameter_types! {
@@ -2979,6 +3000,8 @@ mod benches {
 		[pallet_alpha_bridge, AlphaBridge]
 		[pallet_compute_scoring, ComputeScoring]
 		[pallet_marketplace, Marketplace]
+		[pallet_arion, Arion]
+		[pallet_hippocampus, Hippocampus]
 	);
 }
 
