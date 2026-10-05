@@ -32,7 +32,7 @@
 //! ./target/release/hippius benchmark pallet \
 //!     --chain benchmark \
 //!     --pallet pallet_marketplace \
-//!     --extrinsic 'charge_account_due,submit_compute_usage,settle_compute_arrears' \
+//!     --extrinsic 'charge_account_due,submit_compute_usage,settle_compute_arrears,buy_credits' \
 //!     --steps 50 --repeat 20
 //! ```
 
@@ -42,6 +42,7 @@ use super::*;
 use crate::pallet::Pallet as Marketplace;
 use frame_benchmarking::v2::*;
 use frame_support::pallet_prelude::{Get, PhantomData};
+use frame_support::traits::Currency;
 use frame_system::pallet_prelude::BlockNumberFor;
 use frame_system::RawOrigin;
 use pallet_credits::Pallet as CreditsPallet;
@@ -359,5 +360,26 @@ mod benchmarks {
 			assert_eq!(ComputeArrears::<T>::get(&who), 0);
 			assert_eq!(CreditsPallet::<T>::get_free_credits(&who), FUNDING - COMPUTE_ARREARS);
 		}
+	}
+
+	/// A purchase with a referral code by an account with no client IP, so
+	/// the mint checks and records the referral and probes the IP pool.
+	#[benchmark]
+	fn buy_credits() {
+		let buyer: T::AccountId = whitelisted_caller();
+		let alpha: u128 = 1_000_000_000_000_000_000;
+		let funded: pallet_hippocampus::BalanceOf<T> = alpha.saturating_mul(10).saturated_into();
+		let _ = <T as pallet_hippocampus::Config>::Currency::make_free_balance_be(&buyer, funded);
+		BuyCreditsEnabled::<T>::put(true);
+		pallet_credits::AlphaPrice::<T>::put(2_000_000_000_000_000_000u128);
+		pallet_credits::AlphaPriceUpdatedAt::<T>::put(frame_system::Pallet::<T>::block_number());
+		let referrer: T::AccountId = account("referrer", 0, SEED);
+		let code: Vec<u8> = b"HIPPIUSBENCH".to_vec();
+		pallet_credits::ReferralCodes::<T>::insert(&code, referrer);
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(buyer.clone()), alpha, 0, Some(code));
+
+		assert_eq!(CreditsPallet::<T>::get_free_credits(&buyer), 2_000_000_000_000_000_000);
 	}
 }

@@ -366,6 +366,25 @@ pub mod pallet {
 		#[pallet::constant]
 		type ComputeUsageRetention: Get<u64>;
 
+		/// Smallest `alpha_amount` `buy_credits` accepts, in planck. Keeps
+		/// dust purchases — each of which creates a batch that is never
+		/// pruned — from being cheaper than the storage they cost.
+		#[pallet::constant]
+		type MinBuyAlpha: Get<u128>;
+
+		/// Most batches an account may hold for `buy_credits` to open another.
+		/// Past it, purchases top up the account's last purchase batch.
+		///
+		/// `consume_credits` walks every batch an account has ever had,
+		/// exhausted ones included, and the billing hooks price that walk at a
+		/// fixed batch count (see `COMPUTE_BENCH_BATCHES`). Authority deposits
+		/// are backend-gated, but `buy_credits` is open to anyone, so without
+		/// this an account could pile up enough tiny batches to push every
+		/// charge against it far past its declared weight. Keep it at or below
+		/// the batch count the billing weights are priced for.
+		#[pallet::constant]
+		type MaxBatchesPerBuyer: Get<u32>;
+
 		/// Measured cost of the units the billing hook meters itself in.
 		type WeightInfo: crate::weights::WeightInfo;
     }
@@ -906,6 +925,20 @@ pub mod pallet {
 			required: u128,
 			available: u128,
 		},
+		/// `who` paid `alpha_amount` native tokens into the bank and was
+		/// credited `credit_amount` at `alpha_price` (USD per alpha, 18
+		/// decimals) in batch `batch_id`. Emitted alongside `BatchDeposited`.
+		CreditsBought {
+			who: T::AccountId,
+			alpha_amount: u128,
+			credit_amount: u128,
+			batch_id: u64,
+			alpha_price: u128,
+		},
+		/// Root opened or closed `buy_credits`.
+		BuyCreditsStatusChanged {
+			enabled: bool,
+		},
 	}
 
 	#[pallet::error]
@@ -973,6 +1006,28 @@ pub mod pallet {
 		/// The period is more than `MaxComputeBillingLag` behind the current
 		/// one.
 		ComputeBillingPeriodTooOld,
+		/// `buy_credits` is switched off.
+		BuyCreditsDisabled,
+		/// `alpha_amount` is below `MinBuyAlpha`.
+		BuyAmountTooLow,
+		/// `Credits.AlphaPrice` has never been set.
+		AlphaPriceNotSet,
+		/// `Credits.AlphaPrice` is older than `MaxAlphaPriceAge`, or predates
+		/// `Credits.AlphaPriceUpdatedAt` and was never refreshed.
+		AlphaPriceStale,
+		/// `alpha_amount` is worth less than one credit unit at the current
+		/// price.
+		ZeroCreditAmount,
+		/// The credit amount, or the buyer's balance after it, does not fit in
+		/// a `u128`.
+		CreditAmountOverflow,
+		/// The current price would credit less than `min_credits`.
+		SlippageExceeded,
+		/// The referral code is longer than any code the chain issues.
+		ReferralCodeTooLong,
+		/// The caller already holds `MaxBatchesPerBuyer` batches and none of
+		/// them is a purchase batch that could be topped up.
+		TooManyBatches,
 	}
 
 	#[pallet::storage]
@@ -1186,6 +1241,18 @@ pub mod pallet {
 	/// `MaxComputeChargePerAccountPerPeriod`.
 	#[pallet::storage]
 	pub type MaxComputeChargePerCall<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// Whether `buy_credits` is open. Off by default; root switches it with
+	/// `sudo_set_buy_credits_enabled`.
+	#[pallet::storage]
+	pub type BuyCreditsEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	/// The batch an account's latest `buy_credits` went into. Once the account
+	/// holds `MaxBatchesPerBuyer` batches, further purchases top this one up
+	/// instead of opening a new one. Always an unfrozen, fully backed batch
+	/// owned by the account, so it can never be charged back.
+	#[pallet::storage]
+	pub type LastPurchaseBatch<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u64>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -2343,6 +2410,56 @@ pub mod pallet {
 			});
 			Ok(())
 		}
+
+		/// Buy credits with native tokens at `Credits.AlphaPrice`.
+		///
+		/// Moves `alpha_amount` from the caller into the bank as marketplace
+		/// revenue — the same place an authority `deposit` routes its alpha
+		/// backing — and mints `alpha_amount * AlphaPrice / 1e18` credits into
+		/// a new, unfrozen batch. Keep-alive: a purchase that would take the
+		/// caller below the existential deposit fails instead of reaping the
+		/// account. No refunds.
+		///
+		/// `min_credits` is the caller's slippage bound: the price can move
+		/// between signing and inclusion, and the call fails rather than
+		/// credit less than this. `code` is an optional referral code, applied
+		/// exactly as on `deposit`; an invalid one fails the call.
+		#[pallet::call_index(41)]
+		#[pallet::weight((<T as Config>::WeightInfo::buy_credits(), DispatchClass::Normal, Pays::Yes))]
+		pub fn buy_credits(
+			origin: OriginFor<T>,
+			alpha_amount: u128,
+			min_credits: u128,
+			code: Option<Vec<u8>>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			Self::do_buy_credits(who, alpha_amount, min_credits, code)
+		}
+
+		/// Root opens or closes `buy_credits`.
+		#[pallet::call_index(42)]
+		#[pallet::weight((T::DbWeight::get().writes(1), DispatchClass::Operational, Pays::No))]
+		pub fn sudo_set_buy_credits_enabled(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
+			ensure_root(origin)?;
+			BuyCreditsEnabled::<T>::put(enabled);
+			Self::deposit_event(Event::BuyCreditsStatusChanged { enabled });
+			Ok(())
+		}
+	}
+
+	/// Longest referral code `buy_credits` accepts, in bytes.
+	pub const MAX_REFERRAL_CODE_LEN: usize = 64;
+
+	/// Who pays the alpha backing of a new batch into the bank.
+	enum BackingSource<AccountId> {
+		/// The marketplace sudo account, best effort: if the transfer cannot
+		/// be made the batch is recorded in `UnbackedBatchAlpha` and the
+		/// deposit still succeeds. Authority `deposit`, where the alpha was
+		/// paid off-chain.
+		SudoBestEffort,
+		/// The buyer, mandatory: if the transfer cannot be made the whole call
+		/// fails. `buy_credits`, where the alpha *is* the payment.
+		Buyer(AccountId),
 	}
 
 	/// Per-call tally for `ComputeUsageSubmitted`.
@@ -4996,6 +5113,164 @@ pub mod pallet {
 			freeze_for_chargeback: bool,
 			code: Option<Vec<u8>>,
 		) -> DispatchResult {
+			Self::create_batch(
+				sender,
+				credit_amount,
+				alpha_amount,
+				freeze_for_chargeback,
+				code,
+				BackingSource::SudoBestEffort,
+			)
+			.map(|_| ())
+		}
+
+		/// Validate a `buy_credits` purchase, take the buyer's tokens into the
+		/// bank and mint the credits. Transactional: a failure at any step,
+		/// the transfer included, leaves no trace.
+		#[transactional]
+		fn do_buy_credits(
+			who: T::AccountId,
+			alpha_amount: u128,
+			min_credits: u128,
+			code: Option<Vec<u8>>,
+		) -> DispatchResult {
+			ensure!(BuyCreditsEnabled::<T>::get(), Error::<T>::BuyCreditsDisabled);
+			// Issued codes are "HIPPIUS" plus a u64, so 64 bytes is generous;
+			// anything longer is refused before it is hashed into a lookup.
+			ensure!(
+				code.as_ref().map_or(true, |c| c.len() <= MAX_REFERRAL_CODE_LEN),
+				Error::<T>::ReferralCodeTooLong
+			);
+			ensure!(
+				alpha_amount > 0 && alpha_amount >= T::MinBuyAlpha::get(),
+				Error::<T>::BuyAmountTooLow
+			);
+
+			// Same per-account request budget as the other user-facing calls.
+			let requests = UserRequestsCount::<T>::get(&who);
+			ensure!(requests < T::MaxRequestsPerBlock::get(), Error::<T>::TooManyRequests);
+			UserRequestsCount::<T>::insert(&who, requests.saturating_add(1));
+
+			let alpha_price = Self::fresh_alpha_price()?;
+			let credit_amount = Self::alpha_to_credits(alpha_amount, alpha_price)?;
+			ensure!(credit_amount > 0, Error::<T>::ZeroCreditAmount);
+			ensure!(credit_amount >= min_credits, Error::<T>::SlippageExceeded);
+			// The mint saturates; refuse rather than take payment for credits
+			// that would not land.
+			ensure!(
+				CreditsPallet::<T>::get_free_credits(&who).checked_add(credit_amount).is_some(),
+				Error::<T>::CreditAmountOverflow
+			);
+
+			let batch_count = UserBatches::<T>::decode_len(&who).unwrap_or(0);
+			let batch_id = if batch_count < T::MaxBatchesPerBuyer::get() as usize {
+				let batch_id = Self::create_batch(
+					who.clone(),
+					credit_amount,
+					alpha_amount,
+					false,
+					code,
+					BackingSource::Buyer(who.clone()),
+				)?;
+				LastPurchaseBatch::<T>::insert(&who, batch_id);
+				batch_id
+			} else {
+				let batch_id =
+					LastPurchaseBatch::<T>::get(&who).ok_or(Error::<T>::TooManyBatches)?;
+				Self::top_up_purchase_batch(&who, batch_id, credit_amount, alpha_amount, code)?;
+				batch_id
+			};
+
+			Self::deposit_event(Event::CreditsBought {
+				who,
+				alpha_amount,
+				credit_amount,
+				batch_id,
+				alpha_price,
+			});
+			Ok(())
+		}
+
+		/// Add a purchase to an existing purchase batch: the same effects as
+		/// opening one — credits minted, alpha recorded and paid into the bank,
+		/// `BatchDeposited` — without growing the account's batch list.
+		///
+		/// Blending purchases made at different prices into one batch is
+		/// sound: the batch is unfrozen and fully backed, so consumption only
+		/// ever releases its alpha pro rata, and the totals stay exact.
+		fn top_up_purchase_batch(
+			who: &T::AccountId,
+			batch_id: u64,
+			credit_amount: u128,
+			alpha_amount: u128,
+			code: Option<Vec<u8>>,
+		) -> DispatchResult {
+			Batches::<T>::try_mutate(batch_id, |batch| -> DispatchResult {
+				let batch = batch.as_mut().ok_or(Error::<T>::TooManyBatches)?;
+				ensure!(batch.owner == *who && !batch.is_frozen, Error::<T>::TooManyBatches);
+				batch.credit_amount = batch.credit_amount.saturating_add(credit_amount);
+				batch.alpha_amount = batch.alpha_amount.saturating_add(alpha_amount);
+				batch.remaining_credits = batch.remaining_credits.saturating_add(credit_amount);
+				batch.remaining_alpha = batch.remaining_alpha.saturating_add(alpha_amount);
+				Ok(())
+			})?;
+			AlphaBalances::<T>::mutate(who, |alpha| *alpha = alpha.saturating_add(alpha_amount));
+			CreditsPallet::<T>::do_mint(who.clone(), credit_amount, code)?;
+			Self::take_buyer_backing(who, alpha_amount)?;
+			Self::deposit_event(Event::BatchDeposited { owner: who.clone(), batch_id });
+			Ok(())
+		}
+
+		/// Move a buyer's `alpha_amount` into the bank as marketplace revenue
+		/// and count it as undistributed backing. Keep-alive; fails if the
+		/// buyer cannot pay.
+		fn take_buyer_backing(buyer: &T::AccountId, alpha_amount: u128) -> DispatchResult {
+			let backing: pallet_hippocampus::BalanceOf<T> =
+				alpha_amount.try_into().map_err(|_| Error::<T>::InvalidInput)?;
+			pallet_hippocampus::Pallet::<T>::deposit_from(
+				buyer,
+				backing,
+				pallet_hippocampus::DepositType::MarketplaceRevenue,
+			)?;
+			TotalUndistributedBacking::<T>::mutate(|t| *t = t.saturating_add(alpha_amount));
+			Ok(())
+		}
+
+		/// `Credits.AlphaPrice`, refused when unset or older than
+		/// `MaxAlphaPriceAge`. A price with no `AlphaPriceUpdatedAt` record is
+		/// stale: nothing says when it was last true.
+		fn fresh_alpha_price() -> Result<u128, DispatchError> {
+			let price = pallet_credits::AlphaPrice::<T>::get();
+			ensure!(price > 0, Error::<T>::AlphaPriceNotSet);
+			let updated_at =
+				pallet_credits::AlphaPriceUpdatedAt::<T>::get().ok_or(Error::<T>::AlphaPriceStale)?;
+			let age = <frame_system::Pallet<T>>::block_number().saturating_sub(updated_at);
+			ensure!(
+				age <= <T as pallet_credits::Config>::MaxAlphaPriceAge::get(),
+				Error::<T>::AlphaPriceStale
+			);
+			Ok(price)
+		}
+
+		/// `alpha_amount * alpha_price / 1e18`, rounded down: both amounts are
+		/// 18-decimal fixed point, the price in USD per alpha. Exact in U256.
+		pub fn alpha_to_credits(alpha_amount: u128, alpha_price: u128) -> Result<u128, DispatchError> {
+			let credits = U256::from(alpha_amount)
+				.saturating_mul(U256::from(alpha_price))
+				/ U256::from(1_000_000_000_000_000_000u128);
+			u128::try_from(credits).map_err(|_| Error::<T>::CreditAmountOverflow.into())
+		}
+
+		/// Create a batch for `sender`, mint its credits and route its alpha
+		/// backing to the bank from `source`. Returns the new batch id.
+		fn create_batch(
+			sender: T::AccountId,
+			credit_amount: u128,
+			alpha_amount: u128,
+			freeze_for_chargeback: bool,
+			code: Option<Vec<u8>>,
+			source: BackingSource<T::AccountId>,
+		) -> Result<u64, DispatchError> {
 			let batch_id = NextBatchId::<T>::get();
 
 			let release_time = if freeze_for_chargeback {
@@ -5027,10 +5302,15 @@ pub mod pallet {
 			CreditsPallet::<T>::do_mint(sender.clone(), credit_amount, code)?;
 
 			// Route the alpha backing of this deposit to the bank (miner
-			// payment funds). Sourced from the marketplace sudo account; never
-			// blocks the deposit itself if the transfer cannot be made.
+			// payment funds).
 			if alpha_amount > 0 {
-				if let Some(sudo_account) = Self::sudo_key() {
+				if let BackingSource::Buyer(buyer) = source {
+					// The alpha is the payment, so a failed transfer fails the
+					// call and the batch written above is rolled back with it.
+					Self::take_buyer_backing(&buyer, alpha_amount)?;
+				} else if let Some(sudo_account) = Self::sudo_key() {
+					// Sourced from the marketplace sudo account; never blocks
+					// the deposit itself if the transfer cannot be made.
 					let backing: pallet_hippocampus::BalanceOf<T> = alpha_amount.saturated_into();
 					match pallet_hippocampus::Pallet::<T>::deposit_from(
 						&sudo_account,
@@ -5062,7 +5342,7 @@ pub mod pallet {
 
 			Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 
-			Ok(())
+			Ok(batch_id)
 		}
 
 		/// Consume user credits from their batches

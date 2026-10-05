@@ -446,3 +446,32 @@ where
 		T::DbWeight::get().reads_writes(reads, writes)
 	}
 }
+
+/// Stamps `Credits.AlphaPriceUpdatedAt` with the upgrade block when a price is
+/// already set, so the price in force at upgrade time is not refused as stale
+/// by `buy_credits` before the next `set_alpha_price`. It still ages out after
+/// `MaxAlphaPriceAge` like any other price.
+///
+/// Guarded on the record itself rather than a storage version: once
+/// `set_alpha_price` has written it, or this has, there is nothing left to do,
+/// so leaving it in the tuple is harmless.
+pub struct InitAlphaPriceUpdatedAt<T>(sp_std::marker::PhantomData<T>);
+
+impl<T: pallet_credits::Config> OnRuntimeUpgrade for InitAlphaPriceUpdatedAt<T> {
+	fn on_runtime_upgrade() -> Weight {
+		if pallet_credits::AlphaPriceUpdatedAt::<T>::exists() {
+			return T::DbWeight::get().reads(1);
+		}
+		if pallet_credits::AlphaPrice::<T>::get() == 0 {
+			return T::DbWeight::get().reads(2);
+		}
+		let now = frame_system::Pallet::<T>::block_number();
+		pallet_credits::AlphaPriceUpdatedAt::<T>::put(now);
+		log::info!(
+			target: "runtime::migration",
+			"InitAlphaPriceUpdatedAt: stamped existing AlphaPrice at block {:?}",
+			now
+		);
+		T::DbWeight::get().reads_writes(3, 1)
+	}
+}

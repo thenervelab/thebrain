@@ -90,6 +90,10 @@ pub trait WeightInfo {
 	/// `settle_compute_arrears` over `n` accounts, every one of them owing
 	/// arrears it can now pay.
 	fn settle_compute_arrears(n: u32) -> Weight;
+
+	/// `buy_credits` with a referral code, by an account that has no client
+	/// IP yet, so the mint also probes the IP pool.
+	fn buy_credits() -> Weight;
 }
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
@@ -210,6 +214,11 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(RocksDbWeight::get().reads(1))
 			.saturating_add(compute_row().saturating_mul(n.into()))
 	}
+
+	/// See [`buy_credits`].
+	fn buy_credits() -> Weight {
+		buy_credits()
+	}
 }
 
 /// For tests and mocks: same shape, same relative costs, no database pricing.
@@ -282,6 +291,11 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().reads(1))
 			.saturating_add(compute_row().saturating_mul(n.into()))
 	}
+
+	/// See [`buy_credits`].
+	fn buy_credits() -> Weight {
+		buy_credits()
+	}
 }
 
 /// One compute billing row at its most expensive path: charged in full with
@@ -313,4 +327,37 @@ fn compute_row() -> Weight {
 	Weight::from_parts(200_000_000, 66_000)
 		.saturating_add(RocksDbWeight::get().reads(28))
 		.saturating_add(RocksDbWeight::get().writes(24))
+}
+
+/// `buy_credits` at its most expensive path: a referral code to check and
+/// record, and a buyer with no client IP, so the mint probes the IP pool.
+///
+/// **Estimated from counted storage access, not measured**; the benchmark
+/// that poses this case is `buy_credits` in `benchmarking.rs`. Counted as
+/// distinct keys:
+///
+/// - reads (21): `BuyCreditsEnabled`, `UserRequestsCount`, `AlphaPrice`,
+///   `AlphaPriceUpdatedAt`, `NextBatchId`, `UserBatches`, `AlphaBalances`,
+///   `FreeCredits`, `TotalCreditsPurchased`, `ReferralCodes`, the four IP pool
+///   entries (`RoleToIp`, `AvailableClientIps`, `AssignedClientIps`,
+///   `IpToRole`), both `System.Account` rows, `TotalDeposited`,
+///   `TotalUndistributedBacking`, `LastPurchaseBatch`, plus two of slack;
+/// - writes (19): the same minus the price, the flag and `ReferralCodes`,
+///   plus `Batches` and `ReferredUsers`, plus slack.
+///
+/// The top-up path, taken once the buyer is at `MaxBatchesPerBuyer`, touches
+/// a subset of these: it rewrites one batch instead of opening one.
+///
+/// The 150µs of execution covers a balances transfer and the batch append,
+/// with margin. Proof size is FRAME's per-entry allowance for the unbounded
+/// maps it reads.
+///
+/// The IP pool vectors are priced *empty*, which is what mainnet holds
+/// (`PalletIp.AvailableClientIps` was cleared and never refilled). They are
+/// unbounded, so if the pool is ever repopulated this figure no longer covers
+/// the mint's IP assignment and must be re-measured with a seeded pool.
+fn buy_credits() -> Weight {
+	Weight::from_parts(150_000_000, 60_000)
+		.saturating_add(RocksDbWeight::get().reads(21))
+		.saturating_add(RocksDbWeight::get().writes(19))
 }
