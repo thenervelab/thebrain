@@ -594,7 +594,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92016,
+	spec_version: 92017,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1132,6 +1132,11 @@ parameter_types! {
 	/// Hours of compute usage records kept for replay protection. A week,
 	/// comfortably past `MaxComputeBillingLag`, which it must exceed.
 	pub const ComputeUsageRetention: u64 = 168;
+	/// Smallest `buy_credits` purchase: 0.01 alpha.
+	pub const MinBuyAlpha: u128 = 10_000_000_000_000_000;
+	/// Matches `COMPUTE_BENCH_BATCHES`, the batch count the billing weights
+	/// are priced for.
+	pub const MaxBatchesPerBuyer: u32 = 16;
 }
 
 impl pallet_marketplace::Config for Runtime {
@@ -1162,6 +1167,8 @@ impl pallet_marketplace::Config for Runtime {
 	type MaxComputeUsageRowsPerCall = MaxComputeUsageRowsPerCall;
 	type MaxComputeBillingLag = MaxComputeBillingLag;
 	type ComputeUsageRetention = ComputeUsageRetention;
+	type MinBuyAlpha = MinBuyAlpha;
+	type MaxBatchesPerBuyer = MaxBatchesPerBuyer;
 	type WeightInfo = pallet_marketplace::weights::SubstrateWeight<Runtime>;
 }
 
@@ -1797,12 +1804,15 @@ impl pallet_registration::Config for Runtime {
 parameter_types! {
 	pub const BlocksPerDay: u32 = HOURS as u32 * 24;
 	pub const BlocksPerBackupCheck: u32 =  30;
+	/// `AlphaPrice` older than two days is refused for `buy_credits`.
+	pub const MaxAlphaPriceAge: BlockNumber = 2 * DAYS;
 }
 
 impl pallet_credits::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AuthorityId = pallet_credits::crypto::TestAuthId;
 	type RefferallCoolDOwnPeriod = RefferallCoolDOwnPeriod;
+	type MaxAlphaPriceAge = MaxAlphaPriceAge;
 }
 
 // pallet_container_registry removed — storage cleared in migration RemoveIpAndContainerRegistryPallets
@@ -2233,6 +2243,8 @@ impl InstanceFilter<RuntimeCall> for ProxyType {
 						pallet_marketplace::Call::change_storage_plan { .. }
 					)
 					| RuntimeCall::Marketplace(pallet_marketplace::Call::change_s3_plan { .. })
+					// Converts the principal's native balance into credits.
+					| RuntimeCall::Marketplace(pallet_marketplace::Call::buy_credits { .. })
 					| RuntimeCall::AlphaBridge(pallet_alpha_bridge::Call::withdraw { .. })
 			),
 			ProxyType::Governance => matches!(
@@ -2373,7 +2385,10 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 	}
 }
 
-type Migrations = (migrations::ActivateMinerPaymentBank<Runtime>,);
+type Migrations = (
+	migrations::ActivateMinerPaymentBank<Runtime>,
+	migrations::InitAlphaPriceUpdatedAt<Runtime>,
+);
 
 /// Block type as expected by this runtime.
 pub type Block = generic::Block<Header, UncheckedExtrinsic>;
