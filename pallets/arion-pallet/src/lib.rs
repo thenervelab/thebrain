@@ -29,8 +29,9 @@ use payment_math::{
 use scale_info::TypeInfo;
 use sp_core::{ed25519, H256};
 use sp_runtime::{
+	helpers_128bit::multiply_by_rational_with_rounding,
 	traits::{AccountIdConversion, Hash, Saturating, Verify, Zero},
-	RuntimeDebug, SaturatedConversion,
+	Rounding, RuntimeDebug, SaturatedConversion,
 };
 use sp_staking::StakingInterface;
 use sp_std::{collections::btree_map::BTreeMap, prelude::*};
@@ -46,6 +47,10 @@ pub mod pallet {
 	/// IMPORTANT: This must be typed as `&[u8]` (slice) to match off-chain SCALE encoding.
 	/// Using `b"..."` directly would be `&[u8; N]` (fixed array) which encodes differently.
 	const ATTESTATION_DOMAIN_SEPARATOR: &[u8] = b"ARION_ATTESTATION_V1";
+
+	/// Upper bound for [`FamilyDepositOccupancyFactor`]. At the cap the last family slot costs
+	/// `(1 + 100)^2 = 10_201×` the base; anything steeper is almost certainly a typo.
+	pub const MAX_FAMILY_DEPOSIT_OCCUPANCY_FACTOR: u32 = 100;
 
 	type BalanceOf<T> = <<T as Config>::DepositCurrency as Currency<
 		<T as frame_system::Config>::AccountId,
@@ -1091,7 +1096,10 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type BaseChildDepositValue<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
-	/// Number of families that have claimed the “first child free” slot.
+	/// Number of active families (families with at least one active child).
+	///
+	/// Incremented on every 0 → 1 active-children transition and decremented on every 1 → 0.
+	/// Gates [`Config::MaxFamilies`] and prices the family deposit ([`FamilyDepositBase`]).
 	#[pallet::storage]
 	pub type FamilyCount<T> = StorageValue<_, u32, ValueQuery>;
 
@@ -1171,6 +1179,32 @@ pub mod pallet {
 		BoundedVec<T::AccountId, T::MaxChildrenPerFamily>,
 		ValueQuery,
 	>;
+
+	/// Base deposit reserved from a family account when it becomes an active family
+	/// (its active children go 0 → 1). **Zero disables the family deposit** (default).
+	///
+	/// A family is meant to be one operator and one failure domain: CRUSH spreads the shards of
+	/// a stripe across families. Without a cost on family creation, one operator can register
+	/// many families and hold many shard slots of the same stripe. The deposit is reserved, not
+	/// burned, and is returned in full when the family stops being active.
+	#[pallet::storage]
+	pub type FamilyDepositBase<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+	/// Occupancy steepness `k` of the family deposit curve:
+	/// `deposit = base * (1 + k * FamilyCount / MaxFamilies)^2`.
+	/// `0` makes the deposit flat (`base` for every family). Capped by
+	/// [`MAX_FAMILY_DEPOSIT_OCCUPANCY_FACTOR`].
+	#[pallet::storage]
+	pub type FamilyDepositOccupancyFactor<T> = StorageValue<_, u32, ValueQuery>;
+
+	/// Exact family deposit currently reserved per active family.
+	///
+	/// Invariant: an entry exists **iff** that amount is reserved on the family account for the
+	/// family slot. Families that became active before the deposit existed have no entry and are
+	/// never charged retroactively; their release is a no-op.
+	#[pallet::storage]
+	pub type FamilyDeposits<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, OptionQuery>;
 
 	#[pallet::genesis_config]
 	#[derive(frame_support::DefaultNoBound)]
@@ -1306,6 +1340,27 @@ pub mod pallet {
 		/// Number of fee-free child registrations per family was set by admin.
 		FreeChildSlotsPerFamilySet {
 			slots: u32,
+		},
+		/// A family became active and its occupancy-priced family deposit was reserved.
+		FamilyDepositReserved {
+			family: T::AccountId,
+			amount: BalanceOf<T>,
+			/// Active families before this one (the occupancy the price was computed from).
+			family_count: u32,
+		},
+		/// A family stopped being active and its family deposit was unreserved.
+		FamilyDepositUnreserved {
+			family: T::AccountId,
+			/// Amount actually returned to free balance.
+			amount: BalanceOf<T>,
+			/// Part of the recorded deposit that was no longer reserved (non-zero only if the
+			/// reserve was reduced outside this pallet). Should always be zero.
+			missing: BalanceOf<T>,
+		},
+		/// Family deposit curve parameters were set by admin.
+		FamilyDepositParamsSet {
+			base: BalanceOf<T>,
+			occupancy_factor: u32,
 		},
 		/// A warden was registered and authorized to submit attestations.
 		WardenRegistered {
@@ -1489,6 +1544,10 @@ pub mod pallet {
 		FreeChildSlotsPerFamilyTooLarge,
 		/// Batch/staleness parameters for `prune_stale_node_weights` are out of bounds.
 		InvalidNodeWeightPruneBatch,
+		/// Family account cannot reserve the deposit required to become a new active family.
+		InsufficientFamilyDeposit,
+		/// Occupancy factor exceeds [`MAX_FAMILY_DEPOSIT_OCCUPANCY_FACTOR`].
+		FamilyDepositOccupancyFactorTooLarge,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -1535,6 +1594,63 @@ pub mod pallet {
 			} else {
 				cur
 			}
+		}
+
+		/// Family deposit for a family that would become active while `family_count` families
+		/// are already active: `base * (1 + k * family_count / MaxFamilies)^2`.
+		///
+		/// Integer-only and saturating: computed as `base * (M + k*n) / M * (M + k*n) / M`
+		/// with 128-bit intermediates; any overflow saturates instead of panicking.
+		pub fn family_deposit_for(family_count: u32) -> BalanceOf<T> {
+			let base = FamilyDepositBase::<T>::get();
+			if base.is_zero() {
+				return base;
+			}
+			let max = T::MaxFamilies::get().max(1) as u128;
+			let k = FamilyDepositOccupancyFactor::<T>::get() as u128;
+			let n = (family_count as u128).min(max);
+			let scale = max.saturating_add(k.saturating_mul(n));
+			let once = multiply_by_rational_with_rounding(
+				base.saturated_into::<u128>(),
+				scale,
+				max,
+				Rounding::Down,
+			)
+			.unwrap_or(u128::MAX);
+			let twice = multiply_by_rational_with_rounding(once, scale, max, Rounding::Down)
+				.unwrap_or(u128::MAX);
+			twice.saturated_into::<BalanceOf<T>>()
+		}
+
+		/// Deposit the next new family would have to reserve right now.
+		pub fn next_family_deposit() -> BalanceOf<T> {
+			Self::family_deposit_for(FamilyCount::<T>::get())
+		}
+
+		/// Return a family's recorded family deposit, if any. Never fails: a deregistration must
+		/// not be blocked by a reserve that was reduced elsewhere — the shortfall is reported in
+		/// the event and logged instead.
+		fn release_family_deposit(family: &T::AccountId) {
+			let Some(recorded) = FamilyDeposits::<T>::take(family) else {
+				return;
+			};
+			if recorded.is_zero() {
+				return;
+			}
+			let missing = T::DepositCurrency::unreserve(family, recorded);
+			if !missing.is_zero() {
+				log::warn!(
+					target: "runtime::arion",
+					"family deposit of {:?} only partially unreserved: {:?} missing",
+					family,
+					missing
+				);
+			}
+			Self::deposit_event(Event::FamilyDepositUnreserved {
+				family: family.clone(),
+				amount: recorded.saturating_sub(missing),
+				missing,
+			});
 		}
 
 		/// Helper function to get all keys of UserTotalFilesSize storage item
@@ -1954,6 +2070,7 @@ pub mod pallet {
 			FamilyChildren::<T>::remove(family);
 			FamilyActiveChildren::<T>::remove(family);
 			FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
+			Self::release_family_deposit(family);
 		}
 
 		pub fn deregister_family(family_id: T::AccountId) -> Result<(), Error<T>> {
@@ -2000,6 +2117,7 @@ pub mod pallet {
 				// Update family count
 				let family_count = FamilyCount::<T>::get();
 				FamilyCount::<T>::put(family_count.saturating_sub(1));
+				Self::release_family_deposit(&family_id);
 			}
 			Ok(())
 		}
@@ -2680,6 +2798,10 @@ pub mod pallet {
 		/// - After those are exhausted, the required deposit is **global** (network-wide) and **doubles**
 		///   after each paid registration.
 		/// - Global deposit **halves** after each `GlobalDepositHalvingPeriodBlocks` of inactivity (lazy, computed on registration).
+		/// - A registration that makes the family active (0 → 1 active children) additionally
+		///   reserves the occupancy-priced **family deposit** (see [`FamilyDepositBase`] /
+		///   [`Pallet::set_family_deposit_params`]); it is returned when the family has no active
+		///   child left. Disabled while the base is zero.
 		/// - Requires `node_id` (ed25519 pubkey) to sign a domain-separated payload including a per-node nonce.
 		///
 		/// Signature payload (domain-separated, SCALE-encoded):
@@ -2737,11 +2859,17 @@ pub mod pallet {
 				Error::<T>::TooManyChildrenInFamily
 			);
 
-			// Enforce MaxFamilies the moment a family claims their first fee-free registration.
+			// Enforce MaxFamilies whenever this registration CREATES an active family
+			// (0 active children -> 1). This is the exact mirror of the decrement in
+			// `cleanup_family_when_no_active_children`, so `FamilyCount` means "families with
+			// >= 1 active child" on both edges. (Keying it on "first ever free slot" let a family
+			// that re-registered after dropping to zero come back uncounted, so the counter drifted
+			// down by one per cycle.)
 			let slots_used = Self::family_free_slots_used(&family);
 			let free_slots_limit = Self::free_child_slots_per_family();
-			if slots_used == 0 {
-				let families = FamilyCount::<T>::get();
+			let creates_family = fam_count == 0;
+			let families = FamilyCount::<T>::get();
+			if creates_family {
 				ensure!(families < T::MaxFamilies::get(), Error::<T>::TooManyFamilies);
 			}
 
@@ -2766,6 +2894,23 @@ pub mod pallet {
 			if lockup_enabled && !deposit.is_zero() {
 				T::DepositCurrency::reserve(&family, deposit)
 					.map_err(|_| Error::<T>::InsufficientDeposit)?;
+			}
+
+			// Family deposit: priced on occupancy, reserved once when the family becomes active,
+			// independent of the per-child lockup switch (its own switch is a non-zero base).
+			// The extrinsic is transactional, so a failure here also rolls back the child reserve.
+			if creates_family {
+				let family_deposit = Self::family_deposit_for(families);
+				if !family_deposit.is_zero() {
+					T::DepositCurrency::reserve(&family, family_deposit)
+						.map_err(|_| Error::<T>::InsufficientFamilyDeposit)?;
+					FamilyDeposits::<T>::insert(&family, family_deposit);
+					Self::deposit_event(Event::FamilyDepositReserved {
+						family: family.clone(),
+						amount: family_deposit,
+						family_count: families,
+					});
+				}
 			}
 
 			// Persist registration
@@ -2813,15 +2958,16 @@ pub mod pallet {
 				FamilyFirstSeenBucket::<T>::insert(&family, CurrentWeightBucket::<T>::get());
 			}
 
-			// Consume a fee-free slot and bump global family count on first free registration, or
-			// advance the paid global fee curve.
+			// Symmetric counterpart of the decrement in `cleanup_family_when_no_active_children`.
+			if creates_family {
+				FamilyCount::<T>::put(families.saturating_add(1));
+			}
+
+			// Consume a fee-free slot, or advance the paid global fee curve.
 			if slots_used < free_slots_limit {
 				let new_used = slots_used.saturating_add(1);
 				FamilyFreeSlotsUsed::<T>::insert(&family, new_used);
 				FamilyUsedFreeSlot::<T>::insert(&family, true);
-				if slots_used == 0 {
-					FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_add(1));
-				}
 			} else if lockup_enabled {
 				// Paid registration: update global fee curve and timestamp
 				let next = Self::global_next_deposit_floor_init();
@@ -3260,6 +3406,30 @@ pub mod pallet {
 			);
 			FreeChildSlotsPerFamily::<T>::put(slots);
 			Self::deposit_event(Event::FreeChildSlotsPerFamilySet { slots });
+			Ok(())
+		}
+
+		/// Admin: set the family deposit curve.
+		///
+		/// A registration that makes a family active (0 → 1 active children) reserves
+		/// `base * (1 + occupancy_factor * FamilyCount / MaxFamilies)^2` from the family account,
+		/// returned in full when the family has no active child left. `base = 0` disables it.
+		/// Only affects families created after the call; recorded deposits are never re-priced.
+		#[pallet::call_index(40)]
+		#[pallet::weight((<T as pallet::Config>::WeightInfo::set_family_deposit_params(), Pays::No))]
+		pub fn set_family_deposit_params(
+			origin: OriginFor<T>,
+			base: BalanceOf<T>,
+			occupancy_factor: u32,
+		) -> DispatchResult {
+			T::ArionAdminOrigin::ensure_origin(origin)?;
+			ensure!(
+				occupancy_factor <= MAX_FAMILY_DEPOSIT_OCCUPANCY_FACTOR,
+				Error::<T>::FamilyDepositOccupancyFactorTooLarge
+			);
+			FamilyDepositBase::<T>::put(base);
+			FamilyDepositOccupancyFactor::<T>::put(occupancy_factor);
+			Self::deposit_event(Event::FamilyDepositParamsSet { base, occupancy_factor });
 			Ok(())
 		}
 
