@@ -46,6 +46,7 @@ pub trait WeightInfo {
     fn set_lockup_enabled() -> Weight;
     fn set_base_child_deposit() -> Weight;
     fn set_free_child_slots_per_family() -> Weight;
+    fn set_family_deposit_params() -> Weight;
     fn register_warden() -> Weight;
     fn deregister_warden() -> Weight;
     fn prune_attestation_buckets(n: u32) -> Weight;
@@ -179,18 +180,22 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// Storage: System Account (r:1 w:1) for reserve
     /// Ed25519 signature verification
     fn register_child() -> Weight {
-        Weight::from_parts(100_000_000, 0)
-            .saturating_add(T::DbWeight::get().reads(5))
-            .saturating_add(T::DbWeight::get().writes(6))
+        // +3 reads / +2 writes over the child path for the family deposit
+        // (FamilyDepositBase, FamilyDepositOccupancyFactor, System Account; FamilyDeposits, System Account).
+        Weight::from_parts(120_000_000, 0)
+            .saturating_add(T::DbWeight::get().reads(8))
+            .saturating_add(T::DbWeight::get().writes(8))
     }
 
     /// Storage: Arion ChildRegistrations (r:1 w:1)
     /// Storage: Arion FamilyChildren (r:1 w:1)
     /// Storage: Arion NodeIdToChild (r:0 w:1)
     fn deregister_child() -> Weight {
-        Weight::from_parts(40_000_000, 0)
-            .saturating_add(T::DbWeight::get().reads(2))
-            .saturating_add(T::DbWeight::get().writes(3))
+        // +2 reads / +2 writes for releasing the family deposit when the last child leaves
+        // (FamilyDeposits take, System Account unreserve).
+        Weight::from_parts(50_000_000, 0)
+            .saturating_add(T::DbWeight::get().reads(4))
+            .saturating_add(T::DbWeight::get().writes(5))
     }
 
     /// Storage: Arion ChildRegistrations (r:1 w:1)
@@ -217,6 +222,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     fn set_free_child_slots_per_family() -> Weight {
         Weight::from_parts(5_000_000, 0)
             .saturating_add(T::DbWeight::get().writes(1))
+    }
+
+    /// Storage: Arion FamilyDepositBase (r:0 w:1)
+    /// Storage: Arion FamilyDepositOccupancyFactor (r:0 w:1)
+    fn set_family_deposit_params() -> Weight {
+        Weight::from_parts(5_000_000, 0)
+            .saturating_add(T::DbWeight::get().writes(2))
     }
 
     /// Storage: Arion RegisteredWardens (r:1 w:1)
@@ -360,15 +372,19 @@ impl WeightInfo for () {
     }
 
     fn register_child() -> Weight {
-        Weight::from_parts(100_000_000, 0)
-            .saturating_add(RocksDbWeight::get().reads(5))
-            .saturating_add(RocksDbWeight::get().writes(6))
+        // +3 reads / +2 writes over the child path for the family deposit
+        // (FamilyDepositBase, FamilyDepositOccupancyFactor, System Account; FamilyDeposits, System Account).
+        Weight::from_parts(120_000_000, 0)
+            .saturating_add(RocksDbWeight::get().reads(8))
+            .saturating_add(RocksDbWeight::get().writes(8))
     }
 
     fn deregister_child() -> Weight {
-        Weight::from_parts(40_000_000, 0)
-            .saturating_add(RocksDbWeight::get().reads(2))
-            .saturating_add(RocksDbWeight::get().writes(3))
+        // +2 reads / +2 writes for releasing the family deposit when the last child leaves
+        // (FamilyDeposits take, System Account unreserve).
+        Weight::from_parts(50_000_000, 0)
+            .saturating_add(RocksDbWeight::get().reads(4))
+            .saturating_add(RocksDbWeight::get().writes(5))
     }
 
     fn claim_unbonded() -> Weight {
@@ -390,6 +406,11 @@ impl WeightInfo for () {
     fn set_free_child_slots_per_family() -> Weight {
         Weight::from_parts(5_000_000, 0)
             .saturating_add(RocksDbWeight::get().writes(1))
+    }
+
+    fn set_family_deposit_params() -> Weight {
+        Weight::from_parts(5_000_000, 0)
+            .saturating_add(RocksDbWeight::get().writes(2))
     }
 
     fn register_warden() -> Weight {
