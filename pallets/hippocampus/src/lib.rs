@@ -207,6 +207,13 @@ pub mod pallet {
 		/// Appended last on purpose — `DepositType` is a storage key, and the
 		/// existing variants must keep their SCALE discriminants.
 		ComputeEmission,
+		/// Non-refundable share of the Arion family-creation price, paid by a
+		/// family account when it becomes an active family. Ordinary bank
+		/// revenue: it is NOT an emission compartment, so it counts towards
+		/// [`Pallet::available_for_payout`] like marketplace revenue does.
+		///
+		/// Appended last for the same reason as [`DepositType::ComputeEmission`].
+		FamilyCreationFee,
 	}
 
 	/// Global payout switch (defaults to enabled). While `false`,

@@ -30,8 +30,8 @@ use scale_info::TypeInfo;
 use sp_core::{ed25519, H256};
 use sp_runtime::{
 	helpers_128bit::multiply_by_rational_with_rounding,
-	traits::{AccountIdConversion, Hash, Saturating, Verify, Zero},
-	Rounding, RuntimeDebug, SaturatedConversion,
+	traits::{AccountIdConversion, CheckedAdd, Hash, Saturating, Verify, Zero},
+	Perbill, Rounding, RuntimeDebug, SaturatedConversion,
 };
 use sp_staking::StakingInterface;
 use sp_std::{collections::btree_map::BTreeMap, prelude::*};
@@ -48,9 +48,17 @@ pub mod pallet {
 	/// Using `b"..."` directly would be `&[u8; N]` (fixed array) which encodes differently.
 	const ATTESTATION_DOMAIN_SEPARATOR: &[u8] = b"ARION_ATTESTATION_V1";
 
-	/// Upper bound for [`FamilyDepositOccupancyFactor`]. At the cap the last family slot costs
-	/// `(1 + 100)^2 = 10_201×` the base; anything steeper is almost certainly a typo.
-	pub const MAX_FAMILY_DEPOSIT_OCCUPANCY_FACTOR: u32 = 100;
+	/// `multiplier_permill` value meaning ×1 (the family price never grows).
+	pub const FAMILY_PRICE_MULTIPLIER_ONE: u32 = 1_000_000;
+	/// Upper bound for [`FamilyDepositParams::multiplier_permill`] (×10 per family creation).
+	pub const MAX_FAMILY_PRICE_MULTIPLIER_PERMILL: u32 = 10_000_000;
+	/// Upper bound for [`FamilyDepositParams::half_life`] (365 days at 6 s blocks).
+	pub const MAX_FAMILY_PRICE_HALF_LIFE_BLOCKS: u32 = 5_256_000;
+	/// Upper bound for [`FamilyDepositParams::refund_delay`] (90 days at 6 s blocks).
+	pub const MAX_FAMILY_REFUND_DELAY_BLOCKS: u32 = 1_296_000;
+	/// Upper bound for [`FamilyDepositParams::fee_share`]: the non-refundable part never exceeds
+	/// half of the price, so the family deposit stays mostly a refundable bond.
+	pub const MAX_FAMILY_CREATION_FEE_SHARE_PERCENT: u32 = 50;
 
 	type BalanceOf<T> = <<T as Config>::DepositCurrency as Currency<
 		<T as frame_system::Config>::AccountId,
@@ -120,6 +128,53 @@ pub mod pallet {
 		fn available() -> Balance {
 			Zero::zero()
 		}
+	}
+
+	/// Destination of the non-refundable share of the family-creation price. Implemented by
+	/// the runtime against the bank pallet (no crate coupling).
+	///
+	/// No `()` implementation on purpose: a handler that silently accepted the fee without
+	/// moving it would make the fee free while every event claimed it was paid.
+	pub trait FamilyFeeHandler<AccountId, Balance> {
+		/// Move `amount` from `payer`'s free balance to the fee destination and record it there.
+		/// Must either move the full amount or fail without side effects.
+		fn pay_family_fee(payer: &AccountId, amount: Balance) -> DispatchResult;
+	}
+
+	/// Family deposit / family-creation price parameters (see [`FamilyDepositConfig`]).
+	#[derive(
+		Clone, Copy, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen, Default,
+	)]
+	pub struct FamilyDepositParams<Balance, BlockNumber> {
+		/// Floor of the family-creation price. **Zero disables the mechanism** (default).
+		pub base: Balance,
+		/// Price multiplier applied after each family creation, in millionths:
+		/// `1_000_000` = ×1 (flat), `2_000_000` = ×2 (doubling). Bounded by
+		/// [`FAMILY_PRICE_MULTIPLIER_ONE`]..=[`MAX_FAMILY_PRICE_MULTIPLIER_PERMILL`].
+		pub multiplier_permill: u32,
+		/// Blocks for the stored price to halve when no family is created (lazy decay, linear
+		/// between two halvings). `1..=MAX_FAMILY_PRICE_HALF_LIFE_BLOCKS`.
+		pub half_life: BlockNumber,
+		/// Hard ceiling of the price (`>= base`). The price never exceeds it, whatever the burst.
+		pub cap: Balance,
+		/// Share of the price transferred to the fee handler (the bank) — non-refundable.
+		/// The rest is reserved on the family account and refunded. At most
+		/// [`MAX_FAMILY_CREATION_FEE_SHARE_PERCENT`].
+		pub fee_share: Perbill,
+		/// Blocks between a family losing its last active child and its reserved part becoming
+		/// claimable through [`Pallet::claim_family_refund`]. At most
+		/// [`MAX_FAMILY_REFUND_DELAY_BLOCKS`].
+		pub refund_delay: BlockNumber,
+	}
+
+	/// Refundable part of the family-creation price held for one family.
+	#[derive(Clone, Copy, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	pub struct FamilyDepositRecord<Balance, BlockNumber> {
+		/// Amount reserved on the family account for the family slot.
+		pub amount: Balance,
+		/// `None` while the family is active. Set to `now + refund_delay` when the family loses
+		/// its last active child; from that block on anyone may release it.
+		pub refund_at: Option<BlockNumber>,
 	}
 
 	/// CRUSH map parameters that affect deterministic placement.
@@ -769,6 +824,10 @@ pub mod pallet {
 		/// Funding source for miner payments (the bank pallet in the runtime).
 		type PayoutSource: PayoutSource<Self::AccountId, BalanceOf<Self>>;
 
+		/// Receives the non-refundable share of the family-creation price (the bank pallet in
+		/// the runtime, tagged as family-creation revenue).
+		type FamilyFeeHandler: FamilyFeeHandler<Self::AccountId, BalanceOf<Self>>;
+
 		/// Staking interface used to lock family payouts as bonded stake.
 		type Staking: sp_staking::StakingInterface<
 			Balance = BalanceOf<Self>,
@@ -1099,7 +1158,7 @@ pub mod pallet {
 	/// Number of active families (families with at least one active child).
 	///
 	/// Incremented on every 0 → 1 active-children transition and decremented on every 1 → 0.
-	/// Gates [`Config::MaxFamilies`] and prices the family deposit ([`FamilyDepositBase`]).
+	/// Gates [`Config::MaxFamilies`].
 	#[pallet::storage]
 	pub type FamilyCount<T> = StorageValue<_, u32, ValueQuery>;
 
@@ -1180,31 +1239,39 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
-	/// Base deposit reserved from a family account when it becomes an active family
-	/// (its active children go 0 → 1). **Zero disables the family deposit** (default).
+	/// Family-creation price parameters, set by [`Pallet::set_family_deposit_params`].
+	/// `base == 0` (default) disables the mechanism entirely.
 	///
 	/// A family is meant to be one operator and one failure domain: CRUSH spreads the shards of
 	/// a stripe across families. Without a cost on family creation, one operator can register
-	/// many families and hold many shard slots of the same stripe. The deposit is reserved, not
-	/// burned, and is returned in full when the family stops being active.
+	/// many families and hold many shard slots of the same stripe. The price works like an
+	/// EIP-1559 base fee: every family creation multiplies it, idle time halves it, so a burst
+	/// of creations gets geometrically more expensive while an occasional newcomer pays `base`.
 	#[pallet::storage]
-	pub type FamilyDepositBase<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+	pub type FamilyDepositConfig<T: Config> =
+		StorageValue<_, FamilyDepositParams<BalanceOf<T>, BlockNumberFor<T>>, ValueQuery>;
 
-	/// Occupancy steepness `k` of the family deposit curve:
-	/// `deposit = base * (1 + k * FamilyCount / MaxFamilies)^2`.
-	/// `0` makes the deposit flat (`base` for every family). Capped by
-	/// [`MAX_FAMILY_DEPOSIT_OCCUPANCY_FACTOR`].
+	/// Family-creation price as last bumped, before decay. See [`Pallet::current_family_price`].
 	#[pallet::storage]
-	pub type FamilyDepositOccupancyFactor<T> = StorageValue<_, u32, ValueQuery>;
+	pub type FamilyPrice<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
-	/// Exact family deposit currently reserved per active family.
+	/// Block at which [`FamilyPrice`] was last written (decay origin).
+	#[pallet::storage]
+	pub type FamilyPriceUpdatedAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+	/// Refundable part of the family-creation price held per family.
 	///
-	/// Invariant: an entry exists **iff** that amount is reserved on the family account for the
-	/// family slot. Families that became active before the deposit existed have no entry and are
-	/// never charged retroactively; their release is a no-op.
+	/// Invariant: an entry exists **iff** `amount` is reserved on the family account for the
+	/// family slot. Families that became active before the mechanism was enabled have no entry
+	/// and are never charged retroactively; their deactivation schedules nothing.
 	#[pallet::storage]
-	pub type FamilyDeposits<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, OptionQuery>;
+	pub type FamilyDeposits<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		FamilyDepositRecord<BalanceOf<T>, BlockNumberFor<T>>,
+		OptionQuery,
+	>;
 
 	#[pallet::genesis_config]
 	#[derive(frame_support::DefaultNoBound)]
@@ -1341,15 +1408,31 @@ pub mod pallet {
 		FreeChildSlotsPerFamilySet {
 			slots: u32,
 		},
-		/// A family became active and its occupancy-priced family deposit was reserved.
-		FamilyDepositReserved {
+		/// A family became active and paid the family-creation price: `fee` went to the fee
+		/// handler (the bank), `reserved` is held on the family account until refunded.
+		FamilyDepositCharged {
+			family: T::AccountId,
+			price: BalanceOf<T>,
+			fee: BalanceOf<T>,
+			reserved: BalanceOf<T>,
+			/// Price the next family creation would pay in this block.
+			next_price: BalanceOf<T>,
+		},
+		/// A family became active again before its refund was claimed: the deposit it still
+		/// holds covers the slot again, nothing new is charged.
+		FamilyDepositReused {
 			family: T::AccountId,
 			amount: BalanceOf<T>,
-			/// Active families before this one (the occupancy the price was computed from).
-			family_count: u32,
 		},
-		/// A family stopped being active and its family deposit was unreserved.
-		FamilyDepositUnreserved {
+		/// A family lost its last active child; its reserved deposit is claimable from
+		/// `refund_at` on.
+		FamilyRefundScheduled {
+			family: T::AccountId,
+			amount: BalanceOf<T>,
+			refund_at: BlockNumberFor<T>,
+		},
+		/// A family's reserved deposit was returned to its free balance.
+		FamilyDepositRefunded {
 			family: T::AccountId,
 			/// Amount actually returned to free balance.
 			amount: BalanceOf<T>,
@@ -1357,10 +1440,9 @@ pub mod pallet {
 			/// reserve was reduced outside this pallet). Should always be zero.
 			missing: BalanceOf<T>,
 		},
-		/// Family deposit curve parameters were set by admin.
+		/// Family deposit parameters were set by admin.
 		FamilyDepositParamsSet {
-			base: BalanceOf<T>,
-			occupancy_factor: u32,
+			params: FamilyDepositParams<BalanceOf<T>, BlockNumberFor<T>>,
 		},
 		/// A warden was registered and authorized to submit attestations.
 		WardenRegistered {
@@ -1544,10 +1626,24 @@ pub mod pallet {
 		FreeChildSlotsPerFamilyTooLarge,
 		/// Batch/staleness parameters for `prune_stale_node_weights` are out of bounds.
 		InvalidNodeWeightPruneBatch,
-		/// Family account cannot reserve the deposit required to become a new active family.
+		/// Family account cannot pay the family-creation price (free balance must cover the
+		/// price and stay above the existential deposit).
 		InsufficientFamilyDeposit,
-		/// Occupancy factor exceeds [`MAX_FAMILY_DEPOSIT_OCCUPANCY_FACTOR`].
-		FamilyDepositOccupancyFactorTooLarge,
+		/// `multiplier_permill` outside
+		/// [`FAMILY_PRICE_MULTIPLIER_ONE`]..=[`MAX_FAMILY_PRICE_MULTIPLIER_PERMILL`].
+		FamilyPriceMultiplierOutOfRange,
+		/// `half_life` outside `1..=MAX_FAMILY_PRICE_HALF_LIFE_BLOCKS`.
+		FamilyPriceHalfLifeOutOfRange,
+		/// `cap` is below `base`.
+		FamilyPriceCapBelowBase,
+		/// `fee_share` above [`MAX_FAMILY_CREATION_FEE_SHARE_PERCENT`].
+		FamilyCreationFeeShareTooLarge,
+		/// `refund_delay` above [`MAX_FAMILY_REFUND_DELAY_BLOCKS`].
+		FamilyRefundDelayTooLong,
+		/// The family holds no deposit with a scheduled refund.
+		NoFamilyRefundScheduled,
+		/// The family's refund is not claimable yet.
+		FamilyRefundNotDue,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -1596,48 +1692,186 @@ pub mod pallet {
 			}
 		}
 
-		/// Family deposit for a family that would become active while `family_count` families
-		/// are already active: `base * (1 + k * family_count / MaxFamilies)^2`.
+		/// Stored family price `stored`, written at `updated_at`, decayed to `now`, clamped to
+		/// `params.cap`. **No `base` floor** — see [`Self::current_family_price`].
 		///
-		/// Integer-only and saturating: computed as `base * (M + k*n) / M * (M + k*n) / M`
-		/// with 128-bit intermediates; any overflow saturates instead of panicking.
-		pub fn family_deposit_for(family_count: u32) -> BalanceOf<T> {
-			let base = FamilyDepositBase::<T>::get();
-			if base.is_zero() {
-				return base;
+		/// Halves every `half_life` blocks and falls linearly in between: after `p` full
+		/// half-lives and `r` extra blocks the value is `(v >> p) * (2H - r) / 2H`, so it is
+		/// continuous at every half-life boundary (no step to time a burst on). Integer-only,
+		/// saturating and deterministic.
+		pub fn decayed_family_price(
+			params: &FamilyDepositParams<BalanceOf<T>, BlockNumberFor<T>>,
+			stored: BalanceOf<T>,
+			updated_at: BlockNumberFor<T>,
+			now: BlockNumberFor<T>,
+		) -> BalanceOf<T> {
+			let half_life: u128 = params.half_life.saturated_into();
+			if half_life == 0 {
+				return Zero::zero();
 			}
-			let max = T::MaxFamilies::get().max(1) as u128;
-			let k = FamilyDepositOccupancyFactor::<T>::get() as u128;
-			let n = (family_count as u128).min(max);
-			let scale = max.saturating_add(k.saturating_mul(n));
-			let once = multiply_by_rational_with_rounding(
-				base.saturated_into::<u128>(),
-				scale,
-				max,
+			let elapsed: u128 = now.saturating_sub(updated_at).saturated_into();
+			let periods = elapsed / half_life;
+			if periods >= 128 {
+				return Zero::zero();
+			}
+			let clamped: u128 = stored.min(params.cap).saturated_into();
+			let halved = clamped >> periods;
+			let into_period = elapsed % half_life;
+			let span = half_life.saturating_mul(2);
+			multiply_by_rational_with_rounding(
+				halved,
+				span.saturating_sub(into_period),
+				span,
+				Rounding::Down,
+			)
+			.unwrap_or(halved)
+			.saturated_into()
+		}
+
+		/// Price the next family creation pays right now: `max(base, decayed stored price)`.
+		/// Zero while the mechanism is disabled (`base == 0`).
+		pub fn current_family_price() -> BalanceOf<T> {
+			Self::family_price_at(&FamilyDepositConfig::<T>::get(), Self::now())
+		}
+
+		fn family_price_at(
+			params: &FamilyDepositParams<BalanceOf<T>, BlockNumberFor<T>>,
+			now: BlockNumberFor<T>,
+		) -> BalanceOf<T> {
+			if params.base.is_zero() {
+				return Zero::zero();
+			}
+			let decayed = Self::decayed_family_price(
+				params,
+				FamilyPrice::<T>::get(),
+				FamilyPriceUpdatedAt::<T>::get(),
+				now,
+			);
+			params.base.max(decayed)
+		}
+
+		/// Stored price after a creation paid `price`: `min(cap, price * multiplier)`.
+		fn bumped_family_price(
+			params: &FamilyDepositParams<BalanceOf<T>, BlockNumberFor<T>>,
+			price: BalanceOf<T>,
+		) -> BalanceOf<T> {
+			let bumped = multiply_by_rational_with_rounding(
+				price.saturated_into::<u128>(),
+				params.multiplier_permill as u128,
+				FAMILY_PRICE_MULTIPLIER_ONE as u128,
 				Rounding::Down,
 			)
 			.unwrap_or(u128::MAX);
-			let twice = multiply_by_rational_with_rounding(once, scale, max, Rounding::Down)
-				.unwrap_or(u128::MAX);
-			twice.saturated_into::<BalanceOf<T>>()
+			bumped.saturated_into::<BalanceOf<T>>().min(params.cap)
 		}
 
-		/// Deposit the next new family would have to reserve right now.
-		pub fn next_family_deposit() -> BalanceOf<T> {
-			Self::family_deposit_for(FamilyCount::<T>::get())
-		}
-
-		/// Return a family's recorded family deposit, if any. Never fails: a deregistration must
-		/// not be blocked by a reserve that was reduced elsewhere — the shortfall is reported in
-		/// the event and logged instead.
-		fn release_family_deposit(family: &T::AccountId) {
-			let Some(recorded) = FamilyDeposits::<T>::take(family) else {
-				return;
+		/// A registration is making `family` active (0 → 1 active children).
+		///
+		/// - Deposit still held (refund pending, not yet due): reused, nothing charged, the
+		///   price does not move — it is the same family coming back, not a new one.
+		/// - Deposit whose refund is already due but unclaimed: refunded first, then the family
+		///   pays like a new one (the slot lapsed when the delay ran out).
+		/// - No deposit: pays the current price (no-op while disabled).
+		fn on_family_activated(family: &T::AccountId) -> DispatchResult {
+			let Some(record) = FamilyDeposits::<T>::get(family) else {
+				return Self::charge_family_creation(family);
 			};
-			if recorded.is_zero() {
-				return;
+			match record.refund_at {
+				Some(due) if Self::now() >= due => {
+					Self::release_family_deposit(family, record);
+					Self::charge_family_creation(family)
+				},
+				_ => {
+					FamilyDeposits::<T>::insert(
+						family,
+						FamilyDepositRecord { amount: record.amount, refund_at: None },
+					);
+					Self::deposit_event(Event::FamilyDepositReused {
+						family: family.clone(),
+						amount: record.amount,
+					});
+					Ok(())
+				},
 			}
-			let missing = T::DepositCurrency::unreserve(family, recorded);
+		}
+
+		/// Charge the family-creation price to `family`: the fee share goes to
+		/// [`Config::FamilyFeeHandler`], the rest is reserved and recorded in
+		/// [`FamilyDeposits`], and the stored price is bumped. Callers run inside a
+		/// transactional extrinsic, so any failure rolls everything back.
+		fn charge_family_creation(family: &T::AccountId) -> DispatchResult {
+			let params = FamilyDepositConfig::<T>::get();
+			if params.base.is_zero() {
+				return Ok(());
+			}
+			let now = Self::now();
+			let price = Self::family_price_at(&params, now);
+			// Checked up front so the common case (not enough funds) gets one clear error
+			// whichever leg would fail. Locks/freezes are not visible here: a transfer or reserve
+			// refused for that reason fails below with the currency's own error, and the
+			// transactional extrinsic rolls back whatever leg already ran.
+			let needed = price
+				.checked_add(&T::DepositCurrency::minimum_balance())
+				.ok_or(Error::<T>::InsufficientFamilyDeposit)?;
+			ensure!(
+				T::DepositCurrency::free_balance(family) >= needed,
+				Error::<T>::InsufficientFamilyDeposit
+			);
+			let fee = params.fee_share.mul_floor(price);
+			let reserved = price.saturating_sub(fee);
+			if !fee.is_zero() {
+				T::FamilyFeeHandler::pay_family_fee(family, fee)?;
+			}
+			if !reserved.is_zero() {
+				T::DepositCurrency::reserve(family, reserved)
+					.map_err(|_| Error::<T>::InsufficientFamilyDeposit)?;
+				FamilyDeposits::<T>::insert(
+					family,
+					FamilyDepositRecord { amount: reserved, refund_at: None },
+				);
+			}
+			let next_price = Self::bumped_family_price(&params, price);
+			FamilyPrice::<T>::put(next_price);
+			FamilyPriceUpdatedAt::<T>::put(now);
+			Self::deposit_event(Event::FamilyDepositCharged {
+				family: family.clone(),
+				price,
+				fee,
+				reserved,
+				next_price,
+			});
+			Ok(())
+		}
+
+		/// The family just lost its last active child: start its refund delay. No-op for
+		/// families without a deposit (created before the mechanism, or while disabled).
+		fn schedule_family_refund(family: &T::AccountId) {
+			let delay = FamilyDepositConfig::<T>::get().refund_delay;
+			let refund_at = Self::now().saturating_add(delay);
+			FamilyDeposits::<T>::mutate(family, |maybe| {
+				let Some(record) = maybe else {
+					return;
+				};
+				if record.refund_at.is_some() {
+					return;
+				}
+				record.refund_at = Some(refund_at);
+				Self::deposit_event(Event::FamilyRefundScheduled {
+					family: family.clone(),
+					amount: record.amount,
+					refund_at,
+				});
+			});
+		}
+
+		/// Drop the record and unreserve its amount. Never fails: a refund must not be blocked
+		/// by a reserve that was reduced elsewhere — the shortfall is reported and logged.
+		fn release_family_deposit(
+			family: &T::AccountId,
+			record: FamilyDepositRecord<BalanceOf<T>, BlockNumberFor<T>>,
+		) {
+			FamilyDeposits::<T>::remove(family);
+			let missing = T::DepositCurrency::unreserve(family, record.amount);
 			if !missing.is_zero() {
 				log::warn!(
 					target: "runtime::arion",
@@ -1646,9 +1880,9 @@ pub mod pallet {
 					missing
 				);
 			}
-			Self::deposit_event(Event::FamilyDepositUnreserved {
+			Self::deposit_event(Event::FamilyDepositRefunded {
 				family: family.clone(),
-				amount: recorded.saturating_sub(missing),
+				amount: record.amount.saturating_sub(missing),
 				missing,
 			});
 		}
@@ -2070,7 +2304,7 @@ pub mod pallet {
 			FamilyChildren::<T>::remove(family);
 			FamilyActiveChildren::<T>::remove(family);
 			FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
-			Self::release_family_deposit(family);
+			Self::schedule_family_refund(family);
 		}
 
 		pub fn deregister_family(family_id: T::AccountId) -> Result<(), Error<T>> {
@@ -2117,7 +2351,7 @@ pub mod pallet {
 				// Update family count
 				let family_count = FamilyCount::<T>::get();
 				FamilyCount::<T>::put(family_count.saturating_sub(1));
-				Self::release_family_deposit(&family_id);
+				Self::schedule_family_refund(&family_id);
 			}
 			Ok(())
 		}
@@ -2799,8 +3033,9 @@ pub mod pallet {
 		///   after each paid registration.
 		/// - Global deposit **halves** after each `GlobalDepositHalvingPeriodBlocks` of inactivity (lazy, computed on registration).
 		/// - A registration that makes the family active (0 → 1 active children) additionally
-		///   reserves the occupancy-priced **family deposit** (see [`FamilyDepositBase`] /
-		///   [`Pallet::set_family_deposit_params`]); it is returned when the family has no active
+		///   pays the **family-creation price** (see [`FamilyDepositConfig`] /
+		///   [`Pallet::set_family_deposit_params`]): a share goes to the bank, the rest is
+		///   reserved and becomes claimable `refund_delay` blocks after the family has no active
 		///   child left. Disabled while the base is zero.
 		/// - Requires `node_id` (ed25519 pubkey) to sign a domain-separated payload including a per-node nonce.
 		///
@@ -2896,21 +3131,11 @@ pub mod pallet {
 					.map_err(|_| Error::<T>::InsufficientDeposit)?;
 			}
 
-			// Family deposit: priced on occupancy, reserved once when the family becomes active,
-			// independent of the per-child lockup switch (its own switch is a non-zero base).
-			// The extrinsic is transactional, so a failure here also rolls back the child reserve.
+			// Family-creation price, paid once when the family becomes active, independent of
+			// the per-child lockup switch (its own switch is a non-zero base). The extrinsic is
+			// transactional, so a failure here also rolls back the child reserve.
 			if creates_family {
-				let family_deposit = Self::family_deposit_for(families);
-				if !family_deposit.is_zero() {
-					T::DepositCurrency::reserve(&family, family_deposit)
-						.map_err(|_| Error::<T>::InsufficientFamilyDeposit)?;
-					FamilyDeposits::<T>::insert(&family, family_deposit);
-					Self::deposit_event(Event::FamilyDepositReserved {
-						family: family.clone(),
-						amount: family_deposit,
-						family_count: families,
-					});
-				}
+				Self::on_family_activated(&family)?;
 			}
 
 			// Persist registration
@@ -3409,27 +3634,65 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Admin: set the family deposit curve.
+		/// Admin: set the family-creation price parameters (see [`FamilyDepositParams`]).
 		///
-		/// A registration that makes a family active (0 → 1 active children) reserves
-		/// `base * (1 + occupancy_factor * FamilyCount / MaxFamilies)^2` from the family account,
-		/// returned in full when the family has no active child left. `base = 0` disables it.
-		/// Only affects families created after the call; recorded deposits are never re-priced.
+		/// A registration that makes a family active (0 → 1 active children) pays
+		/// `price = max(base, stored price decayed by half every half_life blocks)`; the stored
+		/// price then becomes `min(cap, price * multiplier)`. `fee_share` of the price goes to the
+		/// bank, the rest is reserved and claimable `refund_delay` blocks after the family has no
+		/// active child left. `base = 0` disables the mechanism. Only affects families charged
+		/// after the call: recorded deposits are never re-priced, and the stored price is kept
+		/// (clamped to the new `cap` when read).
 		#[pallet::call_index(40)]
 		#[pallet::weight((<T as pallet::Config>::WeightInfo::set_family_deposit_params(), Pays::No))]
 		pub fn set_family_deposit_params(
 			origin: OriginFor<T>,
-			base: BalanceOf<T>,
-			occupancy_factor: u32,
+			params: FamilyDepositParams<BalanceOf<T>, BlockNumberFor<T>>,
 		) -> DispatchResult {
 			T::ArionAdminOrigin::ensure_origin(origin)?;
 			ensure!(
-				occupancy_factor <= MAX_FAMILY_DEPOSIT_OCCUPANCY_FACTOR,
-				Error::<T>::FamilyDepositOccupancyFactorTooLarge
+				(FAMILY_PRICE_MULTIPLIER_ONE..=MAX_FAMILY_PRICE_MULTIPLIER_PERMILL)
+					.contains(&params.multiplier_permill),
+				Error::<T>::FamilyPriceMultiplierOutOfRange
 			);
-			FamilyDepositBase::<T>::put(base);
-			FamilyDepositOccupancyFactor::<T>::put(occupancy_factor);
-			Self::deposit_event(Event::FamilyDepositParamsSet { base, occupancy_factor });
+			ensure!(
+				!params.half_life.is_zero()
+					&& params.half_life <= MAX_FAMILY_PRICE_HALF_LIFE_BLOCKS.into(),
+				Error::<T>::FamilyPriceHalfLifeOutOfRange
+			);
+			ensure!(params.cap >= params.base, Error::<T>::FamilyPriceCapBelowBase);
+			ensure!(
+				params.fee_share <= Perbill::from_percent(MAX_FAMILY_CREATION_FEE_SHARE_PERCENT),
+				Error::<T>::FamilyCreationFeeShareTooLarge
+			);
+			ensure!(
+				params.refund_delay <= MAX_FAMILY_REFUND_DELAY_BLOCKS.into(),
+				Error::<T>::FamilyRefundDelayTooLong
+			);
+			FamilyDepositConfig::<T>::put(params);
+			Self::deposit_event(Event::FamilyDepositParamsSet { params });
+			Ok(())
+		}
+
+		/// Return a family's reserved deposit once its refund delay has elapsed.
+		///
+		/// Permissionless (any signed origin; the funds can only go back to the family's own
+		/// free balance), so a keeper can release them as well as the family itself. Fee-paying:
+		/// a premature or bogus claim costs the caller, not the chain.
+		#[pallet::call_index(41)]
+		#[pallet::weight(<T as pallet::Config>::WeightInfo::claim_family_refund())]
+		pub fn claim_family_refund(origin: OriginFor<T>, family: T::AccountId) -> DispatchResult {
+			ensure_signed(origin)?;
+			let record =
+				FamilyDeposits::<T>::get(&family).ok_or(Error::<T>::NoFamilyRefundScheduled)?;
+			let due = record.refund_at.ok_or(Error::<T>::NoFamilyRefundScheduled)?;
+			// Defensive: a scheduled refund implies an inactive family (reactivation clears it).
+			ensure!(
+				FamilyActiveChildren::<T>::get(&family).is_zero(),
+				Error::<T>::NoFamilyRefundScheduled
+			);
+			ensure!(Self::now() >= due, Error::<T>::FamilyRefundNotDue);
+			Self::release_family_deposit(&family, record);
 			Ok(())
 		}
 

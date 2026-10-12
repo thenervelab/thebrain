@@ -1611,3 +1611,26 @@ fn request_payment_still_spends_freely_when_nothing_is_reserved() {
 		assert_eq!(paid, 5_000 - ExistentialDeposit::get());
 	});
 }
+
+#[test]
+fn family_creation_fee_is_spendable_bank_revenue_not_an_emission_compartment() {
+	new_test_ext().execute_with(|| {
+		let before = Hippocampus::available_for_payout();
+		assert_ok!(Hippocampus::deposit_from(&alice(), 700, DepositType::FamilyCreationFee));
+		System::assert_last_event(
+			Event::Deposited {
+				who: alice(),
+				amount: 700,
+				deposit_type: DepositType::FamilyCreationFee,
+			}
+			.into(),
+		);
+		assert_eq!(TotalDeposited::<Test>::get(DepositType::FamilyCreationFee), 700);
+		// Counted in what the bank can pay out, and not held back by either
+		// emission compartment.
+		assert_eq!(Hippocampus::emission_available(), 0);
+		assert_eq!(Hippocampus::compute_emission_available(), 0);
+		assert!(Hippocampus::available_for_payout() > before);
+		assert_eq!(Hippocampus::unreserved_for_payout(), Hippocampus::available_for_payout());
+	});
+}

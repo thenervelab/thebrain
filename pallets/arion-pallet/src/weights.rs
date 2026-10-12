@@ -47,6 +47,7 @@ pub trait WeightInfo {
     fn set_base_child_deposit() -> Weight;
     fn set_free_child_slots_per_family() -> Weight;
     fn set_family_deposit_params() -> Weight;
+    fn claim_family_refund() -> Weight;
     fn register_warden() -> Weight;
     fn deregister_warden() -> Weight;
     fn prune_attestation_buckets(n: u32) -> Weight;
@@ -180,22 +181,32 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// Storage: System Account (r:1 w:1) for reserve
     /// Ed25519 signature verification
     fn register_child() -> Weight {
-        // +3 reads / +2 writes over the child path for the family deposit
-        // (FamilyDepositBase, FamilyDepositOccupancyFactor, System Account; FamilyDeposits, System Account).
-        Weight::from_parts(120_000_000, 0)
-            .saturating_add(T::DbWeight::get().reads(8))
-            .saturating_add(T::DbWeight::get().writes(8))
+        // Worst case, counted by hand (no benchmark for this pallet):
+        // child path      ~23 reads (registry, proxy, cooldowns, uniqueness, caps, free slots,
+        //                 nonce, lockup + global curve, CurrentEpoch/EpochMiners/MinerUidToChild,
+        //                 FamilyChildren, first-seen bucket) / ~15 writes;
+        // family price    +7 reads (FamilyDepositConfig, FamilyDeposits, FamilyPrice,
+        //                 FamilyPriceUpdatedAt, System Account family + bank, Hippocampus
+        //                 TotalDeposited) / +7 writes (same, FamilyDeposits possibly twice when
+        //                 a lapsed deposit is refunded then re-charged).
+        // Ref time covers the fee transfer and the reserve on top of the child path.
+        Weight::from_parts(140_000_000, 0)
+            .saturating_add(T::DbWeight::get().reads(30))
+            .saturating_add(T::DbWeight::get().writes(22))
     }
 
     /// Storage: Arion ChildRegistrations (r:1 w:1)
     /// Storage: Arion FamilyChildren (r:1 w:1)
     /// Storage: Arion NodeIdToChild (r:0 w:1)
     fn deregister_child() -> Weight {
-        // +2 reads / +2 writes for releasing the family deposit when the last child leaves
-        // (FamilyDeposits take, System Account unreserve).
-        Weight::from_parts(50_000_000, 0)
-            .saturating_add(T::DbWeight::get().reads(4))
-            .saturating_add(T::DbWeight::get().writes(5))
+        // Worst case, counted by hand, last child of a family with a bound uid; also charged
+        // by `force_deregister_child`, so its registration lookups and main-node unregister
+        // are included: uid/accrual clearing ~5r/4w, active-set + index ~6r/6w, family
+        // cleanup ~1r/7w, refund scheduling (FamilyDepositConfig, FamilyDeposits) 2r/1w,
+        // cooldowns + registration + nonce 1r/4w, force path ~5r/3w.
+        Weight::from_parts(60_000_000, 0)
+            .saturating_add(T::DbWeight::get().reads(20))
+            .saturating_add(T::DbWeight::get().writes(25))
     }
 
     /// Storage: Arion ChildRegistrations (r:1 w:1)
@@ -224,10 +235,18 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().writes(1))
     }
 
-    /// Storage: Arion FamilyDepositBase (r:0 w:1)
-    /// Storage: Arion FamilyDepositOccupancyFactor (r:0 w:1)
+    /// Storage: Arion FamilyDepositConfig (r:0 w:1)
     fn set_family_deposit_params() -> Weight {
         Weight::from_parts(5_000_000, 0)
+            .saturating_add(T::DbWeight::get().writes(1))
+    }
+
+    /// Storage: Arion FamilyDeposits (r:1 w:1)
+    /// Storage: Arion FamilyActiveChildren (r:1 w:0)
+    /// Storage: System Account (r:1 w:1) for unreserve
+    fn claim_family_refund() -> Weight {
+        Weight::from_parts(30_000_000, 0)
+            .saturating_add(T::DbWeight::get().reads(3))
             .saturating_add(T::DbWeight::get().writes(2))
     }
 
@@ -372,19 +391,29 @@ impl WeightInfo for () {
     }
 
     fn register_child() -> Weight {
-        // +3 reads / +2 writes over the child path for the family deposit
-        // (FamilyDepositBase, FamilyDepositOccupancyFactor, System Account; FamilyDeposits, System Account).
-        Weight::from_parts(120_000_000, 0)
-            .saturating_add(RocksDbWeight::get().reads(8))
-            .saturating_add(RocksDbWeight::get().writes(8))
+        // Worst case, counted by hand (no benchmark for this pallet):
+        // child path      ~23 reads (registry, proxy, cooldowns, uniqueness, caps, free slots,
+        //                 nonce, lockup + global curve, CurrentEpoch/EpochMiners/MinerUidToChild,
+        //                 FamilyChildren, first-seen bucket) / ~15 writes;
+        // family price    +7 reads (FamilyDepositConfig, FamilyDeposits, FamilyPrice,
+        //                 FamilyPriceUpdatedAt, System Account family + bank, Hippocampus
+        //                 TotalDeposited) / +7 writes (same, FamilyDeposits possibly twice when
+        //                 a lapsed deposit is refunded then re-charged).
+        // Ref time covers the fee transfer and the reserve on top of the child path.
+        Weight::from_parts(140_000_000, 0)
+            .saturating_add(RocksDbWeight::get().reads(30))
+            .saturating_add(RocksDbWeight::get().writes(22))
     }
 
     fn deregister_child() -> Weight {
-        // +2 reads / +2 writes for releasing the family deposit when the last child leaves
-        // (FamilyDeposits take, System Account unreserve).
-        Weight::from_parts(50_000_000, 0)
-            .saturating_add(RocksDbWeight::get().reads(4))
-            .saturating_add(RocksDbWeight::get().writes(5))
+        // Worst case, counted by hand, last child of a family with a bound uid; also charged
+        // by `force_deregister_child`, so its registration lookups and main-node unregister
+        // are included: uid/accrual clearing ~5r/4w, active-set + index ~6r/6w, family
+        // cleanup ~1r/7w, refund scheduling (FamilyDepositConfig, FamilyDeposits) 2r/1w,
+        // cooldowns + registration + nonce 1r/4w, force path ~5r/3w.
+        Weight::from_parts(60_000_000, 0)
+            .saturating_add(RocksDbWeight::get().reads(20))
+            .saturating_add(RocksDbWeight::get().writes(25))
     }
 
     fn claim_unbonded() -> Weight {
@@ -410,6 +439,12 @@ impl WeightInfo for () {
 
     fn set_family_deposit_params() -> Weight {
         Weight::from_parts(5_000_000, 0)
+            .saturating_add(RocksDbWeight::get().writes(1))
+    }
+
+    fn claim_family_refund() -> Weight {
+        Weight::from_parts(30_000_000, 0)
+            .saturating_add(RocksDbWeight::get().reads(3))
             .saturating_add(RocksDbWeight::get().writes(2))
     }
 
