@@ -163,18 +163,20 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	}
 }
 
-/// Adapter: the non-refundable share of the Arion family-creation price goes to
-/// the bank, through the same `deposit_from` path (transfer + `TotalDeposited`
+/// Adapter: the non-refundable share of the Arion node registration price goes
+/// to the bank, through the same `deposit_from` path (transfer + `TotalDeposited`
 /// ledger + `Deposited` event) as every other bank deposit, tagged
-/// `DepositType::FamilyCreationFee`. That type is not an emission compartment,
+/// `DepositType::NodeRegistrationFee`. That type is not an emission compartment,
 /// so the funds count towards `available_for_payout` like marketplace revenue.
-pub struct ArionFamilyFeeToBank;
-impl pallet_arion::FamilyFeeHandler<AccountId, Balance> for ArionFamilyFeeToBank {
-	fn pay_family_fee(payer: &AccountId, amount: Balance) -> sp_runtime::DispatchResult {
+pub struct ArionNodeRegistrationFeeToBank;
+impl pallet_arion::NodeRegistrationFeeHandler<AccountId, Balance>
+	for ArionNodeRegistrationFeeToBank
+{
+	fn pay_registration_fee(payer: &AccountId, amount: Balance) -> sp_runtime::DispatchResult {
 		pallet_hippocampus::Pallet::<Runtime>::deposit_from(
 			payer,
 			amount,
-			pallet_hippocampus::DepositType::FamilyCreationFee,
+			pallet_hippocampus::DepositType::NodeRegistrationFee,
 		)
 	}
 }
@@ -464,7 +466,7 @@ impl pallet_arion::Config for Runtime {
 	type MinerStatsPruneMaxScanPerBlock = ArionMinerStatsPruneMaxScanPerBlock;
 	type PalletId = ArionPalletId;
 	type PayoutSource = ArionPayoutSource;
-	type FamilyFeeHandler = ArionFamilyFeeToBank;
+	type NodeRegistrationFeeHandler = ArionNodeRegistrationFeeToBank;
 	type Staking = Staking;
 	type TokenPriceUsd = AlphaTokenPriceUsd;
 	type SettlementInterval = ArionSettlementInterval;
