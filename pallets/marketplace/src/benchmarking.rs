@@ -32,7 +32,7 @@
 //! ./target/release/hippius benchmark pallet \
 //!     --chain benchmark \
 //!     --pallet pallet_marketplace \
-//!     --extrinsic 'charge_account_due,submit_compute_usage,settle_compute_arrears,buy_credits' \
+//!     --extrinsic 'charge_account_due,submit_compute_usage,settle_compute_arrears,buy_credits,submit_usage_v2,set_fee_kind_caps' \
 //!     --steps 50 --repeat 20
 //! ```
 
@@ -41,7 +41,7 @@
 use super::*;
 use crate::pallet::Pallet as Marketplace;
 use frame_benchmarking::v2::*;
-use frame_support::pallet_prelude::{Get, PhantomData};
+use frame_support::pallet_prelude::{BoundedVec, Get, PhantomData};
 use frame_support::traits::Currency;
 use frame_system::pallet_prelude::BlockNumberFor;
 use frame_system::RawOrigin;
@@ -158,6 +158,22 @@ const COMPUTE_PERIOD: u64 = 500_000;
 /// already owes. Both far below `FUNDING`, so every debit succeeds.
 const COMPUTE_AMOUNT: u128 = 1_000;
 const COMPUTE_ARREARS: u128 = 500;
+
+/// Amount of each line of a benchmarked `submit_usage_v2` row.
+const USAGE_LINE: u128 = 100;
+
+/// Every `UsageKind`, in index order.
+const ALL_USAGE_KINDS: [UsageKind; 9] = [
+	UsageKind::Compute,
+	UsageKind::PublicIp,
+	UsageKind::Backup,
+	UsageKind::ManagedFees,
+	UsageKind::Cdn,
+	UsageKind::Bandwidth,
+	UsageKind::S3Storage,
+	UsageKind::S3Overage,
+	UsageKind::S3Plan,
+];
 
 /// Point the chain clock inside the period after `COMPUTE_PERIOD`, so that
 /// period is the most recent closed one.
@@ -360,6 +376,77 @@ mod benchmarks {
 			assert_eq!(ComputeArrears::<T>::get(&who), 0);
 			assert_eq!(CreditsPallet::<T>::get_free_credits(&who), FUNDING - COMPUTE_ARREARS);
 		}
+	}
+
+	/// `n` rows of `k` breakdown lines each, every row charged in full with
+	/// arrears like `submit_compute_usage`'s, and as many lines as possible
+	/// fee kinds with a budget to check and spend to write.
+	///
+	/// `k` stops at the nine kinds that exist: lines must be distinct kinds.
+	/// The weight function extrapolates it to `MAX_USAGE_KINDS_PER_ROW`.
+	#[benchmark]
+	fn submit_usage_v2(n: Linear<1, { T::MaxComputeUsageRowsPerCall::get() }>, k: Linear<1, 9>) {
+		let caller = compute_billing_authority::<T>();
+		close_compute_period::<T>();
+		ReferralCommissionRateBps::<T>::put(500);
+		let generous = FeeCap {
+			per_debit: u128::MAX,
+			per_call: u128::MAX,
+			budget: u128::MAX,
+			window_periods: 1_000,
+		};
+		for kind in &ALL_USAGE_KINDS[ALL_USAGE_KINDS.len() - MAX_FEE_KINDS as usize..] {
+			FeeCapConfig::<T>::insert(kind, generous);
+		}
+		// The last `k` kinds, so the fee kinds are always among them.
+		let kinds = &ALL_USAGE_KINDS[ALL_USAGE_KINDS.len() - k as usize..];
+		let breakdown: UsageBreakdown = kinds
+			.iter()
+			.map(|kind| (*kind, USAGE_LINE))
+			.collect::<Vec<_>>()
+			.try_into()
+			.unwrap();
+		let total = USAGE_LINE.saturating_mul(k as u128);
+		let rows: Vec<UsageRowV2<T::AccountId>> = (0..n)
+			.map(|i| UsageRowV2 {
+				who: compute_debtor::<T>(i),
+				total,
+				usage_hash: sp_core::H256::repeat_byte(i as u8),
+				breakdown: breakdown.clone(),
+			})
+			.collect();
+		let debtors: Vec<T::AccountId> = rows.iter().map(|row| row.who.clone()).collect();
+		let rows: BoundedVec<_, T::MaxComputeUsageRowsPerCall> = rows.try_into().unwrap();
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(caller), COMPUTE_PERIOD, rows);
+
+		for who in debtors {
+			assert_eq!(
+				ComputeUsageCharged::<T>::get(COMPUTE_PERIOD, &who).map(|r| r.outcome),
+				Some(ComputeChargeOutcome::Charged)
+			);
+			assert_eq!(
+				CreditsPallet::<T>::get_free_credits(&who),
+				FUNDING - total - COMPUTE_ARREARS
+			);
+		}
+	}
+
+	/// Adding a kind to a `FeeCapConfig` one short of `MAX_FEE_KINDS`, so the
+	/// count runs over every existing entry.
+	#[benchmark]
+	fn set_fee_kind_caps() {
+		let cap = FeeCap { per_debit: 1, per_call: 1, budget: 1, window_periods: 1 };
+		for kind in &ALL_USAGE_KINDS[..MAX_FEE_KINDS as usize - 1] {
+			FeeCapConfig::<T>::insert(kind, cap);
+		}
+		let kind = ALL_USAGE_KINDS[ALL_USAGE_KINDS.len() - 1];
+
+		#[extrinsic_call]
+		_(RawOrigin::Root, kind, Some(cap));
+
+		assert_eq!(FeeCapConfig::<T>::get(kind), Some(cap));
 	}
 
 	/// A purchase with a referral code by an account with no client IP, so

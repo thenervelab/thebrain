@@ -284,4 +284,100 @@ pub enum ComputeUsageRefusal {
 	CallCapExceeded,
 	/// The account's arrears plus the row would overflow `u128`.
 	ArrearsOverflow,
+	/// A `submit_usage_v2` row whose breakdown is empty, does not list its
+	/// kinds in strictly ascending order, or does not sum (without overflow)
+	/// to the row's total.
+	BreakdownInvalid,
+	/// A fee kind in the row is not allowed by its `FeeCapConfig`: there is
+	/// none, the amount exceeds `per_debit`, or the call would pass `per_call`.
+	FeeCapExceeded,
+	/// A fee kind in the row would take the account past the kind's `budget`
+	/// for the current window.
+	FeeBudgetExceeded,
+}
+
+/// What one line of a `submit_usage_v2` row bills for.
+///
+/// Append-only, with explicit indices: the backend encodes these, so an
+/// existing index must never be renumbered or reused.
+#[derive(
+	Clone,
+	Copy,
+	Encode,
+	Decode,
+	Eq,
+	PartialEq,
+	PartialOrd,
+	Ord,
+	RuntimeDebug,
+	TypeInfo,
+	MaxEncodedLen,
+)]
+pub enum UsageKind {
+	#[codec(index = 0)]
+	Compute,
+	#[codec(index = 1)]
+	PublicIp,
+	#[codec(index = 2)]
+	Backup,
+	#[codec(index = 3)]
+	ManagedFees,
+	#[codec(index = 4)]
+	Cdn,
+	#[codec(index = 5)]
+	Bandwidth,
+	#[codec(index = 6)]
+	S3Storage,
+	#[codec(index = 7)]
+	S3Overage,
+	#[codec(index = 8)]
+	S3Plan,
+}
+
+impl UsageKind {
+	/// Kinds that may only be charged under a `FeeCapConfig` entry: without
+	/// one, any non-zero amount of the kind is refused rather than counted
+	/// against the ordinary per-account cap.
+	///
+	/// Any other kind becomes a fee kind as soon as root gives it a
+	/// `FeeCapConfig` entry, and reverts to ordinary usage when it is removed.
+	pub fn requires_fee_cap(self) -> bool {
+		matches!(self, UsageKind::S3Plan)
+	}
+}
+
+/// Most lines one `submit_usage_v2` row may carry.
+pub const MAX_USAGE_KINDS_PER_ROW: u32 = 16;
+
+/// Most kinds that may hold a `FeeCapConfig` entry at once. Bounds the fee
+/// budget reads and writes one row can cost, which is what lets a full
+/// `submit_usage_v2` call be priced inside one extrinsic.
+pub const MAX_FEE_KINDS: u32 = 4;
+
+/// A row's itemised amounts, one per kind, kinds strictly ascending.
+pub type UsageBreakdown = BoundedVec<(UsageKind, u128), ConstU32<MAX_USAGE_KINDS_PER_ROW>>;
+
+/// One `(period, account)` row of `submit_usage_v2`.
+#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub struct UsageRowV2<AccountId> {
+	pub who: AccountId,
+	/// The row's amount in credits; must equal the sum of `breakdown`.
+	pub total: u128,
+	/// The backend's hash of the period's usage lines. Must commit to the
+	/// breakdown, since only the hash is kept on chain.
+	pub usage_hash: sp_core::H256,
+	pub breakdown: UsageBreakdown,
+}
+
+/// Root's limits on one fee kind, in credits.
+#[derive(Clone, Copy, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub struct FeeCap {
+	/// Most one row may charge of the kind.
+	pub per_debit: u128,
+	/// Most one `submit_usage_v2` call may accept of the kind across its rows.
+	pub per_call: u128,
+	/// Most one account may be charged of the kind per window.
+	pub budget: u128,
+	/// Window length in compute periods, measured on the chain clock. Non-zero.
+	pub window_periods: u64,
 }

@@ -94,6 +94,14 @@ pub trait WeightInfo {
 	/// `buy_credits` with a referral code, by an account that has no client
 	/// IP yet, so the mint also probes the IP pool.
 	fn buy_credits() -> Weight;
+
+	/// `submit_usage_v2` carrying `n` rows of up to `k` breakdown lines each,
+	/// every row at the most expensive path and every line a fee kind as far
+	/// as `MAX_FEE_KINDS` allows.
+	fn submit_usage_v2(n: u32, k: u32) -> Weight;
+
+	/// `set_fee_kind_caps` adding a kind to a full-but-one `FeeCapConfig`.
+	fn set_fee_kind_caps() -> Weight;
 }
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
@@ -135,8 +143,14 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// the day-diff would have skipped the write. Added rather than folded into
 	/// the µs figure so the measured part stays the measured part, and in the
 	/// conservative direction either way.
+	///
+	/// Also carrying, on the same terms, the per-subscription renewal events
+	/// (`SubscriptionRenewed` / `SubscriptionRenewalFailed`) added after the
+	/// measurement: one per subscription per cycle, 15 in the measured case,
+	/// at 10µs each.
 	fn charge_account_due() -> Weight {
 		Weight::from_parts(526_900_000, 1341)
+			.saturating_add(Weight::from_parts(150_000_000, 0))
 			.saturating_add(RocksDbWeight::get().reads(8))
 			.saturating_add(RocksDbWeight::get().writes(22))
 	}
@@ -219,6 +233,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	fn buy_credits() -> Weight {
 		buy_credits()
 	}
+
+	/// See [`submit_usage_v2`].
+	fn submit_usage_v2(n: u32, k: u32) -> Weight {
+		submit_usage_v2::<Self>(n, k)
+	}
+
+	/// See [`set_fee_kind_caps`].
+	fn set_fee_kind_caps() -> Weight {
+		set_fee_kind_caps()
+	}
 }
 
 /// For tests and mocks: same shape, same relative costs, no database pricing.
@@ -296,6 +320,16 @@ impl WeightInfo for () {
 	fn buy_credits() -> Weight {
 		buy_credits()
 	}
+
+	/// See [`submit_usage_v2`].
+	fn submit_usage_v2(n: u32, k: u32) -> Weight {
+		submit_usage_v2::<Self>(n, k)
+	}
+
+	/// See [`set_fee_kind_caps`].
+	fn set_fee_kind_caps() -> Weight {
+		set_fee_kind_caps()
+	}
 }
 
 /// One compute billing row at its most expensive path: charged in full with
@@ -360,4 +394,41 @@ fn buy_credits() -> Weight {
 	Weight::from_parts(150_000_000, 60_000)
 		.saturating_add(RocksDbWeight::get().reads(21))
 		.saturating_add(RocksDbWeight::get().writes(19))
+}
+
+/// `submit_usage_v2`: a `submit_compute_usage` row's cost for each row, plus
+/// each breakdown line's `FeeCapConfig` read and validation, plus a
+/// `FeeSpend` read and write for as many lines as can be fee kinds.
+///
+/// **Estimated, not measured**, like `compute_row` and for the same reason:
+/// the runtime-benchmarks build does not compile on the pinned toolchain. The
+/// benchmark that poses this case is `submit_usage_v2` in `benchmarking.rs`.
+///
+/// - fixed: the chain clock read a second time, for the budget windows;
+/// - per line (`n·k`): one `FeeCapConfig` read (a bounded map, ~100 bytes of
+///   proof) and 1µs for the order and sum checks and the event bytes;
+/// - per fee line (`n·min(k, MAX_FEE_KINDS)`): one `FeeSpend` read and write,
+///   2µs, and FRAME's unbounded-map proof allowance.
+///
+/// A full 250-row, 16-line call adds ~0.23s to `submit_compute_usage`'s
+/// ~0.83s, inside a normal-class extrinsic.
+fn submit_usage_v2<W: WeightInfo>(n: u32, k: u32) -> Weight {
+	let lines = u64::from(n).saturating_mul(u64::from(k));
+	let fee_lines = u64::from(n).saturating_mul(u64::from(k.min(crate::MAX_FEE_KINDS)));
+	let line = Weight::from_parts(1_000_000, 100).saturating_add(RocksDbWeight::get().reads(1));
+	let fee_line = Weight::from_parts(2_000_000, 2_600)
+		.saturating_add(RocksDbWeight::get().reads(1))
+		.saturating_add(RocksDbWeight::get().writes(1));
+	W::submit_compute_usage(n)
+		.saturating_add(RocksDbWeight::get().reads(1))
+		.saturating_add(line.saturating_mul(lines))
+		.saturating_add(fee_line.saturating_mul(fee_lines))
+}
+
+/// `set_fee_kind_caps`: the existing entry probed, the `MAX_FEE_KINDS` keys
+/// counted, one entry written. Estimated; root-only and rare.
+fn set_fee_kind_caps() -> Weight {
+	Weight::from_parts(20_000_000, 1_000)
+		.saturating_add(RocksDbWeight::get().reads(u64::from(crate::MAX_FEE_KINDS) + 2))
+		.saturating_add(RocksDbWeight::get().writes(1))
 }
