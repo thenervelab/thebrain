@@ -212,12 +212,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Estimated, pending a benchmark run — see `compute_row`.
 	///
 	/// Fixed part: the authority list, both caps and the clock in; the
-	/// high-water mark, the prune cursor and the summary event out.
+	/// high-water mark, the prune cursor and the summary event out. Per row,
+	/// `compute_row` plus the `AccountChargeCapOverride` read.
 	fn submit_compute_usage(n: u32) -> Weight {
 		Weight::from_parts(50_000_000, 2_000)
 			.saturating_add(RocksDbWeight::get().reads(4))
 			.saturating_add(RocksDbWeight::get().writes(3))
-			.saturating_add(compute_row().saturating_mul(n.into()))
+			.saturating_add(submit_row().saturating_mul(n.into()))
 	}
 
 	/// Estimated, pending a benchmark run — see `compute_row`. The fixed part
@@ -299,12 +300,13 @@ impl WeightInfo for () {
 	/// Estimated, pending a benchmark run — see `compute_row`.
 	///
 	/// Fixed part: the authority list, both caps and the clock in; the
-	/// high-water mark, the prune cursor and the summary event out.
+	/// high-water mark, the prune cursor and the summary event out. Per row,
+	/// `compute_row` plus the `AccountChargeCapOverride` read.
 	fn submit_compute_usage(n: u32) -> Weight {
 		Weight::from_parts(50_000_000, 2_000)
 			.saturating_add(RocksDbWeight::get().reads(4))
 			.saturating_add(RocksDbWeight::get().writes(3))
-			.saturating_add(compute_row().saturating_mul(n.into()))
+			.saturating_add(submit_row().saturating_mul(n.into()))
 	}
 
 	/// Estimated, pending a benchmark run — see `compute_row`. The fixed part
@@ -361,6 +363,16 @@ fn compute_row() -> Weight {
 	Weight::from_parts(200_000_000, 66_000)
 		.saturating_add(RocksDbWeight::get().reads(28))
 		.saturating_add(RocksDbWeight::get().writes(24))
+}
+
+/// One `submit_compute_usage` / `submit_usage_v2` row: `compute_row` plus
+/// the `AccountChargeCapOverride` read that picks its cap, with the same
+/// ~2.6 KB proof allowance per read as `compute_row`. Settling does not read
+/// it.
+fn submit_row() -> Weight {
+	compute_row()
+		.saturating_add(Weight::from_parts(0, 2_600))
+		.saturating_add(RocksDbWeight::get().reads(1))
 }
 
 /// `buy_credits` at its most expensive path: a referral code to check and

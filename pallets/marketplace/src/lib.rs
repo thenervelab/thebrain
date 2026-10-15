@@ -987,6 +987,12 @@ pub mod pallet {
 			required: u128,
 			available: u128,
 		},
+		/// Root set (`Some`) or removed (`None`) `who`'s own per-period cap on
+		/// non-fee compute usage.
+		AccountChargeCapUpdated {
+			who: T::AccountId,
+			cap: Option<u128>,
+		},
 	}
 
 	#[pallet::error]
@@ -1293,6 +1299,17 @@ pub mod pallet {
 	/// `MaxComputeChargePerAccountPerPeriod`.
 	#[pallet::storage]
 	pub type MaxComputeChargePerCall<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// An account's own per-period cap on non-fee compute usage, in credits,
+	/// replacing `MaxComputeChargePerAccountPerPeriod` for it — higher for an
+	/// enterprise customer, or lower. Set by root with
+	/// `set_account_charge_cap`.
+	///
+	/// An account with an override is also left out of
+	/// `MaxComputeChargePerCall`: its own cap is its only bound.
+	#[pallet::storage]
+	pub type AccountChargeCapOverride<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, OptionQuery>;
 
 	/// Caps on each fee kind, set by root with `set_fee_kind_caps`.
 	///
@@ -2310,6 +2327,13 @@ pub mod pallet {
 		/// `MaxComputeChargePerAccountPerPeriod` per account per period, over
 		/// the `MaxComputeBillingLag` periods still open — and debited credits
 		/// are burned as revenue, never paid to the caller.
+		///
+		/// An account with an `AccountChargeCapOverride` is held to that cap
+		/// instead, and its rows are left out of `MaxComputeChargePerCall`, so
+		/// one large customer cannot use up the call's budget for everyone
+		/// else. What a stolen key can take from overridden accounts is then
+		/// the sum of their overrides over the open periods — set by root, one
+		/// account at a time.
 		#[pallet::call_index(37)]
 		#[pallet::weight((
 			<T as Config>::WeightInfo::submit_compute_usage(
@@ -2338,6 +2362,7 @@ pub mod pallet {
 			let per_call_cap = MaxComputeChargePerCall::<T>::get();
 
 			let mut summary = ComputeUsageSummary::default();
+			let mut call_accepted = 0u128;
 			for (who, amount, usage_hash) in rows {
 				let result = Self::apply_compute_usage_row(
 					period,
@@ -2345,7 +2370,8 @@ pub mod pallet {
 					amount,
 					usage_hash,
 					per_account_cap,
-					per_call_cap.saturating_sub(summary.total_accepted),
+					per_call_cap,
+					&mut call_accepted,
 				);
 				summary.add(result, amount);
 			}
@@ -2519,7 +2545,10 @@ pub mod pallet {
 		/// - the rest of the row, `total` less its fee lines, exceeds
 		///   `MaxComputeChargePerAccountPerPeriod` (`AccountCapExceeded`) or
 		///   takes the call's non-fee sum past `MaxComputeChargePerCall`
-		///   (`CallCapExceeded`).
+		///   (`CallCapExceeded`). An account with an `AccountChargeCapOverride`
+		///   is held to its override instead and left out of the call's
+		///   non-fee sum, as in `submit_compute_usage`; its fee lines keep
+		///   their `FeeCapConfig` caps.
 		///
 		/// A recorded row consumes its fee budget whether it was debited or
 		/// moved to arrears: either way the debt is on the books.
@@ -2600,6 +2629,33 @@ pub mod pallet {
 			Self::deposit_event(Event::FeeKindCapsUpdated { kind, cap });
 			Ok(())
 		}
+
+		/// Root sets (`Some`) or removes (`None`) `who`'s own per-period cap
+		/// on non-fee compute usage, in place of
+		/// `MaxComputeChargePerAccountPerPeriod`. It may be higher or lower
+		/// than the default; it does not touch fee kinds.
+		///
+		/// An overridden account's non-fee usage is no longer counted against
+		/// `MaxComputeChargePerCall` — its override is its only bound — so an
+		/// enterprise customer billed far above the default cannot crowd every
+		/// other account out of a call. The exposure this adds to a stolen
+		/// billing key is the sum of the overrides over the
+		/// `MaxComputeBillingLag` periods still open, which root controls.
+		#[pallet::call_index(45)]
+		#[pallet::weight((T::DbWeight::get().writes(1), DispatchClass::Operational, Pays::No))]
+		pub fn set_account_charge_cap(
+			origin: OriginFor<T>,
+			who: T::AccountId,
+			cap: Option<u128>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			match cap {
+				Some(c) => AccountChargeCapOverride::<T>::insert(&who, c),
+				None => AccountChargeCapOverride::<T>::remove(&who),
+			}
+			Self::deposit_event(Event::AccountChargeCapUpdated { who, cap });
+			Ok(())
+		}
 	}
 
 	/// Longest referral code `buy_credits` accepts, in bytes.
@@ -2665,7 +2721,8 @@ pub mod pallet {
 
 	/// What every row of one `submit_usage_v2` call is checked against.
 	struct UsageCaps {
-		/// `MaxComputeChargePerAccountPerPeriod`, for a row's non-fee part.
+		/// `MaxComputeChargePerAccountPerPeriod`, for a row's non-fee part
+		/// unless the account has an override.
 		per_account: u128,
 		/// `MaxComputeChargePerCall`, for the call's non-fee sum.
 		per_call: u128,
@@ -2675,7 +2732,7 @@ pub mod pallet {
 	}
 
 	/// What one `submit_usage_v2` call has accepted so far, for the per-call
-	/// caps.
+	/// caps. `non_fee` leaves out accounts with a cap override.
 	#[derive(Default)]
 	struct UsageCallTally {
 		non_fee: u128,
@@ -2685,7 +2742,9 @@ pub mod pallet {
 	/// The fee lines of a row that passed every cap, and the `FeeSpend` each
 	/// one leaves behind once the row is recorded.
 	struct UsageAdmission {
-		non_fee: u128,
+		/// What the row adds to the call's non-fee sum: its non-fee part, or
+		/// zero for an account with a cap override.
+		call_non_fee: u128,
 		fees: Vec<(UsageKind, u128, (u64, u128))>,
 	}
 
@@ -2837,15 +2896,17 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Settle or record one compute usage row. `call_headroom` is what the
-		/// call may still accept under `MaxComputeChargePerCall`.
+		/// Settle or record one compute usage row. `call_accepted` is what the
+		/// call has accepted so far under `MaxComputeChargePerCall`, and is
+		/// advanced by this row if it counts towards it.
 		fn apply_compute_usage_row(
 			period: u64,
 			who: &T::AccountId,
 			amount: u128,
 			usage_hash: H256,
 			per_account_cap: u128,
-			call_headroom: u128,
+			per_call_cap: u128,
+			call_accepted: &mut u128,
 		) -> ComputeRowResult {
 			// Idempotency before anything else, caps included: a row that was
 			// accepted before is settled whatever the caps say now, so a cap
@@ -2857,18 +2918,23 @@ pub mod pallet {
 				return result;
 			}
 
-			let refusal = if amount > per_account_cap {
-				Some(ComputeUsageRefusal::AccountCapExceeded)
-			} else if amount > call_headroom {
-				Some(ComputeUsageRefusal::CallCapExceeded)
-			} else {
-				None
+			// A v1 row has no breakdown, so all of it is non-fee.
+			let counted = match Self::check_non_fee_caps(
+				who,
+				amount,
+				per_account_cap,
+				per_call_cap,
+				*call_accepted,
+			) {
+				Ok(counted) => counted,
+				Err(reason) => return Self::refuse_compute_usage_row(period, who, amount, reason),
 			};
-			if let Some(reason) = refusal {
-				return Self::refuse_compute_usage_row(period, who, amount, reason);
-			}
 
-			Self::record_compute_usage_row(period, who, amount, usage_hash, None)
+			let result = Self::record_compute_usage_row(period, who, amount, usage_hash, None);
+			if result.is_recorded() {
+				*call_accepted = call_accepted.saturating_add(counted);
+			}
+			result
 		}
 
 		/// Settle or record one `submit_usage_v2` row: `apply_compute_usage_row`
@@ -2909,7 +2975,7 @@ pub mod pallet {
 			// Spend is drawn only by a recorded row, arrears included: a refusal
 			// (the arrears overflow check) leaves the budget untouched.
 			if result.is_recorded() {
-				call.non_fee = call.non_fee.saturating_add(admission.non_fee);
+				call.non_fee = call.non_fee.saturating_add(admission.call_non_fee);
 				for (kind, amount, spend) in admission.fees {
 					let accepted = call.fees.entry(kind).or_default();
 					*accepted = accepted.saturating_add(amount);
@@ -2975,13 +3041,42 @@ pub mod pallet {
 			}
 
 			let non_fee = total.saturating_sub(fee_total);
-			if non_fee > caps.per_account {
+			let call_non_fee = Self::check_non_fee_caps(
+				who,
+				non_fee,
+				caps.per_account,
+				caps.per_call,
+				call.non_fee,
+			)?;
+			Ok(UsageAdmission { call_non_fee, fees })
+		}
+
+		/// Check a row's non-fee part against `who`'s per-period cap — its
+		/// `AccountChargeCapOverride`, else `default_cap` — and, for an account
+		/// without an override, against what is left of `per_call_cap` after
+		/// `call_accepted`. Returns what the row adds to the call's tally:
+		/// `non_fee`, or zero for an overridden account.
+		fn check_non_fee_caps(
+			who: &T::AccountId,
+			non_fee: u128,
+			default_cap: u128,
+			per_call_cap: u128,
+			call_accepted: u128,
+		) -> Result<u128, ComputeUsageRefusal> {
+			let (cap, counts_against_call) = match AccountChargeCapOverride::<T>::get(who) {
+				Some(cap) => (cap, false),
+				None => (default_cap, true),
+			};
+			if non_fee > cap {
 				return Err(ComputeUsageRefusal::AccountCapExceeded);
 			}
-			if non_fee > caps.per_call.saturating_sub(call.non_fee) {
+			if !counts_against_call {
+				return Ok(0);
+			}
+			if non_fee > per_call_cap.saturating_sub(call_accepted) {
 				return Err(ComputeUsageRefusal::CallCapExceeded);
 			}
-			Ok(UsageAdmission { non_fee, fees })
+			Ok(non_fee)
 		}
 
 		/// The most lines any row of a `submit_usage_v2` call carries, for its

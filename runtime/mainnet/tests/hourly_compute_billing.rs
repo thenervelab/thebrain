@@ -19,9 +19,9 @@ use hippius_mainnet_runtime::{
 	RuntimeOrigin, System,
 };
 use pallet_marketplace::{
-	ComputeArrears, ComputeChargeOutcome, ComputeUsageCharged, ComputeUsagePruneFrom,
-	ComputeUsageRecord, ComputeUsageRefusal, Error, Event as MarketplaceEvent,
-	LastComputeBillingPeriod, COMPUTE_BILLING_PERIOD_MS,
+	AccountChargeCapOverride, ComputeArrears, ComputeChargeOutcome, ComputeUsageCharged,
+	ComputeUsagePruneFrom, ComputeUsageRecord, ComputeUsageRefusal, Error,
+	Event as MarketplaceEvent, LastComputeBillingPeriod, COMPUTE_BILLING_PERIOD_MS,
 };
 use sp_core::{crypto::Ss58Codec, H256};
 use sp_runtime::{AccountId32, BuildStorage, DispatchError};
@@ -585,6 +585,65 @@ fn the_per_call_cap_bounds_the_running_total() {
 			],
 		);
 		assert_eq!(last_summary(), (2, 1, 0, 0, 1, 2_500));
+	});
+}
+
+/// v1 rows are all non-fee, so an account's cap override replaces the default
+/// for the whole row, and keeps the account out of the per-call cap.
+#[test]
+fn an_account_cap_override_applies_to_v1_rows() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Marketplace::set_compute_charge_caps(
+			RuntimeOrigin::root(),
+			PER_ACCOUNT_CAP,
+			HOUR_COST,
+		));
+		let (enterprise, small, a, b) = (account(10), account(11), account(12), account(13));
+		for who in [&enterprise, &small, &a, &b] {
+			deposit_credits(who, 100_000_000);
+		}
+		assert_ok!(Marketplace::set_account_charge_cap(
+			RuntimeOrigin::root(),
+			enterprise.clone(),
+			Some(PER_ACCOUNT_CAP * 2),
+		));
+		assert_ok!(Marketplace::set_account_charge_cap(
+			RuntimeOrigin::root(),
+			small.clone(),
+			Some(HOUR_COST - 1),
+		));
+		assert_eq!(AccountChargeCapOverride::<Runtime>::get(&small), Some(HOUR_COST - 1));
+
+		submit(
+			PERIOD,
+			vec![
+				(enterprise.clone(), PER_ACCOUNT_CAP + 1, hash(1)),
+				(small.clone(), HOUR_COST, hash(2)),
+				(a.clone(), HOUR_COST, hash(3)),
+				(b.clone(), 1, hash(4)),
+			],
+		);
+
+		assert_eq!(credits(&enterprise), 100_000_000 - PER_ACCOUNT_CAP - 1);
+		assert_eq!(credits(&small), 100_000_000);
+		assert_eq!(credits(&a), 100_000_000 - HOUR_COST);
+		assert_eq!(credits(&b), 100_000_000);
+		let refused: Vec<_> = marketplace_events()
+			.into_iter()
+			.filter_map(|e| match e {
+				MarketplaceEvent::ComputeUsageRefused { who, reason, .. } => Some((who, reason)),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(
+			refused,
+			vec![
+				(small, ComputeUsageRefusal::AccountCapExceeded),
+				(b, ComputeUsageRefusal::CallCapExceeded),
+			]
+		);
+		// `total_accepted` still reports every accepted row.
+		assert_eq!(last_summary(), (2, 0, 0, 0, 2, PER_ACCOUNT_CAP + 1 + HOUR_COST));
 	});
 }
 

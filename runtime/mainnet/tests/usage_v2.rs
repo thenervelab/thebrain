@@ -18,10 +18,10 @@ use hippius_mainnet_runtime::{
 	RuntimeOrigin, System,
 };
 use pallet_marketplace::{
-	ComputeArrears, ComputeChargeOutcome, ComputeUsageCharged, ComputeUsageRecord,
-	ComputeUsageRefusal, Error, Event as MarketplaceEvent, FeeCap, FeeCapConfig, FeeSpend,
-	UsageBreakdown, UsageKind, UsageRowV2, COMPUTE_BILLING_PERIOD_MS, MAX_FEE_KINDS,
-	MAX_USAGE_KINDS_PER_ROW,
+	AccountChargeCapOverride, ComputeArrears, ComputeChargeOutcome, ComputeUsageCharged,
+	ComputeUsageRecord, ComputeUsageRefusal, Error, Event as MarketplaceEvent, FeeCap,
+	FeeCapConfig, FeeSpend, UsageBreakdown, UsageKind, UsageRowV2, COMPUTE_BILLING_PERIOD_MS,
+	MAX_FEE_KINDS, MAX_USAGE_KINDS_PER_ROW,
 };
 use sp_core::{crypto::Ss58Codec, H256};
 use sp_runtime::{AccountId32, BuildStorage, DispatchError};
@@ -583,6 +583,126 @@ fn a_duplicate_is_honoured_after_the_fee_caps_are_removed() {
 
 		assert_eq!(last_summary(), (0, 0, 1, 0, 0, 0));
 		assert_eq!(credits(&user), 100_000_000 - PLAN_FEE);
+	});
+}
+
+// ── Per-account cap override ─────────────────────────────────────────────
+
+fn set_account_cap(who: &AccountId, cap: Option<u128>) {
+	assert_ok!(Marketplace::set_account_charge_cap(RuntimeOrigin::root(), who.clone(), cap));
+}
+
+#[test]
+fn an_override_above_the_default_admits_rows_between_the_two() {
+	new_test_ext().execute_with(|| {
+		let (enterprise, ordinary) = (account(10), account(11));
+		deposit_credits(&enterprise, 100_000_000);
+		deposit_credits(&ordinary, 100_000_000);
+		set_account_cap(&enterprise, Some(PER_ACCOUNT_CAP * 2));
+		assert!(marketplace_events().contains(&MarketplaceEvent::AccountChargeCapUpdated {
+			who: enterprise.clone(),
+			cap: Some(PER_ACCOUNT_CAP * 2),
+		}));
+
+		let lines = [(UsageKind::Compute, PER_ACCOUNT_CAP + 1)];
+		submit(PERIOD, vec![row(&enterprise, &lines, hash(1)), row(&ordinary, &lines, hash(2))]);
+
+		assert_eq!(credits(&enterprise), 100_000_000 - PER_ACCOUNT_CAP - 1);
+		assert_eq!(refusals(), vec![(ordinary, ComputeUsageRefusal::AccountCapExceeded)]);
+
+		// The override is a cap too.
+		submit(
+			PERIOD - 1,
+			vec![row(&enterprise, &[(UsageKind::Compute, PER_ACCOUNT_CAP * 2 + 1)], hash(3))],
+		);
+		assert_eq!(refusals()[1], (enterprise, ComputeUsageRefusal::AccountCapExceeded));
+	});
+}
+
+#[test]
+fn an_override_below_the_default_refuses_and_removing_it_restores_the_default() {
+	new_test_ext().execute_with(|| {
+		let user = account(10);
+		deposit_credits(&user, 100_000_000);
+		set_account_cap(&user, Some(HOUR_COST - 1));
+
+		submit(PERIOD, vec![row(&user, &[(UsageKind::Compute, HOUR_COST)], hash(1))]);
+		assert_eq!(refusals(), vec![(user.clone(), ComputeUsageRefusal::AccountCapExceeded)]);
+		assert_eq!(record(PERIOD, &user), None);
+
+		set_account_cap(&user, None);
+		assert_eq!(AccountChargeCapOverride::<Runtime>::get(&user), None);
+		assert!(marketplace_events()
+			.contains(&MarketplaceEvent::AccountChargeCapUpdated { who: user.clone(), cap: None }));
+
+		// Back on the default: the refused row now passes, and the default
+		// still binds above it.
+		submit(PERIOD, vec![row(&user, &[(UsageKind::Compute, HOUR_COST)], hash(1))]);
+		assert_eq!(credits(&user), 100_000_000 - HOUR_COST);
+		submit(PERIOD - 1, vec![row(&user, &[(UsageKind::Compute, PER_ACCOUNT_CAP + 1)], hash(2))]);
+		assert_eq!(refusals()[1], (user, ComputeUsageRefusal::AccountCapExceeded));
+	});
+}
+
+/// The per-call cap bounds ordinary accounts together; an overridden account
+/// is bounded only by its own cap and takes none of their budget.
+#[test]
+fn an_overridden_account_is_left_out_of_the_per_call_cap() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Marketplace::set_compute_charge_caps(
+			RuntimeOrigin::root(),
+			PER_ACCOUNT_CAP,
+			HOUR_COST,
+		));
+		let (enterprise, a, b) = (account(10), account(11), account(12));
+		for who in [&enterprise, &a, &b] {
+			deposit_credits(who, 100_000_000);
+		}
+		set_account_cap(&enterprise, Some(PER_ACCOUNT_CAP * 5));
+
+		submit(
+			PERIOD,
+			vec![
+				// Far above the per-call cap on its own.
+				row(&enterprise, &[(UsageKind::Compute, PER_ACCOUNT_CAP * 5)], hash(1)),
+				// The whole per-call budget is still there for the others...
+				row(&a, &[(UsageKind::Compute, HOUR_COST)], hash(2)),
+				// ...and they share it.
+				row(&b, &[(UsageKind::Compute, 1)], hash(3)),
+			],
+		);
+
+		assert_eq!(credits(&enterprise), 100_000_000 - PER_ACCOUNT_CAP * 5);
+		assert_eq!(credits(&a), 100_000_000 - HOUR_COST);
+		assert_eq!(refusals(), vec![(b, ComputeUsageRefusal::CallCapExceeded)]);
+	});
+}
+
+#[test]
+fn an_override_does_not_lift_fee_caps() {
+	new_test_ext().execute_with(|| {
+		let user = account(10);
+		deposit_credits(&user, 100_000_000);
+		set_account_cap(&user, Some(u128::MAX));
+
+		submit(PERIOD, vec![row(&user, &[(UsageKind::S3Plan, PLAN_FEE)], hash(1))]);
+
+		assert_eq!(refusals(), vec![(user, ComputeUsageRefusal::FeeCapExceeded)]);
+	});
+}
+
+#[test]
+fn only_root_sets_an_account_cap() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			Marketplace::set_account_charge_cap(
+				RuntimeOrigin::signed(biller()),
+				account(10),
+				Some(1),
+			),
+			DispatchError::BadOrigin
+		);
+		assert_eq!(AccountChargeCapOverride::<Runtime>::get(account(10)), None);
 	});
 }
 
