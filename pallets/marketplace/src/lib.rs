@@ -88,7 +88,7 @@ pub mod pallet {
 		traits::{AccountIdConversion, AtLeast32BitUnsigned, Hash, SaturatedConversion},
 		Perbill, Saturating, TransactionOutcome,
 	};
-	use sp_std::{vec, vec::Vec};
+	use sp_std::{collections::btree_map::BTreeMap, vec, vec::Vec};
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
 	#[pallet::storage_version(STORAGE_VERSION)]
@@ -939,6 +939,70 @@ pub mod pallet {
 		BuyCreditsStatusChanged {
 			enabled: bool,
 		},
+		/// `submit_usage_v2`'s counterpart of `ComputeUsageCharged`, with the
+		/// row's itemised breakdown. `amount` is the row's total.
+		UsageCharged {
+			who: T::AccountId,
+			period: u64,
+			amount: u128,
+			arrears_collected: u128,
+			usage_hash: H256,
+			breakdown: UsageBreakdown,
+		},
+		/// `submit_usage_v2`'s counterpart of `ComputeUsageChargeFailed`, with
+		/// the row's itemised breakdown. `amount` is the row's total.
+		UsageChargeFailed {
+			who: T::AccountId,
+			period: u64,
+			amount: u128,
+			required: u128,
+			available: u128,
+			usage_hash: H256,
+			breakdown: UsageBreakdown,
+		},
+		/// Root set (`Some`) or removed (`None`) the caps on one fee kind.
+		FeeKindCapsUpdated {
+			kind: UsageKind,
+			cap: Option<FeeCap>,
+		},
+		/// A due subscription was renewed for another cycle and `amount`
+		/// credits taken for it.
+		SubscriptionRenewed {
+			who: T::AccountId,
+			subscription_id: SubscriptionId,
+			plan_id: T::Hash,
+			amount: u128,
+		},
+		/// A due subscription could not be paid and was deactivated. Emitted
+		/// alongside `SubscriptionChargeFailed`, which does not say which
+		/// subscription it was.
+		///
+		/// `available` is the free credits left when this subscription was
+		/// reached, after any lower-id sibling on the same side was paid —
+		/// where `SubscriptionChargeFailed` reports the side's starting balance.
+		SubscriptionRenewalFailed {
+			who: T::AccountId,
+			subscription_id: SubscriptionId,
+			plan_id: T::Hash,
+			required: u128,
+			available: u128,
+		},
+		/// `who`'s own per-period cap on non-fee compute usage was set
+		/// (`Some`) or removed (`None`), by a charge cap admin (`by`) or by
+		/// root (`by: None`).
+		AccountChargeCapUpdated {
+			who: T::AccountId,
+			cap: Option<u128>,
+			by: Option<T::AccountId>,
+		},
+		/// Root replaced the charge cap admin list.
+		ChargeCapAdminsUpdated {
+			admins: Vec<T::AccountId>,
+		},
+		/// Root changed the highest override a charge cap admin may set.
+		MaxAccountChargeCapOverrideUpdated {
+			max: u128,
+		},
 	}
 
 	#[pallet::error]
@@ -1028,6 +1092,21 @@ pub mod pallet {
 		/// The caller already holds `MaxBatchesPerBuyer` batches and none of
 		/// them is a purchase batch that could be topped up.
 		TooManyBatches,
+		/// A `FeeCap` with a zero `window_periods`.
+		InvalidFeeCap,
+		/// `MAX_FEE_KINDS` kinds already hold a `FeeCapConfig` entry.
+		TooManyFeeKinds,
+		/// The caller is neither root nor in `ChargeCapAdmins`.
+		NotChargeCapAdmin,
+		/// More than `MAX_CHARGE_CAP_ADMINS` charge cap admins.
+		TooManyChargeCapAdmins,
+		/// A charge cap admin tried to set an override above
+		/// `MaxAccountChargeCapOverride`.
+		CapOverrideAboveLimit,
+		/// The same account would be both a charge cap admin and a compute
+		/// billing authority, letting one stolen key raise the caps it bills
+		/// against.
+		AdminIsBillingAuthority,
 	}
 
 	#[pallet::storage]
@@ -1241,6 +1320,58 @@ pub mod pallet {
 	/// `MaxComputeChargePerAccountPerPeriod`.
 	#[pallet::storage]
 	pub type MaxComputeChargePerCall<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// An account's own per-period cap on non-fee compute usage, in credits,
+	/// replacing `MaxComputeChargePerAccountPerPeriod` for it — higher for an
+	/// enterprise customer, or lower. Set by root with
+	/// `set_account_charge_cap`.
+	///
+	/// An account with an override is also left out of
+	/// `MaxComputeChargePerCall`: its own cap is its only bound.
+	#[pallet::storage]
+	pub type AccountChargeCapOverride<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, OptionQuery>;
+
+	/// Accounts that may call `set_account_charge_cap` besides root, within
+	/// `MaxAccountChargeCapOverride`. Set by root with
+	/// `set_charge_cap_admins`; never overlaps `ComputeBillingAuthorities`.
+	#[pallet::storage]
+	pub type ChargeCapAdmins<T: Config> =
+		StorageValue<_, BoundedVec<T::AccountId, ConstU32<MAX_CHARGE_CAP_ADMINS>>, ValueQuery>;
+
+	/// The highest override a charge cap admin may set, in credits. Root is
+	/// not bound by it. Zero by default, so until root raises it an admin can
+	/// only remove overrides or set them to zero.
+	#[pallet::storage]
+	pub type MaxAccountChargeCapOverride<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// Caps on each fee kind, set by root with `set_fee_kind_caps`.
+	///
+	/// A kind with an entry is a fee kind: `submit_usage_v2` charges it under
+	/// these caps instead of `MaxComputeChargePerAccountPerPeriod`. A kind for
+	/// which `UsageKind::requires_fee_cap` holds is a fee kind with or without
+	/// an entry, and without one any non-zero amount of it is refused.
+	#[pallet::storage]
+	pub type FeeCapConfig<T: Config> =
+		StorageMap<_, Blake2_128Concat, UsageKind, FeeCap, OptionQuery>;
+
+	/// What each account has been charged of each fee kind in its current
+	/// budget window: `(window_start, spent)`, `window_start` a compute period
+	/// on the chain clock.
+	///
+	/// The window runs on the chain clock rather than on the submitted
+	/// period, so backdating rows within `MaxComputeBillingLag` cannot reach a
+	/// fresh window. Written only when a row is recorded.
+	#[pallet::storage]
+	pub type FeeSpend<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		UsageKind,
+		Blake2_128Concat,
+		T::AccountId,
+		(u64, u128),
+		OptionQuery,
+	>;
 
 	/// Whether `buy_credits` is open. Off by default; root switches it with
 	/// `sudo_set_buy_credits_enabled`.
@@ -2230,6 +2361,13 @@ pub mod pallet {
 		/// `MaxComputeChargePerAccountPerPeriod` per account per period, over
 		/// the `MaxComputeBillingLag` periods still open — and debited credits
 		/// are burned as revenue, never paid to the caller.
+		///
+		/// An account with an `AccountChargeCapOverride` is held to that cap
+		/// instead, and its rows are left out of `MaxComputeChargePerCall`, so
+		/// one large customer cannot use up the call's budget for everyone
+		/// else. What a stolen key can take from overridden accounts is then
+		/// the sum of their overrides over the open periods — set by root, one
+		/// account at a time.
 		#[pallet::call_index(37)]
 		#[pallet::weight((
 			<T as Config>::WeightInfo::submit_compute_usage(
@@ -2258,54 +2396,21 @@ pub mod pallet {
 			let per_call_cap = MaxComputeChargePerCall::<T>::get();
 
 			let mut summary = ComputeUsageSummary::default();
+			let mut call_accepted = 0u128;
 			for (who, amount, usage_hash) in rows {
-				match Self::apply_compute_usage_row(
+				let result = Self::apply_compute_usage_row(
 					period,
 					&who,
 					amount,
 					usage_hash,
 					per_account_cap,
-					per_call_cap.saturating_sub(summary.total_accepted),
-				) {
-					ComputeRowResult::Charged => {
-						summary.charged = summary.charged.saturating_add(1);
-						summary.total_accepted = summary.total_accepted.saturating_add(amount);
-					},
-					ComputeRowResult::Arrears => {
-						summary.arrears = summary.arrears.saturating_add(1);
-						summary.total_accepted = summary.total_accepted.saturating_add(amount);
-					},
-					ComputeRowResult::Duplicate => {
-						summary.duplicates = summary.duplicates.saturating_add(1)
-					},
-					ComputeRowResult::Conflict => {
-						summary.conflicts = summary.conflicts.saturating_add(1)
-					},
-					ComputeRowResult::Refused => {
-						summary.refused = summary.refused.saturating_add(1)
-					},
-				}
+					per_call_cap,
+					&mut call_accepted,
+				);
+				summary.add(result, amount);
 			}
 
-			if summary.charged > 0 || summary.arrears > 0 {
-				LastComputeBillingPeriod::<T>::mutate(|last| {
-					*last = Some(last.map_or(period, |l| l.max(period)))
-				});
-				ComputeUsagePruneFrom::<T>::mutate(|from| {
-					*from = Some(from.map_or(period, |f| f.min(period)))
-				});
-			}
-
-			Self::deposit_event(Event::ComputeUsageSubmitted {
-				period,
-				charged: summary.charged,
-				arrears: summary.arrears,
-				duplicates: summary.duplicates,
-				conflicts: summary.conflicts,
-				refused: summary.refused,
-				total_accepted: summary.total_accepted,
-			});
-
+			Self::finish_compute_usage_submission(period, &summary);
 			Ok(().into())
 		}
 
@@ -2316,8 +2421,15 @@ pub mod pallet {
 		/// Each authority needs an existential deposit to submit at all — a
 		/// feeless call still passes the nonce check, which rejects accounts
 		/// that do not exist — but nothing beyond it.
+		///
+		/// No authority may also be a charge cap admin (see
+		/// `set_charge_cap_admins`).
 		#[pallet::call_index(38)]
-		#[pallet::weight((T::DbWeight::get().writes(1), DispatchClass::Operational, Pays::No))]
+		#[pallet::weight((
+			T::DbWeight::get().reads_writes(1, 1),
+			DispatchClass::Operational,
+			Pays::No
+		))]
 		pub fn set_compute_billing_authorities(
 			origin: OriginFor<T>,
 			authorities: Vec<T::AccountId>,
@@ -2331,6 +2443,11 @@ pub mod pallet {
 			let mut authorities = authorities;
 			authorities.sort();
 			authorities.dedup();
+			let admins = ChargeCapAdmins::<T>::get();
+			ensure!(
+				!authorities.iter().any(|a| admins.contains(a)),
+				Error::<T>::AdminIsBillingAuthority
+			);
 
 			ComputeBillingAuthorities::<T>::put(&authorities);
 			Self::deposit_event(Event::ComputeBillingAuthoritiesSet { authorities });
@@ -2445,6 +2562,218 @@ pub mod pallet {
 			Self::deposit_event(Event::BuyCreditsStatusChanged { enabled });
 			Ok(())
 		}
+
+		/// `submit_compute_usage` with an itemised breakdown per row: each
+		/// row's `total` is split into `(UsageKind, amount)` lines, kinds
+		/// strictly ascending, summing exactly to `total`.
+		///
+		/// **The `usage_hash` MUST commit to the breakdown.** The breakdown is
+		/// carried in the events only; storage keeps the same
+		/// `ComputeUsageRecord` (total and hash) as `submit_compute_usage`, so
+		/// the hash is the only on-chain trace of how the total was made up.
+		///
+		/// Shares `ComputeUsageCharged` with `submit_compute_usage`: a
+		/// `(period, account)` accepted by either call is a duplicate (same
+		/// total and hash) or a conflict for both, and is never debited twice.
+		/// Origin, period window, debit, arrears and referral are the same as
+		/// `submit_compute_usage`'s.
+		///
+		/// Each row is decided on its own. On top of `submit_compute_usage`'s
+		/// outcomes, a row is refused, left unrecorded and resubmittable when:
+		///
+		/// - its breakdown is empty, out of order, has a repeated kind, or
+		///   does not sum (without overflow) to `total` — `BreakdownInvalid`;
+		/// - a fee kind (see `FeeCapConfig`) has no cap entry, exceeds its
+		///   `per_debit`, or takes the call past its `per_call` —
+		///   `FeeCapExceeded`;
+		/// - a fee kind takes the account past its `budget` for the window,
+		///   counted on the chain clock — `FeeBudgetExceeded`;
+		/// - the rest of the row, `total` less its fee lines, exceeds
+		///   `MaxComputeChargePerAccountPerPeriod` (`AccountCapExceeded`) or
+		///   takes the call's non-fee sum past `MaxComputeChargePerCall`
+		///   (`CallCapExceeded`). An account with an `AccountChargeCapOverride`
+		///   is held to its override instead and left out of the call's
+		///   non-fee sum, as in `submit_compute_usage`; its fee lines keep
+		///   their `FeeCapConfig` caps.
+		///
+		/// A recorded row consumes its fee budget whether it was debited or
+		/// moved to arrears: either way the debt is on the books.
+		///
+		/// Emits `UsageCharged` / `UsageChargeFailed` in place of
+		/// `ComputeUsageCharged` / `ComputeUsageChargeFailed`; the duplicate,
+		/// conflict, refusal and summary events are the same.
+		#[pallet::call_index(43)]
+		#[pallet::weight((
+			<T as Config>::WeightInfo::submit_usage_v2(
+				u32::try_from(rows.len()).unwrap_or(u32::MAX),
+				Pallet::<T>::widest_breakdown(rows),
+			),
+			DispatchClass::Normal,
+			Pays::No
+		))]
+		pub fn submit_usage_v2(
+			origin: OriginFor<T>,
+			period: u64,
+			rows: BoundedVec<UsageRowV2<T::AccountId>, T::MaxComputeUsageRowsPerCall>,
+		) -> DispatchResultWithPostInfo {
+			let early_exit_weight = <T as Config>::WeightInfo::submit_usage_v2(0, 0);
+			let caller = ensure_signed(origin)?;
+			Self::ensure_compute_billing_authority(&caller)
+				.map_err(|e| e.with_weight(early_exit_weight))?;
+			Self::ensure_compute_period_billable(period)
+				.map_err(|e| e.with_weight(early_exit_weight))?;
+
+			let caps = UsageCaps {
+				per_account: MaxComputeChargePerAccountPerPeriod::<T>::get(),
+				per_call: MaxComputeChargePerCall::<T>::get(),
+				now: Self::current_compute_period(),
+			};
+
+			let mut summary = ComputeUsageSummary::default();
+			let mut call = UsageCallTally::default();
+			for row in rows.iter() {
+				let result = Self::apply_usage_row_v2(period, row, &caps, &mut call);
+				summary.add(result, row.total);
+			}
+
+			Self::finish_compute_usage_submission(period, &summary);
+			Ok(().into())
+		}
+
+		/// Root sets (`Some`) or removes (`None`) the caps on one fee kind.
+		///
+		/// Setting caps makes the kind a fee kind for `submit_usage_v2`;
+		/// removing them makes it ordinary usage again, except for a kind that
+		/// `UsageKind::requires_fee_cap`, which is then refused outright. At
+		/// most `MAX_FEE_KINDS` kinds may hold caps at once. Spend already
+		/// recorded in `FeeSpend` is kept either way.
+		#[pallet::call_index(44)]
+		#[pallet::weight((
+			<T as Config>::WeightInfo::set_fee_kind_caps(),
+			DispatchClass::Operational,
+			Pays::No
+		))]
+		pub fn set_fee_kind_caps(
+			origin: OriginFor<T>,
+			kind: UsageKind,
+			cap: Option<FeeCap>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			match cap {
+				Some(c) => {
+					ensure!(c.window_periods > 0, Error::<T>::InvalidFeeCap);
+					if !FeeCapConfig::<T>::contains_key(kind) {
+						ensure!(
+							FeeCapConfig::<T>::iter_keys().count() < MAX_FEE_KINDS as usize,
+							Error::<T>::TooManyFeeKinds
+						);
+					}
+					FeeCapConfig::<T>::insert(kind, c);
+				},
+				None => FeeCapConfig::<T>::remove(kind),
+			}
+			Self::deposit_event(Event::FeeKindCapsUpdated { kind, cap });
+			Ok(())
+		}
+
+		/// Root or a charge cap admin sets (`Some`) or removes (`None`) `who`'s
+		/// own per-period cap on non-fee compute usage, in place of
+		/// `MaxComputeChargePerAccountPerPeriod`. It may be higher or lower
+		/// than the default; it does not touch fee kinds.
+		///
+		/// Root is unbounded. An admin (a signed member of `ChargeCapAdmins`)
+		/// may set any override up to `MaxAccountChargeCapOverride` —
+		/// including one below the default — and may remove one, which puts
+		/// the account back on the default.
+		///
+		/// An overridden account's non-fee usage is no longer counted against
+		/// `MaxComputeChargePerCall` — its override is its only bound — so an
+		/// enterprise customer billed far above the default cannot crowd every
+		/// other account out of a call. The exposure this adds to a stolen
+		/// billing key is the sum of the overrides over the
+		/// `MaxComputeBillingLag` periods still open: each one set by root, or
+		/// by an admin within `MaxAccountChargeCapOverride`.
+		#[pallet::call_index(45)]
+		#[pallet::weight((
+			T::DbWeight::get().reads_writes(2, 1),
+			DispatchClass::Operational,
+			Pays::No
+		))]
+		pub fn set_account_charge_cap(
+			origin: OriginFor<T>,
+			who: T::AccountId,
+			cap: Option<u128>,
+		) -> DispatchResult {
+			let by = ensure_signed_or_root(origin)?;
+			if let Some(admin) = &by {
+				ensure!(ChargeCapAdmins::<T>::get().contains(admin), Error::<T>::NotChargeCapAdmin);
+				if let Some(c) = cap {
+					ensure!(
+						c <= MaxAccountChargeCapOverride::<T>::get(),
+						Error::<T>::CapOverrideAboveLimit
+					);
+				}
+			}
+			match cap {
+				Some(c) => AccountChargeCapOverride::<T>::insert(&who, c),
+				None => AccountChargeCapOverride::<T>::remove(&who),
+			}
+			Self::deposit_event(Event::AccountChargeCapUpdated { who, cap, by });
+			Ok(())
+		}
+
+		/// Root replaces the list of accounts allowed to call
+		/// `set_account_charge_cap` without root, at most
+		/// `MAX_CHARGE_CAP_ADMINS`. An empty list leaves it to root alone.
+		///
+		/// No admin may be a compute billing authority — a stolen billing key
+		/// could otherwise raise the caps it bills against — and
+		/// `set_compute_billing_authorities` enforces the same from its side.
+		#[pallet::call_index(46)]
+		#[pallet::weight((
+			T::DbWeight::get().reads_writes(1, 1),
+			DispatchClass::Operational,
+			Pays::No
+		))]
+		pub fn set_charge_cap_admins(
+			origin: OriginFor<T>,
+			admins: Vec<T::AccountId>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			let mut admins = admins;
+			admins.sort();
+			admins.dedup();
+			let authorities = ComputeBillingAuthorities::<T>::get();
+			ensure!(
+				!admins.iter().any(|a| authorities.contains(a)),
+				Error::<T>::AdminIsBillingAuthority
+			);
+			let bounded: BoundedVec<_, ConstU32<MAX_CHARGE_CAP_ADMINS>> =
+				admins.clone().try_into().map_err(|_| Error::<T>::TooManyChargeCapAdmins)?;
+
+			ChargeCapAdmins::<T>::put(bounded);
+			Self::deposit_event(Event::ChargeCapAdminsUpdated { admins });
+			Ok(())
+		}
+
+		/// Root sets the highest override a charge cap admin may set with
+		/// `set_account_charge_cap`.
+		///
+		/// Its own call rather than a parameter of `set_charge_cap_admins`:
+		/// rotating an admin key and moving the limit are separate decisions,
+		/// and folding them together would make every rotation restate — and
+		/// risk resetting — the limit.
+		#[pallet::call_index(47)]
+		#[pallet::weight((T::DbWeight::get().writes(1), DispatchClass::Operational, Pays::No))]
+		pub fn set_max_account_charge_cap_override(
+			origin: OriginFor<T>,
+			max: u128,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			MaxAccountChargeCapOverride::<T>::put(max);
+			Self::deposit_event(Event::MaxAccountChargeCapOverrideUpdated { max });
+			Ok(())
+		}
 	}
 
 	/// Longest referral code `buy_credits` accepts, in bytes.
@@ -2473,6 +2802,26 @@ pub mod pallet {
 		total_accepted: u128,
 	}
 
+	impl ComputeUsageSummary {
+		/// Count one row's result; `amount` is what an accepted row adds to
+		/// `total_accepted`.
+		fn add(&mut self, result: ComputeRowResult, amount: u128) {
+			match result {
+				ComputeRowResult::Charged => {
+					self.charged = self.charged.saturating_add(1);
+					self.total_accepted = self.total_accepted.saturating_add(amount);
+				},
+				ComputeRowResult::Arrears => {
+					self.arrears = self.arrears.saturating_add(1);
+					self.total_accepted = self.total_accepted.saturating_add(amount);
+				},
+				ComputeRowResult::Duplicate => self.duplicates = self.duplicates.saturating_add(1),
+				ComputeRowResult::Conflict => self.conflicts = self.conflicts.saturating_add(1),
+				ComputeRowResult::Refused => self.refused = self.refused.saturating_add(1),
+			}
+		}
+	}
+
 	/// What `apply_compute_usage_row` did with one row.
 	enum ComputeRowResult {
 		Charged,
@@ -2480,6 +2829,41 @@ pub mod pallet {
 		Duplicate,
 		Conflict,
 		Refused,
+	}
+
+	impl ComputeRowResult {
+		fn is_recorded(&self) -> bool {
+			matches!(self, ComputeRowResult::Charged | ComputeRowResult::Arrears)
+		}
+	}
+
+	/// What every row of one `submit_usage_v2` call is checked against.
+	struct UsageCaps {
+		/// `MaxComputeChargePerAccountPerPeriod`, for a row's non-fee part
+		/// unless the account has an override.
+		per_account: u128,
+		/// `MaxComputeChargePerCall`, for the call's non-fee sum.
+		per_call: u128,
+		/// The current compute period, which fee budget windows are measured
+		/// against.
+		now: u64,
+	}
+
+	/// What one `submit_usage_v2` call has accepted so far, for the per-call
+	/// caps. `non_fee` leaves out accounts with a cap override.
+	#[derive(Default)]
+	struct UsageCallTally {
+		non_fee: u128,
+		fees: BTreeMap<UsageKind, u128>,
+	}
+
+	/// The fee lines of a row that passed every cap, and the `FeeSpend` each
+	/// one leaves behind once the row is recorded.
+	struct UsageAdmission {
+		/// What the row adds to the call's non-fee sum: its non-fee part, or
+		/// zero for an account with a cap override.
+		call_non_fee: u128,
+		fees: Vec<(UsageKind, u128, (u64, u128))>,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -2630,70 +3014,261 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Settle or record one compute usage row. `call_headroom` is what the
-		/// call may still accept under `MaxComputeChargePerCall`.
+		/// Settle or record one compute usage row. `call_accepted` is what the
+		/// call has accepted so far under `MaxComputeChargePerCall`, and is
+		/// advanced by this row if it counts towards it.
 		fn apply_compute_usage_row(
 			period: u64,
 			who: &T::AccountId,
 			amount: u128,
 			usage_hash: H256,
 			per_account_cap: u128,
-			call_headroom: u128,
+			per_call_cap: u128,
+			call_accepted: &mut u128,
 		) -> ComputeRowResult {
 			// Idempotency before anything else, caps included: a row that was
 			// accepted before is settled whatever the caps say now, so a cap
 			// lowered between a submit and its retry cannot turn the retry's
 			// duplicates into refusals the backend would try to resubmit.
-			if let Some(recorded) = ComputeUsageCharged::<T>::get(period, who) {
-				if recorded.amount == amount && recorded.usage_hash == usage_hash {
-					Self::deposit_event(Event::ComputeUsageDuplicate {
-						who: who.clone(),
-						period,
-						usage_hash,
-					});
-					return ComputeRowResult::Duplicate;
-				}
-				Self::deposit_event(Event::ComputeUsageConflict {
-					who: who.clone(),
-					period,
-					recorded_amount: recorded.amount,
-					recorded_hash: recorded.usage_hash,
-					submitted_amount: amount,
-					submitted_hash: usage_hash,
-				});
-				return ComputeRowResult::Conflict;
+			if let Some(result) =
+				Self::compute_usage_already_recorded(period, who, amount, usage_hash)
+			{
+				return result;
 			}
 
-			let refusal = if amount > per_account_cap {
-				Some(ComputeUsageRefusal::AccountCapExceeded)
-			} else if amount > call_headroom {
-				Some(ComputeUsageRefusal::CallCapExceeded)
-			} else {
-				None
+			// A v1 row has no breakdown, so all of it is non-fee.
+			let counted = match Self::check_non_fee_caps(
+				who,
+				amount,
+				per_account_cap,
+				per_call_cap,
+				*call_accepted,
+			) {
+				Ok(counted) => counted,
+				Err(reason) => return Self::refuse_compute_usage_row(period, who, amount, reason),
 			};
-			if let Some(reason) = refusal {
-				Self::deposit_event(Event::ComputeUsageRefused {
-					who: who.clone(),
+
+			let result = Self::record_compute_usage_row(period, who, amount, usage_hash, None);
+			if result.is_recorded() {
+				*call_accepted = call_accepted.saturating_add(counted);
+			}
+			result
+		}
+
+		/// Settle or record one `submit_usage_v2` row: `apply_compute_usage_row`
+		/// with the breakdown checked first and the caps split between the fee
+		/// lines and the rest.
+		fn apply_usage_row_v2(
+			period: u64,
+			row: &UsageRowV2<T::AccountId>,
+			caps: &UsageCaps,
+			call: &mut UsageCallTally,
+		) -> ComputeRowResult {
+			let UsageRowV2 { who, total, usage_hash, breakdown } = row;
+
+			// Before idempotency: a malformed row says nothing about its total,
+			// so it is not compared with what was recorded.
+			if !Self::breakdown_is_valid(breakdown, *total) {
+				return Self::refuse_compute_usage_row(
 					period,
-					amount,
-					reason,
-				});
-				return ComputeRowResult::Refused;
+					who,
+					*total,
+					ComputeUsageRefusal::BreakdownInvalid,
+				);
+			}
+			// Then idempotency, before the caps, for the same reason as v1.
+			if let Some(result) =
+				Self::compute_usage_already_recorded(period, who, *total, *usage_hash)
+			{
+				return result;
 			}
 
+			let admission = match Self::admit_usage_row_v2(who, *total, breakdown, caps, call) {
+				Ok(admission) => admission,
+				Err(reason) => return Self::refuse_compute_usage_row(period, who, *total, reason),
+			};
+
+			let result =
+				Self::record_compute_usage_row(period, who, *total, *usage_hash, Some(breakdown));
+			// Spend is drawn only by a recorded row, arrears included: a refusal
+			// (the arrears overflow check) leaves the budget untouched.
+			if result.is_recorded() {
+				call.non_fee = call.non_fee.saturating_add(admission.call_non_fee);
+				for (kind, amount, spend) in admission.fees {
+					let accepted = call.fees.entry(kind).or_default();
+					*accepted = accepted.saturating_add(amount);
+					FeeSpend::<T>::insert(kind, who, spend);
+				}
+			}
+			result
+		}
+
+		/// Non-empty, kinds strictly ascending (hence unique), and summing to
+		/// `total` without overflow.
+		fn breakdown_is_valid(breakdown: &UsageBreakdown, total: u128) -> bool {
+			let ascending = breakdown.windows(2).all(|pair| pair[0].0 < pair[1].0);
+			let sum = breakdown.iter().try_fold(0u128, |acc, (_, amount)| acc.checked_add(*amount));
+			!breakdown.is_empty() && ascending && sum == Some(total)
+		}
+
+		/// Check a valid row against the fee caps and, for what is left after
+		/// its fee lines, the ordinary caps. Reads only; returns the `FeeSpend`
+		/// to write if the row is recorded.
+		fn admit_usage_row_v2(
+			who: &T::AccountId,
+			total: u128,
+			breakdown: &UsageBreakdown,
+			caps: &UsageCaps,
+			call: &UsageCallTally,
+		) -> Result<UsageAdmission, ComputeUsageRefusal> {
+			let mut fee_total = 0u128;
+			let mut fees = Vec::new();
+			for &(kind, amount) in breakdown.iter() {
+				let Some(cap) = FeeCapConfig::<T>::get(kind) else {
+					// Absent is forbidden for a kind that requires caps, and
+					// ordinary usage for any other.
+					if kind.requires_fee_cap() && amount > 0 {
+						return Err(ComputeUsageRefusal::FeeCapExceeded);
+					}
+					continue;
+				};
+				if amount == 0 {
+					continue;
+				}
+				let call_headroom =
+					cap.per_call.saturating_sub(call.fees.get(&kind).copied().unwrap_or(0));
+				if amount > cap.per_debit || amount > call_headroom {
+					return Err(ComputeUsageRefusal::FeeCapExceeded);
+				}
+				// The window runs on the chain clock, never on the submitted
+				// period: a backdated row lands in the window that is open now.
+				let (window_start, spent) = match FeeSpend::<T>::get(kind, who) {
+					Some((start, spent)) if caps.now < start.saturating_add(cap.window_periods) => {
+						(start, spent)
+					},
+					_ => (caps.now, 0),
+				};
+				let spent = spent
+					.checked_add(amount)
+					.filter(|spent| *spent <= cap.budget)
+					.ok_or(ComputeUsageRefusal::FeeBudgetExceeded)?;
+				// Fee lines are part of a breakdown already checked to sum to
+				// `total`, so neither this nor the subtraction below can wrap.
+				fee_total = fee_total.saturating_add(amount);
+				fees.push((kind, amount, (window_start, spent)));
+			}
+
+			let non_fee = total.saturating_sub(fee_total);
+			let call_non_fee = Self::check_non_fee_caps(
+				who,
+				non_fee,
+				caps.per_account,
+				caps.per_call,
+				call.non_fee,
+			)?;
+			Ok(UsageAdmission { call_non_fee, fees })
+		}
+
+		/// Check a row's non-fee part against `who`'s per-period cap — its
+		/// `AccountChargeCapOverride`, else `default_cap` — and, for an account
+		/// without an override, against what is left of `per_call_cap` after
+		/// `call_accepted`. Returns what the row adds to the call's tally:
+		/// `non_fee`, or zero for an overridden account.
+		fn check_non_fee_caps(
+			who: &T::AccountId,
+			non_fee: u128,
+			default_cap: u128,
+			per_call_cap: u128,
+			call_accepted: u128,
+		) -> Result<u128, ComputeUsageRefusal> {
+			let (cap, counts_against_call) = match AccountChargeCapOverride::<T>::get(who) {
+				Some(cap) => (cap, false),
+				None => (default_cap, true),
+			};
+			if non_fee > cap {
+				return Err(ComputeUsageRefusal::AccountCapExceeded);
+			}
+			if !counts_against_call {
+				return Ok(0);
+			}
+			if non_fee > per_call_cap.saturating_sub(call_accepted) {
+				return Err(ComputeUsageRefusal::CallCapExceeded);
+			}
+			Ok(non_fee)
+		}
+
+		/// The most lines any row of a `submit_usage_v2` call carries, for its
+		/// declared weight.
+		fn widest_breakdown(rows: &[UsageRowV2<T::AccountId>]) -> u32 {
+			let widest = rows.iter().map(|row| row.breakdown.len()).max().unwrap_or(0);
+			u32::try_from(widest).unwrap_or(u32::MAX)
+		}
+
+		/// The outcome of a row whose `(period, account)` already has a record:
+		/// a duplicate if it matches, a conflict if not. `None` if unrecorded.
+		fn compute_usage_already_recorded(
+			period: u64,
+			who: &T::AccountId,
+			amount: u128,
+			usage_hash: H256,
+		) -> Option<ComputeRowResult> {
+			let recorded = ComputeUsageCharged::<T>::get(period, who)?;
+			if recorded.amount == amount && recorded.usage_hash == usage_hash {
+				Self::deposit_event(Event::ComputeUsageDuplicate {
+					who: who.clone(),
+					period,
+					usage_hash,
+				});
+				return Some(ComputeRowResult::Duplicate);
+			}
+			Self::deposit_event(Event::ComputeUsageConflict {
+				who: who.clone(),
+				period,
+				recorded_amount: recorded.amount,
+				recorded_hash: recorded.usage_hash,
+				submitted_amount: amount,
+				submitted_hash: usage_hash,
+			});
+			Some(ComputeRowResult::Conflict)
+		}
+
+		fn refuse_compute_usage_row(
+			period: u64,
+			who: &T::AccountId,
+			amount: u128,
+			reason: ComputeUsageRefusal,
+		) -> ComputeRowResult {
+			Self::deposit_event(Event::ComputeUsageRefused {
+				who: who.clone(),
+				period,
+				amount,
+				reason,
+			});
+			ComputeRowResult::Refused
+		}
+
+		/// Debit a row that passed its caps, or move it to arrears, and record
+		/// it. `breakdown` is `Some` for a `submit_usage_v2` row, which picks
+		/// the v2 events.
+		fn record_compute_usage_row(
+			period: u64,
+			who: &T::AccountId,
+			amount: u128,
+			usage_hash: H256,
+			breakdown: Option<&UsageBreakdown>,
+		) -> ComputeRowResult {
 			let arrears = ComputeArrears::<T>::get(who);
 			// Checked, not saturating: a saturated sum would record the whole
 			// row as accepted while adding less than all of it to the debt. And
 			// checked before the commitment is drawn, so a refusal never spends
 			// allowance.
 			if arrears.checked_add(amount).is_none() {
-				Self::deposit_event(Event::ComputeUsageRefused {
-					who: who.clone(),
+				return Self::refuse_compute_usage_row(
 					period,
+					who,
 					amount,
-					reason: ComputeUsageRefusal::ArrearsOverflow,
-				});
-				return ComputeRowResult::Refused;
+					ComputeUsageRefusal::ArrearsOverflow,
+				);
 			}
 			let billable = Self::draw_compute_commitment(who, amount);
 			// `billable <= amount`, so the check above covers this sum.
@@ -2702,23 +3277,46 @@ pub mod pallet {
 			// Nothing new to bill leaves any arrears for `settle_compute_arrears`
 			// rather than attempting them on every idle hour.
 			let outcome = if billable == 0 || Self::collect_compute_credits(who, owed) {
-				Self::deposit_event(Event::ComputeUsageCharged {
-					who: who.clone(),
-					period,
-					amount,
-					arrears_collected: if billable == 0 { 0 } else { arrears },
-					usage_hash,
+				let arrears_collected = if billable == 0 { 0 } else { arrears };
+				Self::deposit_event(match breakdown {
+					None => Event::ComputeUsageCharged {
+						who: who.clone(),
+						period,
+						amount,
+						arrears_collected,
+						usage_hash,
+					},
+					Some(breakdown) => Event::UsageCharged {
+						who: who.clone(),
+						period,
+						amount,
+						arrears_collected,
+						usage_hash,
+						breakdown: breakdown.clone(),
+					},
 				});
 				ComputeChargeOutcome::Charged
 			} else {
 				ComputeArrears::<T>::insert(who, owed);
-				Self::deposit_event(Event::ComputeUsageChargeFailed {
-					who: who.clone(),
-					period,
-					amount,
-					required: owed,
-					available: CreditsPallet::<T>::get_free_credits(who),
-					usage_hash,
+				let available = CreditsPallet::<T>::get_free_credits(who);
+				Self::deposit_event(match breakdown {
+					None => Event::ComputeUsageChargeFailed {
+						who: who.clone(),
+						period,
+						amount,
+						required: owed,
+						available,
+						usage_hash,
+					},
+					Some(breakdown) => Event::UsageChargeFailed {
+						who: who.clone(),
+						period,
+						amount,
+						required: owed,
+						available,
+						usage_hash,
+						breakdown: breakdown.clone(),
+					},
 				});
 				ComputeChargeOutcome::Arrears
 			};
@@ -2733,6 +3331,29 @@ pub mod pallet {
 				ComputeChargeOutcome::Charged => ComputeRowResult::Charged,
 				ComputeChargeOutcome::Arrears => ComputeRowResult::Arrears,
 			}
+		}
+
+		/// Bump the billing high-water mark and prune cursor if any row was
+		/// recorded, and emit the call's summary.
+		fn finish_compute_usage_submission(period: u64, summary: &ComputeUsageSummary) {
+			if summary.charged > 0 || summary.arrears > 0 {
+				LastComputeBillingPeriod::<T>::mutate(|last| {
+					*last = Some(last.map_or(period, |l| l.max(period)))
+				});
+				ComputeUsagePruneFrom::<T>::mutate(|from| {
+					*from = Some(from.map_or(period, |f| f.min(period)))
+				});
+			}
+
+			Self::deposit_event(Event::ComputeUsageSubmitted {
+				period,
+				charged: summary.charged,
+				arrears: summary.arrears,
+				duplicates: summary.duplicates,
+				conflicts: summary.conflicts,
+				refused: summary.refused,
+				total_accepted: summary.total_accepted,
+			});
 		}
 
 		/// The part of `amount` left to charge to credits after `who`'s monthly
@@ -4110,10 +4731,12 @@ pub mod pallet {
 				Some(pallet_calendar::Pallet::<T>::add_months_clamped(prev_next, anchor, 1));
 		}
 
+		/// Returns the credits charged, and each subscription that could not
+		/// be paid with the free credits left when it was reached.
 		fn charge_due_subscriptions_individually(
 			account_id: &T::AccountId,
 			due: &[UserPlanSubscription<T>],
-		) -> (u128, Vec<SubscriptionId>) {
+		) -> (u128, Vec<(SubscriptionId, u128)>) {
 			let mut charged_total = 0u128;
 			let mut failed = Vec::new();
 			let mut available = CreditsPallet::<T>::get_free_credits(account_id);
@@ -4137,8 +4760,14 @@ pub mod pallet {
 				if paid {
 					charged_total = charged_total.saturating_add(price);
 					available = available.saturating_sub(price);
+					Self::deposit_event(Event::SubscriptionRenewed {
+						who: account_id.clone(),
+						subscription_id: sub.id,
+						plan_id: sub.package.id,
+						amount: price,
+					});
 				} else {
-					failed.push(sub.id);
+					failed.push((sub.id, available));
 				}
 			}
 
@@ -4253,6 +4882,12 @@ pub mod pallet {
 								continue;
 							}
 							Self::advance_subscription_cycle(sub, today, current_block);
+							Self::deposit_event(Event::SubscriptionRenewed {
+								who: account_id.clone(),
+								subscription_id: sub.id,
+								plan_id: sub.package.id,
+								amount: 0,
+							});
 						}
 						continue;
 					}
@@ -4298,7 +4933,7 @@ pub mod pallet {
 							continue;
 						}
 
-						if !subs_to_deactivate.contains(&sub.id) {
+						if !subs_to_deactivate.iter().any(|(id, _)| *id == sub.id) {
 							Self::advance_subscription_cycle(sub, today, current_block);
 						}
 					}
@@ -4318,7 +4953,7 @@ pub mod pallet {
 
 					// Deactivate the subscriptions that could not be paid, refund
 					// any unused prepaid months, and report each one individually.
-					for sub_id in subs_to_deactivate {
+					for (sub_id, available_at_failure) in subs_to_deactivate {
 						let Some(failed) = subs.iter().find(|s| s.id == sub_id).cloned() else {
 							continue;
 						};
@@ -4361,6 +4996,13 @@ pub mod pallet {
 							who: account_id.clone(),
 							required_credits: price,
 							available_credits: available_at_attempt,
+						});
+						Self::deposit_event(Event::SubscriptionRenewalFailed {
+							who: account_id.clone(),
+							subscription_id: sub_id,
+							plan_id: failed.package.id,
+							required: price,
+							available: available_at_failure,
 						});
 					}
 				}
