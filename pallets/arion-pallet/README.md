@@ -32,13 +32,21 @@ This pallet also includes **registration primitives** for miner “child” acco
 
 - **Spoof resistance**: `node_id` is an ed25519 public key (32 bytes). Registration requires a valid signature from the
   corresponding private key.
-- **Anti-Sybil adaptive pricing**:
-  - **First child is free per family (one-time)**.
-  - After that, the required deposit is **global** (network-wide) and **doubles** after each paid registration.
-  - The global deposit **halves** after each `GlobalDepositHalvingPeriodBlocks` of inactivity (lazy, only computed on registration).
+- **Anti-Sybil adaptive pricing** (per node):
+  - `FreeChildSlotsPerFamily` fee-free registrations per family (lifetime, default 1; 0 = every node pays).
+  - After that, every registration pays the **global** (network-wide) node price
+    `max(child deposit, stored price decayed)`; the stored price then becomes `min(cap, price * multiplier)`.
+    The stored price **halves** every `half_life` blocks of inactivity (lazy, linear between two halvings).
+  - `fee_share` of the price goes to the bank (`DepositType::NodeRegistrationFee`), the rest is the child's deposit,
+    reserved on the family account.
+  - Parameters: `set_node_deposit_params` (`NodeDepositParams`). While never set, the pre-existing curve applies:
+    ×2 per paid registration, `half_life = GlobalDepositHalvingPeriodBlocks`, no cap, no fee,
+    `refund_delay = UnbondingPeriodBlocks`.
 - **Anti-yoyo**:
-  - `deregister_child` places the child into **unbonding** and applies a **cooldown**.
-  - The deposit remains reserved until `claim_unbonded` after `UnbondingPeriodBlocks`.
+  - `deregister_child` / `force_deregister_child` / `deregister_family` place the child into **unbonding** and apply a **cooldown**.
+  - The deposit remains reserved until `claim_unbonded` after `refund_delay`.
+  - The same node (same family, child account and node id) registered again before then reuses its deposit:
+    no fee, no second reserve, the price does not move. A new child account or node id is a new node.
 
 #### Registration signature payload
 
@@ -145,9 +153,10 @@ families (raw must be > 0).
      - `MaxChildrenTotal` (e.g. 2000)
      - `MaxChildrenPerFamily`
      - `BaseChildDeposit`
-     - `GlobalDepositHalvingPeriodBlocks` (e.g. 14_400 @ 6s blocks ≈ 24h)
+     - `GlobalDepositHalvingPeriodBlocks` (default `half_life`, e.g. 14_400 @ 6s blocks ≈ 24h)
      - `UnregisterCooldownBlocks`
-     - `UnbondingPeriodBlocks`
+     - `UnbondingPeriodBlocks` (default `refund_delay`)
+   - **`NodeRegistrationFeeHandler`** — receives the non-refundable share of the node price (the bank)
    - `MaxMiners`, `MaxEndpointLen`, `MaxHttpAddrLen`, `MaxStatsUpdates`
    - weight-related constants:
      - `MaxNodeWeight` / `MaxFamilyWeight` (caps)
@@ -173,6 +182,9 @@ This pallet includes sudo/admin-controlled extrinsics (configure `AdminOrigin = 
 - `set_lockup_enabled(enabled: bool)`
   - toggles whether `register_child` reserves deposits (lockup) and whether unbonding delays apply
 - `set_base_child_deposit(deposit)`
-  - sets the **base deposit floor** used by the global registration fee curve
+  - sets the **child deposit**, floor of the node registration price
+- `set_node_deposit_params(params)`
+  - `multiplier_permill` (×1..×10), `half_life` (1 block..365 days), `cap` (>= child deposit),
+    `fee_share` (<= 50 %), `refund_delay` (<= 90 days)
 
 
