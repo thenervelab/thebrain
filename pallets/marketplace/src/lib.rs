@@ -987,11 +987,21 @@ pub mod pallet {
 			required: u128,
 			available: u128,
 		},
-		/// Root set (`Some`) or removed (`None`) `who`'s own per-period cap on
-		/// non-fee compute usage.
+		/// `who`'s own per-period cap on non-fee compute usage was set
+		/// (`Some`) or removed (`None`), by a charge cap admin (`by`) or by
+		/// root (`by: None`).
 		AccountChargeCapUpdated {
 			who: T::AccountId,
 			cap: Option<u128>,
+			by: Option<T::AccountId>,
+		},
+		/// Root replaced the charge cap admin list.
+		ChargeCapAdminsUpdated {
+			admins: Vec<T::AccountId>,
+		},
+		/// Root changed the highest override a charge cap admin may set.
+		MaxAccountChargeCapOverrideUpdated {
+			max: u128,
 		},
 	}
 
@@ -1086,6 +1096,17 @@ pub mod pallet {
 		InvalidFeeCap,
 		/// `MAX_FEE_KINDS` kinds already hold a `FeeCapConfig` entry.
 		TooManyFeeKinds,
+		/// The caller is neither root nor in `ChargeCapAdmins`.
+		NotChargeCapAdmin,
+		/// More than `MAX_CHARGE_CAP_ADMINS` charge cap admins.
+		TooManyChargeCapAdmins,
+		/// A charge cap admin tried to set an override above
+		/// `MaxAccountChargeCapOverride`.
+		CapOverrideAboveLimit,
+		/// The same account would be both a charge cap admin and a compute
+		/// billing authority, letting one stolen key raise the caps it bills
+		/// against.
+		AdminIsBillingAuthority,
 	}
 
 	#[pallet::storage]
@@ -1310,6 +1331,19 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type AccountChargeCapOverride<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u128, OptionQuery>;
+
+	/// Accounts that may call `set_account_charge_cap` besides root, within
+	/// `MaxAccountChargeCapOverride`. Set by root with
+	/// `set_charge_cap_admins`; never overlaps `ComputeBillingAuthorities`.
+	#[pallet::storage]
+	pub type ChargeCapAdmins<T: Config> =
+		StorageValue<_, BoundedVec<T::AccountId, ConstU32<MAX_CHARGE_CAP_ADMINS>>, ValueQuery>;
+
+	/// The highest override a charge cap admin may set, in credits. Root is
+	/// not bound by it. Zero by default, so until root raises it an admin can
+	/// only remove overrides or set them to zero.
+	#[pallet::storage]
+	pub type MaxAccountChargeCapOverride<T: Config> = StorageValue<_, u128, ValueQuery>;
 
 	/// Caps on each fee kind, set by root with `set_fee_kind_caps`.
 	///
@@ -2387,8 +2421,15 @@ pub mod pallet {
 		/// Each authority needs an existential deposit to submit at all — a
 		/// feeless call still passes the nonce check, which rejects accounts
 		/// that do not exist — but nothing beyond it.
+		///
+		/// No authority may also be a charge cap admin (see
+		/// `set_charge_cap_admins`).
 		#[pallet::call_index(38)]
-		#[pallet::weight((T::DbWeight::get().writes(1), DispatchClass::Operational, Pays::No))]
+		#[pallet::weight((
+			T::DbWeight::get().reads_writes(1, 1),
+			DispatchClass::Operational,
+			Pays::No
+		))]
 		pub fn set_compute_billing_authorities(
 			origin: OriginFor<T>,
 			authorities: Vec<T::AccountId>,
@@ -2402,6 +2443,11 @@ pub mod pallet {
 			let mut authorities = authorities;
 			authorities.sort();
 			authorities.dedup();
+			let admins = ChargeCapAdmins::<T>::get();
+			ensure!(
+				!authorities.iter().any(|a| admins.contains(a)),
+				Error::<T>::AdminIsBillingAuthority
+			);
 
 			ComputeBillingAuthorities::<T>::put(&authorities);
 			Self::deposit_event(Event::ComputeBillingAuthoritiesSet { authorities });
@@ -2630,30 +2676,102 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Root sets (`Some`) or removes (`None`) `who`'s own per-period cap
-		/// on non-fee compute usage, in place of
+		/// Root or a charge cap admin sets (`Some`) or removes (`None`) `who`'s
+		/// own per-period cap on non-fee compute usage, in place of
 		/// `MaxComputeChargePerAccountPerPeriod`. It may be higher or lower
 		/// than the default; it does not touch fee kinds.
+		///
+		/// Root is unbounded. An admin (a signed member of `ChargeCapAdmins`)
+		/// may set any override up to `MaxAccountChargeCapOverride` —
+		/// including one below the default — and may remove one, which puts
+		/// the account back on the default.
 		///
 		/// An overridden account's non-fee usage is no longer counted against
 		/// `MaxComputeChargePerCall` — its override is its only bound — so an
 		/// enterprise customer billed far above the default cannot crowd every
 		/// other account out of a call. The exposure this adds to a stolen
 		/// billing key is the sum of the overrides over the
-		/// `MaxComputeBillingLag` periods still open, which root controls.
+		/// `MaxComputeBillingLag` periods still open: each one set by root, or
+		/// by an admin within `MaxAccountChargeCapOverride`.
 		#[pallet::call_index(45)]
-		#[pallet::weight((T::DbWeight::get().writes(1), DispatchClass::Operational, Pays::No))]
+		#[pallet::weight((
+			T::DbWeight::get().reads_writes(2, 1),
+			DispatchClass::Operational,
+			Pays::No
+		))]
 		pub fn set_account_charge_cap(
 			origin: OriginFor<T>,
 			who: T::AccountId,
 			cap: Option<u128>,
 		) -> DispatchResult {
-			ensure_root(origin)?;
+			let by = ensure_signed_or_root(origin)?;
+			if let Some(admin) = &by {
+				ensure!(ChargeCapAdmins::<T>::get().contains(admin), Error::<T>::NotChargeCapAdmin);
+				if let Some(c) = cap {
+					ensure!(
+						c <= MaxAccountChargeCapOverride::<T>::get(),
+						Error::<T>::CapOverrideAboveLimit
+					);
+				}
+			}
 			match cap {
 				Some(c) => AccountChargeCapOverride::<T>::insert(&who, c),
 				None => AccountChargeCapOverride::<T>::remove(&who),
 			}
-			Self::deposit_event(Event::AccountChargeCapUpdated { who, cap });
+			Self::deposit_event(Event::AccountChargeCapUpdated { who, cap, by });
+			Ok(())
+		}
+
+		/// Root replaces the list of accounts allowed to call
+		/// `set_account_charge_cap` without root, at most
+		/// `MAX_CHARGE_CAP_ADMINS`. An empty list leaves it to root alone.
+		///
+		/// No admin may be a compute billing authority — a stolen billing key
+		/// could otherwise raise the caps it bills against — and
+		/// `set_compute_billing_authorities` enforces the same from its side.
+		#[pallet::call_index(46)]
+		#[pallet::weight((
+			T::DbWeight::get().reads_writes(1, 1),
+			DispatchClass::Operational,
+			Pays::No
+		))]
+		pub fn set_charge_cap_admins(
+			origin: OriginFor<T>,
+			admins: Vec<T::AccountId>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			let mut admins = admins;
+			admins.sort();
+			admins.dedup();
+			let authorities = ComputeBillingAuthorities::<T>::get();
+			ensure!(
+				!admins.iter().any(|a| authorities.contains(a)),
+				Error::<T>::AdminIsBillingAuthority
+			);
+			let bounded: BoundedVec<_, ConstU32<MAX_CHARGE_CAP_ADMINS>> =
+				admins.clone().try_into().map_err(|_| Error::<T>::TooManyChargeCapAdmins)?;
+
+			ChargeCapAdmins::<T>::put(bounded);
+			Self::deposit_event(Event::ChargeCapAdminsUpdated { admins });
+			Ok(())
+		}
+
+		/// Root sets the highest override a charge cap admin may set with
+		/// `set_account_charge_cap`.
+		///
+		/// Its own call rather than a parameter of `set_charge_cap_admins`:
+		/// rotating an admin key and moving the limit are separate decisions,
+		/// and folding them together would make every rotation restate — and
+		/// risk resetting — the limit.
+		#[pallet::call_index(47)]
+		#[pallet::weight((T::DbWeight::get().writes(1), DispatchClass::Operational, Pays::No))]
+		pub fn set_max_account_charge_cap_override(
+			origin: OriginFor<T>,
+			max: u128,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			MaxAccountChargeCapOverride::<T>::put(max);
+			Self::deposit_event(Event::MaxAccountChargeCapOverrideUpdated { max });
 			Ok(())
 		}
 	}

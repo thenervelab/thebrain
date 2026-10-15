@@ -250,6 +250,9 @@ pub const COMPUTE_BILLING_PERIOD_MS: u64 = 3_600_000;
 /// expected shape.
 pub const MAX_COMPUTE_BILLING_AUTHORITIES: u32 = 8;
 
+/// Ceiling on `ChargeCapAdmins`.
+pub const MAX_CHARGE_CAP_ADMINS: u32 = 8;
+
 /// What became of one accepted `(period, account)` compute usage row.
 #[derive(Clone, Copy, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 pub enum ComputeChargeOutcome {

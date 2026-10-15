@@ -18,10 +18,10 @@ use hippius_mainnet_runtime::{
 	RuntimeOrigin, System,
 };
 use pallet_marketplace::{
-	AccountChargeCapOverride, ComputeArrears, ComputeChargeOutcome, ComputeUsageCharged,
-	ComputeUsageRecord, ComputeUsageRefusal, Error, Event as MarketplaceEvent, FeeCap,
-	FeeCapConfig, FeeSpend, UsageBreakdown, UsageKind, UsageRowV2, COMPUTE_BILLING_PERIOD_MS,
-	MAX_FEE_KINDS, MAX_USAGE_KINDS_PER_ROW,
+	AccountChargeCapOverride, ChargeCapAdmins, ComputeArrears, ComputeChargeOutcome,
+	ComputeUsageCharged, ComputeUsageRecord, ComputeUsageRefusal, Error, Event as MarketplaceEvent,
+	FeeCap, FeeCapConfig, FeeSpend, UsageBreakdown, UsageKind, UsageRowV2,
+	COMPUTE_BILLING_PERIOD_MS, MAX_FEE_KINDS, MAX_USAGE_KINDS_PER_ROW,
 };
 use sp_core::{crypto::Ss58Codec, H256};
 use sp_runtime::{AccountId32, BuildStorage, DispatchError};
@@ -602,6 +602,7 @@ fn an_override_above_the_default_admits_rows_between_the_two() {
 		assert!(marketplace_events().contains(&MarketplaceEvent::AccountChargeCapUpdated {
 			who: enterprise.clone(),
 			cap: Some(PER_ACCOUNT_CAP * 2),
+			by: None,
 		}));
 
 		let lines = [(UsageKind::Compute, PER_ACCOUNT_CAP + 1)];
@@ -632,8 +633,11 @@ fn an_override_below_the_default_refuses_and_removing_it_restores_the_default() 
 
 		set_account_cap(&user, None);
 		assert_eq!(AccountChargeCapOverride::<Runtime>::get(&user), None);
-		assert!(marketplace_events()
-			.contains(&MarketplaceEvent::AccountChargeCapUpdated { who: user.clone(), cap: None }));
+		assert!(marketplace_events().contains(&MarketplaceEvent::AccountChargeCapUpdated {
+			who: user.clone(),
+			cap: None,
+			by: None,
+		}));
 
 		// Back on the default: the refused row now passes, and the default
 		// still binds above it.
@@ -691,8 +695,9 @@ fn an_override_does_not_lift_fee_caps() {
 	});
 }
 
+/// With no admins configured, only root sets an account cap.
 #[test]
-fn only_root_sets_an_account_cap() {
+fn without_admins_only_root_sets_an_account_cap() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
 			Marketplace::set_account_charge_cap(
@@ -700,9 +705,195 @@ fn only_root_sets_an_account_cap() {
 				account(10),
 				Some(1),
 			),
+			Error::<Runtime>::NotChargeCapAdmin
+		);
+		assert_noop!(
+			Marketplace::set_account_charge_cap(RuntimeOrigin::none(), account(10), Some(1)),
 			DispatchError::BadOrigin
 		);
 		assert_eq!(AccountChargeCapOverride::<Runtime>::get(account(10)), None);
+	});
+}
+
+// ── Charge cap admins ────────────────────────────────────────────────────
+
+fn cap_admin() -> AccountId {
+	account(3)
+}
+
+fn set_cap_as(
+	origin: RuntimeOrigin,
+	who: &AccountId,
+	cap: Option<u128>,
+) -> Result<(), DispatchError> {
+	Marketplace::set_account_charge_cap(origin, who.clone(), cap)
+}
+
+/// Admins in place, limited to twice the default.
+fn with_cap_admin() {
+	assert_ok!(Marketplace::set_charge_cap_admins(RuntimeOrigin::root(), vec![cap_admin()]));
+	assert_ok!(Marketplace::set_max_account_charge_cap_override(
+		RuntimeOrigin::root(),
+		PER_ACCOUNT_CAP * 2,
+	));
+}
+
+#[test]
+fn an_admin_sets_overrides_up_to_the_limit_and_root_beyond_it() {
+	new_test_ext().execute_with(|| {
+		with_cap_admin();
+		let user = account(10);
+		let admin = RuntimeOrigin::signed(cap_admin());
+
+		assert_ok!(set_cap_as(admin.clone(), &user, Some(PER_ACCOUNT_CAP * 2)));
+		assert_eq!(AccountChargeCapOverride::<Runtime>::get(&user), Some(PER_ACCOUNT_CAP * 2));
+		assert!(marketplace_events().contains(&MarketplaceEvent::AccountChargeCapUpdated {
+			who: user.clone(),
+			cap: Some(PER_ACCOUNT_CAP * 2),
+			by: Some(cap_admin()),
+		}));
+
+		assert_noop!(
+			Marketplace::set_account_charge_cap(admin, user.clone(), Some(PER_ACCOUNT_CAP * 2 + 1)),
+			Error::<Runtime>::CapOverrideAboveLimit
+		);
+
+		assert_ok!(set_cap_as(RuntimeOrigin::root(), &user, Some(PER_ACCOUNT_CAP * 10)));
+		assert_eq!(AccountChargeCapOverride::<Runtime>::get(&user), Some(PER_ACCOUNT_CAP * 10));
+		assert!(marketplace_events().contains(&MarketplaceEvent::AccountChargeCapUpdated {
+			who: user,
+			cap: Some(PER_ACCOUNT_CAP * 10),
+			by: None,
+		}));
+	});
+}
+
+/// Until root sets a limit, an admin can only take caps down: to zero, or
+/// back to the default by removing an override.
+#[test]
+fn with_no_limit_set_an_admin_can_only_remove_or_zero_an_override() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Marketplace::set_charge_cap_admins(RuntimeOrigin::root(), vec![cap_admin()]));
+		let user = account(10);
+		let admin = RuntimeOrigin::signed(cap_admin());
+		assert_ok!(set_cap_as(RuntimeOrigin::root(), &user, Some(PER_ACCOUNT_CAP * 10)));
+
+		assert_noop!(
+			Marketplace::set_account_charge_cap(admin.clone(), user.clone(), Some(1)),
+			Error::<Runtime>::CapOverrideAboveLimit
+		);
+		assert_ok!(set_cap_as(admin.clone(), &user, Some(0)));
+		assert_eq!(AccountChargeCapOverride::<Runtime>::get(&user), Some(0));
+		assert_ok!(set_cap_as(admin, &user, None));
+		assert_eq!(AccountChargeCapOverride::<Runtime>::get(&user), None);
+		assert!(marketplace_events().contains(&MarketplaceEvent::AccountChargeCapUpdated {
+			who: user,
+			cap: None,
+			by: Some(cap_admin()),
+		}));
+	});
+}
+
+#[test]
+fn an_admin_may_lower_an_account_below_the_default() {
+	new_test_ext().execute_with(|| {
+		with_cap_admin();
+		let user = account(10);
+		deposit_credits(&user, 100_000_000);
+		assert_ok!(set_cap_as(RuntimeOrigin::signed(cap_admin()), &user, Some(HOUR_COST - 1)));
+
+		submit(PERIOD, vec![row(&user, &[(UsageKind::Compute, HOUR_COST)], hash(1))]);
+		assert_eq!(refusals(), vec![(user, ComputeUsageRefusal::AccountCapExceeded)]);
+	});
+}
+
+#[test]
+fn only_root_and_admins_set_account_caps() {
+	new_test_ext().execute_with(|| {
+		with_cap_admin();
+		for outsider in [account(99), biller()] {
+			assert_noop!(
+				Marketplace::set_account_charge_cap(
+					RuntimeOrigin::signed(outsider),
+					account(10),
+					Some(1),
+				),
+				Error::<Runtime>::NotChargeCapAdmin
+			);
+		}
+		// Removing an admin revokes it.
+		assert_ok!(Marketplace::set_charge_cap_admins(RuntimeOrigin::root(), vec![]));
+		assert_noop!(
+			Marketplace::set_account_charge_cap(
+				RuntimeOrigin::signed(cap_admin()),
+				account(10),
+				None,
+			),
+			Error::<Runtime>::NotChargeCapAdmin
+		);
+	});
+}
+
+#[test]
+fn admins_and_their_limit_are_set_by_root_alone() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			Marketplace::set_charge_cap_admins(
+				RuntimeOrigin::signed(cap_admin()),
+				vec![cap_admin()]
+			),
+			DispatchError::BadOrigin
+		);
+		with_cap_admin();
+		assert_noop!(
+			Marketplace::set_max_account_charge_cap_override(RuntimeOrigin::signed(cap_admin()), 1),
+			DispatchError::BadOrigin
+		);
+		assert!(marketplace_events()
+			.contains(&MarketplaceEvent::ChargeCapAdminsUpdated { admins: vec![cap_admin()] }));
+		assert!(marketplace_events().contains(
+			&MarketplaceEvent::MaxAccountChargeCapOverrideUpdated { max: PER_ACCOUNT_CAP * 2 }
+		));
+		// An admin cannot touch the other caps either.
+		assert_noop!(
+			Marketplace::set_compute_charge_caps(RuntimeOrigin::signed(cap_admin()), 1, 1),
+			DispatchError::BadOrigin
+		);
+		assert_noop!(
+			Marketplace::set_fee_kind_caps(
+				RuntimeOrigin::signed(cap_admin()),
+				UsageKind::S3Plan,
+				None
+			),
+			DispatchError::BadOrigin
+		);
+
+		let nine: Vec<AccountId> = (100..109).map(account).collect();
+		assert_noop!(
+			Marketplace::set_charge_cap_admins(RuntimeOrigin::root(), nine),
+			Error::<Runtime>::TooManyChargeCapAdmins
+		);
+	});
+}
+
+/// A billing key that could raise its own victims' caps would turn the cap
+/// back into whatever the key wants, so the two roles never share an account.
+#[test]
+fn a_billing_authority_is_never_a_charge_cap_admin() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			Marketplace::set_charge_cap_admins(RuntimeOrigin::root(), vec![cap_admin(), biller()]),
+			Error::<Runtime>::AdminIsBillingAuthority
+		);
+		assert_ok!(Marketplace::set_charge_cap_admins(RuntimeOrigin::root(), vec![cap_admin()]));
+		assert_noop!(
+			Marketplace::set_compute_billing_authorities(
+				RuntimeOrigin::root(),
+				vec![biller(), cap_admin()],
+			),
+			Error::<Runtime>::AdminIsBillingAuthority
+		);
+		assert_eq!(ChargeCapAdmins::<Runtime>::get().into_inner(), vec![cap_admin()]);
 	});
 }
 
