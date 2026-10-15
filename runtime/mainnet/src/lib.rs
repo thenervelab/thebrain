@@ -605,7 +605,7 @@ impl pallet_registration::ProxyTypeCompat for ProxyType {
 	fn is_non_transfer(&self) -> bool {
 		matches!(self, ProxyType::NonTransfer)
 	}
-
+	
 	fn is_any(&self) -> bool {
 		matches!(self, ProxyType::Any)
 	}
