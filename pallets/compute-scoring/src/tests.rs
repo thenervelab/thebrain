@@ -2258,6 +2258,30 @@ mod slashing {
     }
 
     #[test]
+    fn a_refused_slash_is_rolled_back_entirely() {
+        new_test_ext().execute_with(|| {
+            staked(1, 500);
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            let issuance_before = Balances::total_issuance();
+            crate::mock::mock_sink_refuses(true);
+            System::reset_events();
+
+            assert_noop!(
+                ComputeScoring::slash_stake(RuntimeOrigin::root(), 1, 200, SlashReason::Sla),
+                Error::<TestRuntime>::SlashSinkRefused
+            );
+            assert_eq!(on_hold(1), 500);
+            assert_eq!(StakedAmount::<TestRuntime>::get(1), 500);
+            assert_eq!(SlashRecord::<TestRuntime>::get(1), 0);
+            assert_eq!(Balances::total_issuance(), issuance_before);
+            assert!(System::events().is_empty());
+        });
+    }
+
+    #[test]
     fn set_slash_beneficiary_is_deprecated() {
         new_test_ext().execute_with(|| {
             assert_noop!(
@@ -2368,6 +2392,68 @@ mod slashing {
             crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
             assert_eq!(on_hold(1), 400);
             assert_eq!(Balances::free_balance(1), 1_500);
+        });
+    }
+
+    #[test]
+    fn migration_failure_rolls_the_account_back_and_keeps_the_old_version() {
+        use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            // A corrupt pre-state: the `cmps/stk` record says 500 while the
+            // account only has 400 reserved, so a full unreserve comes up
+            // 100 short and the conversion must not half-happen.
+            let _ = Balances::make_free_balance_be(&1, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                400
+            ));
+            pallet_balances::Reserves::<TestRuntime>::mutate(1, |r| r[0].amount = 500);
+            StakedAmount::<TestRuntime>::insert(1, 500);
+            // A second, healthy account converts regardless.
+            let _ = Balances::make_free_balance_be(&2, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &2,
+                300
+            ));
+            StakedAmount::<TestRuntime>::insert(2, 300);
+
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            // Account 1 rolled back to exactly its pre-migration state.
+            assert_eq!(
+                Balances::reserved_balance_named(&crate::pallet::STAKE_RESERVE_ID, &1),
+                500
+            );
+            assert_eq!(Balances::reserved_balance(1), 400);
+            assert_eq!(on_hold(1), 0);
+            assert_eq!(Balances::free_balance(1), 600);
+            assert_eq!(on_hold(2), 300);
+            // Not stamped: the next upgrade retries.
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 0);
+        });
+    }
+
+    #[test]
+    fn migration_moves_a_reserve_that_disagrees_with_the_ledger_as_is() {
+        use frame_support::traits::{OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            let _ = Balances::make_free_balance_be(&1, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                250
+            ));
+            StakedAmount::<TestRuntime>::insert(1, 400);
+
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            // The physical reserve moved, nothing more, nothing freed.
+            assert_eq!(on_hold(1), 250);
+            assert_eq!(Balances::free_balance(1), 750);
         });
     }
 

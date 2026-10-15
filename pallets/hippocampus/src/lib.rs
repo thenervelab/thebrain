@@ -661,8 +661,11 @@ pub mod pallet {
 		/// Shares the 24-hour `Max24HourMinerPayout` budget with
 		/// `pay_storage_miners` — the two compartments are separate pots, but
 		/// the daily drain rate is capped once across both.
+		// +1 read: the `TotalDeposited[SlashRecycled]` term of the compute
+		// compartment, newer than the benchmark.
 		#[pallet::call_index(9)]
-		#[pallet::weight(<T as Config>::WeightInfo::pay_compute_miners(T::MaxComputeMinersPerPayout::get()))]
+		#[pallet::weight(<T as Config>::WeightInfo::pay_compute_miners(T::MaxComputeMinersPerPayout::get())
+			.saturating_add(T::DbWeight::get().reads(1)))]
 		pub fn pay_compute_miners(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(

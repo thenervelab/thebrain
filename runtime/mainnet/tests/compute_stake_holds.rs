@@ -218,6 +218,36 @@ fn slash_beyond_the_stake_recycles_only_what_was_held() {
 }
 
 #[test]
+fn a_slash_the_pot_cannot_accept_is_rolled_back_not_burned() {
+	// The one case `resolve` refuses: no pot account and a slash below ED.
+	new_test_ext().execute_with(|| {
+		let who = account(2);
+		stake(&who, 10_000);
+		enable_slashing();
+		assert_eq!(Hippocampus::balance(), 0);
+		let issuance_before = Balances::total_issuance();
+
+		assert_noop!(
+			ComputeScoring::slash_stake(
+				RuntimeOrigin::signed(scoring_admin()),
+				who.clone(),
+				ED - 1,
+				SlashReason::Manual
+			),
+			pallet_compute_scoring::Error::<Runtime>::SlashSinkRefused
+		);
+		assert_eq!(on_hold(&who), 10_000);
+		assert_eq!(Balances::total_issuance(), issuance_before);
+
+		// At or above ED the pot is simply created.
+		slash(&who, ED, SlashReason::Manual);
+		assert_eq!(Hippocampus::balance(), ED);
+		assert_eq!(TotalDeposited::<Runtime>::get(DepositType::SlashRecycled), ED);
+		assert_eq!(Balances::total_issuance(), issuance_before);
+	});
+}
+
+#[test]
 fn slashing_disabled_moves_nothing() {
 	// Live state: `SlashingEnabled` is false.
 	new_test_ext().execute_with(|| {

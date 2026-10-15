@@ -304,29 +304,27 @@ impl
 		owner: &AccountId,
 		credit: pallet_compute_scoring::StakeCreditOf<Runtime>,
 		reason: pallet_compute_scoring::SlashReason,
-	) {
+	) -> Result<(), pallet_compute_scoring::StakeCreditOf<Runtime>> {
 		use frame_support::traits::{fungible::Balanced, Imbalance};
 
 		let amount = credit.peek();
 		let pot = pallet_hippocampus::Pallet::<Runtime>::account_id();
-		match <Balances as Balanced<AccountId>>::resolve(&pot, credit) {
-			Ok(()) => {
-				pallet_hippocampus::Pallet::<Runtime>::record_slash_recycled(owner, amount, reason)
-			},
-			// Only reachable if the pot account does not exist AND the slash is
-			// below the existential deposit: the pot is kept alive by every
-			// transfer out of it (`KeepAlive`) and funded by transaction fees,
-			// so this is a broken-invariant alarm, not a path. The credit drops
-			// (burns) — nothing is booked, so no ledger claims funds the bank
-			// does not hold.
-			Err(unplaced) => log::error!(
+		// `resolve` can only refuse when the pot account does not exist and
+		// the slash is below the existential deposit. The credit is then
+		// handed back and compute-scoring rolls the whole slash back — it
+		// never burns.
+		if let Err(unplaced) = <Balances as Balanced<AccountId>>::resolve(&pot, credit) {
+			log::warn!(
 				target: "runtime::compute-scoring",
-				"slash sink: Hippocampus pot refused {:?} slashed from {:?} ({:?}); burned",
+				"slash sink: Hippocampus pot refused {:?} slashed from {:?} ({:?}); slash rolled back",
 				unplaced.peek(),
 				owner,
 				reason
-			),
+			);
+			return Err(unplaced);
 		}
+		pallet_hippocampus::Pallet::<Runtime>::record_slash_recycled(owner, amount, reason);
+		Ok(())
 	}
 }
 

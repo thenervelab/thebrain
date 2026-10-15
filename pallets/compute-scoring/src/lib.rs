@@ -328,18 +328,28 @@ pub mod pallet {
     /// the slash in the receiving ledger with the owner and the reason,
     /// which a bare `OnUnbalanced::on_unbalanced(credit)` cannot carry.
     ///
-    /// **Contract**: an implementation MUST place the credit somewhere —
-    /// dropping it burns the funds (`Credit`'s drop decreases issuance).
-    /// The production binding resolves it into the Hippocampus pot; there
-    /// is no burn path and no beneficiary account.
+    /// **Contract**: an implementation MUST either place the whole credit
+    /// and return `Ok`, or hand it back untouched as `Err` — never drop it
+    /// (`Credit`'s drop decreases issuance, i.e. burns). On `Err` the slash
+    /// is rolled back entirely (hold, ledger, record, events) and
+    /// `slash_stake` fails with [`Error::SlashSinkRefused`]. The production
+    /// binding resolves into the Hippocampus pot; there is no burn path and
+    /// no beneficiary account.
     pub trait StakeSlashSink<AccountId, Credit> {
-        fn on_stake_slash(owner: &AccountId, credit: Credit, reason: SlashReason);
+        fn on_stake_slash(owner: &AccountId, credit: Credit, reason: SlashReason)
+            -> Result<(), Credit>;
     }
 
     /// Burns the slashed funds (drops the credit). For test runtimes only:
     /// no production runtime should burn slashed stake.
     impl<AccountId, Credit> StakeSlashSink<AccountId, Credit> for () {
-        fn on_stake_slash(_owner: &AccountId, _credit: Credit, _reason: SlashReason) {}
+        fn on_stake_slash(
+            _owner: &AccountId,
+            _credit: Credit,
+            _reason: SlashReason,
+        ) -> Result<(), Credit> {
+            Ok(())
+        }
     }
 
     // =====================================================================
@@ -2083,6 +2093,9 @@ pub mod pallet {
         /// no beneficiary to set. Appended last — `Error` variants are
         /// metadata-indexed.
         SlashBeneficiaryDeprecated,
+        /// The runtime's `SlashSink` could not place the slashed funds; the
+        /// slash was rolled back (nothing moved, nothing burned).
+        SlashSinkRefused,
     }
 
     // =====================================================================
@@ -2270,28 +2283,41 @@ pub mod pallet {
         /// [`Event::SlashSkippedDisabled`] and moves no balance. Slashed
         /// funds come off the [`HoldReason::ComputeStake`] hold as a credit
         /// and go to `T::SlashSink` — there is no burn branch and no
-        /// beneficiary.
+        /// beneficiary. If the sink refuses the credit the whole slash is
+        /// rolled back and [`Error::SlashSinkRefused`] returned: nothing
+        /// moves, nothing burns, nothing is recorded.
         fn do_slash(
             owner: &T::AccountId,
             requested: BalanceOf<T>,
             reason: SlashReason,
-        ) -> BalanceOf<T> {
+        ) -> Result<BalanceOf<T>, DispatchError> {
             if !SlashingEnabled::<T>::get() {
                 Self::deposit_event(Event::SlashSkippedDisabled {
                     owner: owner.clone(),
                     amount: requested,
                     reason,
                 });
-                return Zero::zero();
+                return Ok(Zero::zero());
             }
+            // Own storage layer, so the rollback holds for any caller — not
+            // only for `slash_stake`, whose dispatch is transactional anyway.
+            frame_support::storage::with_storage_layer(|| {
+                Self::slash_into_sink(owner, requested, reason)
+            })
+        }
 
+        fn slash_into_sink(
+            owner: &T::AccountId,
+            requested: BalanceOf<T>,
+            reason: SlashReason,
+        ) -> Result<BalanceOf<T>, DispatchError> {
             let active = StakedAmount::<T>::get(owner);
             let unbonding = StakeUnbonding::<T>::get(owner)
                 .map(|(a, _)| a)
                 .unwrap_or_else(Zero::zero);
             let amount = requested.min(active.saturating_add(unbonding));
             if amount.is_zero() {
-                return Zero::zero();
+                return Ok(Zero::zero());
             }
 
             // Physically take the funds off the hold FIRST and measure what
@@ -2306,11 +2332,11 @@ pub mod pallet {
             );
             let slashed = credit.peek();
             if slashed.is_zero() {
-                return Zero::zero();
+                return Ok(Zero::zero());
             }
 
             // Decrement the logical stake by what was ACTUALLY slashed —
-            // active stake first, then the still-reserved unbonding chunk.
+            // active stake first, then the still-held unbonding chunk.
             let from_active = slashed.min(active);
             StakedAmount::<T>::insert(owner, active.saturating_sub(from_active));
             let from_unbond = slashed.saturating_sub(from_active);
@@ -2335,8 +2361,13 @@ pub mod pallet {
             });
             // Last, so the sink's own event (production: Hippocampus
             // `SlashRecycled`) follows `Slashed` in the log.
-            T::SlashSink::on_stake_slash(owner, credit, reason);
-            slashed
+            if let Err(refused) = T::SlashSink::on_stake_slash(owner, credit, reason) {
+                // The credit's drop decreases issuance, but inside this
+                // storage layer — reverted with everything else by the `Err`.
+                drop(refused);
+                return Err(Error::<T>::SlashSinkRefused.into());
+            }
+            Ok(slashed)
         }
 
         // --- PR-3 marketplace helpers ---
@@ -3848,9 +3879,11 @@ pub mod pallet {
         #[pallet::weight((<T as pallet::Config>::WeightInfo::set_base_child_deposit(), Pays::No))]
         pub fn set_slash_beneficiary(
             origin: OriginFor<T>,
-            _beneficiary: Option<T::AccountId>,
+            beneficiary: Option<T::AccountId>,
         ) -> DispatchResult {
             T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
+            // Argument kept (unused) so the call's metadata is unchanged.
+            let _ = beneficiary;
             Err(Error::<T>::SlashBeneficiaryDeprecated.into())
         }
 
@@ -3858,8 +3891,16 @@ pub mod pallet {
         /// off-chain validator detects the breach (liveness / deficiency)
         /// and submits this, the same way it drives `set_miner_status`.
         /// No-op on balance while the kill-switch is off (event only).
+        // Priced on `deregister_child` (no dedicated benchmark yet) plus
+        // the sink's work, which that benchmark never covered: the
+        // receiving account, the hold slot and the receiving ledger
+        // (production: Hippocampus `TotalDeposited`), read and written.
         #[pallet::call_index(48)]
-        #[pallet::weight((<T as pallet::Config>::WeightInfo::deregister_child(), Pays::No))]
+        #[pallet::weight((
+            <T as pallet::Config>::WeightInfo::deregister_child()
+                .saturating_add(T::DbWeight::get().reads_writes(4, 4)),
+            Pays::No
+        ))]
         pub fn slash_stake(
             origin: OriginFor<T>,
             owner: T::AccountId,
@@ -3868,7 +3909,7 @@ pub mod pallet {
         ) -> DispatchResult {
             T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
             ensure!(!amount.is_zero(), Error::<T>::ZeroStake);
-            Self::do_slash(&owner, amount, reason);
+            Self::do_slash(&owner, amount, reason)?;
             Ok(())
         }
 
