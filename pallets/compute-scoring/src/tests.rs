@@ -2542,6 +2542,63 @@ mod slashing {
         });
     }
 
+    /// Old `reserve_named` could leave `free == 0` when the account had a
+    /// second provider. After the reserve the account has exactly ONE
+    /// provider and zero free balance; the conversion must still move the
+    /// whole reserve (a `Protect` hold only keeps ED back for a sole
+    /// provider that the unreserve itself restores).
+    #[test]
+    fn migration_converts_an_account_reserved_down_to_zero_free() {
+        use frame_support::traits::{OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            let _ = Balances::make_free_balance_be(&1, 400);
+            frame_system::Pallet::<TestRuntime>::inc_providers(&1);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                400
+            ));
+            assert_eq!(Balances::free_balance(1), 0);
+            assert_eq!(frame_system::Pallet::<TestRuntime>::providers(&1), 1);
+            StakedAmount::<TestRuntime>::insert(1, 400);
+
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            assert_eq!(on_hold(1), 400);
+            assert_eq!(legacy(1), 0);
+            assert_eq!(Balances::free_balance(1), 0);
+        });
+    }
+
+    #[test]
+    fn a_failed_lazy_conversion_refuses_the_call() {
+        new_test_ext().execute_with(|| {
+            // Corrupt legacy state (record 500, only 400 really reserved):
+            // the conversion rolls back, and the calls must say so.
+            let _ = Balances::make_free_balance_be(&1, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                400
+            ));
+            pallet_balances::Reserves::<TestRuntime>::mutate(1, |r| r[0].amount = 500);
+            StakedAmount::<TestRuntime>::insert(1, 500);
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_noop!(
+                ComputeScoring::slash_stake(RuntimeOrigin::root(), 1, 100, SlashReason::Sla),
+                Error::<TestRuntime>::LegacyStakeConversionFailed
+            );
+            assert_noop!(
+                ComputeScoring::top_up_stake(RuntimeOrigin::signed(1), 10),
+                Error::<TestRuntime>::LegacyStakeConversionFailed
+            );
+        });
+    }
+
     #[test]
     fn migration_moves_a_reserve_that_disagrees_with_the_ledger_as_is() {
         use frame_support::traits::{OnRuntimeUpgrade, StorageVersion};

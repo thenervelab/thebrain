@@ -2097,6 +2097,10 @@ pub mod pallet {
         /// The runtime's `SlashSink` could not place the slashed funds; the
         /// slash was rolled back (nothing moved, nothing burned).
         SlashSinkRefused,
+        /// The account's stake is still on the legacy `cmps/stk` reserve and
+        /// could not be moved onto the hold; the call was refused and the
+        /// stake stays reserved.
+        LegacyStakeConversionFailed,
     }
 
     // =====================================================================
@@ -2287,6 +2291,20 @@ pub mod pallet {
         /// beneficiary. If the sink refuses the credit the whole slash is
         /// rolled back and [`Error::SlashSinkRefused`] returned: nothing
         /// moves, nothing burns, nothing is recorded.
+        /// Lazy half of the v1 migration (see [`crate::migrations::v1`]):
+        /// move `who`'s stake off the legacy `cmps/stk` reserve onto the
+        /// hold before any call that moves stake balance. Fails loudly
+        /// rather than letting a call act on a hold that is missing the
+        /// legacy part (a slash would silently find nothing to take).
+        fn ensure_stake_on_hold(who: &T::AccountId) -> DispatchResult {
+            match crate::migrations::v1::convert_legacy_stake::<T>(who) {
+                crate::migrations::v1::Converted::Failed => {
+                    Err(Error::<T>::LegacyStakeConversionFailed.into())
+                }
+                _ => Ok(()),
+            }
+        }
+
         pub(crate) fn do_slash(
             owner: &T::AccountId,
             requested: BalanceOf<T>,
@@ -2314,7 +2332,7 @@ pub mod pallet {
         ) -> Result<BalanceOf<T>, DispatchError> {
             // An account the v1 migration did not reach still holds its
             // stake on the legacy reserve; move it to the hold first.
-            crate::migrations::v1::convert_legacy_stake::<T>(owner);
+            Self::ensure_stake_on_hold(owner)?;
             let active = StakedAmount::<T>::get(owner);
             let unbonding = StakeUnbonding::<T>::get(owner)
                 .map(|(a, _)| a)
@@ -3733,8 +3751,7 @@ pub mod pallet {
         pub fn top_up_stake(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(!amount.is_zero(), Error::<T>::ZeroStake);
-            // Lazy half of the v1 migration (see `migrations::v1`).
-            crate::migrations::v1::convert_legacy_stake::<T>(&who);
+            Self::ensure_stake_on_hold(&who)?;
             T::StakeCurrency::hold(&HoldReason::ComputeStake.into(), &who, amount)
                 .map_err(|_| Error::<T>::InsufficientBalanceForStake)?;
             StakedAmount::<T>::mutate(&who, |s| *s = s.saturating_add(amount));
@@ -3854,8 +3871,7 @@ pub mod pallet {
             let (amount, end) =
                 StakeUnbonding::<T>::get(&who).ok_or(Error::<T>::NoStakeUnbonding)?;
             ensure!(Self::now() >= end, Error::<T>::UnbondingNotReady);
-            // Lazy half of the v1 migration (see `migrations::v1`).
-            crate::migrations::v1::convert_legacy_stake::<T>(&who);
+            Self::ensure_stake_on_hold(&who)?;
             // `Exact`: all of it or nothing — a short hold must not let the
             // claim succeed and drop the unbonding record.
             T::StakeCurrency::release(
