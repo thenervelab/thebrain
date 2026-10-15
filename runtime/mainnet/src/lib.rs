@@ -491,10 +491,9 @@ impl pallet_hippocampus::Config for Runtime {
 	// `TooManyMiners` and no storage emission can be paid at all, with each
 	// missed day unrecoverable under the 24-hour cap.
 	//
-	// NOT sized off `MaxFamilies` (600): that cap is only enforced when a
-	// family claims its FIRST fee-free slot, and `FamilyCount` is decremented
-	// on cleanup without being re-incremented on re-registration, so it does
-	// not bound the number of distinct families. `MaxChildrenTotal` does.
+	// NOT sized off `MaxFamilies` (600): that cap bounds the families with an
+	// active child at registration time, but the payout set is read from
+	// weight state and `MaxChildrenTotal` is the hard ceiling. Size off that.
 	type MaxMinersPerPayout = ConstU32<1024>;
 	type BlocksPer24Hours = BlocksPer24Hours;
 	type Max24HourMinerPayout = Max24HourMinerPayout;
@@ -594,7 +593,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92018,
+	spec_version: 92019,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,

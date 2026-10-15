@@ -512,6 +512,11 @@ pub mod pallet {
 			node_id_hex: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
+			// The node's libp2p signature binds the challenge to `owner` but says
+			// nothing about the owner's consent: without this, anyone holding a
+			// node key could register it under someone else's account (blocking
+			// their own registration, and charging them the fee when enabled).
+			ensure!(who == owner, DispatchError::BadOrigin);
 
 			// Keep the param for SDK compatibility, but disable the feature for now.
 			ensure!(!pay_in_credits, Error::<T>::PayInCreditsDisabled);
