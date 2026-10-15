@@ -8,7 +8,9 @@
 use crate as pallet_compute_scoring;
 use crate::pallet::{
     EpochWeightEntry, FamilyRegistry, NodeRegistrationProvider, ProxyVerifier, RankingsSink,
+    SlashReason, StakeCreditOf, StakeSlashSink,
 };
+use frame_support::traits::{fungible::Balanced, Imbalance};
 use core::cell::RefCell;
 use frame_support::traits::{ConstU128, ConstU32, ConstU64, EitherOfDiverse};
 use frame_support::{derive_impl, ord_parameter_types, parameter_types};
@@ -154,6 +156,47 @@ pub fn mock_clear_pushed_rankings() {
     PUSHED_RANKINGS.with(|s| s.borrow_mut().clear());
 }
 
+/// Account the mock [`MockSlashSink`] resolves slashed stake into —
+/// stands in for the production Hippocampus pot.
+pub const SLASH_POT: AccountId = 9_999;
+
+thread_local! {
+    static SLASHES: RefCell<Vec<(AccountId, Balance, SlashReason)>> =
+        const { RefCell::new(Vec::new()) };
+    static SINK_REFUSES: RefCell<bool> = const { RefCell::new(false) };
+}
+
+/// Mirrors the production sink's shape: resolves the credit into a pot
+/// account (nothing burns) and records `(owner, amount, reason)`. Hands the
+/// credit back when told to refuse ([`mock_sink_refuses`]).
+pub struct MockSlashSink;
+impl StakeSlashSink<AccountId, StakeCreditOf<TestRuntime>> for MockSlashSink {
+    fn on_stake_slash(
+        owner: &AccountId,
+        credit: StakeCreditOf<TestRuntime>,
+        reason: SlashReason,
+    ) -> Result<(), StakeCreditOf<TestRuntime>> {
+        if SINK_REFUSES.with(|r| *r.borrow()) {
+            return Err(credit);
+        }
+        let amount = credit.peek();
+        <Balances as Balanced<AccountId>>::resolve(&SLASH_POT, credit)?;
+        SLASHES.with(|s| s.borrow_mut().push((*owner, amount, reason)));
+        Ok(())
+    }
+}
+
+/// Test helper: make [`MockSlashSink`] refuse (hand back) every credit.
+pub fn mock_sink_refuses(refuse: bool) {
+    SINK_REFUSES.with(|r| *r.borrow_mut() = refuse);
+}
+
+/// Test helper: drain the `(owner, amount, reason)` slashes the mock sink
+/// has received.
+pub fn mock_drain_slashes() -> Vec<(AccountId, Balance, SlashReason)> {
+    SLASHES.with(|s| core::mem::take(&mut *s.borrow_mut()))
+}
+
 parameter_types! {
     /// Pallet-instance discriminator pinned by the runtime so
     /// `AggregateView::pallet_instance` checks have a stable
@@ -203,6 +246,9 @@ impl pallet_compute_scoring::Config for TestRuntime {
     type AuditAuthorityOrigin =
         EitherOfDiverse<EnsureRoot<AccountId>, EnsureSignedBy<AuditAuthority, AccountId>>;
     type DepositCurrency = Balances;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    type StakeCurrency = Balances;
+    type SlashSink = MockSlashSink;
     type FamilyRegistry = DummyFamilyRegistry;
     type ProxyVerifier = DummyProxyVerifier;
     type Registration = MockRegistration;
@@ -274,6 +320,8 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
         // PR-I6: also clear the `RankingsSink` recording so every
         // test starts with an empty bridge payload.
         mock_clear_pushed_rankings();
+        mock_drain_slashes();
+        mock_sink_refuses(false);
     });
     ext
 }

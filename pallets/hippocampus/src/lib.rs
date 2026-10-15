@@ -17,12 +17,14 @@
 //!   family's weight is the sum of the node weights of its eligible children,
 //!   so the operator running the most/best-weighted nodes is paid the most.
 //! - `pay_compute_miners(amount)`: admin-gated; distributes `amount` from the
-//!   *compute* emission compartment to compute miners pro-rata by their
-//!   epoch reward weight. Its compartment (`DepositType::ComputeEmission`)
-//!   and its ledger (`ComputeEmissionPaidOut`) are separate from the storage
-//!   ones — neither payout can spend the other's funds — but the two share a
-//!   single 24-hour rate limit (`Max24HourMinerPayout`), so total emission
-//!   leaving the bank per day is capped once across both.
+//!   *compute* compartment to compute miners pro-rata by their epoch reward
+//!   weight. The compartment is fed by compute emission
+//!   (`DepositType::ComputeEmission`) and by recycled compute-stake slashes
+//!   (`DepositType::SlashRecycled`, booked by `record_slash_recycled`); its
+//!   ledger (`ComputeEmissionPaidOut`) is separate from the storage ones —
+//!   neither payout can spend the other's funds — but the two share a single
+//!   24-hour rate limit (`Max24HourMinerPayout`), so total emission leaving
+//!   the bank per day is capped once across both.
 //! - `add_requester` / `remove_requester`: admin-gated whitelist management.
 //! - `set_distribution_enabled`: admin-gated global switch. While off, every
 //!   `request_payment` is rejected and no funds leave the bank; deposits are
@@ -183,6 +185,11 @@ pub mod pallet {
 		#[pallet::constant]
 		type MaxComputeMinersPerPayout: Get<u32>;
 
+		/// Why a recycled slash happened, carried verbatim on
+		/// [`Event::SlashRecycled`]. The runtime binds the slashing pallet's
+		/// own reason type, so the bank stays decoupled from it.
+		type SlashReason: Parameter + MaxEncodedLen;
+
 		type WeightInfo: WeightInfo;
 	}
 
@@ -207,6 +214,18 @@ pub mod pallet {
 		/// Appended last on purpose — `DepositType` is a storage key, and the
 		/// existing variants must keep their SCALE discriminants.
 		ComputeEmission,
+		/// Slashed compute stake recycled into the bank. Part of the COMPUTE
+		/// compartment: spendable by `pay_compute_miners` only, never by
+		/// `request_payment` and never by `pay_storage_miners`.
+		///
+		/// Booked exclusively by [`Pallet::record_slash_recycled`] — the
+		/// `deposit` extrinsic refuses it, so `TotalDeposited[SlashRecycled]`
+		/// reconciles 1:1 with the slashes that produced it. It is never
+		/// reported as `Deposited { ComputeEmission }`: emission figures stay
+		/// pure.
+		///
+		/// Appended last on purpose, like `ComputeEmission`.
+		SlashRecycled,
 	}
 
 	/// Global payout switch (defaults to enabled). While `false`,
@@ -253,9 +272,10 @@ pub mod pallet {
 	pub type MinerPayoutPeriodStart<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
 	/// Lifetime total distributed to compute miners out of the compute
-	/// emission compartment. `TotalDeposited[ComputeEmission] -
-	/// ComputeEmissionPaidOut` is the compartment balance still reserved for
-	/// `pay_compute_miners`.
+	/// compartment — emission AND recycled slashes; payouts do not track the
+	/// source of each unit. `TotalDeposited[ComputeEmission] +
+	/// TotalDeposited[SlashRecycled] - ComputeEmissionPaidOut` is the
+	/// compartment balance still reserved for `pay_compute_miners`.
 	#[pallet::storage]
 	pub type ComputeEmissionPaidOut<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
@@ -363,6 +383,10 @@ pub mod pallet {
 		},
 		/// Individual compute miner payment detail for indexing.
 		ComputeMinerPaymentPaid { miner: T::AccountId, amount: BalanceOf<T> },
+		/// `amount` of `from`'s slashed stake was recycled into the bank's
+		/// compute compartment. Deliberately NOT a `Deposited` event: a
+		/// recycled slash is not emission.
+		SlashRecycled { from: T::AccountId, amount: BalanceOf<T>, reason: T::SlashReason },
 	}
 
 	#[pallet::error]
@@ -405,6 +429,10 @@ pub mod pallet {
 		/// inflates every pro-rata share and can overdraw the compartment.
 		/// Appended last on purpose — `Error` variants are metadata-indexed.
 		WeightSumOverflow,
+		/// `DepositType::SlashRecycled` cannot be deposited: it is booked only
+		/// by the slash sink (`record_slash_recycled`), so the recycled ledger
+		/// reconciles with the slashes that produced it.
+		SlashRecycledNotDepositable,
 	}
 
 	#[pallet::call]
@@ -633,8 +661,11 @@ pub mod pallet {
 		/// Shares the 24-hour `Max24HourMinerPayout` budget with
 		/// `pay_storage_miners` — the two compartments are separate pots, but
 		/// the daily drain rate is capped once across both.
+		// +1 read: the `TotalDeposited[SlashRecycled]` term of the compute
+		// compartment, newer than the benchmark.
 		#[pallet::call_index(9)]
-		#[pallet::weight(<T as Config>::WeightInfo::pay_compute_miners(T::MaxComputeMinersPerPayout::get()))]
+		#[pallet::weight(<T as Config>::WeightInfo::pay_compute_miners(T::MaxComputeMinersPerPayout::get())
+			.saturating_add(T::DbWeight::get().reads(1)))]
 		pub fn pay_compute_miners(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(
@@ -665,11 +696,12 @@ pub mod pallet {
 				Error::<T>::ExceedsDaily24HourMinerPayoutLimit
 			);
 
-			// Compartment wall: only funds deposited as `ComputeEmission` pay
-			// compute miners — never storage emission, marketplace backing,
+			// Compartment wall: only the compute compartment — funds deposited
+			// as `ComputeEmission` plus recycled compute-stake slashes — pays
+			// compute miners; never storage emission, marketplace backing,
 			// fees, or grants.
 			ensure!(
-				amount <= Self::compute_emission_available(),
+				amount <= Self::compute_payable_available(),
 				Error::<T>::InsufficientComputeEmissionFunds
 			);
 			// The compartment ledger can exceed what is physically free (another
@@ -790,6 +822,25 @@ pub mod pallet {
 			});
 		}
 
+		/// Book `amount` of `from`'s slashed stake as recycled into the compute
+		/// compartment and emit [`Event::SlashRecycled`].
+		///
+		/// Records only: the caller (the runtime's compute-stake slash sink)
+		/// must already have resolved exactly `amount` into
+		/// [`Self::account_id`]. Booking without the funds would let
+		/// `pay_compute_miners` spend money the bank does not hold on behalf of
+		/// this compartment.
+		pub fn record_slash_recycled(
+			from: &T::AccountId,
+			amount: BalanceOf<T>,
+			reason: T::SlashReason,
+		) {
+			TotalDeposited::<T>::mutate(DepositType::SlashRecycled, |total| {
+				*total = total.saturating_add(amount);
+			});
+			Self::deposit_event(Event::SlashRecycled { from: from.clone(), amount, reason });
+		}
+
 		/// Funds `request_payment` could release right now (free balance minus
 		/// the existential deposit the bank always keeps).
 		pub fn available_for_payout() -> BalanceOf<T> {
@@ -812,7 +863,8 @@ pub mod pallet {
 		}
 
 		/// What `request_payment` may actually release: the free balance above
-		/// ED, minus BOTH emission compartments.
+		/// ED, minus BOTH miner compartments (storage emission, and compute
+		/// emission + recycled slashes).
 		///
 		/// The compartments are reserved for `pay_storage_miners` /
 		/// `pay_compute_miners`, and that reservation has to be enforced here
@@ -831,15 +883,28 @@ pub mod pallet {
 		pub fn unreserved_for_payout() -> BalanceOf<T> {
 			Self::available_for_payout()
 				.saturating_sub(Self::emission_available())
-				.saturating_sub(Self::compute_emission_available())
+				.saturating_sub(Self::compute_payable_available())
 		}
 
-		/// Compute emission deposited but not yet distributed to compute
-		/// miners.
+		/// The compute compartment: compute emission plus recycled
+		/// compute-stake slashes, minus what `pay_compute_miners` has paid.
 		///
-		/// Like [`Self::emission_available`], other bank consumers must
-		/// subtract this from their spendable headroom — the compartment is
-		/// reserved for `pay_compute_miners`.
+		/// This is what `pay_compute_miners` may spend, and what every other
+		/// bank consumer must subtract from its spendable headroom — like
+		/// [`Self::emission_available`], the compartment is reserved for its
+		/// own payout.
+		pub fn compute_payable_available() -> BalanceOf<T> {
+			TotalDeposited::<T>::get(DepositType::ComputeEmission)
+				.saturating_add(TotalDeposited::<T>::get(DepositType::SlashRecycled))
+				.saturating_sub(ComputeEmissionPaidOut::<T>::get())
+		}
+
+		/// Emission-only view of the compute compartment: compute emission not
+		/// yet paid out, counting recycled slashes as spent LAST (payouts draw
+		/// emission first). Reporting only — slashes never inflate an emission
+		/// figure. Do NOT use it as a reservation: it omits recycled funds that
+		/// are still owed to compute miners; use
+		/// [`Self::compute_payable_available`] for that.
 		pub fn compute_emission_available() -> BalanceOf<T> {
 			TotalDeposited::<T>::get(DepositType::ComputeEmission)
 				.saturating_sub(ComputeEmissionPaidOut::<T>::get())
@@ -854,6 +919,10 @@ pub mod pallet {
 			deposit_type: DepositType,
 		) -> DispatchResult {
 			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
+			ensure!(
+				deposit_type != DepositType::SlashRecycled,
+				Error::<T>::SlashRecycledNotDepositable
+			);
 			T::Currency::transfer(
 				who,
 				&Self::account_id(),

@@ -2179,8 +2179,15 @@ mod stake {
 
 mod slashing {
     use super::*;
-    use crate::pallet::{SlashReason, SlashRecord, SlashingEnabled, StakeUnbonding, StakedAmount};
-    use frame_support::traits::{Currency, NamedReservableCurrency, ReservableCurrency};
+    use crate::mock::{mock_drain_slashes, SLASH_POT};
+    use crate::pallet::{
+        HoldReason, SlashReason, SlashRecord, SlashingEnabled, StakeUnbonding, StakedAmount,
+    };
+    use frame_support::traits::{
+        fungible::{InspectHold, MutateHold},
+        tokens::Precision,
+        Currency, NamedReservableCurrency,
+    };
 
     fn staked(acct: AccountId, amount: Balance) {
         let _ = Balances::make_free_balance_be(&acct, amount * 2);
@@ -2218,8 +2225,12 @@ mod slashing {
         });
     }
 
+    fn on_hold(acct: AccountId) -> Balance {
+        Balances::balance_on_hold(&HoldReason::ComputeStake.into(), &acct)
+    }
+
     #[test]
-    fn enabled_burns_reserved_and_records() {
+    fn enabled_slashes_hold_into_sink_and_records() {
         new_test_ext().execute_with(|| {
             staked(1, 500);
             let issuance_before = Balances::total_issuance();
@@ -2236,67 +2247,386 @@ mod slashing {
             ));
 
             assert_eq!(StakedAmount::<TestRuntime>::get(1), 300);
+            assert_eq!(on_hold(1), 300);
             assert_eq!(Balances::reserved_balance(1), 300);
             assert_eq!(SlashRecord::<TestRuntime>::get(1), 200);
-            // Burned ⇒ total issuance dropped by the slashed amount.
-            assert_eq!(Balances::total_issuance(), issuance_before - 200);
+            // Handed to the sink, which placed it in the pot: nothing burned.
+            assert_eq!(mock_drain_slashes(), vec![(1, 200, SlashReason::Sla)]);
+            assert_eq!(Balances::free_balance(SLASH_POT), 200);
+            assert_eq!(Balances::total_issuance(), issuance_before);
         });
     }
 
     #[test]
-    fn enabled_repatriates_to_beneficiary_when_set() {
+    fn a_refused_slash_is_rolled_back_entirely() {
         new_test_ext().execute_with(|| {
             staked(1, 500);
-            // A live beneficiary (escrow) above ED so repatriation lands.
-            let _ = Balances::make_free_balance_be(&9, 10);
             assert_ok!(ComputeScoring::set_slashing_enabled(
                 RuntimeOrigin::root(),
                 true
             ));
-            assert_ok!(ComputeScoring::set_slash_beneficiary(
-                RuntimeOrigin::root(),
-                Some(9)
-            ));
+            let issuance_before = Balances::total_issuance();
+            crate::mock::mock_sink_refuses(true);
+            System::reset_events();
 
+            assert_noop!(
+                ComputeScoring::slash_stake(RuntimeOrigin::root(), 1, 200, SlashReason::Sla),
+                Error::<TestRuntime>::SlashSinkRefused
+            );
+            assert_eq!(on_hold(1), 500);
+            assert_eq!(StakedAmount::<TestRuntime>::get(1), 500);
+            assert_eq!(SlashRecord::<TestRuntime>::get(1), 0);
+            assert_eq!(Balances::total_issuance(), issuance_before);
+            assert!(System::events().is_empty());
+        });
+    }
+
+    /// `do_slash` must roll itself back, not lean on `slash_stake`'s
+    /// transactional dispatch: a future non-extrinsic caller (an automated
+    /// slash in a hook) gets no dispatch layer.
+    #[test]
+    fn a_refused_slash_rolls_back_outside_a_dispatch_too() {
+        new_test_ext().execute_with(|| {
+            staked(1, 500);
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            let issuance_before = Balances::total_issuance();
+            crate::mock::mock_sink_refuses(true);
+
+            assert_eq!(
+                ComputeScoring::do_slash(&1, 200, SlashReason::Sla),
+                Err(Error::<TestRuntime>::SlashSinkRefused.into())
+            );
+            assert_eq!(on_hold(1), 500);
+            assert_eq!(StakedAmount::<TestRuntime>::get(1), 500);
+            assert_eq!(SlashRecord::<TestRuntime>::get(1), 0);
+            assert_eq!(Balances::total_issuance(), issuance_before);
+        });
+    }
+
+    #[test]
+    fn the_unit_sink_fails_closed() {
+        use crate::pallet::{StakeCreditOf, StakeSlashSink};
+        use frame_support::traits::{fungible::Balanced, Imbalance};
+        new_test_ext().execute_with(|| {
+            let credit: StakeCreditOf<TestRuntime> = <Balances as Balanced<AccountId>>::issue(10);
+            let refused =
+                <() as StakeSlashSink<AccountId, StakeCreditOf<TestRuntime>>>::on_stake_slash(
+                    &1,
+                    credit,
+                    SlashReason::Manual,
+                );
+            assert_eq!(refused.map_err(|c| c.peek()), Err(10));
+        });
+    }
+
+    #[test]
+    fn set_slash_beneficiary_is_deprecated() {
+        new_test_ext().execute_with(|| {
+            assert_noop!(
+                ComputeScoring::set_slash_beneficiary(RuntimeOrigin::root(), Some(9)),
+                Error::<TestRuntime>::SlashBeneficiaryDeprecated
+            );
+            assert_noop!(
+                ComputeScoring::set_slash_beneficiary(RuntimeOrigin::root(), None),
+                Error::<TestRuntime>::SlashBeneficiaryDeprecated
+            );
+            // Even with a legacy value somehow present, the slash ignores it.
+            crate::pallet::SlashBeneficiary::<TestRuntime>::put(9);
+            staked(1, 500);
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
             assert_ok!(ComputeScoring::slash_stake(
                 RuntimeOrigin::root(),
                 1,
                 150,
                 SlashReason::Manual
             ));
-
-            assert_eq!(StakedAmount::<TestRuntime>::get(1), 350);
-            assert_eq!(Balances::reserved_balance(1), 350);
-            // Repatriated to the beneficiary's free balance (compensation).
-            assert_eq!(Balances::free_balance(9), 160);
-            assert_eq!(SlashRecord::<TestRuntime>::get(1), 150);
+            assert_eq!(Balances::free_balance(9), 0);
+            assert_eq!(Balances::free_balance(SLASH_POT), 150);
         });
     }
 
     #[test]
-    fn dead_beneficiary_falls_back_to_burn_no_accounting_drift() {
+    fn stake_lives_on_the_compute_stake_hold_not_a_named_reserve() {
         new_test_ext().execute_with(|| {
             staked(1, 500);
-            // Beneficiary 9 stays dead (balance 0 < ED) — repatriation can't
-            // land, so the slash must still burn: reserved drops by `amount`.
+            assert_eq!(on_hold(1), 500);
+            assert_eq!(
+                Balances::reserved_balance_named(&crate::pallet::STAKE_RESERVE_ID, &1),
+                0
+            );
+            // Unbonding moves no balance: still one hold, split by the ledger.
+            assert_ok!(ComputeScoring::request_unstake(RuntimeOrigin::signed(1), 200));
+            assert_eq!(on_hold(1), 500);
+            System::set_block_number(System::block_number() + 64);
+            assert_ok!(ComputeScoring::claim_unstaked(RuntimeOrigin::signed(1)));
+            assert_eq!(on_hold(1), 300);
+            assert_eq!(StakedAmount::<TestRuntime>::get(1), 300);
+            assert_eq!(StakeUnbonding::<TestRuntime>::get(1), None);
+        });
+    }
+
+    #[test]
+    fn claim_refuses_a_short_hold_and_keeps_the_record() {
+        new_test_ext().execute_with(|| {
+            staked(1, 500);
+            assert_ok!(ComputeScoring::request_unstake(RuntimeOrigin::signed(1), 500));
+            // Out-of-band drift: the hold is 100 short of the unbonding record.
+            assert_ok!(Balances::release(
+                &HoldReason::ComputeStake.into(),
+                &1,
+                100,
+                Precision::Exact
+            ));
+            System::set_block_number(System::block_number() + 64);
+            assert_noop!(
+                ComputeScoring::claim_unstaked(RuntimeOrigin::signed(1)),
+                Error::<TestRuntime>::PartialUnreserve
+            );
+            assert!(StakeUnbonding::<TestRuntime>::get(1).is_some());
+        });
+    }
+
+    #[test]
+    fn migration_converts_a_stake_reserve_into_a_hold() {
+        use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            // Pre-upgrade state: v0, stake on the legacy named reserve, a
+            // child deposit on its own reserve, a legacy beneficiary.
+            StorageVersion::new(0).put::<ComputeScoring>();
+            let _ = Balances::make_free_balance_be(&1, 2_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                400
+            ));
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::DEPOSIT_RESERVE_ID,
+                &1,
+                100
+            ));
+            StakedAmount::<TestRuntime>::insert(1, 300);
+            StakeUnbonding::<TestRuntime>::insert(1, (100, 77));
+            crate::pallet::SlashBeneficiary::<TestRuntime>::put(9);
+
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            assert_eq!(on_hold(1), 400);
+            assert_eq!(
+                Balances::reserved_balance_named(&crate::pallet::STAKE_RESERVE_ID, &1),
+                0
+            );
+            assert_eq!(
+                Balances::reserved_balance_named(&crate::pallet::DEPOSIT_RESERVE_ID, &1),
+                100
+            );
+            assert_eq!(Balances::free_balance(1), 1_500);
+            assert!(!crate::pallet::SlashBeneficiary::<TestRuntime>::exists());
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 1);
+
+            // Idempotent: a second run is a no-op.
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+            assert_eq!(on_hold(1), 400);
+            assert_eq!(Balances::free_balance(1), 1_500);
+        });
+    }
+
+    #[test]
+    fn migration_failure_rolls_the_account_back_and_keeps_the_old_version() {
+        use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            // A corrupt pre-state: the `cmps/stk` record says 500 while the
+            // account only has 400 reserved, so a full unreserve comes up
+            // 100 short and the conversion must not half-happen.
+            let _ = Balances::make_free_balance_be(&1, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                400
+            ));
+            pallet_balances::Reserves::<TestRuntime>::mutate(1, |r| r[0].amount = 500);
+            StakedAmount::<TestRuntime>::insert(1, 500);
+            // A second, healthy account converts regardless.
+            let _ = Balances::make_free_balance_be(&2, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &2,
+                300
+            ));
+            StakedAmount::<TestRuntime>::insert(2, 300);
+
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            // Account 1 rolled back to exactly its pre-migration state.
+            assert_eq!(
+                Balances::reserved_balance_named(&crate::pallet::STAKE_RESERVE_ID, &1),
+                500
+            );
+            assert_eq!(Balances::reserved_balance(1), 400);
+            assert_eq!(on_hold(1), 0);
+            assert_eq!(Balances::free_balance(1), 600);
+            assert_eq!(on_hold(2), 300);
+            // Stamped anyway: the lazy half owns the leftover.
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 1);
+        });
+    }
+
+    /// Seed `n` legacy stakers `1000..1000+n`, each with 100 on the
+    /// `cmps/stk` reserve and in the ledger.
+    fn seed_legacy_stakers(n: u64) {
+        for who in 1_000..1_000 + n {
+            let _ = Balances::make_free_balance_be(&who, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &who,
+                100
+            ));
+            StakedAmount::<TestRuntime>::insert(who, 100);
+        }
+    }
+
+    fn legacy(who: AccountId) -> Balance {
+        Balances::reserved_balance_named(&crate::pallet::STAKE_RESERVE_ID, &who)
+    }
+
+    #[test]
+    fn migration_is_bounded_and_the_rest_converts_lazily() {
+        use crate::migrations::v1::{MigrateStakeReserveToHold, MAX_ACCOUNTS_PER_UPGRADE};
+        use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            let n = u64::from(MAX_ACCOUNTS_PER_UPGRADE) + 3;
+            seed_legacy_stakers(n);
+
+            MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            let on_reserve: Vec<AccountId> =
+                (1_000..1_000 + n).filter(|w| legacy(*w) > 0).collect();
+            assert_eq!(on_reserve.len(), 3, "exactly the cap was converted eagerly");
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 1);
+            for who in 1_000..1_000 + n {
+                // Never free: on the reserve or on the hold, all of it.
+                assert_eq!(legacy(who) + on_hold(who), 100);
+                assert_eq!(Balances::free_balance(who), 900);
+            }
+
+            // Lazy half: each stake-moving call converts its account first.
+            let (a, b, c) = (on_reserve[0], on_reserve[1], on_reserve[2]);
+            assert_ok!(ComputeScoring::top_up_stake(RuntimeOrigin::signed(a), 50));
+            assert_eq!((legacy(a), on_hold(a)), (0, 150));
+
+            assert_ok!(ComputeScoring::request_unstake(RuntimeOrigin::signed(b), 100));
+            System::set_block_number(System::block_number() + 64);
+            assert_ok!(ComputeScoring::claim_unstaked(RuntimeOrigin::signed(b)));
+            assert_eq!((legacy(b), on_hold(b)), (0, 0));
+            assert_eq!(Balances::free_balance(b), 1_000);
+
             assert_ok!(ComputeScoring::set_slashing_enabled(
                 RuntimeOrigin::root(),
                 true
             ));
-            assert_ok!(ComputeScoring::set_slash_beneficiary(
-                RuntimeOrigin::root(),
-                Some(9)
-            ));
             assert_ok!(ComputeScoring::slash_stake(
                 RuntimeOrigin::root(),
-                1,
-                150,
-                SlashReason::Manual
+                c,
+                40,
+                SlashReason::Sla
             ));
-            assert_eq!(StakedAmount::<TestRuntime>::get(1), 350);
-            assert_eq!(Balances::reserved_balance(1), 350); // dropped, not stuck at 500
-            assert_eq!(Balances::free_balance(9), 0); // dead → got nothing
-            assert_eq!(SlashRecord::<TestRuntime>::get(1), 150);
+            assert_eq!((legacy(c), on_hold(c)), (0, 60));
+            assert_eq!(mock_drain_slashes(), vec![(c, 40, SlashReason::Sla)]);
+        });
+    }
+
+    /// Old `reserve_named` could leave `free == 0` when the account had a
+    /// second provider. After the reserve the account has exactly ONE
+    /// provider and zero free balance; the conversion must still move the
+    /// whole reserve (a `Protect` hold only keeps ED back for a sole
+    /// provider that the unreserve itself restores).
+    #[test]
+    fn migration_converts_an_account_reserved_down_to_zero_free() {
+        use frame_support::traits::{OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            let _ = Balances::make_free_balance_be(&1, 400);
+            frame_system::Pallet::<TestRuntime>::inc_providers(&1);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                400
+            ));
+            assert_eq!(Balances::free_balance(1), 0);
+            assert_eq!(frame_system::Pallet::<TestRuntime>::providers(&1), 1);
+            StakedAmount::<TestRuntime>::insert(1, 400);
+
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            assert_eq!(on_hold(1), 400);
+            assert_eq!(legacy(1), 0);
+            assert_eq!(Balances::free_balance(1), 0);
+        });
+    }
+
+    #[test]
+    fn a_failed_lazy_conversion_refuses_the_call() {
+        new_test_ext().execute_with(|| {
+            // Corrupt legacy state (record 500, only 400 really reserved):
+            // the conversion rolls back, and the calls must say so.
+            let _ = Balances::make_free_balance_be(&1, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                400
+            ));
+            pallet_balances::Reserves::<TestRuntime>::mutate(1, |r| r[0].amount = 500);
+            StakedAmount::<TestRuntime>::insert(1, 500);
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_noop!(
+                ComputeScoring::slash_stake(RuntimeOrigin::root(), 1, 100, SlashReason::Sla),
+                Error::<TestRuntime>::LegacyStakeConversionFailed
+            );
+            assert_noop!(
+                ComputeScoring::top_up_stake(RuntimeOrigin::signed(1), 10),
+                Error::<TestRuntime>::LegacyStakeConversionFailed
+            );
+        });
+    }
+
+    #[test]
+    fn migration_moves_a_reserve_that_disagrees_with_the_ledger_as_is() {
+        use frame_support::traits::{OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            let _ = Balances::make_free_balance_be(&1, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &1,
+                250
+            ));
+            StakedAmount::<TestRuntime>::insert(1, 400);
+
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            // The physical reserve moved, nothing more, nothing freed.
+            assert_eq!(on_hold(1), 250);
+            assert_eq!(Balances::free_balance(1), 750);
+        });
+    }
+
+    #[test]
+    fn migration_with_empty_ledger_only_bumps_the_version() {
+        use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            crate::migrations::v1::MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 1);
         });
     }
 
@@ -2430,10 +2760,12 @@ mod slashing {
             // an untagged `slash_reserved(500)` draws from the whole
             // 400-pool and eats the deposit; the named slash is
             // capped at the 300 the stake reserve actually holds.
-            assert_eq!(
-                Balances::unreserve_named(&crate::pallet::STAKE_RESERVE_ID, &FAM, 200),
-                0
-            );
+            assert_ok!(Balances::release(
+                &HoldReason::ComputeStake.into(),
+                &FAM,
+                200,
+                Precision::Exact
+            ));
             assert_eq!(Balances::reserved_balance(FAM), 400);
 
             assert_ok!(ComputeScoring::set_slashing_enabled(
@@ -2476,10 +2808,15 @@ mod slashing {
     fn slash_records_actual_amount_when_reserved_is_short() {
         new_test_ext().execute_with(|| {
             staked(1, 500);
-            // Simulate logical/physical drift: free 200 of the reserve
-            // out-of-band so reserved (300) < StakedAmount (500).
-            assert_eq!(Balances::unreserve(&1, 200), 0);
-            assert_eq!(Balances::reserved_balance(1), 300);
+            // Simulate logical/physical drift: free 200 of the hold
+            // out-of-band so held (300) < StakedAmount (500).
+            assert_ok!(Balances::release(
+                &HoldReason::ComputeStake.into(),
+                &1,
+                200,
+                Precision::Exact
+            ));
+            assert_eq!(on_hold(1), 300);
             assert_ok!(ComputeScoring::set_slashing_enabled(
                 RuntimeOrigin::root(),
                 true
@@ -2492,8 +2829,9 @@ mod slashing {
                 400,
                 SlashReason::Liveness
             ));
-            // Record + event reflect what was ACTUALLY burned (300), not 400.
+            // Record + sink reflect what was ACTUALLY slashed (300), not 400.
             assert_eq!(SlashRecord::<TestRuntime>::get(1), 300);
+            assert_eq!(mock_drain_slashes(), vec![(1, 300, SlashReason::Liveness)]);
             assert_eq!(Balances::reserved_balance(1), 0);
             // Logical stake decremented by the actual 300 (500 - 300 = 200).
             assert_eq!(StakedAmount::<TestRuntime>::get(1), 200);
