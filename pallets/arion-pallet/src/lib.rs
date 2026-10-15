@@ -917,7 +917,9 @@ pub mod pallet {
 		/// Invariant restored (and kept by `register_child` /
 		/// `cleanup_family_when_no_active_children` / `deregister_family`):
 		///
-		///     FamilyCount == |{ f : FamilyActiveChildren[f] > 0 }|
+		/// ```text
+		/// FamilyCount == |{ f : FamilyActiveChildren[f] > 0 }|
+		/// ```
 		///
 		/// i.e. the number of families with at least one `Active` child.
 		///
