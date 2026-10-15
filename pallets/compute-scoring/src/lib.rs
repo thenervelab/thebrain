@@ -2286,7 +2286,7 @@ pub mod pallet {
         /// beneficiary. If the sink refuses the credit the whole slash is
         /// rolled back and [`Error::SlashSinkRefused`] returned: nothing
         /// moves, nothing burns, nothing is recorded.
-        fn do_slash(
+        pub(crate) fn do_slash(
             owner: &T::AccountId,
             requested: BalanceOf<T>,
             reason: SlashReason,

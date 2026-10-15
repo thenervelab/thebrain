@@ -2281,6 +2281,31 @@ mod slashing {
         });
     }
 
+    /// `do_slash` must roll itself back, not lean on `slash_stake`'s
+    /// transactional dispatch: a future non-extrinsic caller (an automated
+    /// slash in a hook) gets no dispatch layer.
+    #[test]
+    fn a_refused_slash_rolls_back_outside_a_dispatch_too() {
+        new_test_ext().execute_with(|| {
+            staked(1, 500);
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            let issuance_before = Balances::total_issuance();
+            crate::mock::mock_sink_refuses(true);
+
+            assert_eq!(
+                ComputeScoring::do_slash(&1, 200, SlashReason::Sla),
+                Err(Error::<TestRuntime>::SlashSinkRefused.into())
+            );
+            assert_eq!(on_hold(1), 500);
+            assert_eq!(StakedAmount::<TestRuntime>::get(1), 500);
+            assert_eq!(SlashRecord::<TestRuntime>::get(1), 0);
+            assert_eq!(Balances::total_issuance(), issuance_before);
+        });
+    }
+
     #[test]
     fn set_slash_beneficiary_is_deprecated() {
         new_test_ext().execute_with(|| {
