@@ -14,6 +14,8 @@ frame-support = { workspace = true, default-features = false }
 frame-system = { workspace = true, default-features = false }
 sp-runtime = { workspace = true, default-features = false }
 sp-std = { workspace = true, default-features = false }
+# Migration diagnostics (`migrations::v1`).
+log = { workspace = true, default-features = false }
 # PR-I3: `sp_io::hashing::sha2_256` is used by `submit_audit_stats` to
 # chain `prev_aggregate_hash` via the same SHA-256 the off-chain
 # audit-VM (`hippius_types::audit_vm`) uses — `T::Hashing` would
@@ -73,6 +75,7 @@ std = [
     "frame-system/std",
     "sp-runtime/std",
     "sp-std/std",
+    "log/std",
     "sp-core/std",
     "sp-io/std",
     "hippius-types/std",

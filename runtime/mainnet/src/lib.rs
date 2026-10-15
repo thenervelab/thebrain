@@ -150,8 +150,9 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 	fn available() -> Balance {
 		// Compartmentalization: the alpha backing still owed to the ranking /
 		// marketplace pots — and chargeback refunds still owed back to the
-		// sudo account — and the emission compartments reserved for ranking-based
-		// `pay_storage_miners` and weight-based `pay_compute_miners` — is not
+		// sudo account — and the compartments reserved for ranking-based
+		// `pay_storage_miners` and weight-based `pay_compute_miners` (compute
+		// emission plus recycled stake slashes) — is not
 		// spendable by the miner settlement: a runaway
 		// miner due (bad stats, bad price, compromised authority key) can at
 		// worst drain the miner budget, never funds owed to someone else.
@@ -159,7 +160,7 @@ impl pallet_arion::PayoutSource<AccountId, Balance> for ArionPayoutSource {
 			.saturating_sub(pallet_marketplace::TotalUndistributedBacking::<Runtime>::get())
 			.saturating_sub(pallet_marketplace::PendingSudoRefunds::<Runtime>::get())
 			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::emission_available())
-			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::compute_emission_available())
+			.saturating_sub(pallet_hippocampus::Pallet::<Runtime>::compute_payable_available())
 	}
 }
 
@@ -282,6 +283,53 @@ impl pallet_hippocampus::ComputeMinerWeights<AccountId> for ComputeMinerWeightsS
 	}
 }
 
+/// compute-scoring `SlashSink`: slashed compute stake is recycled into the
+/// Hippocampus pot for compute-miner payouts — never burned, never sent to
+/// a treasury or a beneficiary account.
+///
+/// The credit (funds already taken off the owner's `ComputeStake` hold) is
+/// resolved into the pot, then booked as `DepositType::SlashRecycled` with
+/// the owner and reason (`Hippocampus.SlashRecycled`), which puts it in the
+/// compute compartment: payable by `pay_compute_miners`, out of reach of
+/// `request_payment` and `pay_storage_miners`, and never reported as
+/// emission.
+pub struct SlashToHippocampus;
+impl
+	pallet_compute_scoring::StakeSlashSink<
+		AccountId,
+		pallet_compute_scoring::StakeCreditOf<Runtime>,
+	> for SlashToHippocampus
+{
+	fn on_stake_slash(
+		owner: &AccountId,
+		credit: pallet_compute_scoring::StakeCreditOf<Runtime>,
+		reason: pallet_compute_scoring::SlashReason,
+	) {
+		use frame_support::traits::{fungible::Balanced, Imbalance};
+
+		let amount = credit.peek();
+		let pot = pallet_hippocampus::Pallet::<Runtime>::account_id();
+		match <Balances as Balanced<AccountId>>::resolve(&pot, credit) {
+			Ok(()) => {
+				pallet_hippocampus::Pallet::<Runtime>::record_slash_recycled(owner, amount, reason)
+			},
+			// Only reachable if the pot account does not exist AND the slash is
+			// below the existential deposit: the pot is kept alive by every
+			// transfer out of it (`KeepAlive`) and funded by transaction fees,
+			// so this is a broken-invariant alarm, not a path. The credit drops
+			// (burns) — nothing is booked, so no ledger claims funds the bank
+			// does not hold.
+			Err(unplaced) => log::error!(
+				target: "runtime::compute-scoring",
+				"slash sink: Hippocampus pot refused {:?} slashed from {:?} ({:?}); burned",
+				unplaced.peek(),
+				owner,
+				reason
+			),
+		}
+	}
+}
+
 /// Adapter: token price in USD (fixed-point 18 decimals) from the credits
 /// pallet alpha price feed.
 pub struct AlphaTokenPriceUsd;
@@ -355,6 +403,11 @@ impl pallet_compute_scoring::Config for Runtime {
 		frame_system::EnsureSignedBy<ComputeScoringAuthorityMembers, AccountId>,
 	>;
 	type DepositCurrency = Balances;
+	type RuntimeHoldReason = RuntimeHoldReason;
+	// Same `Balances` instance: stake on the `ComputeStake` hold, child
+	// deposits on the `cmps/dep` named reserve.
+	type StakeCurrency = Balances;
+	type SlashSink = SlashToHippocampus;
 	type FamilyRegistry = pallet_registration::Pallet<Runtime>;
 	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
 	type Registration = pallet_registration::Pallet<Runtime>;
@@ -506,6 +559,7 @@ impl pallet_hippocampus::Config for Runtime {
 	// `MaxMinerStatusUpdatesPerCall` — if that constant ever exceeds this one,
 	// every `pay_compute_miners` call fails with `TooManyComputeMiners`.
 	type MaxComputeMinersPerPayout = ConstU32<640>;
+	type SlashReason = pallet_compute_scoring::SlashReason;
 	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
 }
 #[cfg(feature = "std")]
@@ -594,7 +648,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92018,
+	spec_version: 92019,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -2388,6 +2442,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 type Migrations = (
 	migrations::ActivateMinerPaymentBank<Runtime>,
 	migrations::InitAlphaPriceUpdatedAt<Runtime>,
+	pallet_compute_scoring::migrations::v1::MigrateStakeReserveToHold<Runtime>,
 );
 
 /// Block type as expected by this runtime.
