@@ -2456,8 +2456,73 @@ mod slashing {
             assert_eq!(on_hold(1), 0);
             assert_eq!(Balances::free_balance(1), 600);
             assert_eq!(on_hold(2), 300);
-            // Not stamped: the next upgrade retries.
-            assert_eq!(ComputeScoring::on_chain_storage_version(), 0);
+            // Stamped anyway: the lazy half owns the leftover.
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 1);
+        });
+    }
+
+    /// Seed `n` legacy stakers `1000..1000+n`, each with 100 on the
+    /// `cmps/stk` reserve and in the ledger.
+    fn seed_legacy_stakers(n: u64) {
+        for who in 1_000..1_000 + n {
+            let _ = Balances::make_free_balance_be(&who, 1_000);
+            assert_ok!(Balances::reserve_named(
+                &crate::pallet::STAKE_RESERVE_ID,
+                &who,
+                100
+            ));
+            StakedAmount::<TestRuntime>::insert(who, 100);
+        }
+    }
+
+    fn legacy(who: AccountId) -> Balance {
+        Balances::reserved_balance_named(&crate::pallet::STAKE_RESERVE_ID, &who)
+    }
+
+    #[test]
+    fn migration_is_bounded_and_the_rest_converts_lazily() {
+        use crate::migrations::v1::{MigrateStakeReserveToHold, MAX_ACCOUNTS_PER_UPGRADE};
+        use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(0).put::<ComputeScoring>();
+            let n = u64::from(MAX_ACCOUNTS_PER_UPGRADE) + 3;
+            seed_legacy_stakers(n);
+
+            MigrateStakeReserveToHold::<TestRuntime>::on_runtime_upgrade();
+
+            let on_reserve: Vec<AccountId> =
+                (1_000..1_000 + n).filter(|w| legacy(*w) > 0).collect();
+            assert_eq!(on_reserve.len(), 3, "exactly the cap was converted eagerly");
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 1);
+            for who in 1_000..1_000 + n {
+                // Never free: on the reserve or on the hold, all of it.
+                assert_eq!(legacy(who) + on_hold(who), 100);
+                assert_eq!(Balances::free_balance(who), 900);
+            }
+
+            // Lazy half: each stake-moving call converts its account first.
+            let (a, b, c) = (on_reserve[0], on_reserve[1], on_reserve[2]);
+            assert_ok!(ComputeScoring::top_up_stake(RuntimeOrigin::signed(a), 50));
+            assert_eq!((legacy(a), on_hold(a)), (0, 150));
+
+            assert_ok!(ComputeScoring::request_unstake(RuntimeOrigin::signed(b), 100));
+            System::set_block_number(System::block_number() + 64);
+            assert_ok!(ComputeScoring::claim_unstaked(RuntimeOrigin::signed(b)));
+            assert_eq!((legacy(b), on_hold(b)), (0, 0));
+            assert_eq!(Balances::free_balance(b), 1_000);
+
+            assert_ok!(ComputeScoring::set_slashing_enabled(
+                RuntimeOrigin::root(),
+                true
+            ));
+            assert_ok!(ComputeScoring::slash_stake(
+                RuntimeOrigin::root(),
+                c,
+                40,
+                SlashReason::Sla
+            ));
+            assert_eq!((legacy(c), on_hold(c)), (0, 60));
+            assert_eq!(mock_drain_slashes(), vec![(c, 40, SlashReason::Sla)]);
         });
     }
 

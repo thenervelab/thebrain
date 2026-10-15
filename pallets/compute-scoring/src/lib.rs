@@ -340,15 +340,16 @@ pub mod pallet {
             -> Result<(), Credit>;
     }
 
-    /// Burns the slashed funds (drops the credit). For test runtimes only:
-    /// no production runtime should burn slashed stake.
+    /// No sink: refuses every credit, so every slash is rolled back. Fail
+    /// closed — a runtime that forgot to bind a sink slashes nothing rather
+    /// than burning.
     impl<AccountId, Credit> StakeSlashSink<AccountId, Credit> for () {
         fn on_stake_slash(
             _owner: &AccountId,
-            _credit: Credit,
+            credit: Credit,
             _reason: SlashReason,
         ) -> Result<(), Credit> {
-            Ok(())
+            Err(credit)
         }
     }
 
@@ -2311,6 +2312,9 @@ pub mod pallet {
             requested: BalanceOf<T>,
             reason: SlashReason,
         ) -> Result<BalanceOf<T>, DispatchError> {
+            // An account the v1 migration did not reach still holds its
+            // stake on the legacy reserve; move it to the hold first.
+            crate::migrations::v1::convert_legacy_stake::<T>(owner);
             let active = StakedAmount::<T>::get(owner);
             let unbonding = StakeUnbonding::<T>::get(owner)
                 .map(|(a, _)| a)
@@ -3722,11 +3726,15 @@ pub mod pallet {
 
         /// Staker: put additional native collateral on the
         /// [`HoldReason::ComputeStake`] hold.
+        // + the lazy v1 conversion (`migrations::v1::CONVERT_READS_WRITES`).
         #[pallet::call_index(36)]
-        #[pallet::weight(<T as pallet::Config>::WeightInfo::register_child())]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::register_child()
+            .saturating_add(T::DbWeight::get().reads_writes(3, 3)))]
         pub fn top_up_stake(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(!amount.is_zero(), Error::<T>::ZeroStake);
+            // Lazy half of the v1 migration (see `migrations::v1`).
+            crate::migrations::v1::convert_legacy_stake::<T>(&who);
             T::StakeCurrency::hold(&HoldReason::ComputeStake.into(), &who, amount)
                 .map_err(|_| Error::<T>::InsufficientBalanceForStake)?;
             StakedAmount::<T>::mutate(&who, |s| *s = s.saturating_add(amount));
@@ -3837,13 +3845,17 @@ pub mod pallet {
         }
 
         /// Staker: release fully-unbonded stake from the hold.
+        // + the lazy v1 conversion (`migrations::v1::CONVERT_READS_WRITES`).
         #[pallet::call_index(45)]
-        #[pallet::weight(<T as pallet::Config>::WeightInfo::claim_unbonded())]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::claim_unbonded()
+            .saturating_add(T::DbWeight::get().reads_writes(3, 3)))]
         pub fn claim_unstaked(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let (amount, end) =
                 StakeUnbonding::<T>::get(&who).ok_or(Error::<T>::NoStakeUnbonding)?;
             ensure!(Self::now() >= end, Error::<T>::UnbondingNotReady);
+            // Lazy half of the v1 migration (see `migrations::v1`).
+            crate::migrations::v1::convert_legacy_stake::<T>(&who);
             // `Exact`: all of it or nothing — a short hold must not let the
             // claim succeed and drop the unbonding record.
             T::StakeCurrency::release(
@@ -3892,13 +3904,14 @@ pub mod pallet {
         /// and submits this, the same way it drives `set_miner_status`.
         /// No-op on balance while the kill-switch is off (event only).
         // Priced on `deregister_child` (no dedicated benchmark yet) plus
-        // the sink's work, which that benchmark never covered: the
-        // receiving account, the hold slot and the receiving ledger
-        // (production: Hippocampus `TotalDeposited`), read and written.
+        // what that benchmark never covered: the sink (receiving account,
+        // hold slot, receiving ledger — production: Hippocampus
+        // `TotalDeposited`) and the lazy v1 conversion
+        // (`migrations::v1::CONVERT_READS_WRITES`), read and written.
         #[pallet::call_index(48)]
         #[pallet::weight((
             <T as pallet::Config>::WeightInfo::deregister_child()
-                .saturating_add(T::DbWeight::get().reads_writes(4, 4)),
+                .saturating_add(T::DbWeight::get().reads_writes(7, 7)),
             Pays::No
         ))]
         pub fn slash_stake(

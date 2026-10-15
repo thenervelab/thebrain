@@ -2,6 +2,21 @@
 
 /// v0 → v1: operator stake moves from the `cmps/stk` named reserve to the
 /// [`HoldReason::ComputeStake`] fungible hold.
+///
+/// Two halves, so the upgrade block stays bounded whatever the pre-upgrade
+/// ledger holds (`top_up_stake` is callable while `StakeEnabled` is off, so
+/// the ledger is not provably empty at enactment):
+///
+/// - [`MigrateStakeReserveToHold`] converts at most
+///   [`MAX_ACCOUNTS_PER_UPGRADE`] ledger accounts eagerly and stamps v1.
+/// - [`convert_legacy_stake`] is also called lazily by every call that
+///   moves stake balance (`top_up_stake`, `claim_unstaked`, `do_slash`), so
+///   an account the eager pass did not reach is converted the first time it
+///   is touched. Until then its stake stays on the named reserve: locked,
+///   never free.
+///
+/// On mainnet at spec 92018 the ledger is empty, so the eager pass is a
+/// version bump.
 pub mod v1 {
     use crate::pallet::{
         Config, HoldReason, Pallet, SlashBeneficiary, StakeUnbonding, StakedAmount,
@@ -17,38 +32,31 @@ pub mod v1 {
 
     const LOG_TARGET: &str = "runtime::compute-scoring::migration";
 
-    /// Converts every `cmps/stk` named reserve into a
-    /// [`HoldReason::ComputeStake`] hold, and clears the deprecated
-    /// [`SlashBeneficiary`].
-    ///
-    /// Every ledger account is converted in this one upgrade — there is no
-    /// page cap, because a cap could leave stake on a reserve the new code
-    /// never reads. The cost is linear in the ledger size and fully charged;
-    /// on mainnet the ledger is EMPTY at spec 92018 (stake was never
-    /// enabled), which the deploy checklist re-reads before the upgrade.
-    ///
-    /// The version is stamped only if EVERY account converted. An account
-    /// whose hold fails keeps its stake on the named reserve (never free),
-    /// is logged, and is retried by the next upgrade — the per-account step
-    /// is idempotent (a zero stake reserve is a no-op). Until then that
-    /// account's stake is merely unclaimable and unslashable, not lost.
-    pub struct MigrateStakeReserveToHold<T>(PhantomData<T>);
+    /// Most ledger accounts the eager pass converts in the upgrade block.
+    /// The rest are converted lazily (see the module docs).
+    pub const MAX_ACCOUNTS_PER_UPGRADE: u32 = 512;
 
-    /// Every account the stake ledger knows, and the number of storage keys
-    /// read to find them. `top_up_stake` is the only writer of the stake
-    /// reserve and always writes [`StakedAmount`], and [`StakeUnbonding`]
-    /// covers an owner whose active stake was fully unbonded — so no stake
-    /// reserve exists outside this set.
-    fn ledger_owners<T: Config>() -> (BTreeSet<T::AccountId>, u64) {
-        let mut keys: u64 = 0;
-        let owners = StakedAmount::<T>::iter_keys()
-            .chain(StakeUnbonding::<T>::iter_keys())
-            .inspect(|_| keys = keys.saturating_add(1))
-            .collect();
-        (owners, keys)
+    /// Storage accesses of one conversion that moves funds: `Reserves`,
+    /// `Account` and `Holds`, each read and written (the ledger reads are
+    /// charged by the caller).
+    pub const CONVERT_READS_WRITES: (u64, u64) = (3, 3);
+
+    type BalanceOf<T> = <<T as Config>::DepositCurrency as frame_support::traits::Currency<
+        <T as frame_system::Config>::AccountId,
+    >>::Balance;
+
+    /// Outcome of converting one account.
+    pub enum Converted<B> {
+        /// No `cmps/stk` reserve: nothing to do (already on the hold, or
+        /// never staked).
+        Nothing,
+        /// The whole reserve moved onto the hold.
+        Moved(B),
+        /// The conversion was rolled back; the stake is still on the reserve.
+        Failed,
     }
 
-    /// The stake the ledger says `who` has on hold: active + unbonding.
+    /// The stake the ledger says `who` has: active + unbonding.
     fn logical_stake<T: Config>(who: &T::AccountId) -> BalanceOf<T> {
         StakedAmount::<T>::get(who).saturating_add(
             StakeUnbonding::<T>::get(who)
@@ -57,17 +65,12 @@ pub mod v1 {
         )
     }
 
-    /// Outcome of converting one account.
-    enum Converted<B> {
-        Nothing,
-        Moved(B),
-        Failed,
-    }
-
-    /// Move `who`'s whole `cmps/stk` reserve onto the hold, atomically: on
-    /// any shortfall or hold failure the storage layer rolls the account back
-    /// to its pre-migration state, so stake is never left free.
-    fn convert<T: Config>(who: &T::AccountId) -> Converted<BalanceOf<T>> {
+    /// Move `who`'s whole `cmps/stk` reserve onto the
+    /// [`HoldReason::ComputeStake`] hold, atomically: on any shortfall or
+    /// hold failure the storage layer rolls the account back to its prior
+    /// state, so stake is never left free. Idempotent — a zero reserve is
+    /// [`Converted::Nothing`].
+    pub fn convert_legacy_stake<T: Config>(who: &T::AccountId) -> Converted<BalanceOf<T>> {
         let reserved = T::DepositCurrency::reserved_balance_named(&STAKE_RESERVE_ID, who);
         if reserved.is_zero() {
             return Converted::Nothing;
@@ -105,6 +108,12 @@ pub mod v1 {
         }
     }
 
+    /// Eager half of v0 → v1: converts up to [`MAX_ACCOUNTS_PER_UPGRADE`]
+    /// `cmps/stk` reserves into holds, clears the deprecated
+    /// [`SlashBeneficiary`], and stamps v1. Guarded on the storage version,
+    /// so it runs once.
+    pub struct MigrateStakeReserveToHold<T>(PhantomData<T>);
+
     impl<T: Config> OnRuntimeUpgrade for MigrateStakeReserveToHold<T> {
         fn on_runtime_upgrade() -> Weight {
             if Pallet::<T>::on_chain_storage_version() >= 1 {
@@ -112,31 +121,41 @@ pub mod v1 {
                 return T::DbWeight::get().reads(1);
             }
 
-            let (owners, keys) = ledger_owners::<T>();
-            // Version read + the two key scans.
-            let mut reads: u64 = 1u64.saturating_add(keys);
+            let limit = MAX_ACCOUNTS_PER_UPGRADE as usize;
+            let (convert_reads, convert_writes) = CONVERT_READS_WRITES;
+            // Version read.
+            let mut reads: u64 = 1;
             let mut writes: u64 = 0;
+            let mut seen: BTreeSet<T::AccountId> = BTreeSet::new();
             let mut converted: u32 = 0;
             let mut failed: u32 = 0;
             let mut total = BalanceOf::<T>::zero();
+            let mut truncated = false;
 
-            for who in owners.iter() {
-                // Reserves + ledger (2 maps) read; then, on a move, Reserves,
-                // Account and Holds read and written.
+            // Lazy iteration: at most `limit` distinct owners are ever
+            // touched, plus the one key that proves there are more.
+            for who in StakedAmount::<T>::iter_keys().chain(StakeUnbonding::<T>::iter_keys()) {
+                reads = reads.saturating_add(1);
+                if seen.contains(&who) {
+                    continue;
+                }
+                if seen.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+                // `Reserves` + the two ledger maps.
                 reads = reads.saturating_add(3);
-                match convert::<T>(who) {
+                match convert_legacy_stake::<T>(&who) {
                     Converted::Nothing => {}
                     Converted::Moved(amount) => {
-                        reads = reads.saturating_add(3);
-                        writes = writes.saturating_add(3);
                         converted = converted.saturating_add(1);
                         total = total.saturating_add(amount);
                     }
-                    Converted::Failed => {
-                        reads = reads.saturating_add(3);
-                        failed = failed.saturating_add(1);
-                    }
+                    Converted::Failed => failed = failed.saturating_add(1),
                 }
+                reads = reads.saturating_add(convert_reads);
+                writes = writes.saturating_add(convert_writes);
+                seen.insert(who);
             }
 
             reads = reads.saturating_add(1);
@@ -146,29 +165,29 @@ pub mod v1 {
                 log::info!(target: LOG_TARGET, "cleared deprecated SlashBeneficiary");
             }
 
-            if owners.is_empty() {
+            if seen.is_empty() {
                 log::info!(target: LOG_TARGET, "stake ledger empty: nothing to migrate");
             } else {
                 log::info!(
                     target: LOG_TARGET,
-                    "{} ledger account(s): {} stake reserve(s) totalling {:?} moved to holds, {} failed",
-                    owners.len(),
+                    "{} ledger account(s) visited: {} stake reserve(s) totalling {:?} moved to holds, {} failed",
+                    seen.len(),
                     converted,
                     total,
                     failed
                 );
             }
-
-            if failed == 0 {
-                StorageVersion::new(1).put::<Pallet<T>>();
-                writes = writes.saturating_add(1);
-            } else {
-                log::error!(
+            if truncated || failed > 0 {
+                log::warn!(
                     target: LOG_TARGET,
-                    "{} account(s) not converted; version left at 0 so the next upgrade retries",
+                    "accounts left on the legacy reserve (truncated: {}, failed: {}); they convert on their next stake call or slash",
+                    truncated,
                     failed
                 );
             }
+
+            StorageVersion::new(1).put::<Pallet<T>>();
+            writes = writes.saturating_add(1);
 
             T::DbWeight::get().reads_writes(reads, writes)
         }
@@ -176,13 +195,21 @@ pub mod v1 {
         #[cfg(feature = "try-runtime")]
         fn pre_upgrade() -> Result<alloc::vec::Vec<u8>, sp_runtime::TryRuntimeError> {
             use codec::Encode;
-            // Per owner: the stake reserve, which must end up on the hold.
-            let snapshot: alloc::vec::Vec<(T::AccountId, BalanceOf<T>)> = ledger_owners::<T>()
-                .0
+            use frame_support::traits::fungible::InspectHold;
+            // Per owner: stake reserve + stake hold, which the migration may
+            // only move between, never change.
+            let owners: BTreeSet<T::AccountId> = StakedAmount::<T>::iter_keys()
+                .chain(StakeUnbonding::<T>::iter_keys())
+                .collect();
+            let snapshot: alloc::vec::Vec<(T::AccountId, BalanceOf<T>)> = owners
                 .into_iter()
                 .map(|who| {
-                    let r = T::DepositCurrency::reserved_balance_named(&STAKE_RESERVE_ID, &who);
-                    (who, r)
+                    let held = T::DepositCurrency::reserved_balance_named(&STAKE_RESERVE_ID, &who)
+                        .saturating_add(T::StakeCurrency::balance_on_hold(
+                            &HoldReason::ComputeStake.into(),
+                            &who,
+                        ));
+                    (who, held)
                 })
                 .collect();
             Ok(snapshot.encode())
@@ -202,22 +229,18 @@ pub mod v1 {
                 !SlashBeneficiary::<T>::exists(),
                 "deprecated SlashBeneficiary still set"
             );
-            for (who, reserved_before) in snapshot {
+            for (who, held_before) in snapshot {
+                let held_after = T::DepositCurrency::reserved_balance_named(&STAKE_RESERVE_ID, &who)
+                    .saturating_add(T::StakeCurrency::balance_on_hold(
+                        &HoldReason::ComputeStake.into(),
+                        &who,
+                    ));
                 frame_support::ensure!(
-                    T::DepositCurrency::reserved_balance_named(&STAKE_RESERVE_ID, &who).is_zero(),
-                    "a cmps/stk named reserve survived the migration"
-                );
-                frame_support::ensure!(
-                    T::StakeCurrency::balance_on_hold(&HoldReason::ComputeStake.into(), &who)
-                        == reserved_before,
-                    "ComputeStake hold differs from the pre-upgrade stake reserve"
+                    held_after == held_before,
+                    "stake reserve + hold changed across the migration"
                 );
             }
             Ok(())
         }
     }
-
-    type BalanceOf<T> = <<T as Config>::DepositCurrency as frame_support::traits::Currency<
-        <T as frame_system::Config>::AccountId,
-    >>::Balance;
 }
