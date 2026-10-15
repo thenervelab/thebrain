@@ -2307,6 +2307,22 @@ mod slashing {
     }
 
     #[test]
+    fn the_unit_sink_fails_closed() {
+        use crate::pallet::{StakeCreditOf, StakeSlashSink};
+        use frame_support::traits::{fungible::Balanced, Imbalance};
+        new_test_ext().execute_with(|| {
+            let credit: StakeCreditOf<TestRuntime> = <Balances as Balanced<AccountId>>::issue(10);
+            let refused =
+                <() as StakeSlashSink<AccountId, StakeCreditOf<TestRuntime>>>::on_stake_slash(
+                    &1,
+                    credit,
+                    SlashReason::Manual,
+                );
+            assert_eq!(refused.map_err(|c| c.peek()), Err(10));
+        });
+    }
+
+    #[test]
     fn set_slash_beneficiary_is_deprecated() {
         new_test_ext().execute_with(|| {
             assert_noop!(
