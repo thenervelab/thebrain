@@ -155,6 +155,13 @@ pub mod pallet {
         /// non-validator owner OR if `owner` has no registered
         /// node at all.
         fn owner_has_validator_node(owner: &AccountId) -> bool;
+        /// `register_family` gate: `true` iff the runtime's registration
+        /// layer has banned `who` (production: `Registration.BannedAccounts`,
+        /// set by root). A banned account cannot become a permissionless
+        /// compute family. Default: nobody is banned.
+        fn is_banned(_who: &AccountId) -> bool {
+            false
+        }
     }
 
     impl<AccountId> FamilyRegistry<AccountId> for () {
@@ -183,6 +190,9 @@ pub mod pallet {
                 Some(info) => info.node_type == pallet_registration::NodeType::Validator,
                 None => false,
             }
+        }
+        fn is_banned(who: &T::AccountId) -> bool {
+            pallet_registration::BannedAccounts::<T>::contains_key(who)
         }
     }
 
@@ -1018,6 +1028,12 @@ pub mod pallet {
         /// `balance_on_hold(ComputeStake) == StakedAmount + StakeUnbonding`.
         #[codec(index = 0)]
         ComputeStake,
+        /// The deposit a permissionless compute family puts up in
+        /// [`Pallet::register_family`], released by
+        /// [`Pallet::unregister_family`]. Never slashed: `do_slash` draws
+        /// from [`HoldReason::ComputeStake`] only.
+        #[codec(index = 1)]
+        ComputeFamilyDeposit,
     }
 
     /// Current epoch — written by
@@ -1316,6 +1332,57 @@ pub mod pallet {
         BoundedVec<T::AccountId, T::MaxChildrenPerFamily>,
         ValueQuery,
     >;
+
+    // =====================================================================
+    // Permissionless compute families
+    //
+    // A compute operator needs a "family" before `register_child` accepts
+    // it. Until now the only way in was `pallet_registration` (sudo, or a
+    // Bittensor UID). `register_family` is the permissionless door: a
+    // signed account puts `FamilyDeposit` on hold and becomes a family. The
+    // runtime's `FamilyRegistry` answers "is a family" with
+    // `Registration || ComputeFamilies`, so `register_child` and the payout
+    // path are unchanged. Anti-sybil = the deposit + `MaxFamilies`.
+    // =====================================================================
+
+    /// A permissionless compute family: the deposit it has on hold under
+    /// [`HoldReason::ComputeFamilyDeposit`], and since when.
+    #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+    pub struct FamilyRecord<Balance, BlockNumber> {
+        pub deposit: Balance,
+        pub since: BlockNumber,
+    }
+
+    /// Families registered through [`Pallet::register_family`].
+    #[pallet::storage]
+    pub type ComputeFamilies<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        FamilyRecord<BalanceOf<T>, BlockNumberFor<T>>,
+        OptionQuery,
+    >;
+
+    /// Number of [`ComputeFamilies`] entries; capped at `MaxFamilies`.
+    #[pallet::storage]
+    pub type ComputeFamiliesCount<T> = StorageValue<_, u32, ValueQuery>;
+
+    /// Deposit `register_family` puts on hold. Root-set. ZERO means
+    /// permissionless registration is DISABLED (the default): a free family
+    /// would be a free sybil, so the door stays shut until governance prices
+    /// it.
+    #[pallet::storage]
+    pub type FamilyDeposit<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+    /// Child registration rows (`ChildRegistrations`, Active OR Unbonding)
+    /// per family. `unregister_family` requires zero, so a family cannot
+    /// leave while a child is still registered or unbonding. Counted from
+    /// this release on: rows created before it are not in the count (only
+    /// relevant to an account that was a `Registration` family before
+    /// becoming a permissionless one).
+    #[pallet::storage]
+    pub type FamilyChildRecords<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
 
     // =====================================================================
     // PR-1 — $-denominated, hosting-proportional STAKE
@@ -1887,6 +1954,22 @@ pub mod pallet {
             max_numer: u32,
             max_denom: u32,
         },
+
+        // --- permissionless compute families ---
+        /// `family` registered permissionlessly, `deposit` put on hold.
+        FamilyRegistered {
+            family: T::AccountId,
+            deposit: BalanceOf<T>,
+        },
+        /// `family` unregistered; `deposit` released.
+        FamilyUnregistered {
+            family: T::AccountId,
+            deposit: BalanceOf<T>,
+        },
+        /// Root set the family deposit (`0` = registration disabled).
+        FamilyDepositSet {
+            amount: BalanceOf<T>,
+        },
     }
 
     /// Named-reserve id for family CHILD DEPOSITS. Distinct from
@@ -2101,6 +2184,23 @@ pub mod pallet {
         /// could not be moved onto the hold; the call was refused and the
         /// stake stays reserved.
         LegacyStakeConversionFailed,
+
+        // --- permissionless compute families (appended) ---
+        /// `FamilyDeposit` is zero: permissionless registration is disabled.
+        FamilyRegistrationDisabled,
+        /// The caller is already a family (via `Registration` or
+        /// `register_family`).
+        AlreadyAFamily,
+        /// The caller is banned by the registration layer.
+        AccountBanned,
+        /// `MaxFamilies` permissionless families already exist.
+        TooManyComputeFamilies,
+        /// The caller's free balance cannot cover `FamilyDeposit`.
+        InsufficientFamilyDeposit,
+        /// The caller is not a permissionless compute family.
+        NotAComputeFamily,
+        /// The family still has a child registered or unbonding.
+        FamilyHasChildren,
     }
 
     // =====================================================================
@@ -2870,6 +2970,7 @@ pub mod pallet {
             );
             NodeIdToChild::<T>::insert(node_id, &child);
             NodeIdNonce::<T>::insert(node_id, nonce.saturating_add(1));
+            FamilyChildRecords::<T>::mutate(&family, |n| *n = n.saturating_add(1));
 
             // Update counts
             TotalActiveChildren::<T>::put(total.saturating_add(1));
@@ -3011,6 +3112,10 @@ pub mod pallet {
             // Remove record; cooldown tombstones remain in separate
             // storage.
             ChildRegistrations::<T>::remove(&child);
+            FamilyChildRecords::<T>::mutate_exists(&reg.family, |n| {
+                let left = n.unwrap_or(0).saturating_sub(1);
+                *n = if left == 0 { None } else { Some(left) };
+            });
 
             Self::deposit_event(Event::ChildUnbonded {
                 family: reg.family,
@@ -3596,6 +3701,89 @@ pub mod pallet {
                 None => ValiSubmitter::<T>::kill(),
             }
             Self::deposit_event(Event::ValiSubmitterSet { who });
+            Ok(())
+        }
+
+        /// Become a compute family without `pallet_registration` (no sudo,
+        /// no Bittensor UID): put [`FamilyDeposit`] on hold under
+        /// [`HoldReason::ComputeFamilyDeposit`].
+        ///
+        /// Refused while the deposit is zero (disabled, the default), if the
+        /// caller already is a family (either way), is banned by the
+        /// registration layer, or `MaxFamilies` permissionless families
+        /// exist. Pays the normal transaction fee (anti-spam).
+        #[pallet::call_index(57)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(8, 5).saturating_add(Weight::from_parts(50_000_000, 10_000)))]
+        pub fn register_family(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let deposit = FamilyDeposit::<T>::get();
+            ensure!(!deposit.is_zero(), Error::<T>::FamilyRegistrationDisabled);
+            ensure!(
+                !ComputeFamilies::<T>::contains_key(&who)
+                    && !T::FamilyRegistry::is_registered_family(&who),
+                Error::<T>::AlreadyAFamily
+            );
+            ensure!(!T::FamilyRegistry::is_banned(&who), Error::<T>::AccountBanned);
+            let count = ComputeFamiliesCount::<T>::get();
+            ensure!(count < T::MaxFamilies::get(), Error::<T>::TooManyComputeFamilies);
+
+            T::StakeCurrency::hold(&HoldReason::ComputeFamilyDeposit.into(), &who, deposit)
+                .map_err(|_| Error::<T>::InsufficientFamilyDeposit)?;
+            ComputeFamilies::<T>::insert(
+                &who,
+                FamilyRecord {
+                    deposit,
+                    since: Self::now(),
+                },
+            );
+            ComputeFamiliesCount::<T>::put(count.saturating_add(1));
+            Self::deposit_event(Event::FamilyRegistered {
+                family: who,
+                deposit,
+            });
+            Ok(())
+        }
+
+        /// Leave: release the deposit recorded at registration (not the
+        /// current [`FamilyDeposit`]). Only once the family has no child
+        /// registered or unbonding — deregister every child and
+        /// `claim_unbonded` each first.
+        #[pallet::call_index(58)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(6, 5).saturating_add(Weight::from_parts(50_000_000, 10_000)))]
+        pub fn unregister_family(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let record = ComputeFamilies::<T>::get(&who).ok_or(Error::<T>::NotAComputeFamily)?;
+            ensure!(
+                FamilyChildren::<T>::get(&who).is_empty()
+                    && FamilyChildRecords::<T>::get(&who) == 0,
+                Error::<T>::FamilyHasChildren
+            );
+            // `Exact`: all of it or nothing, like `claim_unstaked`.
+            T::StakeCurrency::release(
+                &HoldReason::ComputeFamilyDeposit.into(),
+                &who,
+                record.deposit,
+                Precision::Exact,
+            )
+            .map_err(|_| Error::<T>::PartialUnreserve)?;
+            ComputeFamilies::<T>::remove(&who);
+            ComputeFamiliesCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+            Self::deposit_event(Event::FamilyUnregistered {
+                family: who,
+                deposit: record.deposit,
+            });
+            Ok(())
+        }
+
+        /// Root: set the deposit [`Pallet::register_family`] puts on hold.
+        /// `0` disables permissionless registration. Existing families keep
+        /// the deposit they registered with.
+        #[pallet::call_index(59)]
+        #[pallet::weight((T::DbWeight::get().writes(1), Pays::No))]
+        pub fn set_family_deposit(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
+            ensure_root(origin)?;
+            FamilyDeposit::<T>::put(amount);
+            Self::deposit_event(Event::FamilyDepositSet { amount });
             Ok(())
         }
 

@@ -71,8 +71,17 @@ impl pallet_timestamp::Config for TestRuntime {
 /// `pallet_proxy`, `pallet_utils`, …).
 pub struct DummyFamilyRegistry;
 impl FamilyRegistry<AccountId> for DummyFamilyRegistry {
-    fn is_registered_family(_family: &AccountId) -> bool {
-        true
+    fn is_registered_family(family: &AccountId) -> bool {
+        // Default: every account is a `Registration` family (what most
+        // tests assume). `mock_registration_families(Some(set))` switches
+        // to the production shape: `Registration` set OR `ComputeFamilies`.
+        REGISTRATION_FAMILIES.with(|r| match &*r.borrow() {
+            None => true,
+            Some(set) => {
+                set.contains(family)
+                    || crate::pallet::ComputeFamilies::<TestRuntime>::contains_key(family)
+            }
+        })
     }
     fn owner_has_validator_node(_owner: &AccountId) -> bool {
         // PR-I5 tests don't exercise `force_deregister_child`'s
@@ -81,6 +90,26 @@ impl FamilyRegistry<AccountId> for DummyFamilyRegistry {
         // the runtime's registration storage.
         true
     }
+    fn is_banned(who: &AccountId) -> bool {
+        BANNED.with(|b| b.borrow().contains(who))
+    }
+}
+
+thread_local! {
+    static REGISTRATION_FAMILIES: RefCell<Option<BTreeSet<AccountId>>> =
+        const { RefCell::new(None) };
+    static BANNED: RefCell<BTreeSet<AccountId>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+/// Test helper: `None` = every account is a `Registration` family;
+/// `Some(set)` = only `set` is, plus permissionless `ComputeFamilies`.
+pub fn mock_registration_families(set: Option<BTreeSet<AccountId>>) {
+    REGISTRATION_FAMILIES.with(|r| *r.borrow_mut() = set);
+}
+
+/// Test helper: ban `who` in the mock registration layer.
+pub fn mock_ban(who: AccountId) {
+    BANNED.with(|b| b.borrow_mut().insert(who));
 }
 
 pub struct DummyProxyVerifier;
@@ -322,6 +351,8 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
         mock_clear_pushed_rankings();
         mock_drain_slashes();
         mock_sink_refuses(false);
+        mock_registration_families(None);
+        BANNED.with(|b| b.borrow_mut().clear());
     });
     ext
 }

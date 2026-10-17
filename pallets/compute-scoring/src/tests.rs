@@ -5070,3 +5070,268 @@ mod vali_submitter {
         });
     }
 }
+
+// =====================================================================
+// Permissionless compute families (`register_family`)
+// =====================================================================
+
+mod families {
+    use super::*;
+    use crate::pallet::{
+        ComputeFamilies, ComputeFamiliesCount, FamilyChildRecords, FamilyChildren,
+        FamilyDeposit, HoldReason, SlashReason, StakedAmount,
+    };
+    use frame_support::traits::{fungible::InspectHold, Currency, Get};
+    use std::collections::BTreeSet;
+
+    const FAM: AccountId = 21;
+    const DEPOSIT: Balance = 1_000;
+
+    fn family_hold(who: AccountId) -> Balance {
+        Balances::balance_on_hold(&HoldReason::ComputeFamilyDeposit.into(), &who)
+    }
+
+    /// Production shape: nobody is a `Registration` family, the deposit is
+    /// set, `FAM` is funded.
+    fn setup() {
+        mock_registration_families(Some(BTreeSet::new()));
+        assert_ok!(ComputeScoring::set_family_deposit(RuntimeOrigin::root(), DEPOSIT));
+        let _ = Balances::make_free_balance_be(&FAM, 10_000);
+    }
+
+    fn register_child_of(family: AccountId, child: AccountId, seed: u8) -> [u8; 32] {
+        let pair = ed25519::Pair::from_seed(&[seed; 32]);
+        let node_id = pair.public().0;
+        let msg = (b"HIPPIUS_COMPUTE_NODE_REG_V1", &family, &child, &node_id, 0u64).encode();
+        assert_ok!(ComputeScoring::register_child(
+            RuntimeOrigin::signed(family),
+            family,
+            child,
+            node_id,
+            pair.sign(&msg).0,
+        ));
+        node_id
+    }
+
+    #[test]
+    fn disabled_while_the_deposit_is_zero() {
+        new_test_ext().execute_with(|| {
+            mock_registration_families(Some(BTreeSet::new()));
+            let _ = Balances::make_free_balance_be(&FAM, 10_000);
+            assert_eq!(FamilyDeposit::<TestRuntime>::get(), 0);
+            assert_noop!(
+                ComputeScoring::register_family(RuntimeOrigin::signed(FAM)),
+                Error::<TestRuntime>::FamilyRegistrationDisabled
+            );
+        });
+    }
+
+    #[test]
+    fn register_holds_the_deposit_and_unlocks_register_child() {
+        new_test_ext().execute_with(|| {
+            setup();
+            // Not a family yet: register_child is refused.
+            let pair = ed25519::Pair::from_seed(&[0x31; 32]);
+            let node_id = pair.public().0;
+            let msg = (b"HIPPIUS_COMPUTE_NODE_REG_V1", &FAM, &7u64, &node_id, 0u64).encode();
+            assert_noop!(
+                ComputeScoring::register_child(
+                    RuntimeOrigin::signed(FAM),
+                    FAM,
+                    7,
+                    node_id,
+                    pair.sign(&msg).0
+                ),
+                Error::<TestRuntime>::FamilyNotRegistered
+            );
+
+            assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(FAM)));
+            assert_eq!(family_hold(FAM), DEPOSIT);
+            assert_eq!(Balances::free_balance(FAM), 10_000 - DEPOSIT);
+            let rec = ComputeFamilies::<TestRuntime>::get(FAM).unwrap();
+            assert_eq!(rec.deposit, DEPOSIT);
+            assert_eq!(rec.since, System::block_number());
+            assert_eq!(ComputeFamiliesCount::<TestRuntime>::get(), 1);
+            System::assert_last_event(
+                ComputeEvent::FamilyRegistered { family: FAM, deposit: DEPOSIT }.into(),
+            );
+
+            register_child_of(FAM, 7, 0x31);
+            assert_eq!(FamilyChildren::<TestRuntime>::get(FAM).len(), 1);
+            assert_eq!(FamilyChildRecords::<TestRuntime>::get(FAM), 1);
+        });
+    }
+
+    #[test]
+    fn a_family_cannot_register_twice_either_way() {
+        new_test_ext().execute_with(|| {
+            setup();
+            assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(FAM)));
+            assert_noop!(
+                ComputeScoring::register_family(RuntimeOrigin::signed(FAM)),
+                Error::<TestRuntime>::AlreadyAFamily
+            );
+            // A `Registration` family needs no permissionless one.
+            let reg_family: AccountId = 22;
+            let _ = Balances::make_free_balance_be(&reg_family, 10_000);
+            mock_registration_families(Some(BTreeSet::from([reg_family])));
+            assert_noop!(
+                ComputeScoring::register_family(RuntimeOrigin::signed(reg_family)),
+                Error::<TestRuntime>::AlreadyAFamily
+            );
+        });
+    }
+
+    #[test]
+    fn a_banned_account_is_refused() {
+        new_test_ext().execute_with(|| {
+            setup();
+            mock_ban(FAM);
+            assert_noop!(
+                ComputeScoring::register_family(RuntimeOrigin::signed(FAM)),
+                Error::<TestRuntime>::AccountBanned
+            );
+        });
+    }
+
+    #[test]
+    fn the_family_count_is_capped_at_max_families() {
+        new_test_ext().execute_with(|| {
+            setup();
+            let max: u32 = <TestRuntime as crate::pallet::Config>::MaxFamilies::get();
+            let max = u64::from(max);
+            for who in 100..100 + max {
+                let _ = Balances::make_free_balance_be(&who, 10_000);
+                assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(who)));
+            }
+            let late = 100 + max;
+            let _ = Balances::make_free_balance_be(&late, 10_000);
+            assert_noop!(
+                ComputeScoring::register_family(RuntimeOrigin::signed(late)),
+                Error::<TestRuntime>::TooManyComputeFamilies
+            );
+            // Leaving frees a slot.
+            assert_ok!(ComputeScoring::unregister_family(RuntimeOrigin::signed(100)));
+            assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(late)));
+            assert_eq!(ComputeFamiliesCount::<TestRuntime>::get() as u64, max);
+        });
+    }
+
+    #[test]
+    fn insufficient_balance_is_refused_and_nothing_is_written() {
+        new_test_ext().execute_with(|| {
+            setup();
+            let poor: AccountId = 23;
+            let _ = Balances::make_free_balance_be(&poor, DEPOSIT);
+            // A hold keeps ED liquid, so exactly DEPOSIT is not enough.
+            assert_noop!(
+                ComputeScoring::register_family(RuntimeOrigin::signed(poor)),
+                Error::<TestRuntime>::InsufficientFamilyDeposit
+            );
+        });
+    }
+
+    #[test]
+    fn unregister_waits_for_every_child_then_releases_the_deposit() {
+        new_test_ext().execute_with(|| {
+            setup();
+            assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(FAM)));
+            register_child_of(FAM, 7, 0x32);
+
+            // Active child.
+            assert_noop!(
+                ComputeScoring::unregister_family(RuntimeOrigin::signed(FAM)),
+                Error::<TestRuntime>::FamilyHasChildren
+            );
+            // Unbonding child.
+            assert_ok!(ComputeScoring::deregister_child(RuntimeOrigin::signed(FAM), 7));
+            assert!(FamilyChildren::<TestRuntime>::get(FAM).is_empty());
+            assert_noop!(
+                ComputeScoring::unregister_family(RuntimeOrigin::signed(FAM)),
+                Error::<TestRuntime>::FamilyHasChildren
+            );
+            // Claimed: free to go.
+            let reg = crate::pallet::ChildRegistrations::<TestRuntime>::get(7).unwrap();
+            System::set_block_number(reg.unbonding_end);
+            assert_ok!(ComputeScoring::claim_unbonded(RuntimeOrigin::signed(FAM), 7));
+            assert_eq!(FamilyChildRecords::<TestRuntime>::get(FAM), 0);
+            assert!(!FamilyChildRecords::<TestRuntime>::contains_key(FAM));
+
+            assert_ok!(ComputeScoring::unregister_family(RuntimeOrigin::signed(FAM)));
+            assert_eq!(family_hold(FAM), 0);
+            assert_eq!(Balances::free_balance(FAM), 10_000);
+            assert!(!ComputeFamilies::<TestRuntime>::contains_key(FAM));
+            assert_eq!(ComputeFamiliesCount::<TestRuntime>::get(), 0);
+            System::assert_last_event(
+                ComputeEvent::FamilyUnregistered { family: FAM, deposit: DEPOSIT }.into(),
+            );
+            // No longer a family: register_child refused again.
+            let pair = ed25519::Pair::from_seed(&[0x33; 32]);
+            let node_id = pair.public().0;
+            let msg = (b"HIPPIUS_COMPUTE_NODE_REG_V1", &FAM, &8u64, &node_id, 0u64).encode();
+            assert_noop!(
+                ComputeScoring::register_child(
+                    RuntimeOrigin::signed(FAM),
+                    FAM,
+                    8,
+                    node_id,
+                    pair.sign(&msg).0
+                ),
+                Error::<TestRuntime>::FamilyNotRegistered
+            );
+        });
+    }
+
+    #[test]
+    fn unregister_of_a_non_family_is_refused() {
+        new_test_ext().execute_with(|| {
+            setup();
+            assert_noop!(
+                ComputeScoring::unregister_family(RuntimeOrigin::signed(FAM)),
+                Error::<TestRuntime>::NotAComputeFamily
+            );
+        });
+    }
+
+    #[test]
+    fn the_deposit_released_is_the_one_registered_with() {
+        new_test_ext().execute_with(|| {
+            setup();
+            assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(FAM)));
+            assert_ok!(ComputeScoring::set_family_deposit(RuntimeOrigin::root(), 5_000));
+            assert_ok!(ComputeScoring::unregister_family(RuntimeOrigin::signed(FAM)));
+            assert_eq!(family_hold(FAM), 0);
+            assert_eq!(Balances::free_balance(FAM), 10_000);
+        });
+    }
+
+    #[test]
+    fn set_family_deposit_is_root_only() {
+        new_test_ext().execute_with(|| {
+            assert_noop!(
+                ComputeScoring::set_family_deposit(RuntimeOrigin::signed(ADMIN_AUTHORITY), 1),
+                sp_runtime::DispatchError::BadOrigin
+            );
+            assert_ok!(ComputeScoring::set_family_deposit(RuntimeOrigin::root(), 7));
+            System::assert_last_event(ComputeEvent::FamilyDepositSet { amount: 7 }.into());
+        });
+    }
+
+    #[test]
+    fn the_family_deposit_is_never_slashed() {
+        new_test_ext().execute_with(|| {
+            setup();
+            assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(FAM)));
+            assert_ok!(ComputeScoring::top_up_stake(RuntimeOrigin::signed(FAM), 300));
+            assert_ok!(ComputeScoring::set_slashing_enabled(RuntimeOrigin::root(), true));
+            assert_ok!(ComputeScoring::slash_stake(
+                RuntimeOrigin::root(),
+                FAM,
+                10_000,
+                SlashReason::Sla
+            ));
+            assert_eq!(StakedAmount::<TestRuntime>::get(FAM), 0);
+            assert_eq!(family_hold(FAM), DEPOSIT);
+        });
+    }
+}

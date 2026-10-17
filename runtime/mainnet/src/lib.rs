@@ -328,6 +328,31 @@ impl
 	}
 }
 
+/// compute-scoring `FamilyRegistry`: a compute family is EITHER a
+/// `Registration` owner (sudo / Bittensor-UID path, unchanged) OR a
+/// permissionless family from `ComputeScoring.register_family` that the
+/// registration layer has not banned. The Arion pallet keeps its own
+/// `Registration`-only binding.
+pub struct ComputeFamilyRegistry;
+impl pallet_compute_scoring::FamilyRegistry<AccountId> for ComputeFamilyRegistry {
+	fn is_registered_family(family: &AccountId) -> bool {
+		use pallet_compute_scoring::FamilyRegistry;
+		<pallet_registration::Pallet<Runtime> as FamilyRegistry<AccountId>>::is_registered_family(
+			family,
+		) || (pallet_compute_scoring::ComputeFamilies::<Runtime>::contains_key(family)
+			&& !Self::is_banned(family))
+	}
+	fn owner_has_validator_node(owner: &AccountId) -> bool {
+		use pallet_compute_scoring::FamilyRegistry;
+		<pallet_registration::Pallet<Runtime> as FamilyRegistry<AccountId>>::owner_has_validator_node(
+			owner,
+		)
+	}
+	fn is_banned(who: &AccountId) -> bool {
+		pallet_registration::BannedAccounts::<Runtime>::contains_key(who)
+	}
+}
+
 /// Adapter: token price in USD (fixed-point 18 decimals) from the credits
 /// pallet alpha price feed.
 pub struct AlphaTokenPriceUsd;
@@ -406,7 +431,7 @@ impl pallet_compute_scoring::Config for Runtime {
 	// deposits on the `cmps/dep` named reserve.
 	type StakeCurrency = Balances;
 	type SlashSink = SlashToHippocampus;
-	type FamilyRegistry = pallet_registration::Pallet<Runtime>;
+	type FamilyRegistry = ComputeFamilyRegistry;
 	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
 	type Registration = pallet_registration::Pallet<Runtime>;
 	type RankingsSink = ();
