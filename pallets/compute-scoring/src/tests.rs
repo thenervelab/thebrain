@@ -5079,7 +5079,8 @@ mod families {
     use super::*;
     use crate::pallet::{
         ComputeFamilies, ComputeFamiliesCount, FamilyChildRecords, FamilyChildren,
-        FamilyDeposit, HoldReason, SlashReason, StakedAmount,
+        FamilyDeposit, HoldReason, MaxPermissionlessChildren, MaxPermissionlessFamilies,
+        SlashReason, StakedAmount,
     };
     use frame_support::traits::{fungible::InspectHold, Currency, Get};
     use std::collections::BTreeSet;
@@ -5278,6 +5279,72 @@ mod families {
                     pair.sign(&msg).0
                 ),
                 Error::<TestRuntime>::FamilyNotRegistered
+            );
+        });
+    }
+
+    #[test]
+    fn permissionless_caps_bound_families_and_children() {
+        new_test_ext().execute_with(|| {
+            setup();
+            assert_eq!(MaxPermissionlessFamilies::<TestRuntime>::get(), 64);
+            assert_eq!(MaxPermissionlessChildren::<TestRuntime>::get(), 8);
+            assert_noop!(
+                ComputeScoring::set_permissionless_caps(
+                    RuntimeOrigin::signed(ADMIN_AUTHORITY),
+                    1,
+                    1
+                ),
+                sp_runtime::DispatchError::BadOrigin
+            );
+            assert_ok!(ComputeScoring::set_permissionless_caps(RuntimeOrigin::root(), 1, 1));
+            System::assert_last_event(
+                ComputeEvent::PermissionlessCapsSet { max_families: 1, max_children_per_family: 1 }
+                    .into(),
+            );
+
+            assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(FAM)));
+            let other: AccountId = 24;
+            let _ = Balances::make_free_balance_be(&other, 10_000);
+            assert_noop!(
+                ComputeScoring::register_family(RuntimeOrigin::signed(other)),
+                Error::<TestRuntime>::TooManyComputeFamilies
+            );
+
+            register_child_of(FAM, 7, 0x34);
+            let pair = ed25519::Pair::from_seed(&[0x35; 32]);
+            let node_id = pair.public().0;
+            let msg = (b"HIPPIUS_COMPUTE_NODE_REG_V1", &FAM, &8u64, &node_id, 0u64).encode();
+            assert_noop!(
+                ComputeScoring::register_child(
+                    RuntimeOrigin::signed(FAM),
+                    FAM,
+                    8,
+                    node_id,
+                    pair.sign(&msg).0
+                ),
+                Error::<TestRuntime>::TooManyPermissionlessChildren
+            );
+            // A `Registration` family is not bound by the permissionless cap.
+            let reg_family: AccountId = 25;
+            mock_registration_families(Some(BTreeSet::from([reg_family])));
+            register_child_of(reg_family, 9, 0x36);
+            register_child_of(reg_family, 10, 0x37);
+        });
+    }
+
+    /// A child registered before `FamilyChildRecords` existed is not in
+    /// that count; the active-children list still holds the family in.
+    #[test]
+    fn a_pre_release_active_child_still_blocks_unregister() {
+        new_test_ext().execute_with(|| {
+            setup();
+            assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(FAM)));
+            FamilyChildren::<TestRuntime>::mutate(FAM, |v| v.try_push(99).unwrap());
+            assert_eq!(FamilyChildRecords::<TestRuntime>::get(FAM), 0);
+            assert_noop!(
+                ComputeScoring::unregister_family(RuntimeOrigin::signed(FAM)),
+                Error::<TestRuntime>::FamilyHasChildren
             );
         });
     }

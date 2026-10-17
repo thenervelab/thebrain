@@ -7,11 +7,12 @@
 use frame_support::traits::{fungible::InspectHold, Currency, Get};
 use frame_support::{assert_noop, assert_ok};
 use hippius_mainnet_runtime::{
-	AccountId, Balances, ComputeFamilyRegistry, ComputeScoring, ProxyType, Runtime,
-	RuntimeHoldReason, RuntimeOrigin, System,
+	AccountId, Balances, ComputeFamilyRegistry, ComputeNodeRegistry, ComputeScoring, ProxyType,
+	Runtime, RuntimeHoldReason, RuntimeOrigin, System,
 };
 use pallet_compute_scoring::{
 	ComputeFamilies, ComputeFamiliesCount, Error, FamilyRegistry, HoldReason,
+	NodeRegistrationProvider,
 };
 use sp_core::{ed25519, Pair};
 use sp_runtime::codec::Encode;
@@ -42,7 +43,7 @@ fn enable(deposit: u128) {
 	assert_ok!(ComputeScoring::set_family_deposit(RuntimeOrigin::root(), deposit));
 }
 
-fn register_child(family: &AccountId, child: &AccountId, seed: u8) {
+fn register_child(family: &AccountId, child: &AccountId, seed: u8) -> [u8; 32] {
 	assert_ok!(pallet_proxy::Pallet::<Runtime>::add_proxy(
 		RuntimeOrigin::signed(family.clone()),
 		child.clone().into(),
@@ -59,6 +60,7 @@ fn register_child(family: &AccountId, child: &AccountId, seed: u8) {
 		node_id,
 		node.sign(&msg).0,
 	));
+	node_id
 }
 
 #[test]
@@ -171,17 +173,61 @@ fn a_ban_blocks_registration_and_switches_an_existing_family_off() {
 }
 
 #[test]
-fn the_cap_is_max_families() {
+fn the_cap_is_the_permissionless_share_of_max_families() {
 	new_test_ext().execute_with(|| {
 		enable(DEPOSIT);
 		let max: u32 = <Runtime as pallet_compute_scoring::Config>::MaxFamilies::get();
 		assert_eq!(max, 600);
-		ComputeFamiliesCount::<Runtime>::put(max);
+		let share = pallet_compute_scoring::MaxPermissionlessFamilies::<Runtime>::get();
+		assert_eq!(share, 64);
+		ComputeFamiliesCount::<Runtime>::put(share);
 		let op = account(6);
 		let _ = Balances::deposit_creating(&op, 100 * UNIT);
 		assert_noop!(
-			ComputeScoring::register_family(RuntimeOrigin::signed(op)),
+			ComputeScoring::register_family(RuntimeOrigin::signed(op.clone())),
 			Error::<Runtime>::TooManyComputeFamilies
 		);
+		// Root can widen the share, never past MaxFamilies.
+		assert_ok!(ComputeScoring::set_permissionless_caps(RuntimeOrigin::root(), 10_000, 8));
+		assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(op)));
+		ComputeFamiliesCount::<Runtime>::put(max);
+		let late = account(7);
+		let _ = Balances::deposit_creating(&late, 100 * UNIT);
+		assert_noop!(
+			ComputeScoring::register_family(RuntimeOrigin::signed(late)),
+			Error::<Runtime>::TooManyComputeFamilies
+		);
+	});
+}
+
+#[test]
+fn a_permissionless_family_node_counts_as_registered_for_attestation() {
+	new_test_ext().execute_with(|| {
+		enable(DEPOSIT);
+		let (op, child) = (account(8), account(9));
+		let _ = Balances::deposit_creating(&op, 100 * UNIT);
+		assert_ok!(ComputeScoring::register_family(RuntimeOrigin::signed(op.clone())));
+		let node_id = register_child(&op, &child, 0x42);
+		assert!(ComputeNodeRegistry::is_node_registered(&node_id));
+		// An unknown node is not.
+		assert!(!ComputeNodeRegistry::is_node_registered(&[0x77; 32]));
+
+		// Banned family: its nodes stop counting.
+		assert_ok!(pallet_registration::Pallet::<Runtime>::set_account_ban_status(
+			RuntimeOrigin::root(),
+			op.clone(),
+			true
+		));
+		assert!(!ComputeNodeRegistry::is_node_registered(&node_id));
+		assert_ok!(pallet_registration::Pallet::<Runtime>::set_account_ban_status(
+			RuntimeOrigin::root(),
+			op.clone(),
+			false
+		));
+		assert!(ComputeNodeRegistry::is_node_registered(&node_id));
+
+		// Deregistered child: no longer registered.
+		assert_ok!(ComputeScoring::deregister_child(RuntimeOrigin::signed(op), child));
+		assert!(!ComputeNodeRegistry::is_node_registered(&node_id));
 	});
 }

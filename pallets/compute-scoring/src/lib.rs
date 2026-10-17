@@ -1363,9 +1363,44 @@ pub mod pallet {
         OptionQuery,
     >;
 
-    /// Number of [`ComputeFamilies`] entries; capped at `MaxFamilies`.
+    /// Number of [`ComputeFamilies`] entries; capped at
+    /// `min(MaxFamilies, MaxPermissionlessFamilies)`.
     #[pallet::storage]
     pub type ComputeFamiliesCount<T> = StorageValue<_, u32, ValueQuery>;
+
+    #[pallet::type_value]
+    pub fn DefaultMaxPermissionlessFamilies() -> u32 {
+        64
+    }
+
+    #[pallet::type_value]
+    pub fn DefaultMaxPermissionlessChildren() -> u32 {
+        8
+    }
+
+    /// Most permissionless families at once (root-set via
+    /// [`Pallet::set_permissionless_caps`]). Separate from, and further
+    /// bounded by, `MaxFamilies`.
+    ///
+    /// Why a separate, smaller cap: `register_child` is `Pays::No`, child
+    /// deposits are zero while `LockupEnabled` is off, and a node key is
+    /// self-generated. Without it a few refundable family deposits could
+    /// register throw-away children until `MaxChildrenTotal` (1000) or the
+    /// shared `FamilyCount < MaxFamilies` gate is full, locking every
+    /// `Registration` family out. Default 64 families x 8 children = 512
+    /// children: the permissionless share can never take more than ~half
+    /// the child slots or ~11% of `FamilyCount`, whatever an attacker
+    /// spends.
+    #[pallet::storage]
+    pub type MaxPermissionlessFamilies<T> =
+        StorageValue<_, u32, ValueQuery, DefaultMaxPermissionlessFamilies>;
+
+    /// Most ACTIVE children a permissionless family may have (root-set via
+    /// [`Pallet::set_permissionless_caps`]); `MaxChildrenPerFamily` still
+    /// applies on top. See [`MaxPermissionlessFamilies`].
+    #[pallet::storage]
+    pub type MaxPermissionlessChildren<T> =
+        StorageValue<_, u32, ValueQuery, DefaultMaxPermissionlessChildren>;
 
     /// Deposit `register_family` puts on hold. Root-set. ZERO means
     /// permissionless registration is DISABLED (the default): a free family
@@ -1970,6 +2005,11 @@ pub mod pallet {
         FamilyDepositSet {
             amount: BalanceOf<T>,
         },
+        /// Root set the permissionless-family caps.
+        PermissionlessCapsSet {
+            max_families: u32,
+            max_children_per_family: u32,
+        },
     }
 
     /// Named-reserve id for family CHILD DEPOSITS. Distinct from
@@ -2201,6 +2241,8 @@ pub mod pallet {
         NotAComputeFamily,
         /// The family still has a child registered or unbonding.
         FamilyHasChildren,
+        /// A permissionless family is at `MaxPermissionlessChildren`.
+        TooManyPermissionlessChildren,
     }
 
     // =====================================================================
@@ -2890,6 +2932,13 @@ pub mod pallet {
             ensure!(
                 fam_count < T::MaxChildrenPerFamily::get(),
                 Error::<T>::TooManyChildrenInFamily
+            );
+            // Permissionless families get a smaller share (see
+            // `MaxPermissionlessFamilies` for why).
+            ensure!(
+                !ComputeFamilies::<T>::contains_key(&family)
+                    || fam_count < MaxPermissionlessChildren::<T>::get(),
+                Error::<T>::TooManyPermissionlessChildren
             );
 
             // Enforce MaxFamilies whenever this registration would
@@ -3725,7 +3774,10 @@ pub mod pallet {
             );
             ensure!(!T::FamilyRegistry::is_banned(&who), Error::<T>::AccountBanned);
             let count = ComputeFamiliesCount::<T>::get();
-            ensure!(count < T::MaxFamilies::get(), Error::<T>::TooManyComputeFamilies);
+            ensure!(
+                count < T::MaxFamilies::get().min(MaxPermissionlessFamilies::<T>::get()),
+                Error::<T>::TooManyComputeFamilies
+            );
 
             T::StakeCurrency::hold(&HoldReason::ComputeFamilyDeposit.into(), &who, deposit)
                 .map_err(|_| Error::<T>::InsufficientFamilyDeposit)?;
@@ -3784,6 +3836,28 @@ pub mod pallet {
             ensure_root(origin)?;
             FamilyDeposit::<T>::put(amount);
             Self::deposit_event(Event::FamilyDepositSet { amount });
+            Ok(())
+        }
+
+        /// Root: cap the permissionless share — how many families
+        /// [`Pallet::register_family`] admits (further bounded by
+        /// `MaxFamilies`) and how many active children each may hold
+        /// (further bounded by `MaxChildrenPerFamily`). Lowering a cap
+        /// never evicts: it only refuses new registrations above it.
+        #[pallet::call_index(60)]
+        #[pallet::weight((T::DbWeight::get().writes(2), Pays::No))]
+        pub fn set_permissionless_caps(
+            origin: OriginFor<T>,
+            max_families: u32,
+            max_children_per_family: u32,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            MaxPermissionlessFamilies::<T>::put(max_families);
+            MaxPermissionlessChildren::<T>::put(max_children_per_family);
+            Self::deposit_event(Event::PermissionlessCapsSet {
+                max_families,
+                max_children_per_family,
+            });
             Ok(())
         }
 

@@ -353,6 +353,33 @@ impl pallet_compute_scoring::FamilyRegistry<AccountId> for ComputeFamilyRegistry
 	}
 }
 
+/// compute-scoring `NodeRegistrationProvider` (gates `submit_audit_stats`
+/// and `submit_live_attestation`): a node is registered if
+/// `pallet_registration` knows it (unchanged), OR if it is the Active child
+/// of a permissionless compute family that is not banned. A permissionless
+/// family's nodes never appear in `pallet_registration`, so without the
+/// second arm they could register but never attest.
+pub struct ComputeNodeRegistry;
+impl pallet_compute_scoring::NodeRegistrationProvider for ComputeNodeRegistry {
+	fn is_node_registered(node_id: &[u8; 32]) -> bool {
+		use pallet_compute_scoring::{FamilyRegistry, NodeRegistrationProvider};
+		if <pallet_registration::Pallet<Runtime> as NodeRegistrationProvider>::is_node_registered(
+			node_id,
+		) {
+			return true;
+		}
+		let Some(child) = pallet_compute_scoring::NodeIdToChild::<Runtime>::get(node_id) else {
+			return false;
+		};
+		let Some(reg) = pallet_compute_scoring::ChildRegistrations::<Runtime>::get(&child) else {
+			return false;
+		};
+		reg.status == pallet_compute_scoring::ChildStatus::Active
+			&& pallet_compute_scoring::ComputeFamilies::<Runtime>::contains_key(&reg.family)
+			&& !ComputeFamilyRegistry::is_banned(&reg.family)
+	}
+}
+
 /// Adapter: token price in USD (fixed-point 18 decimals) from the credits
 /// pallet alpha price feed.
 pub struct AlphaTokenPriceUsd;
@@ -433,7 +460,7 @@ impl pallet_compute_scoring::Config for Runtime {
 	type SlashSink = SlashToHippocampus;
 	type FamilyRegistry = ComputeFamilyRegistry;
 	type ProxyVerifier = pallet_proxy::Pallet<Runtime>;
-	type Registration = pallet_registration::Pallet<Runtime>;
+	type Registration = ComputeNodeRegistry;
 	type RankingsSink = ();
 
 	type MaxFamilies = ConstU32<600>;
