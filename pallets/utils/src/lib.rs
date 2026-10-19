@@ -10,6 +10,28 @@ mod tests;
 
 pub mod http_utils;
 pub mod signing;
+
+use sp_core::crypto::Ss58Codec;
+
+/// SS58 addresses of the Hippius-operated validators. Metagraph never prunes them from the
+/// session set, and they are the only accounts allowed to write rankings (HIP-01 #1).
+/// Hardcoded so changing the set is a reviewed runtime upgrade, not a storage write.
+pub const TRUSTED_VALIDATORS: [&str; 3] = [
+	"5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g",
+	"5FH2vToACmzqqD2WXJsUZ5dDaXEfejYg4EMc4yJThCFBwhZK",
+	"5FLcxzsKzaynqMvXcX4pwCD4GV8Cndx5WCqzTfL7LLuwoyWq",
+];
+
+/// Returns whether `account` is one of [`TRUSTED_VALIDATORS`]. An account that does not
+/// encode to 32 bytes is never trusted.
+pub fn is_trusted_validator(account: &impl Encode) -> bool {
+	let Ok(bytes) = <[u8; 32]>::try_from(account.encode()) else {
+		return false;
+	};
+	let ss58 = AccountId32::new(bytes).to_ss58check();
+	TRUSTED_VALIDATORS.contains(&ss58.as_str())
+}
+
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
