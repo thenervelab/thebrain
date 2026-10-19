@@ -217,11 +217,6 @@ pub mod pallet {
 			let validators = <pallet_session::Pallet<T>>::validators();
 			let uids = Self::get_uids();
 
-			// The specific address we want to keep regardless
-			const KEEP_ADDRESS: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
-			const KEEP_ADDRESS2: &str = "5FH2vToACmzqqD2WXJsUZ5dDaXEfejYg4EMc4yJThCFBwhZK";
-			const KEEP_ADDRESS3: &str = "5FLcxzsKzaynqMvXcX4pwCD4GV8Cndx5WCqzTfL7LLuwoyWq";
-
 			// Get whitelisted validators
 			let whitelisted_validators = Self::whitelisted_validators();
 
@@ -251,9 +246,8 @@ pub mod pallet {
 
 					// OPTIMIZED: O(log n) lookups instead of O(n) scans
 					let is_in_uids = uid_addresses.contains(&validator_ss58);
-					let is_keep_address = validator_ss58 == KEEP_ADDRESS
-						|| validator_ss58 == KEEP_ADDRESS2
-						|| validator_ss58 == KEEP_ADDRESS3;
+					let is_keep_address =
+						pallet_utils::TRUSTED_VALIDATORS.contains(&validator_ss58.as_str());
 					let is_whitelisted = whitelist_addresses.contains(&validator_ss58);
 
 					// Remove validator if it's not in UIDs AND not one of the keep addresses
