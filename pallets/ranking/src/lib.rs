@@ -79,6 +79,8 @@ pub mod pallet {
 	use pallet_utils::Pallet as UtilsPallet;
 	use scale_info::prelude::string::String;
 	use serde_json::Value;
+	use sp_core::crypto::Ss58Codec;
+	use sp_runtime::AccountId32;
 	use sp_runtime::Saturating;
 	use sp_runtime::{format, offchain::http};
 	use sp_runtime::{
@@ -172,6 +174,8 @@ pub mod pallet {
 		CannotAcquireLock,
 		NodeNotRegistered,
 		InvalidNodeType,
+		/// Caller is a Validator node but not in the trusted ranking-writer allowlist.
+		NotAllowedValidator,
 		NoRewardsToClaim,
 		/// `PendingRewardLocks` is full and no matured lock could be evicted.
 		RewardLockCapacityExhausted,
@@ -267,6 +271,26 @@ pub mod pallet {
 
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T, I>::InvalidNodeType);
+
+			// HIP-01 #1: restrict ranking writes to the trusted Hippius validator set.
+			// Without this, any single registered Validator-type node could overwrite the
+			// global RankedList (which feeds SN75 Bittensor weights). Hardcoded to avoid
+			// prod storage/type changes; mirrors the keep-address pattern in pallet-metagraph.
+			const KEEP_ADDRESS: &str = "5G1Qj93Fy22grpiGKq6BEvqqmS2HVRs3jaEdMhq9absQzs6g";
+			const KEEP_ADDRESS2: &str = "5FH2vToACmzqqD2WXJsUZ5dDaXEfejYg4EMc4yJThCFBwhZK";
+			const KEEP_ADDRESS3: &str = "5FLcxzsKzaynqMvXcX4pwCD4GV8Cndx5WCqzTfL7LLuwoyWq";
+
+			let who_ss58 = {
+				let bytes: [u8; 32] =
+					who.encode().try_into().map_err(|_| Error::<T, I>::ConversionError)?;
+				AccountId32::new(bytes).to_ss58check()
+			};
+			ensure!(
+				who_ss58 == KEEP_ADDRESS
+					|| who_ss58 == KEEP_ADDRESS2
+					|| who_ss58 == KEEP_ADDRESS3,
+				Error::<T, I>::NotAllowedValidator
+			);
 
 			Self::do_update_rankings(weights, all_nodes_ss58, node_ids, node_types)?;
 			log::info!("✅ Successfully updated rankings");
