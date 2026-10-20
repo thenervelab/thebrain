@@ -810,10 +810,24 @@ pub mod pallet {
 		}
 
 		#[cfg(feature = "try-runtime")]
-		fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+		fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
+			// The families the migration must land on, counted before it runs;
+			// the migration itself never touches `FamilyActiveChildren`.
+			let (_, families) = Self::count_current_families();
+			Ok(families.encode())
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
 			ensure!(
 				Pallet::<T>::on_chain_storage_version() >= 3,
 				"arion: storage version not bumped to 3"
+			);
+			let families_before = u32::decode(&mut &state[..])
+				.map_err(|_| "arion: undecodable pre_upgrade state")?;
+			ensure!(
+				FamilyCount::<T>::get() == families_before,
+				"arion: FamilyCount != families with active children before the upgrade"
 			);
 			Self::check_family_count()
 		}
