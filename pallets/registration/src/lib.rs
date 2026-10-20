@@ -512,11 +512,6 @@ pub mod pallet {
 			node_id_hex: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
-			// The node's libp2p signature binds the challenge to `owner` but says
-			// nothing about the owner's consent: without this, anyone holding a
-			// node key could register it under someone else's account (blocking
-			// their own registration, and charging them the fee when enabled).
-			ensure!(who == owner, DispatchError::BadOrigin);
 
 			// HIP-01 #2: bind the extrinsic signer to the claimed owner. The challenge and
 			// node signature only prove node ownership, not control of `owner`, so without

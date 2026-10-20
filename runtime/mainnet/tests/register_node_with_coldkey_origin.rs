@@ -1,4 +1,5 @@
-//! `Registration::register_node_with_coldkey` must be signed by `owner`.
+//! `Registration::register_node_with_coldkey` must be signed by `owner`
+//! (the HIP-01 #2 guard from #73, which returns `NotNodeOwner`).
 //!
 //! The node's libp2p signature over the challenge binds it to `owner`, but it
 //! is not the owner's consent: anyone holding a node key could otherwise
@@ -7,7 +8,7 @@
 use frame_support::assert_noop;
 use hippius_mainnet_runtime::{AccountId, Registration, Runtime, RuntimeOrigin, System};
 use pallet_registration::{Libp2pKeyType, NodeType};
-use sp_runtime::{AccountId32, BuildStorage, DispatchError};
+use sp_runtime::{AccountId32, BuildStorage};
 
 fn account(seed: u8) -> AccountId {
 	AccountId32::new([seed; 32])
@@ -41,7 +42,10 @@ fn call(
 #[test]
 fn rejects_a_signer_other_than_owner() {
 	new_test_ext().execute_with(|| {
-		assert_noop!(call(&account(1), &account(2)), DispatchError::BadOrigin);
+		assert_noop!(
+			call(&account(1), &account(2)),
+			pallet_registration::Error::<Runtime>::NotNodeOwner
+		);
 	});
 }
 
