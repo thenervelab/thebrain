@@ -172,6 +172,8 @@ pub mod pallet {
 		CannotAcquireLock,
 		NodeNotRegistered,
 		InvalidNodeType,
+		/// Caller is a Validator node but not in the trusted ranking-writer allowlist.
+		NotAllowedValidator,
 		NoRewardsToClaim,
 		/// `PendingRewardLocks` is full and no matured lock could be evicted.
 		RewardLockCapacityExhausted,
@@ -267,6 +269,10 @@ pub mod pallet {
 
 			// Check if the node type is Validator
 			ensure!(node_info.node_type == NodeType::Validator, Error::<T, I>::InvalidNodeType);
+
+			// HIP-01 #1: without this, any registered Validator-type node could overwrite the
+			// global RankedList, which feeds SN75 Bittensor weights.
+			ensure!(pallet_utils::is_trusted_validator(&who), Error::<T, I>::NotAllowedValidator);
 
 			Self::do_update_rankings(weights, all_nodes_ss58, node_ids, node_types)?;
 			log::info!("✅ Successfully updated rankings");

@@ -518,6 +518,11 @@ pub mod pallet {
 			// their own registration, and charging them the fee when enabled).
 			ensure!(who == owner, DispatchError::BadOrigin);
 
+			// HIP-01 #2: bind the extrinsic signer to the claimed owner. The challenge and
+			// node signature only prove node ownership, not control of `owner`, so without
+			// this an outsider could register/squat a node slot under someone else's identity.
+			ensure!(who == owner, Error::<T>::NotNodeOwner);
+
 			// Keep the param for SDK compatibility, but disable the feature for now.
 			ensure!(!pay_in_credits, Error::<T>::PayInCreditsDisabled);
 
