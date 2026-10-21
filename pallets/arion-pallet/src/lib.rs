@@ -2048,7 +2048,20 @@ pub mod pallet {
 			FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
 		}
 
-		pub fn deregister_family(family_id: T::AccountId) -> Result<(), Error<T>> {
+		/// Remove a family and every child it has, releasing their deposits.
+		///
+		/// Atomic: the body runs in its own storage layer, so an error midway
+		/// (a child without a registration, a short reserve) rolls back every
+		/// write already made — the children list, released deposits, removed
+		/// indices — instead of leaving a half-deleted family. It needs its own
+		/// layer because its caller (`purge_nodes_if_deregistered_on_bittensor`)
+		/// runs from a hook, where no dispatch layer exists (#75).
+		pub fn deregister_family(family_id: T::AccountId) -> DispatchResult {
+			frame_support::storage::with_storage_layer(|| Self::do_deregister_family(&family_id))
+		}
+
+		fn do_deregister_family(family_id: &T::AccountId) -> DispatchResult {
+			let family_id = family_id.clone();
 			// Ensure the family exists
 			if FamilyActiveChildren::<T>::contains_key(&family_id) {
 				// Legacy rows hold 0 for a family that dropped out before the
