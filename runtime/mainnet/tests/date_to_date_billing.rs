@@ -928,6 +928,112 @@ fn a_short_funded_account_keeps_its_oldest_subscription() {
 	});
 }
 
+/// Each renewal names its subscription: one event per subscription renewed,
+/// and one per subscription dropped next to the account-level
+/// `SubscriptionChargeFailed`, which does not say which plan it was.
+#[test]
+fn renewals_and_failed_renewals_are_reported_per_subscription() {
+	new_test_ext_at(ms_2026(3, 9)).execute_with(|| {
+		let drive = add_plan(b"drive", PLAN_PRICE);
+		let compute = add_compute_plan(b"compute", CHEAP_PRICE);
+		let user = account(11);
+
+		deposit_credits(&user, PLAN_PRICE + CHEAP_PRICE);
+		purchase(&user, drive);
+		purchase(&user, compute);
+		finish_backfill();
+		let ids: Vec<(u32, Hashed)> = subs_of(&user).iter().map(|s| (s.id, s.package.id)).collect();
+		let id_of = |plan: Hashed| ids.iter().find(|(_, p)| *p == plan).unwrap().0;
+
+		// Fund the Drive renewal only.
+		deposit_credits(&user, PLAN_PRICE);
+		System::reset_events();
+		tick_on(4, 9);
+
+		let events: Vec<pallet_marketplace::Event<Runtime>> = System::events()
+			.into_iter()
+			.filter_map(|r| match r.event {
+				hippius_mainnet_runtime::RuntimeEvent::Marketplace(e) => Some(e),
+				_ => None,
+			})
+			.collect();
+		assert!(events.contains(&pallet_marketplace::Event::SubscriptionRenewed {
+			who: user.clone(),
+			subscription_id: id_of(drive),
+			plan_id: drive,
+			amount: PLAN_PRICE,
+		}));
+		assert!(events.contains(&pallet_marketplace::Event::SubscriptionChargeFailed {
+			who: user.clone(),
+			required_credits: CHEAP_PRICE,
+			available_credits: 0,
+		}));
+		assert!(events.contains(&pallet_marketplace::Event::SubscriptionRenewalFailed {
+			who: user.clone(),
+			subscription_id: id_of(compute),
+			plan_id: compute,
+			required: CHEAP_PRICE,
+			available: 0,
+		}));
+		let renewed = events
+			.iter()
+			.filter(|e| matches!(e, pallet_marketplace::Event::SubscriptionRenewed { .. }))
+			.count();
+		assert_eq!(renewed, 1);
+	});
+}
+
+/// Two plans on the same side, one affordable: the failed renewal reports the
+/// credits left after its sibling was paid, not the side's starting balance.
+#[test]
+fn a_failed_renewal_reports_what_was_left_when_it_was_reached() {
+	new_test_ext_at(ms_2026(3, 9)).execute_with(|| {
+		let drive = add_plan(b"drive", PLAN_PRICE);
+		assert_ok!(Marketplace::add_new_plan(
+			RuntimeOrigin::root(),
+			b"s3".to_vec(),
+			b"{}".to_vec(),
+			b"{}".to_vec(),
+			PLAN_PRICE,
+			false,
+			true,
+			Some(1_000_000),
+		));
+		let s3 = <Runtime as frame_system::Config>::Hashing::hash_of(&b"s3".to_vec());
+		let user = account(11);
+
+		deposit_credits(&user, PLAN_PRICE * 2);
+		purchase(&user, drive);
+		purchase(&user, s3);
+		finish_backfill();
+		let s3_id = subs_of(&user).iter().find(|s| s.package.id == s3).unwrap().id;
+
+		deposit_credits(&user, PLAN_PRICE);
+		System::reset_events();
+		tick_on(4, 9);
+
+		let events: Vec<pallet_marketplace::Event<Runtime>> = System::events()
+			.into_iter()
+			.filter_map(|r| match r.event {
+				hippius_mainnet_runtime::RuntimeEvent::Marketplace(e) => Some(e),
+				_ => None,
+			})
+			.collect();
+		assert!(events.contains(&pallet_marketplace::Event::SubscriptionChargeFailed {
+			who: user.clone(),
+			required_credits: PLAN_PRICE,
+			available_credits: PLAN_PRICE,
+		}));
+		assert!(events.contains(&pallet_marketplace::Event::SubscriptionRenewalFailed {
+			who: user.clone(),
+			subscription_id: s3_id,
+			plan_id: s3,
+			required: PLAN_PRICE,
+			available: 0,
+		}));
+	});
+}
+
 /// `INDEX-COMPLETE` across a partial payment — the one path that both moves a
 /// subscription forward and drops a sibling in the same write.
 ///
