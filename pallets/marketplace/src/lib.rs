@@ -5400,16 +5400,23 @@ pub mod pallet {
 			);
 			let probe = <T as Config>::WeightInfo::hourly_probe();
 			let charge = <T as Config>::WeightInfo::hourly_charge();
+			// A user past the nothing-to-bill gate reads both prices and their
+			// free credits and may write their marker, whether or not a charge
+			// follows (zero price, rounding floor, broke user).
+			let past_gate = T::DbWeight::get().reads_writes(3, 1);
+			// The cursor read, the `next_key` that finds the end of the map, and
+			// the cursor write: paid once per tick, metered before anything else.
+			meter.consume(T::DbWeight::get().reads_writes(2, 1));
 
-			// Walk users one at a time, reserving the worst case — a probe plus a
-			// charge — before each. Sizing the whole batch up front at that
+			// Walk users one at a time, reserving the worst case — a probe, the
+			// past-the-gate reads and a charge — before each. Sizing the whole batch up front at that
 			// worst case visited only ~36 users a tick on mainnet, although
 			// almost every user takes the probe path; once the map passed ~65k
 			// keys a pass took longer than `MAX_CATCHUP_HOURS`, and every
 			// billable account fell further behind on every pass. Reserving per
 			// user keeps the same bound while the budget a probe leaves unspent
 			// goes to the next user instead of to nobody.
-			let worst_case = probe.saturating_add(charge);
+			let worst_case = probe.saturating_add(past_gate).saturating_add(charge);
 			if !meter.can_consume(worst_case) {
 				return meter.consumed();
 			}
@@ -5538,6 +5545,7 @@ pub mod pallet {
 						}
 						continue;
 					}
+					meter.consume(past_gate);
 
 					// Each side at its own rate. S3 falls back to the Drive
 					// price while no separate one is set, so a chain that has
