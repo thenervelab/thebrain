@@ -117,6 +117,7 @@ impl pallet_hippocampus::Config for Test {
 	type Max24HourMinerPayout = Max24HourMinerPayout;
 	type ComputeMinerWeights = MockComputeWeights;
 	type MaxComputeMinersPerPayout = ConstU32<16>;
+	type SlashReason = u8;
 	type WeightInfo = ();
 }
 

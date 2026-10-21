@@ -74,6 +74,7 @@ mod tests;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 
+pub mod migrations;
 pub mod weights;
 pub use weights::WeightInfo;
 
@@ -85,7 +86,11 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
     dispatch::DispatchResult,
     pallet_prelude::*,
-    traits::{Currency, EnsureOrigin, Get, NamedReservableCurrency},
+    traits::{
+        fungible::{self, BalancedHold, Credit, MutateHold},
+        tokens::Precision,
+        Currency, EnsureOrigin, Get, Imbalance, NamedReservableCurrency,
+    },
     BoundedVec,
 };
 use frame_system::pallet_prelude::*;
@@ -125,6 +130,11 @@ pub mod pallet {
     type BalanceOf<T> = <<T as Config>::DepositCurrency as Currency<
         <T as frame_system::Config>::AccountId,
     >>::Balance;
+
+    /// The imbalance a stake slash produces: funds taken off the
+    /// [`HoldReason::ComputeStake`] hold and not yet placed anywhere.
+    pub type StakeCreditOf<T> =
+        Credit<<T as frame_system::Config>::AccountId, <T as Config>::StakeCurrency>;
 
     // =====================================================================
     // Trait hooks (runtime-wired) — anti-Sybil registration / proxy gates
@@ -307,6 +317,40 @@ pub mod pallet {
         /// itself; no in-runtime push needed. Test runtimes substitute a
         /// recording sink (see `mock::MockRankingsSink`).
         fn push_rankings(_epoch: u64, _entries: &[EpochWeightEntry]) {}
+    }
+
+    /// Destination of slashed stake. `do_slash` takes the funds off the
+    /// [`HoldReason::ComputeStake`] hold as a `Credit` (an imbalance: the
+    /// funds have left the owner and belong to nobody yet) and hands it
+    /// here together with who was slashed and why.
+    ///
+    /// This is an `OnUnbalanced` with context: the production sink books
+    /// the slash in the receiving ledger with the owner and the reason,
+    /// which a bare `OnUnbalanced::on_unbalanced(credit)` cannot carry.
+    ///
+    /// **Contract**: an implementation MUST either place the whole credit
+    /// and return `Ok`, or hand it back untouched as `Err` — never drop it
+    /// (`Credit`'s drop decreases issuance, i.e. burns). On `Err` the slash
+    /// is rolled back entirely (hold, ledger, record, events) and
+    /// `slash_stake` fails with [`Error::SlashSinkRefused`]. The production
+    /// binding resolves into the Hippocampus pot; there is no burn path and
+    /// no beneficiary account.
+    pub trait StakeSlashSink<AccountId, Credit> {
+        fn on_stake_slash(owner: &AccountId, credit: Credit, reason: SlashReason)
+            -> Result<(), Credit>;
+    }
+
+    /// No sink: refuses every credit, so every slash is rolled back. Fail
+    /// closed — a runtime that forgot to bind a sink slashes nothing rather
+    /// than burning.
+    impl<AccountId, Credit> StakeSlashSink<AccountId, Credit> for () {
+        fn on_stake_slash(
+            _owner: &AccountId,
+            credit: Credit,
+            _reason: SlashReason,
+        ) -> Result<(), Credit> {
+            Err(credit)
+        }
     }
 
     // =====================================================================
@@ -759,6 +803,24 @@ pub mod pallet {
         /// STAKE reserve only, by construction.
         type DepositCurrency: NamedReservableCurrency<Self::AccountId, ReserveIdentifier = [u8; 8]>;
 
+        /// The overarching hold reason; carries [`HoldReason::ComputeStake`].
+        type RuntimeHoldReason: From<HoldReason>;
+
+        /// Currency operator STAKE is held in, under
+        /// [`HoldReason::ComputeStake`] (fungible holds, not a named
+        /// reserve). Child deposits stay on `DepositCurrency`'s named
+        /// reserve [`DEPOSIT_RESERVE_ID`] and are never slashable — a
+        /// hold slash draws from the stake hold only, by construction.
+        /// Production binds the same `pallet_balances` instance as
+        /// `DepositCurrency`.
+        type StakeCurrency: fungible::Inspect<Self::AccountId, Balance = BalanceOf<Self>>
+            + MutateHold<Self::AccountId, Reason = Self::RuntimeHoldReason>
+            + BalancedHold<Self::AccountId>;
+
+        /// Where slashed stake goes (see [`StakeSlashSink`]). Production
+        /// binds the Hippocampus pot.
+        type SlashSink: StakeSlashSink<Self::AccountId, StakeCreditOf<Self>>;
+
         /// Family registry hook — production runtime binds this to
         /// `pallet_registration::Pallet<Self>`; tests use `()` (fail-
         /// closed) or a stand-in.
@@ -931,9 +993,32 @@ pub mod pallet {
     // Pallet + Storage
     // =====================================================================
 
+    /// Version 1: operator stake moved from the `cmps/stk` named reserve
+    /// to the [`HoldReason::ComputeStake`] fungible hold
+    /// ([`crate::migrations::v1::MigrateStakeReserveToHold`]).
+    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
     #[pallet::without_storage_info]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
+
+    /// Reasons this pallet places funds on hold.
+    #[pallet::composite_enum]
+    pub enum HoldReason {
+        /// Operator stake collateral — BOTH the active part
+        /// ([`StakedAmount`]) and the part being unbonded
+        /// ([`StakeUnbonding`]), which stays slashable until claimed.
+        ///
+        /// One reason, not one per phase: moving funds between two hold
+        /// reasons is a release followed by a hold, two balance
+        /// operations where today there are none (`request_unstake` moves
+        /// nothing). The pallet's own ledger already splits the held total
+        /// into active and unbonding, and the invariant is
+        /// `balance_on_hold(ComputeStake) == StakedAmount + StakeUnbonding`.
+        #[codec(index = 0)]
+        ComputeStake,
+    }
 
     /// Current epoch — written by
     /// [`Pallet::vali_submit_epoch_close`] (must be strictly
@@ -1334,13 +1419,15 @@ pub mod pallet {
     #[pallet::storage]
     pub type StakeFloor<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
-    /// Active stake reserved per owner account.
+    /// Active stake per owner account, held under
+    /// [`HoldReason::ComputeStake`].
     #[pallet::storage]
     pub type StakedAmount<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
 
     /// Pending stake unbond per owner: `(amount, earliest claimable
-    /// block)`. The amount stays RESERVED (slashable) until claimed.
+    /// block)`. The amount stays ON HOLD under
+    /// [`HoldReason::ComputeStake`] (slashable) until claimed.
     #[pallet::storage]
     pub type StakeUnbonding<T: Config> = StorageMap<
         _,
@@ -1362,9 +1449,10 @@ pub mod pallet {
     //
     // Global kill-switch `SlashingEnabled` (mirrors `LockupEnabled`):
     // default OFF ⇒ a breach only emits `SlashSkippedDisabled`, NO balance
-    // is ever burned. Slashed funds either burn (`slash_reserved`) or are
-    // repatriated to `SlashBeneficiary` (a tenant-compensation escrow) when
-    // set. See docs/design/marketplace-stake-slashing.md §4.
+    // moves. Slashed funds are taken off the `ComputeStake` hold and handed
+    // to `T::SlashSink` — in production, recycled into the Hippocampus pot
+    // for compute-miner payouts. Never burned, never sent to a beneficiary
+    // account. See docs/design/marketplace-stake-slashing.md §4.
     // =====================================================================
 
     /// Why a stake was slashed (carried on the event + for audit).
@@ -1385,8 +1473,11 @@ pub mod pallet {
     #[pallet::storage]
     pub type SlashingEnabled<T> = StorageValue<_, bool, ValueQuery>;
 
-    /// Where slashed funds go. `None` ⇒ burn (`slash_reserved`); `Some(b)`
-    /// ⇒ repatriate to `b`'s free balance (tenant-compensation escrow).
+    /// DEPRECATED, unread. Slashed funds used to burn (`None`) or be
+    /// repatriated here (`Some`); they now always go to `T::SlashSink`.
+    /// Kept only so the storage item keeps its metadata entry; the v1
+    /// migration clears it and `set_slash_beneficiary` refuses to write
+    /// it.
     #[pallet::storage]
     pub type SlashBeneficiary<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
 
@@ -1743,11 +1834,14 @@ pub mod pallet {
         SlashingEnabledSet {
             enabled: bool,
         },
-        /// The slash beneficiary was set (`None` ⇒ burn).
+        /// The slash beneficiary was set. DEPRECATED: no longer emitted
+        /// (`set_slash_beneficiary` is refused); kept for metadata/index
+        /// stability so historic events still decode.
         SlashBeneficiarySet {
             beneficiary: Option<T::AccountId>,
         },
-        /// Stake was slashed: `amount` burned or repatriated.
+        /// Stake was slashed: `amount` taken off the `ComputeStake` hold and
+        /// handed to `T::SlashSink` (production: the Hippocampus pot).
         Slashed {
             owner: T::AccountId,
             amount: BalanceOf<T>,
@@ -1799,8 +1893,10 @@ pub mod pallet {
     /// [`STAKE_RESERVE_ID`] so slashing (stake-only) can never draw
     /// from registration deposits — thebrain#49 R9.
     pub const DEPOSIT_RESERVE_ID: [u8; 8] = *b"cmps/dep";
-    /// Named-reserve id for operator STAKE collateral. The ONLY
-    /// reserve `do_slash` touches.
+    /// LEGACY named-reserve id for operator STAKE collateral. Stake now
+    /// lives on the [`HoldReason::ComputeStake`] hold; this id is read
+    /// only by [`crate::migrations::v1::MigrateStakeReserveToHold`], which
+    /// converts any such reserve into the hold.
     pub const STAKE_RESERVE_ID: [u8; 8] = *b"cmps/stk";
 
     #[pallet::error]
@@ -1993,6 +2089,18 @@ pub mod pallet {
         InvalidPricePolicy,
         /// No pending price change is due for application.
         NoPriceChangeDue,
+        /// `set_slash_beneficiary` is deprecated: slashed stake always goes
+        /// to the runtime's `SlashSink` (the Hippocampus pot), so there is
+        /// no beneficiary to set. Appended last — `Error` variants are
+        /// metadata-indexed.
+        SlashBeneficiaryDeprecated,
+        /// The runtime's `SlashSink` could not place the slashed funds; the
+        /// slash was rolled back (nothing moved, nothing burned).
+        SlashSinkRefused,
+        /// The account's stake is still on the legacy `cmps/stk` reserve and
+        /// could not be moved onto the hold; the call was refused and the
+        /// stake stays reserved.
+        LegacyStakeConversionFailed,
     }
 
     // =====================================================================
@@ -2173,73 +2281,84 @@ pub mod pallet {
 
         /// Slash up to `requested` of `owner`'s stake for `reason`,
         /// returning the amount actually slashed. Draws from active stake
-        /// first, then from the (still-reserved) unbonding chunk — so stake
+        /// first, then from the (still-held) unbonding chunk — so stake
         /// in unbonding stays slashable, per the design invariant.
         ///
         /// Kill-switch: while `SlashingEnabled` is `false` this only emits
         /// [`Event::SlashSkippedDisabled`] and moves no balance. Slashed
-        /// funds burn (`slash_reserved`) unless a [`SlashBeneficiary`] is
-        /// set (then they are repatriated to it).
-        fn do_slash(
+        /// funds come off the [`HoldReason::ComputeStake`] hold as a credit
+        /// and go to `T::SlashSink` — there is no burn branch and no
+        /// beneficiary. If the sink refuses the credit the whole slash is
+        /// rolled back and [`Error::SlashSinkRefused`] returned: nothing
+        /// moves, nothing burns, nothing is recorded.
+        /// Lazy half of the v1 migration (see [`crate::migrations::v1`]):
+        /// move `who`'s stake off the legacy `cmps/stk` reserve onto the
+        /// hold before any call that moves stake balance. Fails loudly
+        /// rather than letting a call act on a hold that is missing the
+        /// legacy part (a slash would silently find nothing to take).
+        fn ensure_stake_on_hold(who: &T::AccountId) -> DispatchResult {
+            match crate::migrations::v1::convert_legacy_stake::<T>(who) {
+                crate::migrations::v1::Converted::Failed => {
+                    Err(Error::<T>::LegacyStakeConversionFailed.into())
+                }
+                _ => Ok(()),
+            }
+        }
+
+        pub(crate) fn do_slash(
             owner: &T::AccountId,
             requested: BalanceOf<T>,
             reason: SlashReason,
-        ) -> BalanceOf<T> {
+        ) -> Result<BalanceOf<T>, DispatchError> {
             if !SlashingEnabled::<T>::get() {
                 Self::deposit_event(Event::SlashSkippedDisabled {
                     owner: owner.clone(),
                     amount: requested,
                     reason,
                 });
-                return Zero::zero();
+                return Ok(Zero::zero());
             }
+            // Own storage layer, so the rollback holds for any caller — not
+            // only for `slash_stake`, whose dispatch is transactional anyway.
+            frame_support::storage::with_storage_layer(|| {
+                Self::slash_into_sink(owner, requested, reason)
+            })
+        }
 
+        fn slash_into_sink(
+            owner: &T::AccountId,
+            requested: BalanceOf<T>,
+            reason: SlashReason,
+        ) -> Result<BalanceOf<T>, DispatchError> {
+            // An account the v1 migration did not reach still holds its
+            // stake on the legacy reserve; move it to the hold first.
+            Self::ensure_stake_on_hold(owner)?;
             let active = StakedAmount::<T>::get(owner);
             let unbonding = StakeUnbonding::<T>::get(owner)
                 .map(|(a, _)| a)
                 .unwrap_or_else(Zero::zero);
             let amount = requested.min(active.saturating_add(unbonding));
             if amount.is_zero() {
-                return Zero::zero();
+                return Ok(Zero::zero());
             }
 
-            // Physically remove from the reserved balance FIRST and measure
-            // what was ACTUALLY moved — so the logical decrement, the
-            // `SlashRecord`, and the event reflect reality even if the
-            // reserved balance is somehow short of the logical stake. A
-            // repatriation that can't land (e.g. a dead beneficiary) falls
-            // back to a burn; both report the un-moved remainder.
-            let slashed = match SlashBeneficiary::<T>::get() {
-                Some(beneficiary) => {
-                    let not_repatriated = T::DepositCurrency::repatriate_reserved_named(
-                        &STAKE_RESERVE_ID,
-                        owner,
-                        &beneficiary,
-                        amount,
-                        frame_support::traits::BalanceStatus::Free,
-                    )
-                    .unwrap_or(amount);
-                    let repatriated = amount.saturating_sub(not_repatriated);
-                    // Burn whatever couldn't be repatriated.
-                    let (_imbalance, burn_remainder) = T::DepositCurrency::slash_reserved_named(
-                        &STAKE_RESERVE_ID,
-                        owner,
-                        not_repatriated,
-                    );
-                    repatriated.saturating_add(not_repatriated.saturating_sub(burn_remainder))
-                }
-                None => {
-                    let (_imbalance, remainder) =
-                        T::DepositCurrency::slash_reserved_named(&STAKE_RESERVE_ID, owner, amount);
-                    amount.saturating_sub(remainder)
-                }
-            };
+            // Physically take the funds off the hold FIRST and measure what
+            // was ACTUALLY taken (`slash` is best-effort) — so the logical
+            // decrement, the `SlashRecord`, the event and the sink all
+            // reflect reality even if the hold is somehow short of the
+            // logical stake.
+            let (credit, _short) = <T::StakeCurrency as BalancedHold<T::AccountId>>::slash(
+                &HoldReason::ComputeStake.into(),
+                owner,
+                amount,
+            );
+            let slashed = credit.peek();
             if slashed.is_zero() {
-                return Zero::zero();
+                return Ok(Zero::zero());
             }
 
             // Decrement the logical stake by what was ACTUALLY slashed —
-            // active stake first, then the still-reserved unbonding chunk.
+            // active stake first, then the still-held unbonding chunk.
             let from_active = slashed.min(active);
             StakedAmount::<T>::insert(owner, active.saturating_sub(from_active));
             let from_unbond = slashed.saturating_sub(from_active);
@@ -2262,7 +2381,15 @@ pub mod pallet {
                 amount: slashed,
                 reason,
             });
-            slashed
+            // Last, so the sink's own event (production: Hippocampus
+            // `SlashRecycled`) follows `Slashed` in the log.
+            if let Err(refused) = T::SlashSink::on_stake_slash(owner, credit, reason) {
+                // The credit's drop decreases issuance, but inside this
+                // storage layer — reverted with everything else by the `Err`.
+                drop(refused);
+                return Err(Error::<T>::SlashSinkRefused.into());
+            }
+            Ok(slashed)
         }
 
         // --- PR-3 marketplace helpers ---
@@ -3615,13 +3742,17 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Staker: reserve additional native collateral.
+        /// Staker: put additional native collateral on the
+        /// [`HoldReason::ComputeStake`] hold.
+        // + the lazy v1 conversion (`migrations::v1::CONVERT_READS_WRITES`).
         #[pallet::call_index(36)]
-        #[pallet::weight(<T as pallet::Config>::WeightInfo::register_child())]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::register_child()
+            .saturating_add(T::DbWeight::get().reads_writes(3, 3)))]
         pub fn top_up_stake(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(!amount.is_zero(), Error::<T>::ZeroStake);
-            T::DepositCurrency::reserve_named(&STAKE_RESERVE_ID, &who, amount)
+            Self::ensure_stake_on_hold(&who)?;
+            T::StakeCurrency::hold(&HoldReason::ComputeStake.into(), &who, amount)
                 .map_err(|_| Error::<T>::InsufficientBalanceForStake)?;
             StakedAmount::<T>::mutate(&who, |s| *s = s.saturating_add(amount));
             Self::deposit_event(Event::StakeToppedUp {
@@ -3632,9 +3763,10 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Staker: begin unbonding `amount` of active stake. It stays
-        /// reserved (slashable) until [`claim_unstaked`] after the
-        /// unbonding period.
+        /// Staker: begin unbonding `amount` of active stake. It stays on
+        /// hold (slashable) until [`claim_unstaked`] after the unbonding
+        /// period. No balance moves here: active and unbonding stake share
+        /// the one [`HoldReason::ComputeStake`] hold, split by the ledger.
         ///
         /// **Gap #2 (graceful exit):** if this unstake is an *exit signal* —
         /// the owner unbonds EVERYTHING (`remaining == 0`, unambiguous and
@@ -3729,16 +3861,26 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Staker: release fully-unbonded stake.
+        /// Staker: release fully-unbonded stake from the hold.
+        // + the lazy v1 conversion (`migrations::v1::CONVERT_READS_WRITES`).
         #[pallet::call_index(45)]
-        #[pallet::weight(<T as pallet::Config>::WeightInfo::claim_unbonded())]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::claim_unbonded()
+            .saturating_add(T::DbWeight::get().reads_writes(3, 3)))]
         pub fn claim_unstaked(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let (amount, end) =
                 StakeUnbonding::<T>::get(&who).ok_or(Error::<T>::NoStakeUnbonding)?;
             ensure!(Self::now() >= end, Error::<T>::UnbondingNotReady);
-            let unreleased = T::DepositCurrency::unreserve_named(&STAKE_RESERVE_ID, &who, amount);
-            ensure!(unreleased.is_zero(), Error::<T>::PartialUnreserve);
+            Self::ensure_stake_on_hold(&who)?;
+            // `Exact`: all of it or nothing — a short hold must not let the
+            // claim succeed and drop the unbonding record.
+            T::StakeCurrency::release(
+                &HoldReason::ComputeStake.into(),
+                &who,
+                amount,
+                Precision::Exact,
+            )
+            .map_err(|_| Error::<T>::PartialUnreserve)?;
             StakeUnbonding::<T>::remove(&who);
             Self::deposit_event(Event::StakeReleased { who, amount });
             Ok(())
@@ -3756,7 +3898,11 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Admin: set the slash beneficiary (`None` ⇒ burn slashed funds).
+        /// DEPRECATED — always refused with
+        /// [`Error::SlashBeneficiaryDeprecated`]. Slashed stake goes to
+        /// the runtime's `SlashSink` (the Hippocampus pot); it is never
+        /// burned and never repatriated to an account. The call keeps its
+        /// index and signature so `transaction_version` does not move.
         #[pallet::call_index(47)]
         #[pallet::weight((<T as pallet::Config>::WeightInfo::set_base_child_deposit(), Pays::No))]
         pub fn set_slash_beneficiary(
@@ -3764,20 +3910,26 @@ pub mod pallet {
             beneficiary: Option<T::AccountId>,
         ) -> DispatchResult {
             T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
-            match &beneficiary {
-                Some(b) => SlashBeneficiary::<T>::put(b),
-                None => SlashBeneficiary::<T>::kill(),
-            }
-            Self::deposit_event(Event::SlashBeneficiarySet { beneficiary });
-            Ok(())
+            // Argument kept (unused) so the call's metadata is unchanged.
+            let _ = beneficiary;
+            Err(Error::<T>::SlashBeneficiaryDeprecated.into())
         }
 
         /// Authority: slash `owner`'s stake for a proven breach. The
         /// off-chain validator detects the breach (liveness / deficiency)
         /// and submits this, the same way it drives `set_miner_status`.
         /// No-op on balance while the kill-switch is off (event only).
+        // Priced on `deregister_child` (no dedicated benchmark yet) plus
+        // what that benchmark never covered: the sink (receiving account,
+        // hold slot, receiving ledger — production: Hippocampus
+        // `TotalDeposited`) and the lazy v1 conversion
+        // (`migrations::v1::CONVERT_READS_WRITES`), read and written.
         #[pallet::call_index(48)]
-        #[pallet::weight((<T as pallet::Config>::WeightInfo::deregister_child(), Pays::No))]
+        #[pallet::weight((
+            <T as pallet::Config>::WeightInfo::deregister_child()
+                .saturating_add(T::DbWeight::get().reads_writes(7, 7)),
+            Pays::No
+        ))]
         pub fn slash_stake(
             origin: OriginFor<T>,
             owner: T::AccountId,
@@ -3786,7 +3938,7 @@ pub mod pallet {
         ) -> DispatchResult {
             T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
             ensure!(!amount.is_zero(), Error::<T>::ZeroStake);
-            Self::do_slash(&owner, amount, reason);
+            Self::do_slash(&owner, amount, reason)?;
             Ok(())
         }
 

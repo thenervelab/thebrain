@@ -1611,3 +1611,137 @@ fn request_payment_still_spends_freely_when_nothing_is_reserved() {
 		assert_eq!(paid, 5_000 - ExistentialDeposit::get());
 	});
 }
+
+// =====================================================================
+// Recycled compute-stake slashes (`DepositType::SlashRecycled`)
+// =====================================================================
+
+/// What the runtime's slash sink does: the funds land in the pot, then the
+/// bank books them.
+fn recycle_slash(from: AccountId, amount: Balance, reason: u8) {
+	use frame_support::traits::Currency;
+	let _ = Balances::deposit_creating(&hippocampus_account(), amount);
+	Hippocampus::record_slash_recycled(&from, amount, reason);
+}
+
+#[test]
+fn record_slash_recycled_books_the_compute_compartment_not_emission() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			1_000,
+			DepositType::ComputeEmission
+		));
+		System::reset_events();
+
+		recycle_slash(charlie(), 300, 7);
+
+		assert_eq!(TotalDeposited::<Test>::get(DepositType::SlashRecycled), 300);
+		assert_eq!(TotalDeposited::<Test>::get(DepositType::ComputeEmission), 1_000);
+		assert_eq!(Hippocampus::compute_payable_available(), 1_300);
+		// The emission-only view does not move.
+		assert_eq!(Hippocampus::compute_emission_available(), 1_000);
+		// Storage emission untouched.
+		assert_eq!(Hippocampus::emission_available(), 0);
+		// The recycled funds are reserved: request_payment headroom unchanged.
+		assert_eq!(Hippocampus::unreserved_for_payout(), 0);
+
+		let events = System::events();
+		assert!(events
+			.iter()
+			.any(|r| r.event
+				== Event::SlashRecycled { from: charlie(), amount: 300, reason: 7 }.into()));
+		assert!(
+			!events
+				.iter()
+				.any(|r| matches!(r.event, RuntimeEvent::Hippocampus(Event::Deposited { .. }))),
+			"a recycled slash must not emit Deposited"
+		);
+	});
+}
+
+#[test]
+fn slash_recycled_cannot_be_deposited_directly() {
+	new_test_ext().execute_with(|| {
+		assert_noop!(
+			Hippocampus::deposit(RuntimeOrigin::signed(alice()), 1_000, DepositType::SlashRecycled),
+			Error::<Test>::SlashRecycledNotDepositable
+		);
+	});
+}
+
+#[test]
+fn request_payment_cannot_spend_recycled_slashes() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			100,
+			DepositType::MarketplaceRevenue
+		));
+		recycle_slash(charlie(), 5_000, 1);
+		assert_ok!(Hippocampus::add_requester(RuntimeOrigin::root(), dave()));
+
+		// Only the 100 of marketplace revenue is spendable; the 5 000 recycled
+		// stays for compute miners.
+		let paid = Hippocampus::request_payment(&dave(), &bob(), 10_000).unwrap();
+		assert_eq!(paid, 100);
+		assert_eq!(Balances::free_balance(hippocampus_account()), 5_010);
+		assert_eq!(Hippocampus::compute_payable_available(), 5_000);
+		assert_eq!(Hippocampus::request_payment(&dave(), &bob(), 1).unwrap(), 0);
+	});
+}
+
+#[test]
+fn pay_compute_miners_spends_recycled_slashes() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		assert_ok!(Hippocampus::deposit(
+			RuntimeOrigin::signed(alice()),
+			400,
+			DepositType::ComputeEmission
+		));
+		recycle_slash(charlie(), 600, 1);
+		set_compute_miners(vec![(charlie(), 1), (dave(), 1)]);
+		set_compute_epoch(Some(1));
+		whitelist_miner_payment_caller(alice());
+
+		// 1 000 > the 400 of emission alone: only payable because of the
+		// recycled 600.
+		assert_ok!(Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1_000));
+		assert_eq!(Balances::free_balance(dave()), 500);
+		assert_eq!(ComputeEmissionPaidOut::<Test>::get(), 1_000);
+		assert_eq!(Hippocampus::compute_payable_available(), 0);
+		// Emission counted as spent first: the emission-only view floors at 0.
+		assert_eq!(Hippocampus::compute_emission_available(), 0);
+
+		// And no further: the compartment is empty.
+		set_compute_epoch(Some(2));
+		assert_noop!(
+			Hippocampus::pay_compute_miners(RuntimeOrigin::signed(alice()), 1),
+			Error::<Test>::InsufficientComputeEmissionFunds
+		);
+	});
+}
+
+#[test]
+fn pay_storage_miners_cannot_spend_recycled_slashes() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::deposit(RuntimeOrigin::signed(alice()), 10, DepositType::Grant));
+		recycle_slash(charlie(), 600, 1);
+		set_storage_miners(vec![(charlie(), 1)]);
+		whitelist_miner_payment_caller(alice());
+		assert_noop!(
+			Hippocampus::pay_storage_miners(RuntimeOrigin::signed(alice()), 100),
+			Error::<Test>::InsufficientEmissionFunds
+		);
+	});
+}
+
+#[test]
+fn deposit_type_codec_indices_are_append_only() {
+	use codec::Encode;
+	assert_eq!(DepositType::ComputeEmission.encode(), vec![5]);
+	assert_eq!(DepositType::SlashRecycled.encode(), vec![6]);
+}
