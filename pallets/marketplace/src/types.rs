@@ -335,6 +335,12 @@ pub enum UsageKind {
 	S3Overage,
 	#[codec(index = 8)]
 	S3Plan,
+	#[codec(index = 9)]
+	DriveStorage,
+	#[codec(index = 10)]
+	DriveOverage,
+	#[codec(index = 11)]
+	DrivePlan,
 }
 
 impl UsageKind {
@@ -345,7 +351,7 @@ impl UsageKind {
 	/// Any other kind becomes a fee kind as soon as root gives it a
 	/// `FeeCapConfig` entry, and reverts to ordinary usage when it is removed.
 	pub fn requires_fee_cap(self) -> bool {
-		matches!(self, UsageKind::S3Plan)
+		matches!(self, UsageKind::S3Plan | UsageKind::DrivePlan)
 	}
 }
 

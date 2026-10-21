@@ -163,7 +163,7 @@ const COMPUTE_ARREARS: u128 = 500;
 const USAGE_LINE: u128 = 100;
 
 /// Every `UsageKind`, in index order.
-const ALL_USAGE_KINDS: [UsageKind; 9] = [
+const ALL_USAGE_KINDS: [UsageKind; 12] = [
 	UsageKind::Compute,
 	UsageKind::PublicIp,
 	UsageKind::Backup,
@@ -173,6 +173,9 @@ const ALL_USAGE_KINDS: [UsageKind; 9] = [
 	UsageKind::S3Storage,
 	UsageKind::S3Overage,
 	UsageKind::S3Plan,
+	UsageKind::DriveStorage,
+	UsageKind::DriveOverage,
+	UsageKind::DrivePlan,
 ];
 
 /// Point the chain clock inside the period after `COMPUTE_PERIOD`, so that
