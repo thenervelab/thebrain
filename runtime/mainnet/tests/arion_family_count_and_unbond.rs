@@ -289,3 +289,58 @@ fn free_child_reserves_nothing_and_claims_nothing() {
 		assert_eq!(Balances::reserved_balance(account(1)), 0);
 	});
 }
+
+/// The whole trie, so "nothing changed" means nothing at all.
+fn state_root() -> Vec<u8> {
+	sp_io::storage::root(sp_runtime::StateVersion::V0)
+}
+
+/// #75: an error in the middle of `deregister_family` must leave no trace.
+/// The first child is fully processed (indices removed, cooldowns set, its
+/// registration deleted) before the second one fails.
+#[test]
+fn deregister_family_rolls_back_when_a_child_has_no_registration() {
+	new_test_ext().execute_with(|| {
+		let family = account(1);
+		make_family(&family);
+		register(&family, &account(10), &node(10));
+		register(&family, &account(20), &node(20));
+		// Corrupt the second child: listed under the family, no registration.
+		ChildRegistrations::<Runtime>::remove(account(20));
+		let before = state_root();
+
+		assert_eq!(
+			Arion::deregister_family(family.clone()),
+			Err(pallet_arion::Error::<Runtime>::ChildNotRegistered.into())
+		);
+		assert_eq!(state_root(), before, "a failed deregister_family must change nothing");
+		assert!(ChildRegistrations::<Runtime>::get(account(10)).is_some());
+	});
+}
+
+/// #75: same, when the failure is a short reserve on a paid child after a
+/// free child was already released.
+#[test]
+fn deregister_family_rolls_back_on_a_partial_unreserve() {
+	new_test_ext().execute_with(|| {
+		let family = account(1);
+		let deposit = register_paid_child(&family, &account(11));
+		// Out-of-band drift: half the paid child's deposit is no longer reserved.
+		assert_eq!(
+			<Balances as frame_support::traits::ReservableCurrency<AccountId>>::unreserve(
+				&family,
+				deposit / 2
+			),
+			0
+		);
+		let before = state_root();
+
+		assert_eq!(
+			Arion::deregister_family(family.clone()),
+			Err(pallet_arion::Error::<Runtime>::PartialUnreserve.into())
+		);
+		assert_eq!(state_root(), before, "a failed deregister_family must change nothing");
+		assert_eq!(Balances::reserved_balance(&family), deposit - deposit / 2);
+		assert!(ChildRegistrations::<Runtime>::get(account(10)).is_some());
+	});
+}

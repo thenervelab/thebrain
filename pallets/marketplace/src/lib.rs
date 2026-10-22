@@ -5400,13 +5400,24 @@ pub mod pallet {
 			);
 			let probe = <T as Config>::WeightInfo::hourly_probe();
 			let charge = <T as Config>::WeightInfo::hourly_charge();
+			// A user past the nothing-to-bill gate reads both prices and their
+			// free credits and may write their marker, whether or not a charge
+			// follows (zero price, rounding floor, broke user).
+			let past_gate = T::DbWeight::get().reads_writes(3, 1);
+			// The cursor read, the `next_key` that finds the end of the map, and
+			// the cursor write: paid once per tick, metered before anything else.
+			meter.consume(T::DbWeight::get().reads_writes(2, 1));
 
-			// Size the batch assuming every user in it turns out to owe
-			// something. Most will not, so the sweep usually finishes its batch
-			// with budget to spare — but a bound has to hold in the case it is
-			// bounding, not the average one.
-			let affordable = Self::accounts_affordable(&meter, probe.saturating_add(charge));
-			if affordable == 0 {
+			// Walk users one at a time, reserving the worst case — a probe, the
+			// past-the-gate reads and a charge — before each. Sizing the whole batch up front at that
+			// worst case visited only ~36 users a tick on mainnet, although
+			// almost every user takes the probe path; once the map passed ~65k
+			// keys a pass took longer than `MAX_CATCHUP_HOURS`, and every
+			// billable account fell further behind on every pass. Reserving per
+			// user keeps the same bound while the budget a probe leaves unspent
+			// goes to the next user instead of to nobody.
+			let worst_case = probe.saturating_add(past_gate).saturating_add(charge);
+			if !meter.can_consume(worst_case) {
 				return meter.consumed();
 			}
 
@@ -5422,27 +5433,23 @@ pub mod pallet {
 			// rather than a flat one, arriving late costs the user nothing and
 			// the chain nothing. Falling behind defers revenue; it no longer
 			// forgives it.
-			let batch: Vec<(T::AccountId, u128)> = match HourlyChargeCursor::<T>::get() {
-				Some(key) => {
-					UserTotalDriveFilesSize::<T>::iter_from(key).take(affordable).collect()
-				},
-				None => UserTotalDriveFilesSize::<T>::iter().take(affordable).collect(),
+			let mut users = match HourlyChargeCursor::<T>::get() {
+				Some(key) => UserTotalDriveFilesSize::<T>::iter_from(key),
+				None => UserTotalDriveFilesSize::<T>::iter(),
 			};
-
-			// End of the map: restart from the top next tick. Parking the cursor
-			// at the end instead would leave every later tick finding nothing.
-			if batch.is_empty() {
-				HourlyChargeCursor::<T>::kill();
-				return meter.consumed();
-			}
-
-			let exhausted = batch.len() < affordable;
-			let resume_from =
-				UserTotalDriveFilesSize::<T>::hashed_key_for(&batch[batch.len() - 1].0);
+			let mut last_seen: Option<T::AccountId> = None;
+			let mut exhausted = false;
 
 			let mut users_seen: u64 = 0;
 			let mut users_charged_or_removed: u64 = 0;
-			for (user, drive_file_size) in batch {
+			while meter.can_consume(worst_case) {
+				// The iterator reads the next key lazily, and the charge below
+				// writes only other maps, so walking it while charging is sound.
+				let Some((user, drive_file_size)) = users.next() else {
+					exhausted = true;
+					break;
+				};
+				last_seen = Some(user.clone());
 				users_seen = users_seen.saturating_add(1);
 				meter.consume(probe);
 
@@ -5538,6 +5545,7 @@ pub mod pallet {
 						}
 						continue;
 					}
+					meter.consume(past_gate);
 
 					// Each side at its own rate. S3 falls back to the Drive
 					// price while no separate one is set, so a chain that has
@@ -5636,10 +5644,13 @@ pub mod pallet {
 				}
 			}
 
-			if exhausted {
-				HourlyChargeCursor::<T>::kill();
-			} else {
-				HourlyChargeCursor::<T>::put(resume_from);
+			// End of the map: restart from the top next tick. Parking the cursor
+			// at the end instead would leave every later tick finding nothing.
+			match last_seen {
+				Some(user) if !exhausted => HourlyChargeCursor::<T>::put(
+					UserTotalDriveFilesSize::<T>::hashed_key_for(&user),
+				),
+				_ => HourlyChargeCursor::<T>::kill(),
 			}
 
 			log::trace!(

@@ -1082,3 +1082,124 @@ fn a_refused_origin_does_not_hold_the_full_block_weight() {
 		assert!(actual.ref_time() < declared.ref_time() / 10);
 	});
 }
+
+// ── Drive kinds ──────────────────────────────────────────────────────────
+
+/// The backend encodes these indices: they are append-only.
+#[test]
+fn drive_kinds_keep_their_scale_indices() {
+	use parity_scale_codec::Encode;
+	assert_eq!(UsageKind::S3Plan.encode(), vec![8]);
+	assert_eq!(UsageKind::DriveStorage.encode(), vec![9]);
+	assert_eq!(UsageKind::DriveOverage.encode(), vec![10]);
+	assert_eq!(UsageKind::DrivePlan.encode(), vec![11]);
+	assert!(UsageKind::DrivePlan.requires_fee_cap());
+	assert!(!UsageKind::DriveStorage.requires_fee_cap());
+	assert!(!UsageKind::DriveOverage.requires_fee_cap());
+}
+
+#[test]
+fn a_row_with_drive_lines_is_charged_and_its_breakdown_reported() {
+	new_test_ext().execute_with(|| {
+		set_fee_cap(UsageKind::DrivePlan, Some(plan_fee_cap()));
+		let user = account(10);
+		deposit_credits(&user, 100_000_000);
+		let lines = [
+			(UsageKind::Compute, HOUR_COST),
+			(UsageKind::DriveStorage, 300),
+			(UsageKind::DriveOverage, 45),
+			(UsageKind::DrivePlan, PLAN_FEE),
+		];
+		let total = HOUR_COST + 300 + 45 + PLAN_FEE;
+
+		submit(PERIOD, vec![row(&user, &lines, hash(1))]);
+
+		assert_eq!(credits(&user), 100_000_000 - total);
+		assert!(marketplace_events().contains(&MarketplaceEvent::UsageCharged {
+			who: user.clone(),
+			period: PERIOD,
+			amount: total,
+			arrears_collected: 0,
+			usage_hash: hash(1),
+			breakdown: breakdown(&lines),
+		}));
+		// Only the plan line is a fee; Drive storage and overage are ordinary
+		// usage, counted against the hourly cap with compute.
+		assert_eq!(FeeSpend::<Runtime>::get(UsageKind::DrivePlan, &user), Some((NOW, PLAN_FEE)));
+		assert_eq!(FeeSpend::<Runtime>::get(UsageKind::DriveStorage, &user), None);
+	});
+}
+
+#[test]
+fn drive_plan_without_caps_is_refused_but_drive_storage_is_not() {
+	new_test_ext().execute_with(|| {
+		let (a, b) = (account(10), account(11));
+		deposit_credits(&a, 10_000);
+		deposit_credits(&b, 10_000);
+
+		submit(
+			PERIOD,
+			vec![
+				row(&a, &[(UsageKind::DriveStorage, 100), (UsageKind::DrivePlan, 10)], hash(1)),
+				row(&b, &[(UsageKind::DriveStorage, 100), (UsageKind::DriveOverage, 20)], hash(2)),
+			],
+		);
+
+		assert_eq!(refusals(), vec![(a.clone(), ComputeUsageRefusal::FeeCapExceeded)]);
+		assert_eq!(credits(&a), 10_000);
+		assert_eq!(credits(&b), 10_000 - 120);
+	});
+}
+
+#[test]
+fn drive_plan_caps_are_enforced_separately_from_s3_plan() {
+	new_test_ext().execute_with(|| {
+		let cap = FeeCap {
+			per_debit: PLAN_FEE,
+			per_call: PLAN_FEE * 100,
+			budget: PLAN_FEE * 2,
+			window_periods: 720,
+		};
+		set_fee_cap(UsageKind::DrivePlan, Some(cap));
+		set_fee_cap(UsageKind::S3Plan, Some(cap));
+		let user = account(10);
+		deposit_credits(&user, 100_000_000);
+
+		// Above per_debit.
+		submit(PERIOD, vec![row(&user, &[(UsageKind::DrivePlan, PLAN_FEE + 1)], hash(1))]);
+		assert_eq!(refusals(), vec![(user.clone(), ComputeUsageRefusal::FeeCapExceeded)]);
+		System::reset_events();
+
+		// Two plan fees fit the budget; a third in the same window does not,
+		// and the S3 plan budget is untouched by Drive's.
+		submit(PERIOD - 1, vec![row(&user, &[(UsageKind::DrivePlan, PLAN_FEE)], hash(2))]);
+		submit(PERIOD - 2, vec![row(&user, &[(UsageKind::DrivePlan, PLAN_FEE)], hash(3))]);
+		submit(PERIOD - 3, vec![row(&user, &[(UsageKind::DrivePlan, PLAN_FEE)], hash(4))]);
+		assert_eq!(refusals(), vec![(user.clone(), ComputeUsageRefusal::FeeBudgetExceeded)]);
+		assert_eq!(
+			FeeSpend::<Runtime>::get(UsageKind::DrivePlan, &user),
+			Some((NOW, PLAN_FEE * 2))
+		);
+		submit(PERIOD - 4, vec![row(&user, &[(UsageKind::S3Plan, PLAN_FEE)], hash(5))]);
+		assert_eq!(FeeSpend::<Runtime>::get(UsageKind::S3Plan, &user), Some((NOW, PLAN_FEE)));
+		assert_eq!(credits(&user), 100_000_000 - PLAN_FEE * 3);
+	});
+}
+
+#[test]
+fn both_plan_kinds_leave_room_for_two_more_fee_kinds() {
+	new_test_ext().execute_with(|| {
+		set_fee_cap(UsageKind::S3Plan, Some(plan_fee_cap()));
+		set_fee_cap(UsageKind::DrivePlan, Some(plan_fee_cap()));
+		set_fee_cap(UsageKind::Backup, Some(plan_fee_cap()));
+		set_fee_cap(UsageKind::ManagedFees, Some(plan_fee_cap()));
+		assert_noop!(
+			Marketplace::set_fee_kind_caps(
+				RuntimeOrigin::root(),
+				UsageKind::Cdn,
+				Some(plan_fee_cap())
+			),
+			Error::<Runtime>::TooManyFeeKinds
+		);
+	});
+}
