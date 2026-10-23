@@ -7833,6 +7833,7 @@ dependencies = [
 name = "pallet-arion"
 version = "0.1.0"
 dependencies = [
+ "frame-benchmarking 37.0.0",
  "frame-support 37.1.0",
  "frame-system 37.1.0",
  "log",
