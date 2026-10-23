@@ -191,7 +191,9 @@ fn migration_v3_recomputes_a_drifted_family_count() {
 
 		<Arion as Hooks<BlockNumber>>::on_runtime_upgrade();
 		assert_eq!(FamilyCount::<Runtime>::get(), 2);
-		assert_eq!(Arion::on_chain_storage_version(), StorageVersion::new(3));
+		assert_eq!(Arion::on_chain_storage_version(), StorageVersion::new(4));
+		// The v4 step also cleared the legacy zero row inserted above.
+		assert!(!FamilyActiveChildren::<Runtime>::contains_key(account(3)));
 
 		// Idempotent, and gated: a second upgrade at v3 is a no-op.
 		FamilyCount::<Runtime>::put(7);
@@ -205,6 +207,46 @@ fn migration_v3_recomputes_a_drifted_family_count() {
 		make_family(&account(4));
 		register(&account(4), &account(40), &node(40));
 		assert_count(3);
+	});
+}
+
+/// #75 (nit 2): the v4 migration drops legacy zero `FamilyActiveChildren`
+/// rows while leaving the active ones and `FamilyCount` untouched, and is
+/// idempotent.
+#[test]
+fn migration_v4_drops_legacy_zero_family_rows() {
+	new_test_ext().execute_with(|| {
+		let (fam_a, fam_b) = (account(1), account(2));
+		make_family(&fam_a);
+		make_family(&fam_b);
+		register(&fam_a, &account(10), &node(10));
+		register(&fam_b, &account(20), &node(20));
+		// Three legacy zero rows left by families that dropped out before the
+		// drop-to-zero decrement existed.
+		FamilyActiveChildren::<Runtime>::insert(account(3), 0);
+		FamilyActiveChildren::<Runtime>::insert(account(4), 0);
+		FamilyActiveChildren::<Runtime>::insert(account(5), 0);
+		StorageVersion::new(3).put::<Arion>();
+
+		let count_before = FamilyCount::<Runtime>::get();
+		<Arion as Hooks<BlockNumber>>::on_runtime_upgrade();
+
+		assert_eq!(Arion::on_chain_storage_version(), StorageVersion::new(4));
+		// The zero rows are gone; the active families survive untouched.
+		for seed in [3u8, 4, 5] {
+			assert!(!FamilyActiveChildren::<Runtime>::contains_key(account(seed)));
+		}
+		assert_eq!(FamilyActiveChildren::<Runtime>::get(&fam_a), 1);
+		assert_eq!(FamilyActiveChildren::<Runtime>::get(&fam_b), 1);
+		// Dropping uncounted rows must not move FamilyCount.
+		assert_eq!(FamilyCount::<Runtime>::get(), count_before);
+		assert_count(2);
+
+		// Idempotent: re-running at v3 removes nothing more and keeps the count.
+		StorageVersion::new(3).put::<Arion>();
+		<Arion as Hooks<BlockNumber>>::on_runtime_upgrade();
+		assert_count(2);
+		assert_eq!(FamilyActiveChildren::<Runtime>::iter().count(), 2);
 	});
 }
 
