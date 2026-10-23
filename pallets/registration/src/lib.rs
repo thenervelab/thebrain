@@ -106,6 +106,11 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type ReportRequestsClearInterval: Get<u32>;
+
+		/// How many blocks a pending node-owner swap offer stays valid before it
+		/// expires and must be re-offered.
+		#[pallet::constant]
+		type OwnerSwapOfferExpiry: Get<BlockNumberFor<Self>>;
 	}
 
 	#[pallet::pallet]
@@ -234,6 +239,21 @@ pub mod pallet {
 	#[pallet::getter(fn owner_to_node)]
 	pub type OwnerToNode<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, Vec<Vec<u8>>>;
 
+	/// Pending two-step node-owner swaps, keyed by node id.
+	///
+	/// Stores the proposed new owner and the block at which the offer expires.
+	/// The swap only takes effect once the proposed new owner accepts, so a
+	/// node can never be moved onto an account without that account's consent.
+	#[pallet::storage]
+	#[pallet::getter(fn pending_owner_swap)]
+	pub type PendingOwnerSwap<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		Vec<u8>,                           // Node ID
+		(T::AccountId, BlockNumberFor<T>), // (proposed new owner, expiry block)
+		OptionQuery,
+	>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -275,6 +295,17 @@ pub mod pallet {
 		NodeOwnerSwapped {
 			node_id: Vec<u8>,
 			new_owner: T::AccountId,
+		},
+		/// A node owner proposed transferring the node to a new owner, pending
+		/// that new owner's acceptance.
+		NodeOwnerSwapOffered {
+			node_id: Vec<u8>,
+			new_owner: T::AccountId,
+			expiry: BlockNumberFor<T>,
+		},
+		/// A pending node-owner swap offer was cancelled by the current owner.
+		NodeOwnerSwapOfferCancelled {
+			node_id: Vec<u8>,
 		},
 		DeregistrationConsensusReached {
 			node_id: Vec<u8>,
@@ -350,6 +381,12 @@ pub mod pallet {
 		Unauthorized,
 		/// Paying registration fees via credits is temporarily disabled.
 		PayInCreditsDisabled,
+		/// No pending owner-swap offer exists for this node.
+		NoPendingOwnerSwap,
+		/// The caller is not the proposed new owner of the pending swap.
+		NotPendingNewOwner,
+		/// The pending owner-swap offer has expired and must be re-offered.
+		OwnerSwapOfferExpired,
 	}
 
 	#[pallet::hooks]
@@ -814,6 +851,13 @@ pub mod pallet {
 			Ok(().into())
 		}
 
+		/// Force a node-owner swap without the new owner's consent.
+		///
+		/// Root-only, for operator recovery. The consenting path for ordinary
+		/// users is the two-step `offer_node_owner` / `accept_node_owner` flow;
+		/// a single-signature swap let any owner park a node on an account that
+		/// never asked for it, blocking that account from ever registering its
+		/// own node (griefing). See `do_swap_node_owner` for the shared logic.
 		#[pallet::call_index(11)]
 		#[pallet::weight((0, Pays::No))]
 		pub fn swap_node_owner(
@@ -821,35 +865,106 @@ pub mod pallet {
 			node_id: Vec<u8>,
 			new_owner: T::AccountId,
 		) -> DispatchResultWithPostInfo {
+			ensure_root(origin)?;
+
+			Self::do_swap_node_owner(&node_id, &new_owner)?;
+
+			Ok(().into())
+		}
+
+		/// Step 1 of a consenting node-owner swap: the current owner proposes a
+		/// transfer to `new_owner`. The swap does not take effect until the
+		/// proposed new owner calls `accept_node_owner`. The offer expires after
+		/// `OwnerSwapOfferExpiry` blocks.
+		#[pallet::call_index(16)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn offer_node_owner(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+			new_owner: T::AccountId,
+		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
-			// Retrieve the node information
-			let mut node_info = ColdkeyNodeRegistrationV2::<T>::get(&node_id)
+			// Retrieve the node information and ensure the caller is the owner.
+			let node_info = ColdkeyNodeRegistrationV2::<T>::get(&node_id)
 				.ok_or(Error::<T>::NodeNotRegistered)?;
+			ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
 
-			// Ensure the caller is the current owner
-			ensure!(node_info.owner == who.clone(), Error::<T>::NotNodeOwner);
-
-			// Ensure the new owner is not banned
+			// Reject offers to an account that plainly can't accept, so a stale
+			// offer never sits in storage. These are re-checked at accept time.
 			ensure!(!Self::is_account_banned(&new_owner), Error::<T>::AccountBanned);
-
-			// Ensure the new owner is not already registered with another node
 			ensure!(
 				!Self::is_owner_node_registered(&new_owner),
 				Error::<T>::OwnerAlreadyRegistered
 			);
 
-			let old_owner = node_info.owner.clone();
+			let expiry = <frame_system::Pallet<T>>::block_number()
+				.saturating_add(T::OwnerSwapOfferExpiry::get());
 
-			// Update the owner
-			node_info.owner = new_owner.clone();
+			PendingOwnerSwap::<T>::insert(&node_id, (new_owner.clone(), expiry));
 
-			// Save the updated node information back to storage
-			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
-			Self::owner_to_node_remove(&old_owner, &node_id);
-			Self::owner_to_node_add(&new_owner, &node_id);
+			Self::deposit_event(Event::NodeOwnerSwapOffered { node_id, new_owner, expiry });
 
-			Self::deposit_event(Event::NodeOwnerSwapped { node_id, new_owner });
+			Ok(().into())
+		}
+
+		/// Step 2 of a consenting node-owner swap: the proposed new owner accepts
+		/// a pending offer, performing the actual ownership transfer. Banned and
+		/// already-registered checks are re-evaluated here, at accept time.
+		#[pallet::call_index(17)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn accept_node_owner(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			let (pending_owner, expiry) =
+				PendingOwnerSwap::<T>::get(&node_id).ok_or(Error::<T>::NoPendingOwnerSwap)?;
+
+			// Only the proposed new owner may accept, and only they consent here.
+			ensure!(pending_owner == who, Error::<T>::NotPendingNewOwner);
+
+			// Expired offers must be re-offered; clean up so they don't linger.
+			if <frame_system::Pallet<T>>::block_number() > expiry {
+				PendingOwnerSwap::<T>::remove(&node_id);
+				return Err(Error::<T>::OwnerSwapOfferExpired.into());
+			}
+
+			// Re-check the new owner's eligibility at accept time: they may have
+			// been banned or registered their own node since the offer was made.
+			ensure!(!Self::is_account_banned(&who), Error::<T>::AccountBanned);
+			ensure!(
+				!Self::is_owner_node_registered(&who),
+				Error::<T>::OwnerAlreadyRegistered
+			);
+
+			Self::do_swap_node_owner(&node_id, &who)?;
+			PendingOwnerSwap::<T>::remove(&node_id);
+
+			Ok(().into())
+		}
+
+		/// Cancel a pending node-owner swap offer. Callable by the current owner.
+		#[pallet::call_index(18)]
+		#[pallet::weight((0, Pays::No))]
+		pub fn cancel_node_owner_offer(
+			origin: OriginFor<T>,
+			node_id: Vec<u8>,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+
+			let node_info = ColdkeyNodeRegistrationV2::<T>::get(&node_id)
+				.ok_or(Error::<T>::NodeNotRegistered)?;
+			ensure!(node_info.owner == who, Error::<T>::NotNodeOwner);
+
+			ensure!(
+				PendingOwnerSwap::<T>::contains_key(&node_id),
+				Error::<T>::NoPendingOwnerSwap
+			);
+			PendingOwnerSwap::<T>::remove(&node_id);
+
+			Self::deposit_event(Event::NodeOwnerSwapOfferCancelled { node_id });
 
 			Ok(().into())
 		}
@@ -989,6 +1104,32 @@ pub mod pallet {
 		) {
 			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
 			Self::owner_to_node_add(owner, &node_id);
+		}
+
+		/// Core node-owner transfer, shared by the root-only `swap_node_owner`
+		/// and the consenting `accept_node_owner` path. Callers are responsible
+		/// for authorization and for the banned / already-registered checks that
+		/// their flow requires.
+		fn do_swap_node_owner(
+			node_id: &Vec<u8>,
+			new_owner: &T::AccountId,
+		) -> DispatchResult {
+			let mut node_info = ColdkeyNodeRegistrationV2::<T>::get(node_id)
+				.ok_or(Error::<T>::NodeNotRegistered)?;
+
+			let old_owner = node_info.owner.clone();
+			node_info.owner = new_owner.clone();
+
+			ColdkeyNodeRegistrationV2::<T>::insert(node_id.clone(), Some(node_info));
+			Self::owner_to_node_remove(&old_owner, node_id);
+			Self::owner_to_node_add(new_owner, node_id);
+
+			Self::deposit_event(Event::NodeOwnerSwapped {
+				node_id: node_id.clone(),
+				new_owner: new_owner.clone(),
+			});
+
+			Ok(())
 		}
 
 		fn owner_to_node_add(owner: &T::AccountId, node_id: &Vec<u8>) {

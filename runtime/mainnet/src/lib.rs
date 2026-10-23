@@ -1774,6 +1774,8 @@ parameter_types! {
 	pub const ComputeMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
 	pub const GpuMinerInitialFee: Balance = 150_000_000_000; // 150 tokens
 	pub const ReportRequestsClearInterval : u32 = 1000;
+	/// Pending node-owner swap offers expire after 7 days if not accepted.
+	pub const OwnerSwapOfferExpiry: BlockNumber = 7 * DAYS;
 }
 
 impl pallet_registration::Config for Runtime {
@@ -1798,6 +1800,7 @@ impl pallet_registration::Config for Runtime {
 	type ConsensusPeriod = ConsensusPeriod;
 	type EpochDuration = ConstU32<100>; // epoch pin checks clear duration
 	type ReportRequestsClearInterval = ReportRequestsClearInterval;
+	type OwnerSwapOfferExpiry = OwnerSwapOfferExpiry;
 }
 
 parameter_types! {
