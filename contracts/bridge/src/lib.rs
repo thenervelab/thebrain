@@ -79,6 +79,16 @@ mod bridge {
 		// ============ Cleanup Configuration ============
 		/// TTL in blocks for cleaning up finalized records (~7 days at 6s blocks = 100800)
 		cleanup_ttl_blocks: BlockNumber,
+
+		// ============ Emergency Pausers ============
+		/// Accounts allowed to `pause()` (but NOT unpause) — an asymmetric
+		/// circuit breaker: monitoring agents get a key that can only halt
+		/// the bridge, never move funds or resume it. Owner-managed.
+		///
+		/// Upgrade note: this MUST stay a `Mapping` (own storage cell). A
+		/// packed field (Vec, u32, …) appended here would change the root
+		/// cell layout and brick existing state on `set_code`.
+		pausers: Mapping<AccountId, ()>,
 	}
 
 	impl Bridge {
@@ -103,6 +113,7 @@ mod bridge {
 				nonce_to_deposit_request_id: Mapping::default(),
 				withdrawals: Mapping::default(),
 				cleanup_ttl_blocks: 100_800, // ~7 days at 6s blocks
+				pausers: Mapping::default(),
 			}
 		}
 
@@ -475,12 +486,44 @@ mod bridge {
 			Ok(())
 		}
 
+		/// Pause the bridge. Callable by the owner OR any whitelisted pauser.
+		///
+		/// Asymmetric by design: pausing is cheap to trigger (a monitoring
+		/// agent holding a pauser key can halt releases on any doubt), while
+		/// resuming stays owner-only.
 		#[ink(message)]
 		pub fn pause(&mut self) -> Result<(), Error> {
-			self.ensure_owner()?;
+			let caller = self.env().caller();
+			if caller != self.owner && !self.pausers.contains(caller) {
+				return Err(Error::Unauthorized);
+			}
 			self.paused = true;
-			self.env().emit_event(Paused { paused_by: self.env().caller() });
+			self.env().emit_event(Paused { paused_by: caller });
 			Ok(())
+		}
+
+		/// Allow `account` to call `pause()` (owner only).
+		#[ink(message)]
+		pub fn add_pauser(&mut self, account: AccountId) -> Result<(), Error> {
+			self.ensure_owner()?;
+			self.pausers.insert(account, &());
+			self.env().emit_event(PauserAdded { account });
+			Ok(())
+		}
+
+		/// Revoke `account`'s ability to call `pause()` (owner only).
+		#[ink(message)]
+		pub fn remove_pauser(&mut self, account: AccountId) -> Result<(), Error> {
+			self.ensure_owner()?;
+			self.pausers.remove(account);
+			self.env().emit_event(PauserRemoved { account });
+			Ok(())
+		}
+
+		/// Whether `account` is a whitelisted pauser.
+		#[ink(message)]
+		pub fn is_pauser(&self, account: AccountId) -> bool {
+			self.pausers.contains(account)
 		}
 
 		#[ink(message)]
@@ -799,6 +842,59 @@ mod bridge {
 
 			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
 			assert_eq!(bridge.pause(), Err(Error::Unauthorized));
+		}
+
+		#[ink::test]
+		fn pauser_can_pause_but_not_unpause() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			// Owner grants bob the pauser role
+			assert!(bridge.add_pauser(accounts.bob).is_ok());
+			assert!(bridge.is_pauser(accounts.bob));
+
+			// Pauser can pause…
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			assert!(bridge.pause().is_ok());
+			assert!(bridge.is_paused());
+
+			// …but cannot unpause (owner only)
+			assert_eq!(bridge.unpause(), Err(Error::Unauthorized));
+
+			// …and holds no other privilege
+			assert_eq!(
+				bridge.set_guardians_and_threshold(vec![accounts.bob], 1),
+				Err(Error::Unauthorized)
+			);
+			assert_eq!(bridge.add_pauser(accounts.charlie), Err(Error::Unauthorized));
+
+			// Owner unpauses
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.alice);
+			assert!(bridge.unpause().is_ok());
+			assert!(!bridge.is_paused());
+		}
+
+		#[ink::test]
+		fn removed_pauser_cannot_pause() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			assert!(bridge.add_pauser(accounts.bob).is_ok());
+			assert!(bridge.remove_pauser(accounts.bob).is_ok());
+			assert!(!bridge.is_pauser(accounts.bob));
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			assert_eq!(bridge.pause(), Err(Error::Unauthorized));
+		}
+
+		#[ink::test]
+		fn add_pauser_fails_if_not_owner() {
+			let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+			let mut bridge = Bridge::new(accounts.alice, 1, accounts.eve);
+
+			ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+			assert_eq!(bridge.add_pauser(accounts.bob), Err(Error::Unauthorized));
+			assert_eq!(bridge.remove_pauser(accounts.alice), Err(Error::Unauthorized));
 		}
 
 		#[ink::test]
