@@ -85,6 +85,12 @@ pub mod pallet {
 
 		#[pallet::constant]
 		type RefferallCoolDOwnPeriod: Get<u32>;
+
+		/// How many blocks `AlphaPrice` stays usable for pricing after the
+		/// last `set_alpha_price`. Consumers that convert tokens into credits
+		/// at this price must refuse it once it is older than this.
+		#[pallet::constant]
+		type MaxAlphaPriceAge: Get<BlockNumberFor<Self>>;
 	}
 
 	// Storage for authority accounts
@@ -163,6 +169,13 @@ pub mod pallet {
 		Vec<LockedCredit<T::AccountId, BlockNumberFor<T>>>,
 		ValueQuery,
 	>;
+
+	/// Block at which `AlphaPrice` was last written by `set_alpha_price`.
+	/// `None` means the price predates this record and has not been refreshed
+	/// since, which consumers must treat as stale.
+	#[pallet::storage]
+	#[pallet::getter(fn alpha_price_updated_at)]
+	pub type AlphaPriceUpdatedAt<T: Config> = StorageValue<_, BlockNumberFor<T>, OptionQuery>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -457,6 +470,7 @@ pub mod pallet {
 			};
 
 			AlphaPrice::<T>::put(new_price);
+			AlphaPriceUpdatedAt::<T>::put(frame_system::Pallet::<T>::block_number());
 
 			Self::deposit_event(Event::AlphaPriceSet { price: new_price, who: authority });
 

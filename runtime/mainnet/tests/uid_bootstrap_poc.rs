@@ -551,7 +551,7 @@ fn bulk_bind_runs_on_a_chain_already_at_storage_version_one() {
 		);
 		assert_eq!(
 			pallet_arion::Pallet::<Runtime>::on_chain_storage_version(),
-			2,
+			3,
 			"version advances so the step is not repeated"
 		);
 	});

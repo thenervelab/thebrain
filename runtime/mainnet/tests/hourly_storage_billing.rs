@@ -139,6 +139,16 @@ fn report_usage(who: &AccountId, drive_bytes: u128, s3_bytes: u128) {
 }
 
 /// Run the charge tick for one hour.
+/// What `on_initialize` spends at `HOURLY_STEP` with no metric rows at all:
+/// everything but the hourly sweep's per-user work. Subtracting it isolates the
+/// sweep, which is what `HourlyWeightBudget` bounds.
+fn baseline_without_users() -> u64 {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(HOURLY_STEP);
+		Marketplace::on_initialize(HOURLY_STEP).ref_time()
+	})
+}
+
 fn run_one_hour() {
 	System::set_block_number(HOURLY_STEP);
 	Marketplace::on_initialize(HOURLY_STEP);
@@ -187,6 +197,7 @@ fn hourly_spend(setup: impl FnOnce(&AccountId)) -> u128 {
 /// the block is just produced heavier.
 #[test]
 fn the_hourly_sweep_is_bounded_per_tick_and_reaches_everyone() {
+	let baseline = baseline_without_users();
 	new_test_ext().execute_with(|| {
 		// Enough users that one tick cannot afford them all.
 		let total = 300u32;
@@ -206,10 +217,10 @@ fn the_hourly_sweep_is_bounded_per_tick_and_reaches_everyone() {
 		// cursor because it cannot have finished.
 		System::set_block_number(HOURLY_STEP);
 		let consumed = Marketplace::on_initialize(HOURLY_STEP);
+		let sweep = consumed.ref_time().saturating_sub(baseline);
 		assert!(
-			consumed.ref_time() <= budget.ref_time() * 2,
-			"one hourly tick spent {} against a budget of {}",
-			consumed.ref_time(),
+			sweep <= budget.ref_time(),
+			"one hourly tick spent {sweep} against a budget of {}",
 			budget.ref_time(),
 		);
 		assert!(
@@ -233,6 +244,102 @@ fn the_hourly_sweep_is_bounded_per_tick_and_reaches_everyone() {
 				"user {n} was reached by the paged sweep",
 			);
 		}
+	});
+}
+
+/// Users with nothing to bill must not use up the budget a charge would need.
+///
+/// Mainnet sized each tick's batch as if every user owed something, so with
+/// ~82k metric rows — nearly all of them zero or covered by a plan — it visited
+/// 36 users a tick and a pass took ~30 hours. That is past the 24-hour catch-up
+/// cap, so every billable account fell a few more hours behind on every pass.
+/// One tick has to walk past at least twice the old worst-case batch when they
+/// all take the probe path.
+#[test]
+fn users_with_nothing_to_bill_do_not_starve_the_sweep() {
+	use pallet_marketplace::weights::WeightInfo as _;
+	type W = pallet_marketplace::weights::SubstrateWeight<Runtime>;
+
+	let baseline = baseline_without_users();
+	new_test_ext().execute_with(|| {
+		let budget = <Runtime as pallet_marketplace::Config>::HourlyWeightBudget::get()
+			* <Runtime as frame_system::Config>::BlockWeights::get().max_block;
+		let worst_case_batch =
+			budget.ref_time() / W::hourly_probe().saturating_add(W::hourly_charge()).ref_time();
+		let probe_only_batch = budget.ref_time() / W::hourly_probe().ref_time();
+		let idle_users = (worst_case_batch * 2) as u32;
+		assert!(
+			u64::from(idle_users) < probe_only_batch,
+			"test premise: the idle users fit one tick of probes",
+		);
+
+		for n in 0..idle_users {
+			let mut raw = [0u8; 32];
+			raw[0] = 0xE0;
+			raw[1..5].copy_from_slice(&n.to_le_bytes());
+			report_usage(&AccountId32::new(raw), 0, 0);
+		}
+		let payer = account(31);
+		deposit_credits(&payer, 1_000_000);
+		report_usage(&payer, DRIVE_BYTES, S3_BYTES);
+
+		System::set_block_number(HOURLY_STEP);
+		let consumed = Marketplace::on_initialize(HOURLY_STEP);
+
+		assert_eq!(
+			1_000_000 - Credits::get_free_credits(&payer),
+			BOTH_SIDES_CHARGE,
+			"the one payer is billed on the first tick, wherever it sits in the map",
+		);
+		assert!(
+			pallet_marketplace::HourlyChargeCursor::<Runtime>::get().is_none(),
+			"{idle_users} probe-path users fit one tick — the pass must complete",
+		);
+		assert!(consumed.ref_time().saturating_sub(baseline) <= budget.ref_time());
+	});
+}
+
+/// More probe-path users than one tick can walk: the tick stops inside its
+/// budget and parks a cursor, and the one payer, wherever it sits, is still
+/// billed exactly once in the hour across the ticks that follow.
+#[test]
+fn a_tick_full_of_probes_stays_in_budget_and_still_bills_once() {
+	use pallet_marketplace::weights::WeightInfo as _;
+	type W = pallet_marketplace::weights::SubstrateWeight<Runtime>;
+
+	let baseline = baseline_without_users();
+	new_test_ext().execute_with(|| {
+		let budget = <Runtime as pallet_marketplace::Config>::HourlyWeightBudget::get()
+			* <Runtime as frame_system::Config>::BlockWeights::get().max_block;
+		let probe_only_batch = budget.ref_time() / W::hourly_probe().ref_time();
+		let idle_users = (probe_only_batch + 20) as u32;
+
+		for n in 0..idle_users {
+			let mut raw = [0u8; 32];
+			raw[0] = 0xF0;
+			raw[1..5].copy_from_slice(&n.to_le_bytes());
+			report_usage(&AccountId32::new(raw), 0, 0);
+		}
+		let payer = account(32);
+		deposit_credits(&payer, 1_000_000);
+		report_usage(&payer, DRIVE_BYTES, S3_BYTES);
+
+		let mut block = HOURLY_STEP;
+		System::set_block_number(block);
+		let consumed = Marketplace::on_initialize(block);
+		assert!(consumed.ref_time().saturating_sub(baseline) <= budget.ref_time());
+		assert!(
+			pallet_marketplace::HourlyChargeCursor::<Runtime>::get().is_some(),
+			"{idle_users} users exceed one tick of probes — the sweep must park a cursor",
+		);
+
+		// Ticks 8 blocks apart stay inside the same hour.
+		for _ in 0..4 {
+			block += 8;
+			System::set_block_number(block);
+			Marketplace::on_initialize(block);
+		}
+		assert_eq!(1_000_000 - Credits::get_free_credits(&payer), BOTH_SIDES_CHARGE);
 	});
 }
 
@@ -265,7 +372,8 @@ fn a_paged_sweep_bills_each_user_exactly_once_an_hour() {
 			deposit_credits(&user, 1_000_000);
 			report_usage(&user, DRIVE_BYTES, S3_BYTES);
 		}
-		let before: Vec<u128> = (0..total).map(|n| Credits::get_free_credits(&user_of(n))).collect();
+		let before: Vec<u128> =
+			(0..total).map(|n| Credits::get_free_credits(&user_of(n))).collect();
 
 		// First tick is past `BlocksPerHour`, so everyone starts eligible.
 		// Subsequent ticks are 8 blocks apart and stay inside that same hour.
@@ -966,9 +1074,7 @@ fn a_signed_origin_cannot_set_or_clear_the_s3_price() {
 			S3_PRICE_PER_GB,
 		)
 		.is_err());
-		assert!(
-			Marketplace::clear_s3_price_per_gb(RuntimeOrigin::signed(account(11))).is_err()
-		);
+		assert!(Marketplace::clear_s3_price_per_gb(RuntimeOrigin::signed(account(11))).is_err());
 		assert_eq!(Marketplace::get_s3_price_per_gb(), PRICE_PER_GB);
 	});
 }

@@ -804,7 +804,8 @@ pub mod pallet {
 	}
 
 	/// Storage version 1: `MinerUidToChild` reverse index (uid uniqueness).
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+	/// Storage version 3: `FamilyCount` recomputed from `FamilyActiveChildren`.
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -822,11 +823,28 @@ pub mod pallet {
 			if onchain < 2 {
 				weight = weight.saturating_add(Self::migrate_v1_to_v2());
 			}
-			if onchain < 2 {
-				StorageVersion::new(2).put::<Pallet<T>>();
+			if onchain < 3 {
+				weight = weight.saturating_add(Self::migrate_v2_to_v3());
+			}
+			if onchain < 3 {
+				StorageVersion::new(3).put::<Pallet<T>>();
 				weight = weight.saturating_add(T::DbWeight::get().writes(1));
 			}
 			weight
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+			ensure!(
+				Pallet::<T>::on_chain_storage_version() >= 3,
+				"arion: storage version not bumped to 3"
+			);
+			Self::check_family_count()
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn try_state(_n: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+			Self::check_family_count()
 		}
 
 		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
@@ -916,6 +934,64 @@ pub mod pallet {
 			}
 
 			T::DbWeight::get().reads_writes(reads, writes)
+		}
+
+		/// v2 → v3: recompute `FamilyCount` from `FamilyActiveChildren`.
+		///
+		/// Invariant restored (and kept by `register_child` /
+		/// `cleanup_family_when_no_active_children` / `deregister_family`):
+		///
+		/// ```text
+		/// FamilyCount == |{ f : FamilyActiveChildren[f] > 0 }|
+		/// ```
+		///
+		/// i.e. the number of families with at least one `Active` child.
+		///
+		/// The stored counter drifted above that: before the drop-to-zero
+		/// decrement existed, a family whose last child deregistered left the
+		/// count incremented forever (those families still sit in
+		/// `FamilyActiveChildren` with a value of 0), and the increment was keyed
+		/// on "first fee-free slot ever" rather than "family becomes active". At
+		/// `MaxFamilies` every new family fails with `TooManyFamilies`.
+		///
+		/// Idempotent (a pure recount, one write). Reads one entry per key of
+		/// `FamilyActiveChildren`: non-zero entries are bounded by
+		/// `MaxChildrenTotal`, the rest are the legacy zero rows described above.
+		fn migrate_v2_to_v3() -> Weight {
+			let (keys, families) = Self::count_current_families();
+			let before = FamilyCount::<T>::get();
+			FamilyCount::<T>::put(families);
+			log::info!(
+				target: "runtime::arion",
+				"migration v3: FamilyCount {} -> {} ({} FamilyActiveChildren rows scanned)",
+				before,
+				families,
+				keys
+			);
+			T::DbWeight::get().reads_writes(keys.saturating_add(1), 1)
+		}
+
+		/// `(rows scanned, families with >= 1 active child)`.
+		fn count_current_families() -> (u64, u32) {
+			let mut keys: u64 = 0;
+			let mut families: u32 = 0;
+			for (_, active) in FamilyActiveChildren::<T>::iter() {
+				keys = keys.saturating_add(1);
+				if active > 0 {
+					families = families.saturating_add(1);
+				}
+			}
+			(keys, families)
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn check_family_count() -> Result<(), sp_runtime::TryRuntimeError> {
+			let (_, families) = Self::count_current_families();
+			ensure!(
+				FamilyCount::<T>::get() == families,
+				"arion: FamilyCount != families with active children"
+			);
+			Ok(())
 		}
 
 		fn on_initialize_inner(n: BlockNumberFor<T>) -> Weight {
@@ -1115,7 +1191,9 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type BaseChildDepositValue<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
-	/// Number of families that have claimed the “first child free” slot.
+	/// Number of current families: families with at least one `Active` child
+	/// (`FamilyActiveChildren > 0`). Incremented when a family goes 0 -> 1 active
+	/// children, decremented when it drops back to 0. `MaxFamilies` caps it.
 	#[pallet::storage]
 	pub type FamilyCount<T> = StorageValue<_, u32, ValueQuery>;
 
@@ -1980,9 +2058,25 @@ pub mod pallet {
 			FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
 		}
 
-		pub fn deregister_family(family_id: T::AccountId) -> Result<(), Error<T>> {
+		/// Remove a family and every child it has, releasing their deposits.
+		///
+		/// Atomic: the body runs in its own storage layer, so an error midway
+		/// (a child without a registration, a short reserve) rolls back every
+		/// write already made — the children list, released deposits, removed
+		/// indices — instead of leaving a half-deleted family. It needs its own
+		/// layer because its caller (`purge_nodes_if_deregistered_on_bittensor`)
+		/// runs from a hook, where no dispatch layer exists (#75).
+		pub fn deregister_family(family_id: T::AccountId) -> DispatchResult {
+			frame_support::storage::with_storage_layer(|| Self::do_deregister_family(&family_id))
+		}
+
+		fn do_deregister_family(family_id: &T::AccountId) -> DispatchResult {
+			let family_id = family_id.clone();
 			// Ensure the family exists
 			if FamilyActiveChildren::<T>::contains_key(&family_id) {
+				// Legacy rows hold 0 for a family that dropped out before the
+				// drop-to-zero decrement existed; such a family is not counted.
+				let was_current = FamilyActiveChildren::<T>::get(&family_id) > 0;
 				let now = Self::now();
 				let cooldown_end = now.saturating_add(T::UnregisterCooldownBlocks::get());
 
@@ -1993,8 +2087,10 @@ pub mod pallet {
 					let reg = ChildRegistrations::<T>::get(miner)
 						.ok_or(Error::<T>::ChildNotRegistered)?;
 					NodeIdToChild::<T>::remove(reg.node_id);
+					// Release on the recorded deposit, never on the live switch
+					// (see `claim_unbonded`).
 					let amount = reg.deposit;
-					if LockupEnabled::<T>::get() && !amount.is_zero() {
+					if !amount.is_zero() {
 						let unreleased = T::DepositCurrency::unreserve(&family_id, amount);
 						ensure!(unreleased.is_zero(), Error::<T>::PartialUnreserve);
 					}
@@ -2021,9 +2117,9 @@ pub mod pallet {
 				FamilyWeightRaw::<T>::remove(&family_id);
 				FamilyWeight::<T>::remove(&family_id);
 
-				// Update family count
-				let family_count = FamilyCount::<T>::get();
-				FamilyCount::<T>::put(family_count.saturating_sub(1));
+				if was_current {
+					FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
+				}
 			}
 			Ok(())
 		}
@@ -2761,10 +2857,14 @@ pub mod pallet {
 				Error::<T>::TooManyChildrenInFamily
 			);
 
-			// Enforce MaxFamilies the moment a family claims their first fee-free registration.
+			// Enforce MaxFamilies whenever this registration CREATES a current family
+			// (0 -> 1 active children). It used to key on "first fee-free slot ever"
+			// while `cleanup_family_when_no_active_children` decrements on every
+			// drop to zero, so count and cap meant different things and drifted.
+			// Both edges now key on the same fact (same fix as ComputeScoring R17).
 			let slots_used = Self::family_free_slots_used(&family);
 			let free_slots_limit = Self::free_child_slots_per_family();
-			if slots_used == 0 {
+			if fam_count == 0 {
 				let families = FamilyCount::<T>::get();
 				ensure!(families < T::MaxFamilies::get(), Error::<T>::TooManyFamilies);
 			}
@@ -2787,7 +2887,10 @@ pub mod pallet {
 				Self::apply_lazy_global_halving()
 			};
 
-			if lockup_enabled && !deposit.is_zero() {
+			// `reg.deposit != 0  <=>  reg.deposit is reserved from reg.family`.
+			// `deposit` is already zero when lockup is off; the release side
+			// (`claim_unbonded`, `deregister_family`) reads the same single fact.
+			if !deposit.is_zero() {
 				T::DepositCurrency::reserve(&family, deposit)
 					.map_err(|_| Error::<T>::InsufficientDeposit)?;
 			}
@@ -2828,6 +2931,11 @@ pub mod pallet {
 			// Update counts
 			TotalActiveChildren::<T>::put(total.saturating_add(1));
 			FamilyActiveChildren::<T>::insert(&family, fam_count.saturating_add(1));
+			// Symmetric counterpart of the decrement in
+			// `cleanup_family_when_no_active_children`.
+			if fam_count == 0 {
+				FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_add(1));
+			}
 			// Maintain family children index
 			FamilyChildren::<T>::try_mutate(&family, |v| v.try_push(child.clone()))
 				.map_err(|_| Error::<T>::TooManyChildrenInFamily)?;
@@ -2837,15 +2945,11 @@ pub mod pallet {
 				FamilyFirstSeenBucket::<T>::insert(&family, CurrentWeightBucket::<T>::get());
 			}
 
-			// Consume a fee-free slot and bump global family count on first free registration, or
-			// advance the paid global fee curve.
+			// Consume a fee-free slot or advance the paid global fee curve.
 			if slots_used < free_slots_limit {
 				let new_used = slots_used.saturating_add(1);
 				FamilyFreeSlotsUsed::<T>::insert(&family, new_used);
 				FamilyUsedFreeSlot::<T>::insert(&family, true);
-				if slots_used == 0 {
-					FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_add(1));
-				}
 			} else if lockup_enabled {
 				// Paid registration: update global fee curve and timestamp
 				let next = Self::global_next_deposit_floor_init();
@@ -3025,8 +3129,14 @@ pub mod pallet {
 			ensure!(reg.status == ChildStatus::Unbonding, Error::<T>::NotUnbonding);
 			ensure!(Self::now() >= reg.unbonding_end, Error::<T>::UnbondingNotReady);
 
+			// Release on the STORED fact (`reg.deposit`), never on the live
+			// `LockupEnabled` switch. Gating this on the switch stranded funds: an
+			// admin turning lockup off between a paid registration and its claim
+			// skipped the unreserve, while the record below — the only trace of
+			// `(family, deposit)` — was still deleted and `ChildUnbonded { amount }`
+			// still reported the release. Same fix as ComputeScoring.
 			let amount = reg.deposit;
-			if LockupEnabled::<T>::get() && !amount.is_zero() {
+			if !amount.is_zero() {
 				let unreleased = T::DepositCurrency::unreserve(&reg.family, amount);
 				ensure!(unreleased.is_zero(), Error::<T>::PartialUnreserve);
 			}
