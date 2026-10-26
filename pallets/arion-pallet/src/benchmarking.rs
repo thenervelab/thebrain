@@ -12,9 +12,10 @@
 //!   accrual old enough to convert into a payable amount, spread round-robin
 //!   over `f` families;
 //! - every family also carrying arrears, so the arrears walk visits all `f`;
-//! - a bank funded to pay everybody in full, so each family takes the full
-//!   path: transfer into an account that does not exist yet, then a first-time
-//!   `bond` (no ledger yet), which writes more than `bond_extra`.
+//! - every family already bonded before the settlement, so each payout takes
+//!   the heavier `bond_extra` branch (an existing ledger) — the shape every
+//!   settlement after the first one meets — rather than the cheaper first-time
+//!   `bond`; and a bank funded to pay everybody in full.
 //!
 //! `submit_miner_stats` is measured per update with every uid claimed, so each
 //! update takes the accrual path as well as the stats write.
@@ -117,6 +118,18 @@ mod benchmarks {
 		let per_child = u128::from(ELAPSED) * E18;
 		let total_due = per_child * u128::from(c) + ARREARS * u128::from(f);
 		T::BenchmarkHelper::fund_payout_source(&Arion::<T>::account_id(), total_due * 2);
+
+		// Pre-bond every family so settlement takes the heavier `bond_extra`
+		// branch — what it does from the second settlement on — rather than the
+		// cheaper first-time `bond`. Without this the hook's declared weight,
+		// mandatory in `on_initialize`, is measured on the lighter branch.
+		for family in families.iter() {
+			T::BenchmarkHelper::prebond_family(family, per_child);
+		}
+		assert!(
+			families.iter().all(|family| T::Staking::stake(family).is_ok()),
+			"families are pre-bonded, so settlement takes bond_extra"
+		);
 
 		#[block]
 		{

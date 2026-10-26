@@ -109,9 +109,30 @@ fn due_account<T: Config>(count: u32) -> T::AccountId {
 	// deactivation path. That path is cheaper than a renewal, so a benchmark
 	// seeded that way would quietly price the wrong thing and under-fund the
 	// meter. The assertion at the end of the benchmark is what catches it.
-	let batch_id = NextBatchId::<T>::get();
-	Batches::<T>::insert(
-		batch_id,
+	//
+	// Worst case for the debit's batch walk: a full `MaxBatchesPerBuyer` list
+	// of already-spent batches ahead of one funding batch. The charge skips
+	// every spent batch (0 credits), pays from the funder at the end, and
+	// rewrites the list dropping all the spent ids — the maximum-length walk
+	// and prune a single charge can drive.
+	let cap = T::MaxBatchesPerBuyer::get().max(1);
+	for _ in 0..cap.saturating_sub(1) {
+		push_batch::<T>(
+			&who,
+			Batch {
+				owner: who.clone(),
+				credit_amount: 0,
+				alpha_amount: 0,
+				remaining_credits: 0,
+				remaining_alpha: 0,
+				pending_alpha: 0,
+				is_frozen: false,
+				release_time: BlockNumberFor::<T>::from(0u32),
+			},
+		);
+	}
+	push_batch::<T>(
+		&who,
 		Batch {
 			owner: who.clone(),
 			credit_amount: FUNDING,
@@ -123,9 +144,22 @@ fn due_account<T: Config>(count: u32) -> T::AccountId {
 			release_time: BlockNumberFor::<T>::from(0u32),
 		},
 	);
-	UserBatches::<T>::append(&who, batch_id);
-	NextBatchId::<T>::put(batch_id.saturating_add(1));
 	let _ = CreditsPallet::<T>::do_mint(who.clone(), FUNDING, None);
+
+	// A referrer, so the renewal also pays referral commission through the
+	// bank (`request_payment`) — otherwise the measured weight misses the bank
+	// payments a referred account drives. The bank is funded, whitelisted and
+	// switched on so those payments actually land.
+	let referrer: T::AccountId = account("referrer", 0, SEED);
+	let code: Vec<u8> = b"BENCHREF".to_vec();
+	pallet_credits::ReferralCodes::<T>::insert(code.clone(), referrer.clone());
+	pallet_credits::ReferredUsers::<T>::insert(&who, code);
+	ReferralCommissionRateBps::<T>::put(500);
+	let bank = pallet_hippocampus::Pallet::<T>::account_id();
+	let _ = <T as Config>::Currency::deposit_creating(&bank, FUNDING.saturated_into());
+	let _ = <T as Config>::Currency::deposit_creating(&referrer, FUNDING.saturated_into());
+	pallet_hippocampus::WhitelistedRequesters::<T>::insert(Marketplace::<T>::account_id(), ());
+	pallet_hippocampus::DistributionEnabled::<T>::put(true);
 
 	let subs: Vec<UserPlanSubscription<T>> = (0..count)
 		.map(|i| UserPlanSubscription {

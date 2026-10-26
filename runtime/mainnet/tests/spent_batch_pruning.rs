@@ -17,7 +17,8 @@ use hippius_mainnet_runtime::{
 	AccountId, Credits, Marketplace, Runtime, RuntimeEvent, RuntimeOrigin, System,
 };
 use pallet_marketplace::{
-	Batch, Batches, NextBatchId, SpentBatchPruneCursor, SpentBatchPruneDone, UserBatches,
+	Batch, Batches, LastPurchaseBatch, NextBatchId, SpentBatchPruneCursor, SpentBatchPruneDone,
+	UserBatches,
 };
 use sp_runtime::{AccountId32, BuildStorage};
 
@@ -243,5 +244,71 @@ fn the_idle_cleanup_stays_within_its_budget() {
 		let pruned = (0..20).filter(|n| UserBatches::<Runtime>::get(owner_of(*n)).is_none()).count();
 		assert!(pruned > 0 && pruned < 20, "partial progress, got {pruned}");
 		assert!(SpentBatchPruneCursor::<Runtime>::get().is_some());
+	});
+}
+
+/// A debit that fully spends the account's purchase batch must clear
+/// `LastPurchaseBatch`. Otherwise a later `buy_credits` at the cap would top up
+/// a batch no longer in `UserBatches`, minting credits `consume_credits` can
+/// never reach. (Regression, PR #62 review, High #1.)
+#[test]
+fn a_debit_clears_the_purchase_pointer_it_prunes() {
+	new_test_ext().execute_with(|| {
+		let user = account(10);
+		let purchase = push(&user, batch(&user, 100));
+		LastPurchaseBatch::<Runtime>::insert(&user, purchase);
+
+		assert_ok!(Marketplace::consume_credits(user.clone(), 100));
+
+		assert_eq!(UserBatches::<Runtime>::get(&user), None, "the spent batch left the list");
+		assert_eq!(
+			LastPurchaseBatch::<Runtime>::get(&user),
+			None,
+			"the pointer to the pruned batch is cleared"
+		);
+	});
+}
+
+/// A debit that prunes some batches but not the purchase one leaves the pointer
+/// intact.
+#[test]
+fn a_debit_keeps_a_still_live_purchase_pointer() {
+	new_test_ext().execute_with(|| {
+		let user = account(10);
+		let _gone = push(&user, batch(&user, 50));
+		let purchase = push(&user, batch(&user, 100));
+		LastPurchaseBatch::<Runtime>::insert(&user, purchase);
+
+		// Spends the first batch exactly; the purchase batch is never walked.
+		assert_ok!(Marketplace::consume_credits(user.clone(), 50));
+
+		assert_eq!(list(&user), vec![purchase], "only the spent batch left");
+		assert_eq!(
+			LastPurchaseBatch::<Runtime>::get(&user),
+			Some(purchase),
+			"a still-live purchase batch keeps its pointer"
+		);
+	});
+}
+
+/// The idle cleanup clears `LastPurchaseBatch` for a batch it prunes, the same
+/// as the debit path. (Regression, PR #62 review, High #1.)
+#[test]
+fn the_idle_cleanup_clears_the_purchase_pointer_it_prunes() {
+	new_test_ext().execute_with(|| {
+		let user = account(10);
+		let purchase = push(&user, spent(&user));
+		LastPurchaseBatch::<Runtime>::insert(&user, purchase);
+
+		for _ in 0..4 {
+			Marketplace::on_idle(System::block_number(), Weight::MAX);
+		}
+
+		assert_eq!(UserBatches::<Runtime>::get(&user), None, "the spent list is removed");
+		assert_eq!(
+			LastPurchaseBatch::<Runtime>::get(&user),
+			None,
+			"the idle pass cleared the stale pointer"
+		);
 	});
 }

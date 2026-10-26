@@ -114,6 +114,12 @@ pub struct SubstrateWeight<T>(PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Measured: 526.9µs, 7 reads, 21 writes, 1341 bytes of proof.
 	///
+	/// STALE — re-measure on reference hardware. The benchmark now poses the
+	/// worst case this PR introduced: a full `MaxBatchesPerBuyer` `UserBatches`
+	/// list the debit walks and prunes, and a referred account whose renewal
+	/// pays referral commission through the bank (`request_payment`). The figure
+	/// below predates both and under-counts until regenerated.
+	///
 	/// `hippius benchmark pallet --chain dev --pallet pallet_marketplace
 	/// --extrinsic charge_account_due`, against an account holding
 	/// `MaxActiveSubscriptions` subscriptions, all due, all payable, and far
@@ -190,7 +196,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	}
 
 	/// Estimated: the 13 reads and 11 writes a *charged* user cost in that same
-	/// accounting, on top of the probe.
+	/// accounting, on top of the probe. The spent-batch pruning does not raise
+	/// this: the one `UserBatches` rewrite a debit now does when it drops spent
+	/// ids stands in for the per-spent-batch reads and writes the old unbounded
+	/// walk did, which this figure already covered. Still an estimate — the
+	/// hourly path has no benchmark of its own; `charge_account_due` is the
+	/// measured proxy for the debit the two share.
 	fn hourly_charge() -> Weight {
 		Weight::from_parts(0, 0)
 			.saturating_add(RocksDbWeight::get().reads(13))
@@ -202,11 +213,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(1))
 	}
 
-	/// Estimated: the alpha balance, the backing tally and the batch row.
+	/// Estimated: the alpha balance, the backing tally and the batch row,
+	/// plus — when the release leaves the batch spent — the owner's batch list
+	/// and purchase pointer, each read and rewritten.
 	fn alpha_release() -> Weight {
 		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(2))
-			.saturating_add(RocksDbWeight::get().writes(4))
+			.saturating_add(RocksDbWeight::get().reads(4))
+			.saturating_add(RocksDbWeight::get().writes(6))
 	}
 
 	/// Estimated, pending a benchmark run — see `compute_row`.
@@ -293,8 +306,8 @@ impl WeightInfo for () {
 
 	fn alpha_release() -> Weight {
 		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(2))
-			.saturating_add(RocksDbWeight::get().writes(4))
+			.saturating_add(RocksDbWeight::get().reads(4))
+			.saturating_add(RocksDbWeight::get().writes(6))
 	}
 
 	/// Estimated, pending a benchmark run — see `compute_row`.

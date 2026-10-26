@@ -472,6 +472,17 @@ impl pallet_arion::BenchmarkHelper<AccountId> for ArionBenchmarkHelper {
 	fn set_token_price(price: u128) {
 		pallet_credits::AlphaPrice::<Runtime>::put(price);
 	}
+
+	fn prebond_family(family: &AccountId, amount: u128) {
+		// Fund the family and open a staking ledger, so at settlement
+		// `Staking::stake(family)` is already `Ok` and the payout bonds via the
+		// heavier `bond_extra` branch rather than a first-time `bond`.
+		let _ = <Balances as frame_support::traits::Currency<AccountId>>::deposit_creating(
+			family,
+			amount.saturating_mul(4),
+		);
+		let _ = <Staking as sp_staking::StakingInterface>::bond(family, amount, family);
+	}
 }
 
 parameter_types! {

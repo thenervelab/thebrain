@@ -1982,9 +1982,16 @@ pub mod pallet {
 		#[pallet::weight((
 			// The refund through the bank, plus the batch, its alpha and
 			// backing ledgers, the refund carry-over, the owner's batch list
-			// and credits, and the purchase total, each read and written.
+			// and credits, and the purchase total, each read and written. The
+			// batch list is rewritten whole (`retain`), so its full bounded length
+			// is charged in the proof on top of that single access. A measured
+			// weight for this fund-moving call is still a tracked follow-up.
 			<<T as pallet_hippocampus::Config>::WeightInfo as pallet_hippocampus::WeightInfo>::request_payment()
-				.saturating_add(T::DbWeight::get().reads_writes(10, 9)),
+				.saturating_add(T::DbWeight::get().reads_writes(10, 9))
+				.saturating_add(Weight::from_parts(
+					0,
+					16u64.saturating_mul(T::MaxBatchesPerBuyer::get() as u64),
+				)),
 			Pays::No,
 		))]
 		pub fn chargeback(origin: OriginFor<T>, batch_id: u64) -> DispatchResult {
@@ -3422,75 +3429,121 @@ pub mod pallet {
 		/// is set. Only ids are removed — the `Batches` rows stay, since
 		/// chargeback looks them up by id. Idle weight is enough: an unpruned
 		/// list only costs its owner's debits a little more, never a wrong charge.
+		///
+		/// A `UserBatches` list has no bounded length, so — unlike a fixed-shape
+		/// sweep — the whole cost of an account (reading and decoding its list, a
+		/// `Batches` read per id, the rewrite and the purchase pointer) is sized
+		/// from its decoded length and reserved *before* the list is loaded. A
+		/// list too large for even `account_cap` worth of a block is stepped past
+		/// rather than retried forever; `consume_credits` still bounds it on the
+		/// owner's next debit. A list that merely does not fit this block's idle
+		/// budget leaves the cursor untouched, so the next idle block retries it.
 		pub(crate) fn prune_spent_user_batches(limit: Weight) -> Weight {
-			// Bounds the page read up front, so a block with a lot of idle
-			// weight does not decode thousands of lists it will not get to.
 			const MAX_ACCOUNTS_PER_RUN: usize = 64;
 
 			// Same accounting as `prune_compute_usage`: `DbWeight` carries no
 			// proof size, so each read adds an unbounded-map entry's allowance.
 			const PROOF_PER_ACCESS: u64 = 2_600;
+			// Proof charged per id in a list, on top of the read's own allowance:
+			// a `u64` plus encoding slack.
+			const PROOF_PER_ID: u64 = 16;
 			let db = T::DbWeight::get();
 			let access = |reads: u64, writes: u64| {
 				db.reads_writes(reads, writes)
 					.saturating_add(Weight::from_parts(0, PROOF_PER_ACCESS.saturating_mul(reads)))
 			};
+
 			let mut meter = WeightMeter::with_limit(limit);
+			// The done flag in.
 			if meter.try_consume(access(1, 0)).is_err() {
-				return Weight::zero();
+				return meter.consumed();
 			}
 			if SpentBatchPruneDone::<T>::get() {
 				return meter.consumed();
 			}
-			// The cursor in and out, and the done flag out.
+			// The cursor in, and the heavier of {cursor out} or {cursor kill +
+			// done flag out} — reserved up front so the tail write always fits.
 			if meter.try_consume(access(1, 2)).is_err() {
-				return Weight::zero();
-			}
-
-			// Reading the list is paid for when the page is taken; walking its
-			// batches and writing it back is paid per account, below, once the
-			// list's length is known. The page is sized assuming each account
-			// walks at least one batch, so reading it cannot leave nothing to
-			// walk it with.
-			let probe = access(1, 0);
-			let page_size = Self::accounts_affordable(&meter, probe.saturating_add(access(1, 1)))
-				.min(MAX_ACCOUNTS_PER_RUN);
-			if page_size == 0 {
 				return meter.consumed();
 			}
-			let page: Vec<(T::AccountId, Vec<u64>)> = match SpentBatchPruneCursor::<T>::get() {
-				Some(key) => UserBatches::<T>::iter_from(key).take(page_size).collect(),
-				None => UserBatches::<T>::iter().take(page_size).collect(),
-			};
-			meter.consume(probe.saturating_mul(page.len() as u64));
 
-			let mut last_done: Option<&T::AccountId> = None;
-			let mut processed = 0usize;
-			for (who, ids) in page.iter() {
-				let walk = access(ids.len() as u64, 1);
-				if meter.try_consume(walk).is_err() {
+			// A single account may not cost more than this slice of a block; one
+			// that does can never fit an idle budget, so it is skipped rather than
+			// retried forever.
+			let max_block = <T as frame_system::Config>::BlockWeights::get().max_block;
+			let account_cap =
+				Weight::from_parts(max_block.ref_time() / 4, max_block.proof_size() / 4);
+
+			// Keys only: the value is read per account below, after its cost is
+			// reserved. `iter_keys_from` is exclusive of the key, so the stored
+			// cursor is the last account touched and resumption continues past it.
+			let mut iter = match SpentBatchPruneCursor::<T>::get() {
+				Some(key) => UserBatches::<T>::iter_keys_from(key),
+				None => UserBatches::<T>::iter_keys(),
+			};
+
+			let mut cursor_key: Option<Vec<u8>> = None;
+			let mut ran_out = false;
+			for _ in 0..MAX_ACCOUNTS_PER_RUN {
+				let Some(who) = iter.next() else {
+					ran_out = true;
+					break;
+				};
+
+				// Length first, so the full cost is known before the list is
+				// decoded into a working vector. Reads: the key traversal, the
+				// `decode_len` and the `get` of this entry, a `Batches` read per
+				// id. Writes: the list rewrite and a possible pointer clear.
+				let len = UserBatches::<T>::decode_len(&who).unwrap_or(0) as u64;
+				let cost = access(3, 0)
+					.saturating_add(Weight::from_parts(0, len.saturating_mul(PROOF_PER_ID)))
+					.saturating_add(access(len, 1))
+					.saturating_add(access(1, 1));
+
+				if meter.try_consume(cost).is_err() {
+					if cost.any_gt(account_cap) {
+						// Too large for any idle budget. Step past it; a debit on
+						// its owner prunes it via `consume_credits` instead.
+						log::warn!(
+							target: "runtime::marketplace",
+							"spent batch cleanup skipped an oversized UserBatches list"
+						);
+						cursor_key = Some(UserBatches::<T>::hashed_key_for(&who));
+					}
+					// Otherwise it just did not fit this block: leave the cursor
+					// so the next idle block retries this same account.
 					break;
 				}
+
+				let ids = UserBatches::<T>::get(&who).unwrap_or_default();
 				let kept: Vec<u64> = ids
 					.iter()
 					.copied()
 					.filter(|id| Batches::<T>::get(id).is_some_and(|b| !Self::batch_is_spent(&b)))
 					.collect();
-				if kept.is_empty() {
-					UserBatches::<T>::remove(who);
-				} else if kept.len() < ids.len() {
-					UserBatches::<T>::insert(who, kept);
+				if kept.len() < ids.len() {
+					// Clear a purchase pointer whose batch is being pruned, for the
+					// same reason as the debit path (see `buy_credits`).
+					if let Some(last) = LastPurchaseBatch::<T>::get(&who) {
+						if !kept.contains(&last) {
+							LastPurchaseBatch::<T>::remove(&who);
+						}
+					}
+					if kept.is_empty() {
+						UserBatches::<T>::remove(&who);
+					} else {
+						UserBatches::<T>::insert(&who, kept);
+					}
 				}
-				last_done = Some(who);
-				processed += 1;
+				cursor_key = Some(UserBatches::<T>::hashed_key_for(&who));
 			}
 
-			if processed == page.len() && page.len() < page_size {
+			if ran_out {
 				SpentBatchPruneDone::<T>::put(true);
 				SpentBatchPruneCursor::<T>::kill();
 				log::info!(target: "runtime::marketplace", "spent batch cleanup complete");
-			} else if let Some(who) = last_done {
-				SpentBatchPruneCursor::<T>::put(UserBatches::<T>::hashed_key_for(who));
+			} else if let Some(key) = cursor_key {
+				SpentBatchPruneCursor::<T>::put(key);
 			}
 
 			meter.consumed()
@@ -3740,7 +3793,6 @@ pub mod pallet {
 				AccruedReferralCommission::<T>::hashed_key_for(&batch[batch.len() - 1].0);
 
 			let ed = <T as pallet::Config>::Currency::minimum_balance().saturated_into::<u128>();
-			let mut paid_count: u64 = 0;
 			for (referrer, accrued) in batch.iter() {
 				// Measure the balance the transfer would *land on*, not the
 				// commission in isolation: a referrer already at or above ED can
@@ -3755,7 +3807,6 @@ pub mod pallet {
 				if paid == 0 {
 					continue;
 				}
-				paid_count = paid_count.saturating_add(1);
 				let remainder = accrued.saturating_sub(paid);
 				if remainder == 0 {
 					AccruedReferralCommission::<T>::remove(referrer);
@@ -3770,18 +3821,21 @@ pub mod pallet {
 				ReferralPayoutCursor::<T>::put(resume_from);
 			}
 
-			// One read per key inspected, plus the bank reserve ledgers and a
-			// balance write for each referrer actually paid, plus the bank's
-			// own measured cost for each payment it made.
+			// Worst case prices every inspected referrer at the full per-attempt
+			// cost — the dest-balance read, the bank's reserve ledgers and its
+			// measured `request_payment` — not only the ones actually paid. When
+			// distribution is off or the bank sits at its floor, every attempt
+			// still does that work and pays nothing, so pricing by the paid count
+			// would under-declare the whole sweep.
 			let inspected = batch.len() as u64;
 			T::DbWeight::get()
 				.reads_writes(
-					inspected.saturating_add(paid_count.saturating_mul(8)).saturating_add(2),
-					paid_count.saturating_mul(4).saturating_add(1),
+					inspected.saturating_mul(9).saturating_add(2),
+					inspected.saturating_mul(4).saturating_add(1),
 				)
 				.saturating_add(
 					<<T as pallet_hippocampus::Config>::WeightInfo as pallet_hippocampus::WeightInfo>::request_payment()
-						.saturating_mul(paid_count),
+						.saturating_mul(inspected),
 				)
 		}
 
@@ -4257,6 +4311,26 @@ pub mod pallet {
 				TotalUndistributedBacking::<T>::mutate(|t| *t = t.saturating_sub(backed));
 
 				batch.pending_alpha = 0;
+
+				// This release can leave the batch with nothing — no credits, no
+				// alpha, no pending — in which case it has no further use in its
+				// owner's list. Drop it here so the owner's debits stop walking it,
+				// rather than waiting for one to prune it; the `Batches` row stays
+				// for chargeback. Priced by `alpha_release`.
+				if Self::batch_is_spent(&batch) {
+					let owner = batch.owner.clone();
+					UserBatches::<T>::mutate(&owner, |maybe| {
+						if let Some(ids) = maybe {
+							ids.retain(|&id| id != batch_id);
+							if ids.is_empty() {
+								*maybe = None;
+							}
+						}
+					});
+					if LastPurchaseBatch::<T>::get(&owner) == Some(batch_id) {
+						LastPurchaseBatch::<T>::remove(&owner);
+					}
+				}
 				Batches::<T>::insert(batch_id, batch);
 			}
 
@@ -5948,6 +6022,17 @@ pub mod pallet {
 			} else {
 				let batch_id =
 					LastPurchaseBatch::<T>::get(&who).ok_or(Error::<T>::TooManyBatches)?;
+				// The pointer may outlive its batch: once a purchase batch is fully
+				// spent it is pruned from `UserBatches`, though the row and this
+				// pointer remain. Topping it up then would mint credits into a batch
+				// `consume_credits` never visits, stranding them (charges then fail
+				// with `InsufficientFreeCredits` on a balance that looks funded).
+				// Refuse instead; at the cap there is no room to re-file it, so this
+				// is the same answer as a missing pointer.
+				ensure!(
+					UserBatches::<T>::get(&who).is_some_and(|ids| ids.contains(&batch_id)),
+					Error::<T>::TooManyBatches,
+				);
 				Self::top_up_purchase_batch(&who, batch_id, credit_amount, alpha_amount, code)?;
 				batch_id
 			};
@@ -6127,19 +6212,23 @@ pub mod pallet {
 			let mut remaining = credits;
 
 			if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
-				// Ids to drop from the list once the walk is done: batches this
-				// debit found (or left) fully spent, and ids whose batch is gone.
-				// Without this every later debit walks them again, so the cost
-				// of a debit grew with the account's whole deposit history.
-				let mut spent: Vec<u64> = Vec::new();
+				// Positions in `batch_ids` whose batch this debit found (or left)
+				// fully spent, or whose row is gone. Marked by index while
+				// walking, so the list rewrite below is a single linear pass
+				// rather than a membership test per id. Without the rewrite every
+				// later debit walks them again, so a debit's cost grew with the
+				// account's whole deposit history.
+				let mut spent_mask = vec![false; batch_ids.len()];
+				let mut any_spent = false;
 
-				for batch_id in batch_ids.iter().copied() {
+				for (i, batch_id) in batch_ids.iter().copied().enumerate() {
 					if remaining == 0 {
 						break;
 					}
 
 					let Some(mut batch) = Batches::<T>::get(batch_id) else {
-						spent.push(batch_id);
+						spent_mask[i] = true;
+						any_spent = true;
 						continue;
 					};
 					ensure!(batch.owner == sender, Error::<T>::NotAuthorized);
@@ -6154,7 +6243,8 @@ pub mod pallet {
 						batch.is_frozen && block_number >= batch.release_time;
 					if credits_to_take == 0 && !matured_while_frozen {
 						if Self::batch_is_spent(&batch) {
-							spent.push(batch_id);
+							spent_mask[i] = true;
+							any_spent = true;
 						}
 						continue;
 					}
@@ -6229,7 +6319,8 @@ pub mod pallet {
 					batch.remaining_alpha =
 						batch.remaining_alpha.saturating_sub(alpha_to_release_u128);
 					if Self::batch_is_spent(&batch) {
-						spent.push(batch_id);
+						spent_mask[i] = true;
+						any_spent = true;
 					}
 					// Save updated batch. The row stays even when spent:
 					// chargeback looks batches up by id.
@@ -6237,9 +6328,23 @@ pub mod pallet {
 					remaining = remaining.saturating_sub(credits_to_take);
 				}
 
-				if !spent.is_empty() {
-					let kept: Vec<u64> =
-						batch_ids.into_iter().filter(|id| !spent.contains(id)).collect();
+				if any_spent {
+					let kept: Vec<u64> = batch_ids
+						.iter()
+						.copied()
+						.zip(spent_mask.iter())
+						.filter_map(|(id, &is_spent)| (!is_spent).then_some(id))
+						.collect();
+					// Clear the purchase pointer if the batch it targets was just
+					// pruned: otherwise `buy_credits` could top up a batch no
+					// longer in the list, minting credits `consume_credits` can
+					// never reach (they strand, charges fail with
+					// `InsufficientFreeCredits` on a balance that looks funded).
+					if let Some(last) = LastPurchaseBatch::<T>::get(&sender) {
+						if !kept.contains(&last) {
+							LastPurchaseBatch::<T>::remove(&sender);
+						}
+					}
 					if kept.is_empty() {
 						UserBatches::<T>::remove(&sender);
 					} else {
