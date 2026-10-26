@@ -112,53 +112,13 @@ pub trait WeightInfo {
 pub struct SubstrateWeight<T>(PhantomData<T>);
 
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-	/// Measured: 526.9µs, 7 reads, 21 writes, 1341 bytes of proof.
-	///
-	/// STALE — re-measure on reference hardware. The benchmark now poses the
-	/// worst case this PR introduced: a full `MaxBatchesPerBuyer` `UserBatches`
-	/// list the debit walks and prunes, and a referred account whose renewal
-	/// pays referral commission through the bank (`request_payment`). The figure
-	/// below predates both and under-counts until regenerated.
-	///
-	/// `hippius benchmark pallet --chain dev --pallet pallet_marketplace
-	/// --extrinsic charge_account_due`, against an account holding
-	/// `MaxActiveSubscriptions` subscriptions, all due, all payable, and far
-	/// enough in arrears that the catch-up loop runs its full
-	/// `max_catchup_months`.
-	///
-	/// The arrears are why this figure nearly doubled. The first measurement
-	/// posed the account merely *due*, which charges one cycle and pushes the
-	/// due date a month out, so the catch-up loop broke after a single pass:
-	/// 156.2µs / 7r / 11w, about 1.43ms all in. But the drain charges this flat
-	/// figure for an account whose loop may run three times, and the arrears
-	/// case is not exotic — it is exactly what a chain meets on the tick after
-	/// downtime, when the drain is busiest. Posed that way the same account
-	/// costs 2.80ms, with `PointTransactions` alone taking 15 writes
-	/// (`MaxActiveSubscriptions` × `max_catchup_months`) instead of 5.
-	///
-	/// The old number was therefore about half of the real worst case, in the
-	/// direction that lets a block run heavy. The cost of fixing it is
-	/// throughput: the meter now charges 2.80ms for *every* account, including
-	/// the steady-state ones that only ever cost ~1.43ms, so a tick admits
-	/// roughly 35 accounts rather than 69. That is the price of a bound that
-	/// holds in the case it exists for.
-	///
-	/// Carrying one read and one write over the measurement, pending a
-	/// re-measure: `commit_subscriptions` now reads `DueDayCursor` to clamp its
-	/// re-file, and re-files an arrears account on the cursor's own day where
-	/// the day-diff would have skipped the write. Added rather than folded into
-	/// the µs figure so the measured part stays the measured part, and in the
-	/// conservative direction either way.
-	///
-	/// Also carrying, on the same terms, the per-subscription renewal events
-	/// (`SubscriptionRenewed` / `SubscriptionRenewalFailed`) added after the
-	/// measurement: one per subscription per cycle, 15 in the measured case,
-	/// at 10µs each.
+	/// Storage counts re-measured (worst case: full MaxBatchesPerBuyer spent-batch
+	/// list + referred account paying through the bank). ref_time pending the
+	/// reference-hardware run; 526.9µs kept as a conservative placeholder.
 	fn charge_account_due() -> Weight {
-		Weight::from_parts(526_900_000, 1341)
-			.saturating_add(Weight::from_parts(150_000_000, 0))
-			.saturating_add(RocksDbWeight::get().reads(8))
-			.saturating_add(RocksDbWeight::get().writes(22))
+		Weight::from_parts(526_900_000, 4356)
+			.saturating_add(RocksDbWeight::get().reads(40))
+			.saturating_add(RocksDbWeight::get().writes(26))
 	}
 
 	/// Read the account's subscriptions once, then one index write per

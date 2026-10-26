@@ -5276,7 +5276,18 @@ pub mod pallet {
 				// Size the batch by what we can afford as well as by what is
 				// left of the cap, so a batch is never *read* and then abandoned
 				// unpaid — the read costs weight whether or not we charge it.
-				let affordable = Self::accounts_affordable(meter, per_account);
+				// The non-empty day below publishes the cursor with one `writes(1)`
+				// before the account loop. Reserve it here, so a batch sized to the
+				// full remaining cannot be tipped past the meter by that write — an
+				// overshoot otherwise set by the floor remainder, which surfaces when
+				// the per-account weight changes.
+				let publish_reserve = if published == Some(cursor) {
+					Weight::zero()
+				} else {
+					T::DbWeight::get().writes(1)
+				};
+				let affordable =
+					Self::accounts_affordable_reserving(meter, per_account, publish_reserve);
 				let take = cap.saturating_sub(accounts_seen as usize).min(affordable);
 				if take == 0 {
 					break;
@@ -5353,6 +5364,30 @@ pub mod pallet {
 		/// leaves `cap` as the bound, exactly as before the meter existed.
 		fn accounts_affordable(meter: &WeightMeter, per_account: Weight) -> usize {
 			let remaining = meter.remaining();
+			let by_time = if per_account.ref_time() == 0 {
+				usize::MAX
+			} else {
+				(remaining.ref_time() / per_account.ref_time()) as usize
+			};
+			let by_size = if per_account.proof_size() == 0 {
+				usize::MAX
+			} else {
+				(remaining.proof_size() / per_account.proof_size()) as usize
+			};
+			by_time.min(by_size)
+		}
+
+		/// As [`Self::accounts_affordable`], but first setting aside `reserve`
+		/// from the remaining budget — for a caller that consumes `reserve`
+		/// (e.g. a once-per-day cursor publish) after sizing the batch but
+		/// before consuming it, so the batch plus `reserve` cannot exceed the
+		/// meter.
+		fn accounts_affordable_reserving(
+			meter: &WeightMeter,
+			per_account: Weight,
+			reserve: Weight,
+		) -> usize {
+			let remaining = meter.remaining().saturating_sub(reserve);
 			let by_time = if per_account.ref_time() == 0 {
 				usize::MAX
 			} else {
