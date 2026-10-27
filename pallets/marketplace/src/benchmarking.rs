@@ -111,40 +111,56 @@ fn plan_of<T: Config>(index: u32, is_storage_plan: bool) -> Plan<T::Hash> {
 /// list dropping all the spent ids — the maximum-length walk and prune a
 /// single charge can drive.
 ///
+/// The funder is not merely funded: it matured while frozen with alpha still
+/// pending and partly unbacked, exactly the shape `compute_debtor` poses for
+/// the compute-row benchmarks. The two billing charges walk the same
+/// `consume_credits` debit, so each must also price the unfreeze branch — the
+/// one that distributes the pending alpha and releases the proportional
+/// remainder, touching `AlphaBalances`, the `UnbackedBatchAlpha` marker (via
+/// `take_backed_portion`) and `TotalUndistributedBacking`. A funder with no
+/// alpha, unfrozen and fully backed, skips all of that and under-prices the
+/// charge.
+///
 /// The referrer is set up so the charge also accrues (and, on the monthly
 /// path, pays through the bank) referral commission — otherwise the measured
 /// weight misses the work a referred account drives. The bank is funded,
 /// whitelisted and switched on so those payments actually land.
 fn fund_worst_case<T: Config>(who: &T::AccountId) {
 	let cap = T::MaxBatchesPerBuyer::get().max(1);
+	let zero = BlockNumberFor::<T>::from(0u32);
 	for _ in 0..cap.saturating_sub(1) {
 		push_batch::<T>(
 			who,
 			Batch {
 				owner: who.clone(),
-				credit_amount: 0,
-				alpha_amount: 0,
+				credit_amount: FUNDING,
+				alpha_amount: FUNDING,
 				remaining_credits: 0,
 				remaining_alpha: 0,
 				pending_alpha: 0,
 				is_frozen: false,
-				release_time: BlockNumberFor::<T>::from(0u32),
+				release_time: zero,
 			},
 		);
 	}
-	push_batch::<T>(
+	let funded = push_batch::<T>(
 		who,
 		Batch {
 			owner: who.clone(),
 			credit_amount: FUNDING,
-			alpha_amount: 0,
+			alpha_amount: FUNDING,
 			remaining_credits: FUNDING,
-			remaining_alpha: 0,
-			pending_alpha: 0,
-			is_frozen: false,
-			release_time: BlockNumberFor::<T>::from(0u32),
+			remaining_alpha: FUNDING,
+			pending_alpha: FUNDING / 2,
+			is_frozen: true,
+			release_time: zero,
 		},
 	);
+	UnbackedBatchAlpha::<T>::insert(funded, FUNDING / 4);
+	TotalUndistributedBacking::<T>::mutate(|t| *t = t.saturating_add(FUNDING.saturating_mul(2)));
+	pallet_credits::AlphaBalances::<T>::mutate(who, |a| {
+		*a = a.saturating_add(FUNDING.saturating_mul(2))
+	});
 	let _ = CreditsPallet::<T>::do_mint(who.clone(), FUNDING, None);
 
 	let referrer: T::AccountId = account("referrer", 0, SEED);

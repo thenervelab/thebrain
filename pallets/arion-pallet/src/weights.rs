@@ -312,6 +312,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     ///
     /// At the runtime's caps (1_000 children, 600 families) this is ~80.5ms of
     /// execution plus 8_816 reads and 3_404 writes, once per settlement interval.
+    ///
+    /// ⚠️ RE-MEASURE: the benchmark now nominates each family, so `bond_extra`
+    /// takes the bags-list rebag (an extra `BagsList::ListNodes` write per
+    /// family) that a nominating family drives on mainnet. This figure predates
+    /// that and is a floor — regenerate it on the next run and replace this
+    /// value before `set_code`.
     fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
         let (c, f) = (max_children_total as u64, max_families as u64);
         Weight::from_parts(21_048_622_000, 6997)

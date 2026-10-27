@@ -119,10 +119,11 @@ mod benchmarks {
 		let total_due = per_child * u128::from(c) + ARREARS * u128::from(f);
 		T::BenchmarkHelper::fund_payout_source(&Arion::<T>::account_id(), total_due * 2);
 
-		// Pre-bond every family so settlement takes the heavier `bond_extra`
-		// branch — what it does from the second settlement on — rather than the
-		// cheaper first-time `bond`. Without this the hook's declared weight,
-		// mandatory in `on_initialize`, is measured on the lighter branch.
+		// Pre-bond and nominate every family so settlement takes the heavier
+		// `bond_extra` branch — what it does from the second settlement on —
+		// *and* the bags-list rebag that a nominating family drives, rather than
+		// the cheaper first-time `bond` on a non-voter. Without this the hook's
+		// declared weight, mandatory in `on_initialize`, is measured short.
 		for family in families.iter() {
 			T::BenchmarkHelper::prebond_family(family, per_child);
 		}

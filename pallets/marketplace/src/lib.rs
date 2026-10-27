@@ -1400,6 +1400,12 @@ pub mod pallet {
 	/// holds `MaxBatchesPerBuyer` batches, further purchases top this one up
 	/// instead of opening a new one. Always an unfrozen, fully backed batch
 	/// owned by the account, so it can never be charged back.
+	///
+	/// It may point at a batch no longer in `UserBatches`: once the purchase
+	/// batch is fully spent a prune drops it from the list but leaves this
+	/// pointer, and a later `buy_credits` at the cap re-appends the batch before
+	/// topping it up. The batch row survives (kept for chargeback), so the
+	/// pointer stays resolvable.
 	#[pallet::storage]
 	pub type LastPurchaseBatch<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u64>;
 
@@ -3493,7 +3499,8 @@ pub mod pallet {
 				// Length first, so the full cost is known before the list is
 				// decoded into a working vector. Reads: the key traversal, the
 				// `decode_len` and the `get` of this entry, a `Batches` read per
-				// id. Writes: the list rewrite and a possible pointer clear.
+				// id. Writes: the list rewrite, with a trailing read/write of
+				// slack (the pointer is no longer cleared here).
 				let len = UserBatches::<T>::decode_len(&who).unwrap_or(0) as u64;
 				let cost = access(3, 0)
 					.saturating_add(Weight::from_parts(0, len.saturating_mul(PROOF_PER_ID)))
@@ -3522,13 +3529,9 @@ pub mod pallet {
 					.filter(|id| Batches::<T>::get(id).is_some_and(|b| !Self::batch_is_spent(&b)))
 					.collect();
 				if kept.len() < ids.len() {
-					// Clear a purchase pointer whose batch is being pruned, for the
-					// same reason as the debit path (see `buy_credits`).
-					if let Some(last) = LastPurchaseBatch::<T>::get(&who) {
-						if !kept.contains(&last) {
-							LastPurchaseBatch::<T>::remove(&who);
-						}
-					}
+					// The purchase pointer is left intact even when its batch is
+					// pruned here, as on the debit path: `buy_credits` re-appends
+					// it before topping up (see there).
 					if kept.is_empty() {
 						UserBatches::<T>::remove(&who);
 					} else {
@@ -4266,7 +4269,12 @@ pub mod pallet {
 					* <T as frame_system::Config>::BlockWeights::get().max_block,
 			);
 			let probe = <T as Config>::WeightInfo::alpha_release_probe();
-			let release = <T as Config>::WeightInfo::alpha_release();
+			// Each release that spends its batch rewrites the owner's whole list
+			// (`retain` below), bounded by `MaxBatchesPerBuyer`. Price the release
+			// for that full length — as `chargeback` does — so the page is sized
+			// against the longest rewrite it can drive, not a flat figure.
+			let release =
+				<T as Config>::WeightInfo::alpha_release(T::MaxBatchesPerBuyer::get());
 
 			// Sized for the case where every batch in the page turns out to be
 			// matured. Almost none will be — the release_time is a 15-day timer
@@ -4327,9 +4335,8 @@ pub mod pallet {
 							}
 						}
 					});
-					if LastPurchaseBatch::<T>::get(&owner) == Some(batch_id) {
-						LastPurchaseBatch::<T>::remove(&owner);
-					}
+					// The purchase pointer is left intact; `buy_credits` re-files
+					// the batch before topping up (see the debit path).
 				}
 				Batches::<T>::insert(batch_id, batch);
 			}
@@ -6057,17 +6064,22 @@ pub mod pallet {
 			} else {
 				let batch_id =
 					LastPurchaseBatch::<T>::get(&who).ok_or(Error::<T>::TooManyBatches)?;
-				// The pointer may outlive its batch: once a purchase batch is fully
-				// spent it is pruned from `UserBatches`, though the row and this
-				// pointer remain. Topping it up then would mint credits into a batch
-				// `consume_credits` never visits, stranding them (charges then fail
-				// with `InsufficientFreeCredits` on a balance that looks funded).
-				// Refuse instead; at the cap there is no room to re-file it, so this
-				// is the same answer as a missing pointer.
-				ensure!(
-					UserBatches::<T>::get(&who).is_some_and(|ids| ids.contains(&batch_id)),
-					Error::<T>::TooManyBatches,
-				);
+				// The pointer outlives a prune on purpose: once a purchase batch is
+				// fully spent it is dropped from `UserBatches` (its row and this
+				// pointer stay). Re-file it before topping it up, so the minted
+				// credits land in a batch `consume_credits` walks rather than
+				// stranding (a top-up into a batch outside the list would mint
+				// credits that charges never reach, failing later with
+				// `InsufficientFreeCredits` on a balance that looks funded). The
+				// list may pass the cap here, exactly as sudo deposits already let
+				// it. A missing row (never purchased, or charged back) has nothing
+				// to re-file, so this stays `TooManyBatches`.
+				let in_list =
+					UserBatches::<T>::get(&who).is_some_and(|ids| ids.contains(&batch_id));
+				if !in_list {
+					ensure!(Batches::<T>::contains_key(batch_id), Error::<T>::TooManyBatches);
+					UserBatches::<T>::append(&who, batch_id);
+				}
 				Self::top_up_purchase_batch(&who, batch_id, credit_amount, alpha_amount, code)?;
 				batch_id
 			};
@@ -6370,16 +6382,11 @@ pub mod pallet {
 						.zip(spent_mask.iter())
 						.filter_map(|(id, &is_spent)| (!is_spent).then_some(id))
 						.collect();
-					// Clear the purchase pointer if the batch it targets was just
-					// pruned: otherwise `buy_credits` could top up a batch no
-					// longer in the list, minting credits `consume_credits` can
-					// never reach (they strand, charges fail with
-					// `InsufficientFreeCredits` on a balance that looks funded).
-					if let Some(last) = LastPurchaseBatch::<T>::get(&sender) {
-						if !kept.contains(&last) {
-							LastPurchaseBatch::<T>::remove(&sender);
-						}
-					}
+					// `LastPurchaseBatch` is deliberately left pointing at a pruned
+					// purchase batch: at the cap `buy_credits` re-appends it before
+					// topping it up (see there), so the credits land in a batch the
+					// walk reaches. Clearing it here would instead make purchases
+					// fail with `TooManyBatches` once the purchase batch is spent.
 					if kept.is_empty() {
 						UserBatches::<T>::remove(&sender);
 					} else {

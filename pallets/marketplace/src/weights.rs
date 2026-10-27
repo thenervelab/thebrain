@@ -83,8 +83,10 @@ pub trait WeightInfo {
 	/// this is the cost that grows with the chain's whole deposit history.
 	fn alpha_release_probe() -> Weight;
 
-	/// The *additional* cost of actually releasing one matured batch.
-	fn alpha_release() -> Weight;
+	/// The *additional* cost of actually releasing one matured batch. When the
+	/// release leaves the batch spent, the owner's batch list (`n` ids, bounded
+	/// by `MaxBatchesPerBuyer`) is rewritten whole, so `n` sizes that proof.
+	fn alpha_release(n: u32) -> Weight;
 
 	/// `submit_compute_usage` carrying `n` rows, every one of them posed at
 	/// the most expensive path a row can take.
@@ -118,6 +120,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Measured (worst case: full MaxBatchesPerBuyer spent-batch list + referred
 	/// account paying through the bank). 2026-10-27, steps 50 / repeat 20, on a
 	/// dedicated 8-vCPU Hippius CVM (AMD EPYC 9254 24-Core Processor).
+	///
+	/// ⚠️ RE-MEASURE: the `fund_worst_case` setup now poses the funder matured
+	/// while frozen with alpha pending and partly unbacked, so the debit takes
+	/// the unfreeze branch (`AlphaBalances`, `UnbackedBatchAlpha`,
+	/// `TotalUndistributedBacking`). This figure predates that change and is a
+	/// floor, not the current worst case — regenerate it on the next run and
+	/// replace this value before `set_code`.
 	fn charge_account_due() -> Weight {
 		Weight::from_parts(616_434_000, 4356)
 			.saturating_add(RocksDbWeight::get().reads(40))
@@ -170,6 +179,11 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// dominated by the batch walk (`Batches` r:16 at the benchmark cap); the
 	/// price and credit reads the sweep does before this point are counted by
 	/// `hourly_probe` and the loop's `past_gate` reserve, not here.
+	///
+	/// ⚠️ RE-MEASURE: the funder now matures while frozen with alpha pending and
+	/// partly unbacked, so the drain also takes the unfreeze branch. This figure
+	/// predates that change and is a floor — regenerate it on the next run and
+	/// replace this value before `set_code`.
 	fn hourly_charge() -> Weight {
 		Weight::from_parts(91_819_000, 3096)
 			.saturating_add(RocksDbWeight::get().reads(24))
@@ -182,12 +196,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	}
 
 	/// Estimated: the alpha balance, the backing tally and the batch row,
-	/// plus — when the release leaves the batch spent — the owner's batch list
-	/// and purchase pointer, each read and rewritten.
-	fn alpha_release() -> Weight {
+	/// plus — when the release leaves the batch spent — the owner's batch list,
+	/// read and rewritten (the extra reads/writes are slack). The list is
+	/// rewritten whole (`retain`), so its full bounded length (`n` ids, 16 bytes
+	/// of proof each) is charged on top of that single access, as in
+	/// `chargeback`.
+	fn alpha_release(n: u32) -> Weight {
 		Weight::from_parts(0, 0)
 			.saturating_add(RocksDbWeight::get().reads(4))
 			.saturating_add(RocksDbWeight::get().writes(6))
+			.saturating_add(Weight::from_parts(0, 16u64.saturating_mul(n as u64)))
 	}
 
 	/// Estimated, pending a benchmark run — see `compute_row`.
@@ -272,10 +290,11 @@ impl WeightInfo for () {
 		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(1))
 	}
 
-	fn alpha_release() -> Weight {
+	fn alpha_release(n: u32) -> Weight {
 		Weight::from_parts(0, 0)
 			.saturating_add(RocksDbWeight::get().reads(4))
 			.saturating_add(RocksDbWeight::get().writes(6))
+			.saturating_add(Weight::from_parts(0, 16u64.saturating_mul(n as u64)))
 	}
 
 	/// Estimated, pending a benchmark run — see `compute_row`.

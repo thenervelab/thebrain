@@ -247,12 +247,14 @@ fn the_idle_cleanup_stays_within_its_budget() {
 	});
 }
 
-/// A debit that fully spends the account's purchase batch must clear
-/// `LastPurchaseBatch`. Otherwise a later `buy_credits` at the cap would top up
-/// a batch no longer in `UserBatches`, minting credits `consume_credits` can
-/// never reach. (Regression, PR #62 review, High #1.)
+/// A debit that fully spends the account's purchase batch prunes it from
+/// `UserBatches` but leaves `LastPurchaseBatch` pointing at it. A later
+/// `buy_credits` at the cap re-appends that batch before topping it up (see
+/// `buy_credits`), so the credits land where `consume_credits` can reach them;
+/// clearing the pointer here would instead make purchases fail with
+/// `TooManyBatches`. (PR #62 review.)
 #[test]
-fn a_debit_clears_the_purchase_pointer_it_prunes() {
+fn a_debit_keeps_the_purchase_pointer_of_a_batch_it_prunes() {
 	new_test_ext().execute_with(|| {
 		let user = account(10);
 		let purchase = push(&user, batch(&user, 100));
@@ -263,8 +265,8 @@ fn a_debit_clears_the_purchase_pointer_it_prunes() {
 		assert_eq!(UserBatches::<Runtime>::get(&user), None, "the spent batch left the list");
 		assert_eq!(
 			LastPurchaseBatch::<Runtime>::get(&user),
-			None,
-			"the pointer to the pruned batch is cleared"
+			Some(purchase),
+			"the pointer survives the prune, for buy_credits to re-file"
 		);
 	});
 }
@@ -291,10 +293,11 @@ fn a_debit_keeps_a_still_live_purchase_pointer() {
 	});
 }
 
-/// The idle cleanup clears `LastPurchaseBatch` for a batch it prunes, the same
-/// as the debit path. (Regression, PR #62 review, High #1.)
+/// The idle cleanup prunes a spent purchase batch from `UserBatches` but leaves
+/// its pointer intact, the same as the debit path: `buy_credits` re-files it.
+/// (PR #62 review.)
 #[test]
-fn the_idle_cleanup_clears_the_purchase_pointer_it_prunes() {
+fn the_idle_cleanup_keeps_the_purchase_pointer_of_a_batch_it_prunes() {
 	new_test_ext().execute_with(|| {
 		let user = account(10);
 		let purchase = push(&user, spent(&user));
@@ -307,8 +310,8 @@ fn the_idle_cleanup_clears_the_purchase_pointer_it_prunes() {
 		assert_eq!(UserBatches::<Runtime>::get(&user), None, "the spent list is removed");
 		assert_eq!(
 			LastPurchaseBatch::<Runtime>::get(&user),
-			None,
-			"the idle pass cleared the stale pointer"
+			Some(purchase),
+			"the idle pass leaves the pointer for buy_credits to re-file"
 		);
 	});
 }

@@ -482,6 +482,18 @@ impl pallet_arion::BenchmarkHelper<AccountId> for ArionBenchmarkHelper {
 			amount.saturating_mul(4),
 		);
 		let _ = <Staking as sp_staking::StakingInterface>::bond(family, amount, family);
+		// Nominate, so the family joins the bags list (`VoterList`). A bonded but
+		// non-nominating stash is not a voter, so its `bond_extra` skips the
+		// rebag; a family that nominates takes that extra `ListNodes` write on
+		// every payout. Nominating here poses that heavier path, so the measured
+		// per-family weight covers it. (At benchmark genesis `MinNominatorBond`
+		// is 0 and `MaxNominatorsCount` is unset, so this cannot be refused; the
+		// single self-target is accepted because a non-validator's `blocked`
+		// flag defaults to false.) `expect` rather than `let _`: a silent failure
+		// here would put the family back on the non-rebag branch and under-measure
+		// the hook, which is the very gap this poses.
+		<Staking as sp_staking::StakingInterface>::nominate(family, vec![family.clone()])
+			.expect("prebond_family: nominate must make the family a voter so bond_extra rebags");
 	}
 }
 

@@ -129,10 +129,11 @@ pub mod pallet {
 		fn fund_payout_source(requester: &AccountId, amount: u128);
 		/// Make [`Config::TokenPriceUsd`] return `price`.
 		fn set_token_price(price: u128);
-		/// Fund `family` and bond it, so settlement takes the heavier
-		/// `bond_extra` branch (a family already staking) rather than the
-		/// first-time `bond`. Needs balances and staking, which only the runtime
-		/// has concretely.
+		/// Fund `family`, bond it and nominate, so settlement takes the heavier
+		/// `bond_extra` branch (a family already staking) *and* the bags-list
+		/// rebag a nominating family drives, rather than the first-time `bond` on
+		/// a non-voter. Needs balances and staking, which only the runtime has
+		/// concretely.
 		fn prebond_family(family: &AccountId, amount: u128);
 	}
 
