@@ -118,19 +118,15 @@ pub struct SubstrateWeight<T>(PhantomData<T>);
 
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Measured (worst case: full MaxBatchesPerBuyer spent-batch list + referred
-	/// account paying through the bank). 2026-10-27, steps 50 / repeat 20, on a
-	/// dedicated 8-vCPU Hippius CVM (AMD EPYC 9254 24-Core Processor).
-	///
-	/// ⚠️ RE-MEASURE: the `fund_worst_case` setup now poses the funder matured
-	/// while frozen with alpha pending and partly unbacked, so the debit takes
-	/// the unfreeze branch (`AlphaBalances`, `UnbackedBatchAlpha`,
-	/// `TotalUndistributedBacking`). This figure predates that change and is a
-	/// floor, not the current worst case — regenerate it on the next run and
-	/// replace this value before `set_code`.
+	/// account paying through the bank, with the funder matured while frozen,
+	/// alpha pending and partly unbacked, so the debit takes the unfreeze branch
+	/// — `AlphaBalances`, `UnbackedBatchAlpha`, `TotalUndistributedBacking`).
+	/// 2026-10-27, steps 50 / repeat 20, on a dedicated Hippius benchmark VM
+	/// (AMD EPYC 7543 32-Core Processor).
 	fn charge_account_due() -> Weight {
-		Weight::from_parts(616_434_000, 4356)
-			.saturating_add(RocksDbWeight::get().reads(40))
-			.saturating_add(RocksDbWeight::get().writes(26))
+		Weight::from_parts(790_121_000, 4436)
+			.saturating_add(RocksDbWeight::get().reads(37))
+			.saturating_add(RocksDbWeight::get().writes(25))
 	}
 
 	/// Read the account's subscriptions once, then one index write per
@@ -174,20 +170,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Measured by `hourly_charge` in `benchmarking.rs`, posed at the debit's
 	/// worst case — a full `MaxBatchesPerBuyer` spent-batch list the charge
 	/// walks and prunes, behind one funding batch it drains, with a referred
-	/// user so the commission accrual writes. 2026-10-27, steps 50 / repeat 20,
-	/// on the same CVM as `charge_account_due` (AMD EPYC 9254). The 24 reads are
-	/// dominated by the batch walk (`Batches` r:16 at the benchmark cap); the
-	/// price and credit reads the sweep does before this point are counted by
-	/// `hourly_probe` and the loop's `past_gate` reserve, not here.
-	///
-	/// ⚠️ RE-MEASURE: the funder now matures while frozen with alpha pending and
-	/// partly unbacked, so the drain also takes the unfreeze branch. This figure
-	/// predates that change and is a floor — regenerate it on the next run and
-	/// replace this value before `set_code`.
+	/// user so the commission accrual writes, and the funder maturing while
+	/// frozen with alpha pending and partly unbacked so the drain also takes the
+	/// unfreeze branch. 2026-10-27, steps 50 / repeat 20, on the same VM as
+	/// `charge_account_due` (AMD EPYC 7543). The 26 reads are dominated by the
+	/// batch walk (`Batches` r:16 at the benchmark cap); the price and credit
+	/// reads the sweep does before this point are counted by `hourly_probe` and
+	/// the loop's `past_gate` reserve, not here.
 	fn hourly_charge() -> Weight {
-		Weight::from_parts(91_819_000, 3096)
-			.saturating_add(RocksDbWeight::get().reads(24))
-			.saturating_add(RocksDbWeight::get().writes(7))
+		Weight::from_parts(138_483_000, 3279)
+			.saturating_add(RocksDbWeight::get().reads(26))
+			.saturating_add(RocksDbWeight::get().writes(10))
 	}
 
 	/// Estimated: one map read, which is what the skip path costs.

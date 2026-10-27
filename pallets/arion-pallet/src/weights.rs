@@ -303,28 +303,29 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// pre-bonding every family in the benchmark setup.
     ///
     /// Per child (4 r, 1 w): `ChildRegistrations`, `ChildMinerUid`,
-    /// `MinerStatsByUid` reads and a `MinerAccruals` r/w. Per family (8 r, 4 w):
+    /// `MinerStatsByUid` reads and a `MinerAccruals` r/w. Per family (8 r, 5 w):
     /// `FamilyArrears` r/w, the bank transfer (`System::Account` r/w), and the
-    /// `bond_extra` — `Staking::Bonded`, `VirtualStakers`, `Balances::Freezes`,
-    /// `BagsList::ListNodes` reads plus `Staking::Ledger` and `Balances::Locks`
-    /// r/w. Fixed: the two prices, the bank's reserve ledgers and requester
-    /// checks, its payout totals, `LastSettlementBlock`.
+    /// `bond_extra` — `Staking::Bonded`, `VirtualStakers`, `Balances::Freezes`
+    /// reads plus `Staking::Ledger`, `Balances::Locks` and the nominating
+    /// family's `BagsList::ListNodes` rebag, all r/w. Fixed: the two prices, the
+    /// bank's reserve ledgers and requester checks, its payout totals, the
+    /// bags-list bag headers, `LastSettlementBlock`.
     ///
-    /// At the runtime's caps (1_000 children, 600 families) this is ~80.5ms of
-    /// execution plus 8_816 reads and 3_404 writes, once per settlement interval.
+    /// At the runtime's caps (1_000 children, 600 families) this is ~148.4ms of
+    /// execution plus 8_853 reads and 4_041 writes, once per settlement interval.
     ///
-    /// ⚠️ RE-MEASURE: the benchmark now nominates each family, so `bond_extra`
-    /// takes the bags-list rebag (an extra `BagsList::ListNodes` write per
-    /// family) that a nominating family drives on mainnet. This figure predates
-    /// that and is a floor — regenerate it on the next run and replace this
-    /// value before `set_code`.
+    /// 2026-10-27, steps 50 / repeat 20, on a dedicated Hippius benchmark VM
+    /// (AMD EPYC 7543 32-Core Processor). The benchmark nominates each family,
+    /// so `bond_extra` takes the bags-list rebag — the extra `BagsList::ListNodes`
+    /// write per family (per-family writes 4 → 5) that a nominating family drives
+    /// on mainnet.
     fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
         let (c, f) = (max_children_total as u64, max_families as u64);
-        Weight::from_parts(21_048_622_000, 6997)
-            .saturating_add(Weight::from_parts(7_626_195, 2797).saturating_mul(c))
-            .saturating_add(Weight::from_parts(86_367_685, 3774).saturating_mul(f))
-            .saturating_add(T::DbWeight::get().reads(16_u64.saturating_add(c.saturating_mul(4)).saturating_add(f.saturating_mul(8))))
-            .saturating_add(T::DbWeight::get().writes(4_u64.saturating_add(c).saturating_add(f.saturating_mul(4))))
+        Weight::from_parts(28_144_331_000, 92522)
+            .saturating_add(Weight::from_parts(11_371_952, 2796).saturating_mul(c))
+            .saturating_add(Weight::from_parts(181_487_445, 3774).saturating_mul(f))
+            .saturating_add(T::DbWeight::get().reads(53_u64.saturating_add(c.saturating_mul(4)).saturating_add(f.saturating_mul(8))))
+            .saturating_add(T::DbWeight::get().writes(41_u64.saturating_add(c).saturating_add(f.saturating_mul(5))))
     }
 }
 
