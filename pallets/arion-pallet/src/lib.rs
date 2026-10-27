@@ -780,8 +780,9 @@ pub mod pallet {
 	}
 
 	/// Storage version 1: `MinerUidToChild` reverse index (uid uniqueness).
-	/// Storage version 3: `FamilyCount` recomputed from `FamilyActiveChildren`.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
+	/// Storage version 4: legacy zero-valued `FamilyActiveChildren` rows dropped.
+	/// (3: `FamilyCount` recomputed from `FamilyActiveChildren`.)
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -802,8 +803,11 @@ pub mod pallet {
 			if onchain < 3 {
 				weight = weight.saturating_add(Self::migrate_v2_to_v3());
 			}
-			if onchain < 3 {
-				StorageVersion::new(3).put::<Pallet<T>>();
+			if onchain < 4 {
+				weight = weight.saturating_add(Self::migrate_v3_to_v4());
+			}
+			if onchain < 4 {
+				StorageVersion::new(4).put::<Pallet<T>>();
 				weight = weight.saturating_add(T::DbWeight::get().writes(1));
 			}
 			weight
@@ -812,10 +816,11 @@ pub mod pallet {
 		#[cfg(feature = "try-runtime")]
 		fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
 			ensure!(
-				Pallet::<T>::on_chain_storage_version() >= 3,
-				"arion: storage version not bumped to 3"
+				Pallet::<T>::on_chain_storage_version() >= 4,
+				"arion: storage version not bumped to 4"
 			);
-			Self::check_family_count()
+			Self::check_family_count()?;
+			Self::check_no_zero_family_rows()
 		}
 
 		#[cfg(feature = "try-runtime")]
@@ -947,6 +952,41 @@ pub mod pallet {
 			T::DbWeight::get().reads_writes(keys.saturating_add(1), 1)
 		}
 
+		/// v3 → v4: drop the legacy zero-valued `FamilyActiveChildren` rows.
+		///
+		/// Before the drop-to-zero decrement existed, a family whose last child
+		/// deregistered left its `FamilyActiveChildren` row behind holding 0 (see
+		/// `migrate_v2_to_v3`). Those rows are already treated as uncounted
+		/// everywhere — `FamilyCount`, `count_current_families`, and
+		/// `deregister_family` all gate on `> 0` — so removing them changes no
+		/// behaviour; it just shrinks the map and the per-upgrade recount scan.
+		/// On mainnet this clears the 142 zero rows out of 619.
+		///
+		/// Idempotent: a second run finds no zero rows and removes nothing.
+		/// `FamilyCount` is unaffected (only families with `> 0` are counted).
+		fn migrate_v3_to_v4() -> Weight {
+			// Collect first, remove after: mutating a map mid-iteration is unsafe.
+			let mut scanned: u64 = 0;
+			let mut stale: Vec<T::AccountId> = Vec::new();
+			for (family, active) in FamilyActiveChildren::<T>::iter() {
+				scanned = scanned.saturating_add(1);
+				if active == 0 {
+					stale.push(family);
+				}
+			}
+			let removed = stale.len() as u64;
+			for family in stale {
+				FamilyActiveChildren::<T>::remove(family);
+			}
+			log::info!(
+				target: "runtime::arion",
+				"migration v4: removed {} legacy zero FamilyActiveChildren rows ({} scanned)",
+				removed,
+				scanned
+			);
+			T::DbWeight::get().reads_writes(scanned, removed)
+		}
+
 		/// `(rows scanned, families with >= 1 active child)`.
 		fn count_current_families() -> (u64, u32) {
 			let mut keys: u64 = 0;
@@ -966,6 +1006,15 @@ pub mod pallet {
 			ensure!(
 				FamilyCount::<T>::get() == families,
 				"arion: FamilyCount != families with active children"
+			);
+			Ok(())
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn check_no_zero_family_rows() -> Result<(), sp_runtime::TryRuntimeError> {
+			ensure!(
+				FamilyActiveChildren::<T>::iter().all(|(_, active)| active > 0),
+				"arion: a zero-valued FamilyActiveChildren row survived the v4 migration"
 			);
 			Ok(())
 		}
