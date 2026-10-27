@@ -1,10 +1,9 @@
 //! Weights for pallet-hippocampus
 //!
 //! `deposit`, `add_requester`, `remove_requester` and `request_payment` are
-//! **measured** by `benchmarking.rs` (2026-10-02, steps 50, repeat 20, compiled
-//! wasm, `--chain benchmark`, on an i5-1135G7 laptop rather than reference
-//! hardware — rerun there before relying on the absolute figures). Storage
-//! counts and proof sizes are the benchmark's own.
+//! **measured** by `benchmarking.rs` (2026-10-27, steps 50, repeat 20, compiled
+//! wasm, `--chain benchmark`, on a dedicated 8-vCPU Hippius CVM, AMD EPYC 9254
+//! 24-Core Processor). Storage counts and proof sizes are the benchmark's own.
 //!
 //! `pay_storage_miners` and `pay_compute_miners` are still hand-written
 //! estimates.
@@ -47,21 +46,21 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// already paid for by the transaction fee.
 	/// Storage: `Hippocampus::TotalDeposited` (r:1 w:1)
 	fn deposit() -> Weight {
-		Weight::from_parts(88_941_000, 3593)
+		Weight::from_parts(44_449_000, 3593)
 			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
 	}
 
 	/// Storage: `Hippocampus::WhitelistedRequesters` (r:1 w:1)
 	fn add_requester() -> Weight {
-		Weight::from_parts(39_897_000, 3633)
+		Weight::from_parts(12_200_000, 3633)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 
 	/// Storage: `Hippocampus::WhitelistedRequesters` (r:1 w:1)
 	fn remove_requester() -> Weight {
-		Weight::from_parts(27_361_000, 3686)
+		Weight::from_parts(12_860_000, 3686)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -74,7 +73,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	///
 	/// Posed with a cap set and a payee that does not exist yet.
 	fn request_payment() -> Weight {
-		Weight::from_parts(114_257_000, 6370)
+		Weight::from_parts(56_359_000, 6370)
 			.saturating_add(T::DbWeight::get().reads(11_u64))
 			.saturating_add(T::DbWeight::get().writes(4_u64))
 	}
@@ -118,21 +117,21 @@ impl WeightInfo for () {
 	/// already paid for by the transaction fee.
 	/// Storage: `Hippocampus::TotalDeposited` (r:1 w:1)
 	fn deposit() -> Weight {
-		Weight::from_parts(88_941_000, 3593)
+		Weight::from_parts(44_449_000, 3593)
 			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))
 	}
 
 	/// Storage: `Hippocampus::WhitelistedRequesters` (r:1 w:1)
 	fn add_requester() -> Weight {
-		Weight::from_parts(39_897_000, 3633)
+		Weight::from_parts(12_200_000, 3633)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 
 	/// Storage: `Hippocampus::WhitelistedRequesters` (r:1 w:1)
 	fn remove_requester() -> Weight {
-		Weight::from_parts(27_361_000, 3686)
+		Weight::from_parts(12_860_000, 3686)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -145,7 +144,7 @@ impl WeightInfo for () {
 	///
 	/// Posed with a cap set and a payee that does not exist yet.
 	fn request_payment() -> Weight {
-		Weight::from_parts(114_257_000, 6370)
+		Weight::from_parts(56_359_000, 6370)
 			.saturating_add(RocksDbWeight::get().reads(11_u64))
 			.saturating_add(RocksDbWeight::get().writes(4_u64))
 	}

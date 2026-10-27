@@ -109,17 +109,17 @@ pub trait WeightInfo {
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
 ///
-/// `charge_account_due` is **measured**; the other three remain conservative
-/// estimates of single storage operations, where any measurement would sit
-/// inside the rounding.
+/// `charge_account_due` and `hourly_charge` are **measured**; the remaining
+/// single-storage-operation units stay conservative estimates, where any
+/// measurement would sit inside the rounding.
 pub struct SubstrateWeight<T>(PhantomData<T>);
 
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-	/// Storage counts re-measured (worst case: full MaxBatchesPerBuyer spent-batch
-	/// list + referred account paying through the bank). ref_time pending the
-	/// reference-hardware run; 526.9µs kept as a conservative placeholder.
+	/// Measured (worst case: full MaxBatchesPerBuyer spent-batch list + referred
+	/// account paying through the bank). 2026-10-27, steps 50 / repeat 20, on a
+	/// dedicated 8-vCPU Hippius CVM (AMD EPYC 9254 24-Core Processor).
 	fn charge_account_due() -> Weight {
-		Weight::from_parts(526_900_000, 4356)
+		Weight::from_parts(616_434_000, 4356)
 			.saturating_add(RocksDbWeight::get().reads(40))
 			.saturating_add(RocksDbWeight::get().writes(26))
 	}
@@ -162,19 +162,18 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// probe: the per-GiB debit (`consume_credits`), the referral accrual, the
 	/// transaction record and the last-charged marker.
 	///
-	/// Benchmarked by `hourly_charge` in `benchmarking.rs`, posed at the
-	/// debit's worst case — a full `MaxBatchesPerBuyer` spent-batch list the
-	/// charge walks and prunes, behind one funding batch it drains. The
-	/// measured storage counts and ref_time are wired in from the
-	/// reference-hardware run; until then this keeps the prior estimate (13
-	/// reads, 11 writes), which the spent-batch pruning does not raise — the
-	/// one `UserBatches` rewrite a debit now does when it drops spent ids
-	/// stands in for the per-spent-batch reads and writes the old unbounded
-	/// walk did, which this figure already covered.
+	/// Measured by `hourly_charge` in `benchmarking.rs`, posed at the debit's
+	/// worst case — a full `MaxBatchesPerBuyer` spent-batch list the charge
+	/// walks and prunes, behind one funding batch it drains, with a referred
+	/// user so the commission accrual writes. 2026-10-27, steps 50 / repeat 20,
+	/// on the same CVM as `charge_account_due` (AMD EPYC 9254). The 24 reads are
+	/// dominated by the batch walk (`Batches` r:16 at the benchmark cap); the
+	/// price and credit reads the sweep does before this point are counted by
+	/// `hourly_probe` and the loop's `past_gate` reserve, not here.
 	fn hourly_charge() -> Weight {
-		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(13))
-			.saturating_add(RocksDbWeight::get().writes(11))
+		Weight::from_parts(91_819_000, 3096)
+			.saturating_add(RocksDbWeight::get().reads(24))
+			.saturating_add(RocksDbWeight::get().writes(7))
 	}
 
 	/// Estimated: one map read, which is what the skip path costs.
