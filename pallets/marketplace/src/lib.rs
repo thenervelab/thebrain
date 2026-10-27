@@ -3007,7 +3007,7 @@ pub mod pallet {
 		/// monthly-renewal rule rather than the purchase rule: the referrer
 		/// earns a commission on what was collected, and the referred user
 		/// gets no discount — the 5% buyer discount stays purchase-only.
-		fn accrue_hourly_referral_commission(user: &T::AccountId, charged_credits: u128) {
+		pub(crate) fn accrue_hourly_referral_commission(user: &T::AccountId, charged_credits: u128) {
 			let commission = Self::referral_commission_credits(charged_credits);
 			if commission == 0 {
 				return;
@@ -4842,7 +4842,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		fn record_credits_transaction(
+		pub(crate) fn record_credits_transaction(
 			who: &T::AccountId,
 			transaction_type: NativeTransactionType,
 			amount: Points,

@@ -32,7 +32,7 @@
 //! ./target/release/hippius benchmark pallet \
 //!     --chain benchmark \
 //!     --pallet pallet_marketplace \
-//!     --extrinsic 'charge_account_due,submit_compute_usage,settle_compute_arrears,buy_credits,submit_usage_v2,set_fee_kind_caps' \
+//!     --extrinsic 'charge_account_due,hourly_charge,submit_compute_usage,settle_compute_arrears,buy_credits,submit_usage_v2,set_fee_kind_caps' \
 //!     --steps 50 --repeat 20
 //! ```
 
@@ -94,31 +94,32 @@ fn plan_of<T: Config>(index: u32, is_storage_plan: bool) -> Plan<T::Hash> {
 	plan
 }
 
-/// An account holding `count` active subscriptions, every one of them due, and
-/// funded well enough to pay for all of them.
+/// Fund `who` through `UserBatches` in the worst shape a charge can walk, and
+/// set up a funded, whitelisted referrer behind them.
 ///
-/// The first is a Drive plan and the rest are compute, so the charge exercises
-/// both sides of the storage/compute split rather than one branch twice.
-fn due_account<T: Config>(count: u32) -> T::AccountId {
-	let who: T::AccountId = account("subscriber", 0, SEED);
-
-	// Fund through a *batch*, not `do_mint` alone. `consume_credits` spends
-	// from `UserBatches` and requires the whole amount to come from there —
-	// minting `FreeCredits` with no batch behind it leaves the charge failing
-	// with `InsufficientFreeCredits`, which sends `charge_account_due` down the
-	// deactivation path. That path is cheaper than a renewal, so a benchmark
-	// seeded that way would quietly price the wrong thing and under-fund the
-	// meter. The assertion at the end of the benchmark is what catches it.
-	//
-	// Worst case for the debit's batch walk: a full `MaxBatchesPerBuyer` list
-	// of already-spent batches ahead of one funding batch. The charge skips
-	// every spent batch (0 credits), pays from the funder at the end, and
-	// rewrites the list dropping all the spent ids — the maximum-length walk
-	// and prune a single charge can drive.
+/// Fund through a *batch*, not `do_mint` alone. `consume_credits` spends from
+/// `UserBatches` and requires the whole amount to come from there — minting
+/// `FreeCredits` with no batch behind it leaves the charge failing with
+/// `InsufficientFreeCredits`, which sends the charge down its deactivation /
+/// skip path. That path is cheaper than a renewal, so a benchmark seeded that
+/// way would quietly price the wrong thing and under-fund the meter. The
+/// assertion at the end of each benchmark is what catches it.
+///
+/// Worst case for the debit's batch walk: a full `MaxBatchesPerBuyer` list of
+/// already-spent batches ahead of one funding batch. A charge skips every
+/// spent batch (0 credits), pays from the funder at the end, and rewrites the
+/// list dropping all the spent ids — the maximum-length walk and prune a
+/// single charge can drive.
+///
+/// The referrer is set up so the charge also accrues (and, on the monthly
+/// path, pays through the bank) referral commission — otherwise the measured
+/// weight misses the work a referred account drives. The bank is funded,
+/// whitelisted and switched on so those payments actually land.
+fn fund_worst_case<T: Config>(who: &T::AccountId) {
 	let cap = T::MaxBatchesPerBuyer::get().max(1);
 	for _ in 0..cap.saturating_sub(1) {
 		push_batch::<T>(
-			&who,
+			who,
 			Batch {
 				owner: who.clone(),
 				credit_amount: 0,
@@ -132,7 +133,7 @@ fn due_account<T: Config>(count: u32) -> T::AccountId {
 		);
 	}
 	push_batch::<T>(
-		&who,
+		who,
 		Batch {
 			owner: who.clone(),
 			credit_amount: FUNDING,
@@ -146,20 +147,26 @@ fn due_account<T: Config>(count: u32) -> T::AccountId {
 	);
 	let _ = CreditsPallet::<T>::do_mint(who.clone(), FUNDING, None);
 
-	// A referrer, so the renewal also pays referral commission through the
-	// bank (`request_payment`) — otherwise the measured weight misses the bank
-	// payments a referred account drives. The bank is funded, whitelisted and
-	// switched on so those payments actually land.
 	let referrer: T::AccountId = account("referrer", 0, SEED);
 	let code: Vec<u8> = b"BENCHREF".to_vec();
 	pallet_credits::ReferralCodes::<T>::insert(code.clone(), referrer.clone());
-	pallet_credits::ReferredUsers::<T>::insert(&who, code);
+	pallet_credits::ReferredUsers::<T>::insert(who, code);
 	ReferralCommissionRateBps::<T>::put(500);
 	let bank = pallet_hippocampus::Pallet::<T>::account_id();
 	let _ = <T as Config>::Currency::deposit_creating(&bank, FUNDING.saturated_into());
 	let _ = <T as Config>::Currency::deposit_creating(&referrer, FUNDING.saturated_into());
 	pallet_hippocampus::WhitelistedRequesters::<T>::insert(Marketplace::<T>::account_id(), ());
 	pallet_hippocampus::DistributionEnabled::<T>::put(true);
+}
+
+/// An account holding `count` active subscriptions, every one of them due, and
+/// funded well enough to pay for all of them.
+///
+/// The first is a Drive plan and the rest are compute, so the charge exercises
+/// both sides of the storage/compute split rather than one branch twice.
+fn due_account<T: Config>(count: u32) -> T::AccountId {
+	let who: T::AccountId = account("subscriber", 0, SEED);
+	fund_worst_case::<T>(&who);
 
 	let subs: Vec<UserPlanSubscription<T>> = (0..count)
 		.map(|i| UserPlanSubscription {
@@ -364,6 +371,57 @@ mod benchmarks {
 			.saturating_mul(subs as u128)
 			.saturating_mul(MAX_CATCHUP_MONTHS as u128);
 		assert_eq!(spent, expected);
+	}
+
+	/// The per-user charge the hourly storage sweep applies once a user is past
+	/// the nothing-to-bill gate: the per-GiB debit (`consume_credits`), the
+	/// referral accrual, the transaction record and the last-charged marker.
+	///
+	/// Measured with `#[block]`, and for the same reason as `charge_account_due`:
+	/// the charge is not an extrinsic, and `handle_hourly_storage_charging`
+	/// reserves this unit per billable user before touching them, so it has to
+	/// be the worst case. That worst case is the debit's batch walk — a full
+	/// `MaxBatchesPerBuyer` spent-batch list ahead of one funding batch the
+	/// charge drains and prunes — together with a referred user, so the
+	/// commission accrual writes. The price and credit reads the sweep does
+	/// before this point are counted by `hourly_probe` and the `past_gate`
+	/// reserve in the loop, not here.
+	///
+	/// The sequence mirrors the sweep's charge branch exactly, calling the same
+	/// pallet methods in the same order so the measurement tracks any change to
+	/// what a charge does.
+	#[benchmark]
+	fn hourly_charge() {
+		let who: T::AccountId = account("hourly", 0, SEED);
+		fund_worst_case::<T>(&who);
+
+		// Drain the funding batch exactly, so the debit walks and prunes the
+		// whole spent list and the funder with it — the longest walk a single
+		// charge can drive. A smaller amount would leave the funder in the list
+		// and price a shorter prune.
+		let charge_amount = FUNDING;
+		let marker = BlockNumberFor::<T>::from(1_000u32);
+		let referrer: T::AccountId = account("referrer", 0, SEED);
+
+		#[block]
+		{
+			let _ = Marketplace::<T>::consume_credits(who.clone(), charge_amount);
+			Marketplace::<T>::accrue_hourly_referral_commission(&who, charge_amount);
+			let _ = Marketplace::<T>::record_credits_transaction(
+				&who,
+				NativeTransactionType::Subscription,
+				charge_amount,
+			);
+			let _ = Marketplace::<T>::advance_storage_last_charged_at(&who, marker);
+		}
+
+		// The debit drained the funder and rewrote the list dropping every
+		// spent id. A charge that fell through to the skip path (wrong funding
+		// shape) would leave the credits untouched, and this catches it — the
+		// same guard `charge_account_due` relies on.
+		assert_eq!(CreditsPallet::<T>::get_free_credits(&who), 0);
+		assert!(AccruedReferralCommission::<T>::get(&referrer) > 0);
+		assert_eq!(StorageLastChargedAt::<T>::get(&who), marker);
 	}
 
 	/// `n` rows, each charged in full together with arrears it already owed,

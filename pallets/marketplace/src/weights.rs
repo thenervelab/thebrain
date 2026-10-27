@@ -13,19 +13,22 @@
 //! means a wrong number here costs throughput (accounts wait for the next
 //! tick), never a block that overruns.
 //!
-//! `charge_account_due` is measured. Re-measure it whenever the charge path
-//! gains or loses storage access:
+//! `charge_account_due` and `hourly_charge` are measured — the two charges the
+//! billing hooks reserve per account, one on the monthly drain and one on the
+//! hourly sweep. Re-measure them whenever a charge path gains or loses storage
+//! access:
 //!
 //! ```text
 //! cargo build --release --bin hippius --features hippius/runtime-benchmarks
 //! ./target/release/hippius benchmark pallet \
 //!     --chain benchmark \
 //!     --pallet pallet_marketplace \
-//!     --extrinsic charge_account_due \
+//!     --extrinsic 'charge_account_due,hourly_charge' \
 //!     --steps 50 --repeat 20
 //! ```
 //!
-//! The remaining three are single storage operations and stay as estimates.
+//! The remaining single-storage-operation units (`hourly_probe`,
+//! `backfill_account`, `drain_overhead`, `day_probe`) stay as estimates.
 //!
 //! The two feeless compute billing calls, `submit_compute_usage` and
 //! `settle_compute_arrears`, are the exception to "not a weight table for the
@@ -155,13 +158,19 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(RocksDbWeight::get().writes(1))
 	}
 
-	/// Estimated: the 13 reads and 11 writes a *charged* user cost in that same
-	/// accounting, on top of the probe. The spent-batch pruning does not raise
-	/// this: the one `UserBatches` rewrite a debit now does when it drops spent
-	/// ids stands in for the per-spent-batch reads and writes the old unbounded
-	/// walk did, which this figure already covered. Still an estimate — the
-	/// hourly path has no benchmark of its own; `charge_account_due` is the
-	/// measured proxy for the debit the two share.
+	/// The *additional* cost when a user does owe something, on top of the
+	/// probe: the per-GiB debit (`consume_credits`), the referral accrual, the
+	/// transaction record and the last-charged marker.
+	///
+	/// Benchmarked by `hourly_charge` in `benchmarking.rs`, posed at the
+	/// debit's worst case — a full `MaxBatchesPerBuyer` spent-batch list the
+	/// charge walks and prunes, behind one funding batch it drains. The
+	/// measured storage counts and ref_time are wired in from the
+	/// reference-hardware run; until then this keeps the prior estimate (13
+	/// reads, 11 writes), which the spent-batch pruning does not raise — the
+	/// one `UserBatches` rewrite a debit now does when it drops spent ids
+	/// stands in for the per-spent-batch reads and writes the old unbounded
+	/// walk did, which this figure already covered.
 	fn hourly_charge() -> Weight {
 		Weight::from_parts(0, 0)
 			.saturating_add(RocksDbWeight::get().reads(13))
