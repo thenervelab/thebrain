@@ -476,7 +476,9 @@ pub mod pallet {
 							if is_coldkey {
 								ColdkeyNodeRegistrationV2::<T>::remove(&node_id);
 								Self::owner_to_node_remove(&owner, &node_id);
-								writes = writes.saturating_add(1);
+								// Drop any pending owner-swap offer for the removed node.
+								PendingOwnerSwap::<T>::remove(&node_id);
+								writes = writes.saturating_add(2);
 							}
 						}
 					}
@@ -958,8 +960,8 @@ pub mod pallet {
 				Error::<T>::OwnerAlreadyRegistered
 			);
 
+			// do_swap_node_owner clears the pending offer on success.
 			Self::do_swap_node_owner(&node_id, &who)?;
-			PendingOwnerSwap::<T>::remove(&node_id);
 
 			Ok(().into())
 		}
@@ -1147,6 +1149,11 @@ pub mod pallet {
 				node_id: node_id.clone(),
 				new_owner: new_owner.clone(),
 			});
+
+			// A completed transfer invalidates any pending offer on this node
+			// (e.g. an operator root swap made while an offer was outstanding),
+			// so the offer can never outlive the owner who made it.
+			PendingOwnerSwap::<T>::remove(node_id);
 
 			Ok(())
 		}
@@ -1704,6 +1711,9 @@ pub mod pallet {
 			// Remove the main node's registration
 			// Note: LinkedNodes has been removed; sub-node cleanup is handled separately
 			ColdkeyNodeRegistrationV2::<T>::remove(node_id.clone());
+
+			// Drop any pending owner-swap offer; the node it referenced is gone.
+			PendingOwnerSwap::<T>::remove(&node_id);
 
 			// Keep OwnerToNode in sync
 			if let Some(owner) = owner {
