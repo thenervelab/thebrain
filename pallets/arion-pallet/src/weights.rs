@@ -60,8 +60,13 @@ pub trait WeightInfo {
     /// `on_initialize` miner stats prune: bounded scan + protected-uid pass over registrations.
     fn miner_stats_prune_hook(max_scan: u32, max_children_total: u32) -> Weight;
     fn set_miner_price() -> Weight;
-    /// `on_initialize` payment settlement: accrue + aggregate per family + transfer + bond.
-    fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight;
+    /// `on_initialize` payment settlement: accrue + aggregate per family + transfer + bond,
+    /// then a bounded page of departed-family debt payouts.
+    fn miner_payment_settlement_hook(
+        max_children_total: u32,
+        max_families: u32,
+        max_departed: u32,
+    ) -> Weight;
 }
 
 /// Weights for pallet_arion using the Substrate node and recommended hardware.
@@ -297,15 +302,24 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// before serious mainnet traffic (PR #36 review).
     /// Per child: ChildRegistrations + ChildMinerUid + MinerStatsByUid reads, MinerAccruals r/w.
     /// Per family: arrears r/w, bank request_payment (transfer + accounting), staking ledger read + bond write.
-    fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
+    /// Per departed family: ledger read + bank request_payment + ledger r/w, plus one cursor write.
+    fn miner_payment_settlement_hook(
+        max_children_total: u32,
+        max_families: u32,
+        max_departed: u32,
+    ) -> Weight {
         let children = max_children_total as u64;
         let families = max_families as u64;
+        let departed = max_departed as u64;
         Weight::from_parts(25_000_000, 0)
             .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(families))
+            .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(departed))
             .saturating_add(T::DbWeight::get().reads(children.saturating_mul(4).saturating_add(2)))
             .saturating_add(T::DbWeight::get().writes(children))
             .saturating_add(T::DbWeight::get().reads(families.saturating_mul(4)))
             .saturating_add(T::DbWeight::get().writes(families.saturating_mul(6)))
+            .saturating_add(T::DbWeight::get().reads(departed))
+            .saturating_add(T::DbWeight::get().writes(departed.saturating_add(1)))
     }
 }
 
@@ -450,14 +464,22 @@ impl WeightInfo for () {
         Weight::from_parts(10_000_000, 0).saturating_add(RocksDbWeight::get().writes(1))
     }
 
-    fn miner_payment_settlement_hook(max_children_total: u32, max_families: u32) -> Weight {
+    fn miner_payment_settlement_hook(
+        max_children_total: u32,
+        max_families: u32,
+        max_departed: u32,
+    ) -> Weight {
         let children = max_children_total as u64;
         let families = max_families as u64;
+        let departed = max_departed as u64;
         Weight::from_parts(25_000_000, 0)
             .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(families))
+            .saturating_add(Weight::from_parts(150_000_000, 0).saturating_mul(departed))
             .saturating_add(RocksDbWeight::get().reads(children.saturating_mul(4).saturating_add(2)))
             .saturating_add(RocksDbWeight::get().writes(children))
             .saturating_add(RocksDbWeight::get().reads(families.saturating_mul(4)))
             .saturating_add(RocksDbWeight::get().writes(families.saturating_mul(6)))
+            .saturating_add(RocksDbWeight::get().reads(departed))
+            .saturating_add(RocksDbWeight::get().writes(departed.saturating_add(1)))
     }
 }

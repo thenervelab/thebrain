@@ -11,8 +11,9 @@ use hippius_mainnet_runtime::{
 	Runtime, RuntimeEvent, RuntimeOrigin, System,
 };
 use pallet_arion::{
-	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, FamilyArrears,
-	MinerAccruals, MinerStats, MinerStatsUpdate, PayoutSource, SettlementSkipReason,
+	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, DepartedFamilyArrears,
+	FamilyActiveChildren, FamilyArrears, FamilyChildren, MinerAccruals, MinerStats,
+	MinerStatsUpdate, PayoutSource, SettlementSkipReason,
 };
 use payment_math::{pro_rata, Tokens};
 use sp_core::crypto::Ss58Codec;
@@ -66,6 +67,16 @@ fn register_miner_with_status(
 	if status == ChildStatus::Active && uid != 0 {
 		ChildMinerUid::<Runtime>::insert(child, uid);
 		pallet_arion::MinerUidToChild::<Runtime>::insert(uid, child.clone());
+	}
+	// Settlement iterates `FamilyChildren` (bounded active index), so an Active
+	// child must be listed there just as `register_child` would, or it is never
+	// walked. Mirror the live invariant: index + active-count only for Active
+	// children (an Unbonding child is never in `FamilyChildren`).
+	if status == ChildStatus::Active {
+		FamilyChildren::<Runtime>::mutate(family, |v| {
+			v.try_push(child.clone()).expect("under MaxChildrenPerFamily");
+		});
+		FamilyActiveChildren::<Runtime>::mutate(family, |n| *n += 1);
 	}
 }
 
@@ -587,7 +598,7 @@ fn migration_builds_uid_reverse_index_and_drops_duplicates() {
 		// Version advanced past every step: running again is a no-op.
 		assert_eq!(
 			<pallet_arion::Pallet<Runtime> as GetStorageVersion>::on_chain_storage_version(),
-			StorageVersion::new(3)
+			StorageVersion::new(4)
 		);
 	});
 }
@@ -1763,5 +1774,127 @@ fn invariant_arrears_clear_without_double_pay() {
 														// Between SETTLEMENT and 2*SETTLEMENT with 0 bytes: no further accrual
 														// after the zeroing submit at SETTLEMENT_BLOCK (last_block updated).
 		assert!(Balances::free_balance(&family) <= due + tail);
+	});
+}
+
+// --- #79: bounded settlement walk + departed-family debt ledger -------------
+
+/// When a family leaves with unpaid arrears, the debt is not dropped: it moves
+/// to `DepartedFamilyArrears` (so the live `FamilyArrears` map holds only active
+/// families — the #79 bound), and a later settlement pays it down from bank
+/// surplus, in free balance (no bond).
+#[test]
+fn departed_family_debt_is_preserved_and_paid_from_later_surplus() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		submit_stats(7, 100 * GIB);
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		let elapsed = SETTLEMENT_BLOCK as u128 - 1;
+		let due = tokens_for(100 * GIB * elapsed, price, alpha_price);
+
+		// Starve the bank so the family is only partly paid and carries arrears.
+		enable_payments(price, alpha_price, due / 2 + ED);
+		settle_at(SETTLEMENT_BLOCK);
+		let arrears = FamilyArrears::<Runtime>::get(&family);
+		assert!(arrears > 0, "shortfall leaves arrears");
+		let paid_so_far = Balances::free_balance(&family);
+		// The active-path partial payment above was bonded as stake; the departed
+		// payout later must NOT add to that stake (it pays free balance).
+		let staked_before = staking_ledger_active(&family);
+
+		// The family leaves: deregister its only child → family goes inactive.
+		System::set_block_number(SETTLEMENT_BLOCK + 1);
+		Arion::deregister_child(RuntimeOrigin::signed(family.clone()), child.clone())
+			.expect("deregister");
+
+		// Live arrears cleared; the debt is preserved in the departed ledger.
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0, "not in the live arrears map");
+		assert_eq!(
+			DepartedFamilyArrears::<Runtime>::get(&family),
+			arrears,
+			"moved to the departed-debt ledger"
+		);
+
+		// Refill the bank; the next settlement pays the departed debt in full.
+		let _ = Balances::deposit_creating(&Hippocampus::account_id(), arrears + UNIT);
+		settle_at(2 * SETTLEMENT_BLOCK);
+
+		assert_eq!(DepartedFamilyArrears::<Runtime>::get(&family), 0, "departed debt cleared");
+		assert_eq!(
+			Balances::free_balance(&family),
+			paid_so_far + arrears,
+			"paid the full remaining debt"
+		);
+		// Paid in free balance — the departed payout adds nothing to the stake
+		// the family held from its earlier active payout.
+		assert_eq!(
+			staking_ledger_active(&family),
+			staked_before,
+			"departed payout is not bonded"
+		);
+	});
+}
+
+/// The departed-debt payout is a bounded slice per tick: with the ledger holding
+/// far more rows than `MaxDepartedPayoutsPerBlock` (10) and the bank flush, each
+/// settlement clears at most 10, and the cursor drains the rest over later ticks.
+/// This is the weight bound #79 requires — the hook cannot walk the whole map.
+#[test]
+fn departed_payouts_are_capped_per_tick_and_drain_over_time() {
+	new_test_ext().execute_with(|| {
+		// 25 departed families, each owed an amount comfortably above ED, and no
+		// active children anywhere.
+		for i in 0..25u8 {
+			DepartedFamilyArrears::<Runtime>::insert(account(100 + i), 10 * UNIT);
+		}
+		enable_payments(10_000_000_000, UNIT / 20, 10_000 * UNIT);
+
+		let remaining = || DepartedFamilyArrears::<Runtime>::iter().count();
+
+		settle_at(SETTLEMENT_BLOCK);
+		assert_eq!(remaining(), 15, "at most 10 paid in one tick");
+
+		settle_at(2 * SETTLEMENT_BLOCK);
+		assert_eq!(remaining(), 5, "10 more on the next tick");
+
+		settle_at(3 * SETTLEMENT_BLOCK);
+		assert_eq!(remaining(), 0, "the cursor drains the backlog");
+
+		// Every family was paid its full debt in free balance.
+		for i in 0..25u8 {
+			assert_eq!(Balances::free_balance(&account(100 + i)), 10 * UNIT);
+		}
+	});
+}
+
+/// v3 → v4 migration: arrears rows for families with no active children move to
+/// the departed-debt ledger, while an active family's arrears stay live — so the
+/// `FamilyArrears` walk is bounded by `MaxFamilies` even on a chain that already
+/// accumulated stale rows, and nothing owed is dropped.
+#[test]
+fn migration_v4_sweeps_stale_arrears_into_the_departed_ledger() {
+	new_test_ext().execute_with(|| {
+		use frame_support::traits::StorageVersion;
+
+		let active_fam = account(1);
+		let inactive_fam = account(2);
+		// Active family: one active child (so FamilyActiveChildren > 0) + arrears.
+		register_miner(&active_fam, &account(11), 1);
+		FamilyArrears::<Runtime>::insert(&active_fam, 5_000);
+		// Inactive family: arrears but never any active children.
+		FamilyArrears::<Runtime>::insert(&inactive_fam, 7_000);
+
+		StorageVersion::new(3).put::<Arion>();
+		<Arion as OnRuntimeUpgrade>::on_runtime_upgrade();
+
+		// Active family's arrears untouched in the live map.
+		assert_eq!(FamilyArrears::<Runtime>::get(&active_fam), 5_000);
+		assert_eq!(DepartedFamilyArrears::<Runtime>::get(&active_fam), 0);
+		// Inactive family's arrears moved, not dropped.
+		assert_eq!(FamilyArrears::<Runtime>::get(&inactive_fam), 0);
+		assert_eq!(DepartedFamilyArrears::<Runtime>::get(&inactive_fam), 7_000);
 	});
 }

@@ -191,7 +191,7 @@ fn migration_v3_recomputes_a_drifted_family_count() {
 
 		<Arion as Hooks<BlockNumber>>::on_runtime_upgrade();
 		assert_eq!(FamilyCount::<Runtime>::get(), 2);
-		assert_eq!(Arion::on_chain_storage_version(), StorageVersion::new(3));
+		assert_eq!(Arion::on_chain_storage_version(), StorageVersion::new(4));
 
 		// Idempotent, and gated: a second upgrade at v3 is a no-op.
 		FamilyCount::<Runtime>::put(7);

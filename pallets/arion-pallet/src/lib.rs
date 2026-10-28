@@ -777,11 +777,23 @@ pub mod pallet {
 		/// Run miner payment settlement every N blocks (`0` = disabled).
 		#[pallet::constant]
 		type SettlementInterval: Get<BlockNumberFor<Self>>;
+
+		/// Max departed families paid per settlement tick.
+		///
+		/// Bounds the [`DepartedFamilyArrears`] payout page so the settlement
+		/// hook stays within its declared weight however large the departed-debt
+		/// ledger grows. [`DepartedArrearsCursor`] resumes the walk next tick, so
+		/// a backlog drains over several settlements. `0` disables departed
+		/// payouts (debt is still recorded and waits for a non-zero setting).
+		#[pallet::constant]
+		type MaxDepartedPayoutsPerBlock: Get<u32>;
 	}
 
 	/// Storage version 1: `MinerUidToChild` reverse index (uid uniqueness).
 	/// Storage version 3: `FamilyCount` recomputed from `FamilyActiveChildren`.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
+	/// Storage version 4: stale `FamilyArrears` (inactive families) moved to
+	/// `DepartedFamilyArrears`.
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -802,8 +814,11 @@ pub mod pallet {
 			if onchain < 3 {
 				weight = weight.saturating_add(Self::migrate_v2_to_v3());
 			}
-			if onchain < 3 {
-				StorageVersion::new(3).put::<Pallet<T>>();
+			if onchain < 4 {
+				weight = weight.saturating_add(Self::migrate_v3_to_v4());
+			}
+			if onchain < 4 {
+				StorageVersion::new(4).put::<Pallet<T>>();
 				weight = weight.saturating_add(T::DbWeight::get().writes(1));
 			}
 			weight
@@ -812,8 +827,13 @@ pub mod pallet {
 		#[cfg(feature = "try-runtime")]
 		fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
 			ensure!(
-				Pallet::<T>::on_chain_storage_version() >= 3,
-				"arion: storage version not bumped to 3"
+				Pallet::<T>::on_chain_storage_version() >= 4,
+				"arion: storage version not bumped to 4"
+			);
+			ensure!(
+				FamilyArrears::<T>::iter()
+					.all(|(family, owed)| owed == 0 || FamilyActiveChildren::<T>::get(&family) > 0),
+				"arion: FamilyArrears holds a row for an inactive family after v4"
 			);
 			Self::check_family_count()
 		}
@@ -947,6 +967,40 @@ pub mod pallet {
 			T::DbWeight::get().reads_writes(keys.saturating_add(1), 1)
 		}
 
+		/// v3 -> v4: move `FamilyArrears` rows owed to families with no active
+		/// children into `DepartedFamilyArrears`. Leaves the live arrears map
+		/// holding only active families (bounded by `MaxFamilies`), without
+		/// dropping anything owed — the departed-debt ledger pays it down from
+		/// bank surplus. (#79)
+		fn migrate_v3_to_v4() -> Weight {
+			let mut scanned: u64 = 0;
+			let mut to_move: sp_std::vec::Vec<(T::AccountId, u128)> = sp_std::vec::Vec::new();
+			// Collect first; the map must not be mutated while iterated.
+			for (family, owed) in FamilyArrears::<T>::iter() {
+				scanned = scanned.saturating_add(1);
+				if owed > 0 && FamilyActiveChildren::<T>::get(&family) == 0 {
+					to_move.push((family, owed));
+				}
+			}
+			let moved = to_move.len() as u64;
+			for (family, owed) in to_move {
+				FamilyArrears::<T>::remove(&family);
+				DepartedFamilyArrears::<T>::mutate(&family, |d| *d = d.saturating_add(owed));
+			}
+			log::info!(
+				target: "runtime::arion",
+				"migration v4: moved {} of {} arrears rows to the departed-debt ledger",
+				moved,
+				scanned
+			);
+			// Per scanned row: 1 arrears read + 1 FamilyActiveChildren read.
+			// Per moved row: 1 arrears remove + 1 departed r/w.
+			T::DbWeight::get().reads_writes(
+				scanned.saturating_mul(2).saturating_add(1),
+				moved.saturating_mul(2),
+			)
+		}
+
 		/// `(rows scanned, families with >= 1 active child)`.
 		fn count_current_families() -> (u64, u32) {
 			let mut keys: u64 = 0;
@@ -989,6 +1043,7 @@ pub mod pallet {
 					<T as Config>::WeightInfo::miner_payment_settlement_hook(
 						T::MaxChildrenTotal::get(),
 						T::MaxFamilies::get(),
+						T::MaxDepartedPayoutsPerBlock::get(),
 					),
 				);
 			}
@@ -1090,9 +1145,30 @@ pub mod pallet {
 		StorageMap<_, Blake2_128Concat, u32, MinerAccrual<BlockNumberFor<T>>, OptionQuery>;
 
 	/// Tokens owed to a family but not yet paid (carry-over from bank shortfalls).
+	///
+	/// Holds only families with active children: when a family goes fully
+	/// inactive its row is moved to [`DepartedFamilyArrears`] (teardown paths),
+	/// so the settlement's arrears walk stays bounded by `MaxFamilies`. (#79)
 	#[pallet::storage]
 	pub type FamilyArrears<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// Tokens still owed to a family that has **left** the network (no active
+	/// children) but could not be paid before it left because the bank was
+	/// short. Moved here from [`FamilyArrears`] on family teardown so nothing
+	/// owed is dropped, and paid down automatically from bank surplus by the
+	/// settlement hook — a bounded slice per tick via [`DepartedArrearsCursor`].
+	/// This map grows unbounded over the chain's life, which is why the payout
+	/// is paginated rather than scanned in full. (#79)
+	#[pallet::storage]
+	pub type DepartedFamilyArrears<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// Resume point for the bounded [`DepartedFamilyArrears`] payout page.
+	/// `None` starts a fresh pass from the first key.
+	#[pallet::storage]
+	pub type DepartedArrearsCursor<T: Config> =
+		StorageValue<_, T::AccountId, OptionQuery>;
 
 	/// Last block a payment settlement ran at.
 	#[pallet::storage]
@@ -1447,6 +1523,14 @@ pub mod pallet {
 			family: T::AccountId,
 			tokens: u128,
 			staked: bool,
+		},
+		/// A family that had already left the network was paid down from the
+		/// departed-debt ledger, in free balance (no bond). `remaining` is what
+		/// it is still owed after this payout (`0` = cleared from the ledger).
+		DepartedFamilyPaid {
+			family: T::AccountId,
+			tokens: u128,
+			remaining: u128,
 		},
 		/// A settlement tick was skipped. Accruals keep accumulating.
 		MinerPaymentSkipped {
@@ -1880,44 +1964,68 @@ pub mod pallet {
 				return;
 			}
 
-			// Accrue every active child up to `now`, convert and aggregate per family.
+			// Accrue every active child up to `now`, convert and aggregate per
+			// family.
+			//
+			// Iterate `FamilyChildren`, not `ChildRegistrations::iter()`. The
+			// former holds exactly the Active children — a child is pushed on
+			// `register_child` and `swap_remove`d on `deregister_child`, while
+			// `ChildRegistrations` keeps the row as `Unbonding` until
+			// `claim_unbonded`. Its key set is the current families, each key
+			// dropped by `cleanup_family_when_no_active_children` when the
+			// family's active count hits zero. So this walk touches at most
+			// `MaxFamilies` keys x `MaxChildrenPerFamily` children =
+			// `MaxChildrenTotal`, exactly the bound the hook declares. Walking
+			// `ChildRegistrations::iter()` instead scanned every unbonding/stale
+			// row too, so the declared weight was not a true upper bound (#79).
+			//
+			// The per-child `ChildRegistrations` read (and `Active` check) stay:
+			// they cost no more than the old `iter()` already did, and keep the
+			// "only an Active child is paid" guarantee even if the index ever
+			// held a stale row. The family is keyed off the child's own record,
+			// as before.
 			let mut family_due: BTreeMap<T::AccountId, Tokens> = BTreeMap::new();
-			for (child, reg) in ChildRegistrations::<T>::iter() {
-				if reg.status != ChildStatus::Active {
-					continue;
-				}
-				let Some(uid) = ChildMinerUid::<T>::get(&child) else {
-					continue;
-				};
-				if uid == 0 {
-					continue;
-				}
-				Self::accrue_miner_bytes(uid, now);
-				let byte_blocks_snapshot =
-					MinerAccruals::<T>::get(uid).map(|a| a.byte_blocks).unwrap_or(0);
-				if byte_blocks_snapshot == 0 {
-					continue;
-				}
-				let tokens = payment_math::tokens_for(
-					ByteBlocks::new(byte_blocks_snapshot),
-					price,
-					token_price,
-				);
-				if tokens.is_zero() {
-					// Dust: preserve byte_blocks for next settlement
-					continue;
-				}
-				// Consume the accrual only now that it converts to a payable
-				// amount; a zero-token settlement above leaves it for next time.
-				MinerAccruals::<T>::mutate(uid, |acc| {
-					if let Some(a) = acc.as_mut() {
-						a.byte_blocks = 0;
+			for (_family, children) in FamilyChildren::<T>::iter() {
+				for child in children.iter() {
+					let Some(reg) = ChildRegistrations::<T>::get(child) else {
+						continue;
+					};
+					if reg.status != ChildStatus::Active {
+						continue;
 					}
-				});
-				family_due
-					.entry(reg.family.clone())
-					.and_modify(|d| *d = d.saturating_add(tokens))
-					.or_insert(tokens);
+					let Some(uid) = ChildMinerUid::<T>::get(child) else {
+						continue;
+					};
+					if uid == 0 {
+						continue;
+					}
+					Self::accrue_miner_bytes(uid, now);
+					let byte_blocks_snapshot =
+						MinerAccruals::<T>::get(uid).map(|a| a.byte_blocks).unwrap_or(0);
+					if byte_blocks_snapshot == 0 {
+						continue;
+					}
+					let tokens = payment_math::tokens_for(
+						ByteBlocks::new(byte_blocks_snapshot),
+						price,
+						token_price,
+					);
+					if tokens.is_zero() {
+						// Dust: preserve byte_blocks for next settlement
+						continue;
+					}
+					// Consume the accrual only now that it converts to a payable
+					// amount; a zero-token settlement above leaves it for next time.
+					MinerAccruals::<T>::mutate(uid, |acc| {
+						if let Some(a) = acc.as_mut() {
+							a.byte_blocks = 0;
+						}
+					});
+					family_due
+						.entry(reg.family.clone())
+						.and_modify(|d| *d = d.saturating_add(tokens))
+						.or_insert(tokens);
+				}
 			}
 
 			// Include arrears carried over from previous shortfalls.
@@ -1937,6 +2045,9 @@ pub mod pallet {
 			// drains the bank). U256 keeps the true denominator.
 			let total_due = sum_dues(family_due.values().copied());
 			if total_due.is_zero() {
+				// No active dues this tick, but the bank may still owe families
+				// that have left — pay down a bounded slice of that debt. (#79)
+				Self::pay_departed_family_arrears(&Self::account_id());
 				LastSettlementBlock::<T>::put(now);
 				return;
 			}
@@ -2001,6 +2112,13 @@ pub mod pallet {
 				});
 			}
 
+			// Pay down debt owed to families that have already left, from
+			// whatever the bank has left after the active families above were
+			// settled (active miners have priority; departed debt drains from
+			// surplus). A bounded slice per tick via the cursor, so the hook
+			// stays within its declared weight however large the ledger. (#79)
+			Self::pay_departed_family_arrears(&requester);
+
 			LastSettlementBlock::<T>::put(now);
 			Self::deposit_event(Event::MinerPaymentSettled {
 				block: now,
@@ -2008,6 +2126,85 @@ pub mod pallet {
 				tokens_due: total_due_for_event(total_due),
 				tokens_paid: tokens_paid_sum.get(),
 			});
+		}
+
+		/// Pay down [`DepartedFamilyArrears`] from whatever the bank has
+		/// available right now, in free balance (no bond — the family has left).
+		///
+		/// Bounded, resumable page over the ledger, mirroring the family-weight
+		/// recompute cursor: `iter_from` resumes strictly after the parked key,
+		/// `.take(max)` costs exactly `max` reads, and a short page means the map
+		/// ended so the cursor resets for a fresh pass. The ledger grows unbounded
+		/// over the chain's life, so touching only this slice per tick is what
+		/// keeps the settlement hook within its declared weight. (#79)
+		///
+		/// The scan is split from the payout so the map is not mutated while an
+		/// iterator borrows it: collect the page first, park the cursor, then pay.
+		fn pay_departed_family_arrears(requester: &T::AccountId) {
+			let max = T::MaxDepartedPayoutsPerBlock::get();
+			if max == 0 {
+				return;
+			}
+
+			let page = match DepartedArrearsCursor::<T>::get() {
+				Some(last) => DepartedFamilyArrears::<T>::iter_from(
+					DepartedFamilyArrears::<T>::hashed_key_for(&last),
+				),
+				None => DepartedFamilyArrears::<T>::iter(),
+			};
+			let mut scanned: u32 = 0;
+			let mut last_scanned: Option<T::AccountId> = None;
+			let mut owed_page: sp_std::vec::Vec<(T::AccountId, u128)> = sp_std::vec::Vec::new();
+			for (family, owed) in page.take(max as usize) {
+				scanned = scanned.saturating_add(1);
+				last_scanned = Some(family.clone());
+				owed_page.push((family, owed));
+			}
+
+			// A short page means the map ended inside it: reset to start a fresh
+			// pass next tick. Otherwise park at the last key visited; `iter_from`
+			// resumes strictly after it, so parking on a key this call then
+			// removes is still a valid resume point.
+			if scanned < max {
+				DepartedArrearsCursor::<T>::kill();
+			} else if let Some(last) = last_scanned {
+				DepartedArrearsCursor::<T>::put(last);
+			}
+
+			// Pay from whatever the bank has after active families were settled.
+			let mut budget = T::PayoutSource::available().saturated_into::<u128>();
+			for (family, owed) in owed_page {
+				if owed == 0 {
+					DepartedFamilyArrears::<T>::remove(&family);
+					continue;
+				}
+				if budget == 0 {
+					// Nothing left this tick; the rest of the page waits for a
+					// later settlement (the cursor already advanced past them, so
+					// they are revisited once it wraps around).
+					break;
+				}
+				let pay = owed.min(budget);
+				let paid = T::PayoutSource::request_payment(requester, &family, pay.saturated_into())
+					.saturated_into::<u128>();
+				if paid == 0 {
+					// Undeliverable (e.g. below the existential deposit): leave
+					// the debt recorded and retry on a later pass.
+					continue;
+				}
+				budget = budget.saturating_sub(paid);
+				let remaining = owed.saturating_sub(paid);
+				if remaining == 0 {
+					DepartedFamilyArrears::<T>::remove(&family);
+				} else {
+					DepartedFamilyArrears::<T>::insert(&family, remaining);
+				}
+				Self::deposit_event(Event::DepartedFamilyPaid {
+					family,
+					tokens: paid,
+					remaining,
+				});
+			}
 		}
 
 		/// Remove per-child weight / quality tracking (avoids stale keys after deregistration).
@@ -2031,7 +2228,22 @@ pub mod pallet {
 			FamilyWeight::<T>::remove(family);
 			FamilyChildren::<T>::remove(family);
 			FamilyActiveChildren::<T>::remove(family);
+			Self::move_arrears_to_departed(family);
 			FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
+		}
+
+		/// Move any unpaid bank-shortfall debt for a departing family out of the
+		/// live [`FamilyArrears`] map and into [`DepartedFamilyArrears`].
+		///
+		/// Called from every family-teardown path. Keeps `FamilyArrears` holding
+		/// only active families (so the settlement arrears walk is bounded by
+		/// `MaxFamilies`) while preserving what the family is still owed — the
+		/// settlement hook pays it down from bank surplus once funds exist. (#79)
+		fn move_arrears_to_departed(family: &T::AccountId) {
+			let owed = FamilyArrears::<T>::take(family);
+			if owed > 0 {
+				DepartedFamilyArrears::<T>::mutate(family, |d| *d = d.saturating_add(owed));
+			}
 		}
 
 		/// Remove a family and every child it has, releasing their deposits.
@@ -2092,6 +2304,8 @@ pub mod pallet {
 				FamilyFirstSeenBucket::<T>::remove(&family_id);
 				FamilyWeightRaw::<T>::remove(&family_id);
 				FamilyWeight::<T>::remove(&family_id);
+				// Preserve any unpaid debt in the departed-debt ledger (#79).
+				Self::move_arrears_to_departed(&family_id);
 
 				if was_current {
 					FamilyCount::<T>::put(FamilyCount::<T>::get().saturating_sub(1));
