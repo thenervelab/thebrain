@@ -1898,3 +1898,62 @@ fn migration_v4_sweeps_stale_arrears_into_the_departed_ledger() {
 		assert_eq!(DepartedFamilyArrears::<Runtime>::get(&inactive_fam), 7_000);
 	});
 }
+
+/// The wholesale `deregister_family` teardown path also preserves unpaid debt:
+/// it moves `FamilyArrears` into the departed-debt ledger, same as the
+/// drop-to-zero path, so no fund-moving teardown drops what a family is owed.
+#[test]
+fn deregister_family_moves_arrears_to_the_departed_ledger() {
+	new_test_ext().execute_with(|| {
+		let (family, child) = (account(1), account(2));
+		register_miner(&family, &child, 7);
+		// A prior shortfall left this family owed.
+		FamilyArrears::<Runtime>::insert(&family, 3_000);
+
+		Arion::deregister_family(family.clone()).expect("deregister_family");
+
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0, "cleared from the live map");
+		assert_eq!(
+			DepartedFamilyArrears::<Runtime>::get(&family),
+			3_000,
+			"preserved in the departed ledger"
+		);
+		// Wholesale removal took the child registration with it.
+		assert!(ChildRegistrations::<Runtime>::get(&child).is_none());
+	});
+}
+
+/// The #79 bound, the child side: `ChildRegistrations` may hold far more rows
+/// than `MaxChildrenTotal` active entries (unbonding rows linger until
+/// `claim_unbonded`), but settlement walks `FamilyChildren` — the active index —
+/// so those extra rows are never touched and never leak into a payout, however
+/// many there are.
+#[test]
+fn settlement_does_not_walk_unbonding_rows_beyond_the_active_set() {
+	new_test_ext().execute_with(|| {
+		let family = account(1);
+		let active = account(2);
+		register_miner(&family, &active, 1);
+		submit_stats(1, 100 * GIB);
+
+		// 50 Unbonding rows left in `ChildRegistrations` with stale uid bindings
+		// and fat accruals — expensive if the settlement ever walked them. They
+		// are not in `FamilyChildren`, so the bounded walk cannot reach them.
+		for i in 0..50u32 {
+			let c = account((100 + i) as u8);
+			register_miner_with_status(&family, &c, 1_000 + i, ChildStatus::Unbonding);
+			ChildMinerUid::<Runtime>::insert(&c, 1_000 + i);
+			submit_stats(1_000 + i, 500 * GIB);
+		}
+
+		let price = 10_000_000_000_u128;
+		let alpha_price = UNIT / 20;
+		enable_payments(price, alpha_price, 100 * UNIT);
+		settle_at(SETTLEMENT_BLOCK);
+
+		// Only the single active child's due is paid; none of the 50 stale rows.
+		let due = tokens_for(100 * GIB * (SETTLEMENT_BLOCK as u128 - 1), price, alpha_price);
+		assert_eq!(Balances::free_balance(&family), due, "only the active child is paid");
+		assert_eq!(FamilyArrears::<Runtime>::get(&family), 0);
+	});
+}
