@@ -241,16 +241,19 @@ pub mod pallet {
 
 	/// Pending two-step node-owner swaps, keyed by node id.
 	///
-	/// Stores the proposed new owner and the block at which the offer expires.
-	/// The swap only takes effect once the proposed new owner accepts, so a
-	/// node can never be moved onto an account without that account's consent.
+	/// Stores the offering owner, the proposed new owner, and the block at which
+	/// the offer expires. The swap only takes effect once the proposed new owner
+	/// accepts, so a node can never be moved onto an account without that
+	/// account's consent. Binding the offer to the owner who made it lets
+	/// `accept_node_owner` reject an offer whose node has since changed hands.
 	#[pallet::storage]
 	#[pallet::getter(fn pending_owner_swap)]
 	pub type PendingOwnerSwap<T: Config> = StorageMap<
 		_,
 		Blake2_128Concat,
-		Vec<u8>,                           // Node ID
-		(T::AccountId, BlockNumberFor<T>), // (proposed new owner, expiry block)
+		Vec<u8>, // Node ID
+		// (offering owner, proposed new owner, expiry block)
+		(T::AccountId, T::AccountId, BlockNumberFor<T>),
 		OptionQuery,
 	>;
 
@@ -387,6 +390,9 @@ pub mod pallet {
 		NotPendingNewOwner,
 		/// The pending owner-swap offer has expired and must be re-offered.
 		OwnerSwapOfferExpired,
+		/// The node changed owner after the offer was made, so the pending offer
+		/// no longer carries the offering owner's consent.
+		OwnerSwapOfferStale,
 	}
 
 	#[pallet::hooks]
@@ -901,7 +907,7 @@ pub mod pallet {
 			let expiry = <frame_system::Pallet<T>>::block_number()
 				.saturating_add(T::OwnerSwapOfferExpiry::get());
 
-			PendingOwnerSwap::<T>::insert(&node_id, (new_owner.clone(), expiry));
+			PendingOwnerSwap::<T>::insert(&node_id, (who.clone(), new_owner.clone(), expiry));
 
 			Self::deposit_event(Event::NodeOwnerSwapOffered { node_id, new_owner, expiry });
 
@@ -919,7 +925,7 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 
-			let (pending_owner, expiry) =
+			let (offerer, pending_owner, expiry) =
 				PendingOwnerSwap::<T>::get(&node_id).ok_or(Error::<T>::NoPendingOwnerSwap)?;
 
 			// Only the proposed new owner may accept, and only they consent here.
@@ -929,6 +935,19 @@ pub mod pallet {
 			if <frame_system::Pallet<T>>::block_number() > expiry {
 				PendingOwnerSwap::<T>::remove(&node_id);
 				return Err(Error::<T>::OwnerSwapOfferExpired.into());
+			}
+
+			// The node must still be owned by the account that made the offer. If
+			// it changed hands since (an operator root swap, or a deregister
+			// followed by a fresh registration of the same id), the offer no
+			// longer carries that owner's consent: reject it and drop the stale
+			// entry rather than move the node away from an owner who never
+			// offered it.
+			let node_info = ColdkeyNodeRegistrationV2::<T>::get(&node_id)
+				.ok_or(Error::<T>::NodeNotRegistered)?;
+			if node_info.owner != offerer {
+				PendingOwnerSwap::<T>::remove(&node_id);
+				return Err(Error::<T>::OwnerSwapOfferStale.into());
 			}
 
 			// Re-check the new owner's eligibility at accept time: they may have
