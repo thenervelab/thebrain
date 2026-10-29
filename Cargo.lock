@@ -8982,6 +8982,7 @@ dependencies = [
  "frame-benchmarking 37.0.0",
  "frame-support 37.1.0",
  "frame-system 37.1.0",
+ "hex",
  "log",
  "pallet-balances 38.0.1",
  "parity-scale-codec",

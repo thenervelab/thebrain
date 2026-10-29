@@ -27,6 +27,27 @@
 //! - `set_distribution_enabled`: admin-gated global switch. While off, every
 //!   `request_payment` is rejected and no funds leave the bank; deposits are
 //!   unaffected.
+//!
+//! ## Compute settlement (calls 10-18)
+//!
+//! Pays compute miners from compute revenue, per source window (UTC day),
+//! from its **own** sub-accounts (`cmp-settle`, `cmp-owed`), never from the
+//! bank account above, so neither `pay_compute_miners` nor any other bank path
+//! can reach these funds, and settlement cannot reach the bank's.
+//!
+//! - The backend signs an approval per `(window, revision)` with an sr25519
+//!   approver key; a submitter (vali) submits it. The chain checks both
+//!   switches (`ComputeSettlementEnabled` and `DistributionEnabled`), key
+//!   roles, order, params, revenue finality, the revenue cap
+//!   `paid + usd ≤ (r + tol) × charged(W)` and the alpha price.
+//! - Parts are paid in order; each must hash to the approved part hash, list
+//!   families strictly ascending, convert at the approval's price, stay
+//!   within the approval's total (equal on the last part), the settlement
+//!   balance and the daily alpha cap. A failed transfer is moved to the owed
+//!   account and claimable once.
+//! - Keys, params, the first window, enabling and defunding are root-only and
+//!   take effect `RootChangeDelay` after scheduling; the admin may only
+//!   disable.
 
 #[cfg(test)]
 mod mock;
@@ -34,21 +55,38 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod settlement_tests;
+
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
+
+pub mod settlement;
 pub mod weights;
 
 pub use pallet::*;
+pub use settlement::{
+	AlphaPriceSource, Approval, ApprovalInput, ChangeKind, ComputeRevenueSource, Entry,
+	PayoutParams, Progress, RootChange, SettlementKeyRoles,
+};
 pub use weights::WeightInfo;
 
 #[frame_support::pallet]
 pub mod pallet {
-	use crate::weights::WeightInfo;
+	use crate::settlement::{
+		self as st, AlphaPriceSource, ComputeRevenueSource, SettlementKeyRoles, MAX_SETTLEMENT_KEYS,
+	};
+	use crate::weights::{SettlementWeightInfo, WeightInfo};
 	use frame_support::{
+		dispatch::{DispatchResultWithPostInfo, Pays},
 		pallet_prelude::*,
+		storage::with_storage_layer,
 		traits::{Currency, ExistenceRequirement, Get},
 		PalletId,
 	};
 	use frame_system::pallet_prelude::*;
 	use payment_math::Tokens;
+	use sp_core::{sr25519, H256};
 	use sp_runtime::traits::{AccountIdConversion, SaturatedConversion, Saturating, Zero};
 	use sp_std::vec::Vec;
 
@@ -138,7 +176,10 @@ pub mod pallet {
 	/// from sudo, so it keys its one-shot guard on this rather than on
 	/// whitelist contents — a requester can be removed by an admin at any time,
 	/// and inferring "already ran" from that would re-seed.
-	pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+	///
+	/// Version 2 adds compute settlement (switch off, no keys, no params);
+	/// the runtime migration only stamps the version, no balance moves.
+	pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -184,6 +225,34 @@ pub mod pallet {
 		type MaxComputeMinersPerPayout: Get<u32>;
 
 		type WeightInfo: WeightInfo;
+
+		/// Value-backed compute revenue per source window (the marketplace).
+		type ComputeRevenue: st::ComputeRevenueSource;
+
+		/// The chain's alpha price (`Credits.AlphaPrice`).
+		type AlphaPrice: st::AlphaPriceSource<BlockNumberFor<Self>>;
+
+		/// Oldest `AlphaPrice` an approval accepts, in blocks.
+		#[pallet::constant]
+		type MaxAlphaPriceAge: Get<BlockNumberFor<Self>>;
+
+		/// Roles a settlement key must not also hold.
+		type SettlementKeyRoles: st::SettlementKeyRoles<Self::AccountId>;
+
+		/// Origin that schedules settlement changes (root).
+		type SettlementRootOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+		/// Blocks between scheduling a settlement change and applying it.
+		#[pallet::constant]
+		type RootChangeDelay: Get<BlockNumberFor<Self>>;
+
+		/// Most entries one `pay_compute_part` may carry.
+		#[pallet::constant]
+		type MaxEntriesPerPart: Get<u32>;
+
+		/// Windows after which a window can no longer be revised (160).
+		#[pallet::constant]
+		type ComputeRevisionHorizon: Get<u32>;
 	}
 
 	/// Source of deposited funds.
@@ -272,6 +341,102 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type TotalPaidByRequester<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
+
+	// ---------------------------------------------------------------------
+	// Compute settlement
+	// ---------------------------------------------------------------------
+
+	/// Settlement switch, off by default. Root enables it through a delayed
+	/// change; the admin or root disables it at once.
+	#[pallet::storage]
+	pub type ComputeSettlementEnabled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+	/// Accounts that submit approvals and parts (vali).
+	#[pallet::storage]
+	pub type ComputeSettlementSubmitters<T: Config> =
+		StorageValue<_, BoundedVec<T::AccountId, ConstU32<MAX_SETTLEMENT_KEYS>>, ValueQuery>;
+
+	/// sr25519 keys whose signature an approval needs (backend).
+	#[pallet::storage]
+	pub type ComputeSettlementApproverKeys<T: Config> =
+		StorageValue<_, BoundedVec<sr25519::Public, ConstU32<MAX_SETTLEMENT_KEYS>>, ValueQuery>;
+
+	/// The payout params in force: `(version, ParamsV1)`, versions from 1.
+	/// Revision 0 must sign this version.
+	#[pallet::storage]
+	pub type ComputePayoutParams<T: Config> =
+		StorageValue<_, (u32, st::PayoutParams), OptionQuery>;
+
+	/// Every params version ever applied, so a revision checks its cap with
+	/// the share pinned at revision 0 after a params change.
+	#[pallet::storage]
+	pub type ComputeParamsHistory<T: Config> =
+		StorageMap<_, Twox64Concat, u32, st::PayoutParams, OptionQuery>;
+
+	/// Most alpha settlement may pay per UTC day. Zero (the default) pays
+	/// nothing.
+	#[pallet::storage]
+	pub type ComputeMaxDailyAlpha<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// Root changes waiting for their delay: `(change, effective block)`.
+	#[pallet::storage]
+	pub type PendingRootChange<T: Config> = StorageMap<
+		_,
+		Twox64Concat,
+		st::ChangeKind,
+		(st::RootChange<T::AccountId>, BlockNumberFor<T>),
+		OptionQuery,
+	>;
+
+	/// First window settlement may pay; set once.
+	#[pallet::storage]
+	pub type FirstComputeWindow<T: Config> = StorageValue<_, u32, OptionQuery>;
+
+	/// The window revision 0 must settle next.
+	#[pallet::storage]
+	pub type NextComputeWindow<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+	/// Approvals by `(window, revision)`.
+	#[pallet::storage]
+	pub type ComputeApproval<T: Config> =
+		StorageMap<_, Twox64Concat, (u32, u8), st::Approval, OptionQuery>;
+
+	/// Payment progress by `(window, revision)`.
+	#[pallet::storage]
+	pub type ComputeProgress<T: Config> =
+		StorageMap<_, Twox64Concat, (u32, u8), st::Progress<T::AccountId>, OptionQuery>;
+
+	/// `(params_version, params_hash, formula_version)` pinned by revision 0
+	/// of the window; later revisions must match it.
+	#[pallet::storage]
+	pub type WindowParams<T: Config> =
+		StorageMap<_, Twox64Concat, u32, (u32, H256, u16), OptionQuery>;
+
+	/// Paid per window by completed revisions: `(usd credits, alpha)`.
+	#[pallet::storage]
+	pub type ComputeWindowPaid<T: Config> =
+		StorageMap<_, Twox64Concat, u32, (u128, u128), ValueQuery>;
+
+	/// Alpha whose transfer failed, claimable by the family.
+	#[pallet::storage]
+	pub type ComputeOwed<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, BalanceOf<T>, ValueQuery>;
+
+	/// Σ `ComputeOwed`.
+	#[pallet::storage]
+	pub type ComputeOwedTotal<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+	/// Alpha paid by settlement on a UTC day: `(day, alpha)`.
+	#[pallet::storage]
+	pub type ComputeDailyAlpha<T: Config> = StorageValue<_, (u64, u128), ValueQuery>;
+
+	/// Alpha reserved by open approvals and not yet paid.
+	#[pallet::storage]
+	pub type ComputeApprovedUnpaid<T: Config> = StorageValue<_, u128, ValueQuery>;
+
+	/// Where `Defund` pays to; set by root.
+	#[pallet::storage]
+	pub type ComputeRevenueAccount<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
 
 	/// Accounts allowed to draw from the bank at genesis.
 	///
@@ -363,6 +528,42 @@ pub mod pallet {
 		},
 		/// Individual compute miner payment detail for indexing.
 		ComputeMinerPaymentPaid { miner: T::AccountId, amount: BalanceOf<T> },
+		/// A settlement approval was accepted.
+		ComputeApprovalSubmitted {
+			window: u32,
+			revision: u8,
+			parts: u8,
+			usd: u128,
+			price: u128,
+			params_version: u32,
+			formula_version: u16,
+			payable_root: H256,
+			evidence_root: H256,
+		},
+		/// An approval with nothing paid yet was revoked.
+		ComputeApprovalRevoked { window: u32, revision: u8 },
+		/// A part was paid.
+		ComputePartPaid { window: u32, revision: u8, part: u8, usd: u128, alpha: u128 },
+		/// Every part of an approval was paid.
+		ComputeWindowCompleted { window: u32, revision: u8, usd: u128, alpha: u128 },
+		/// A family was paid.
+		ComputeMinerSettled { family: T::AccountId, alpha: BalanceOf<T> },
+		/// A transfer to a family failed; the amount is owed to it.
+		ComputeOwedRecorded { family: T::AccountId, alpha: BalanceOf<T> },
+		/// A family claimed what it was owed.
+		ComputeOwedClaimed { family: T::AccountId, alpha: BalanceOf<T> },
+		/// The settlement account was funded.
+		ComputeSettlementFunded { who: T::AccountId, amount: BalanceOf<T> },
+		/// Unreserved settlement funds went back to the revenue account.
+		ComputeSettlementDefunded { to: T::AccountId, amount: BalanceOf<T> },
+		/// A root change was scheduled.
+		RootChangeScheduled { kind: st::ChangeKind, effective: BlockNumberFor<T> },
+		/// A root change was applied.
+		RootChangeApplied { kind: st::ChangeKind },
+		/// A pending root change was cancelled.
+		RootChangeCancelled { kind: st::ChangeKind },
+		/// The settlement switch changed.
+		ComputeSettlementEnabledChanged { enabled: bool },
 	}
 
 	#[pallet::error]
@@ -405,6 +606,89 @@ pub mod pallet {
 		/// inflates every pro-rata share and can overdraw the compartment.
 		/// Appended last on purpose — `Error` variants are metadata-indexed.
 		WeightSumOverflow,
+		/// `ComputeSettlementEnabled` is off.
+		ComputeSettlementDisabled,
+		/// The caller is not a settlement submitter.
+		NotComputeSubmitter,
+		/// Submitters or approver keys are empty, repeated or overlap.
+		InvalidSettlementKeys,
+		/// A settlement key also holds another privileged role.
+		SettlementKeyHasOtherRole,
+		/// The backend signature does not verify under any approver key.
+		BadApproverSignature,
+		/// No first window has been set.
+		FirstWindowNotSet,
+		/// The first window is already set.
+		FirstWindowAlreadySet,
+		/// The window is before the first window.
+		WindowBeforeFirst,
+		/// Revision 0 is not for `NextComputeWindow`.
+		WindowOutOfOrder,
+		/// Revision `k` needs revision `k − 1` completed.
+		RevisionOutOfOrder,
+		/// Revision `k − 1` completed on the same chain day.
+		RevisionSameDay,
+		/// The window is past its revision horizon.
+		RevisionTooLate,
+		/// An approval already exists for this `(window, revision)`.
+		ApprovalExists,
+		/// No approval for this `(window, revision)`.
+		NoApproval,
+		/// `parts`, `part_hashes` and `usd` disagree.
+		MalformedApproval,
+		/// Params version, formula or params hash differ from what is required.
+		ParamsMismatch,
+		/// Invalid payout params.
+		InvalidParams,
+		/// No params set.
+		ParamsNotSet,
+		/// The window's revenue is not final yet.
+		RevenueNotFinal,
+		/// The approval exceeds `(r + tol) × charged(W)`.
+		RevenueCapExceeded,
+		/// `AlphaPrice` is unset or older than `MaxAlphaPriceAge`.
+		AlphaPriceStale,
+		/// The signed price differs from the chain's `AlphaPrice`.
+		AlphaPriceMismatch,
+		/// Alpha conversion overflowed.
+		AlphaOverflow,
+		/// The part is not the next one.
+		PartOutOfOrder,
+		/// The part does not hash to the approved part hash.
+		PartHashMismatch,
+		/// The part has no entries.
+		EmptyPart,
+		/// Families are not strictly ascending within and across parts.
+		FamiliesNotAscending,
+		/// An entry has zero USD.
+		ZeroUsd,
+		/// An entry's alpha differs from `floor(usd × 1e18 / price)`.
+		AlphaMismatch,
+		/// Paid USD would exceed the approval.
+		TotalsExceeded,
+		/// The last part leaves paid USD unequal to the approval.
+		TotalsMismatch,
+		/// The settlement account cannot cover the part above its seed.
+		InsufficientSettlementFunds,
+		/// The part would exceed the daily alpha cap.
+		DailyAlphaCapExceeded,
+		/// A failed payment could not be moved to the owed account.
+		OwedTransferFailed,
+		/// Nothing is owed to the caller.
+		NothingOwed,
+		/// The approval is already (partly) paid or complete.
+		ApprovalAlreadyStarted,
+		/// No such pending change.
+		NoPendingChange,
+		/// The pending change's delay has not passed.
+		ChangeNotDue,
+		/// No revenue account set for `Defund`.
+		NoRevenueAccount,
+		/// Nothing can be defunded.
+		NothingToDefund,
+		/// A part other than the last does not carry `MaxEntriesPerPart`
+		/// entries.
+		NonCanonicalPart,
 	}
 
 	#[pallet::call]
@@ -769,9 +1053,632 @@ pub mod pallet {
 			});
 			Ok(())
 		}
+
+		/// Accept the backend-signed approval of `(window, revision)`.
+		///
+		/// Origin: a submitter. `backend_sig` is an sr25519 signature by an
+		/// approver key over [`st::approval_digest`]. Revision 0 settles
+		/// `NextComputeWindow`; revision `k` pays escrowed hours of an earlier
+		/// window, at most one per chain day, until the revision horizon.
+		/// With `parts = 0` the approval completes at once. Feeless on
+		/// success.
+		#[pallet::call_index(10)]
+		#[pallet::weight(<T as Config>::WeightInfo::submit_compute_approval())]
+		pub fn submit_compute_approval(
+			origin: OriginFor<T>,
+			window: u32,
+			revision: u8,
+			input: st::ApprovalInput,
+			backend_sig: sr25519::Signature,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+			Self::ensure_switches()?;
+			Self::ensure_submitter(&who)?;
+			Self::ensure_current_keys_valid()?;
+
+			let digest = st::approval_digest(&Self::genesis_hash(), window, revision, &input);
+			Self::ensure_approver_signature(&digest, &backend_sig)?;
+
+			ensure!(
+				!ComputeApproval::<T>::contains_key((window, revision)),
+				Error::<T>::ApprovalExists
+			);
+			ensure!(
+				input.part_hashes.len() == usize::from(input.parts)
+					&& (input.parts > 0 || input.usd == 0)
+					&& (input.parts == 0 || input.usd > 0),
+				Error::<T>::MalformedApproval
+			);
+			let first = FirstComputeWindow::<T>::get().ok_or(Error::<T>::FirstWindowNotSet)?;
+			ensure!(window >= first, Error::<T>::WindowBeforeFirst);
+
+			let today = T::ComputeRevenue::current_window();
+			let params = Self::check_order_and_params(window, revision, today, &input)?;
+
+			let charged =
+				T::ComputeRevenue::final_charged(window).ok_or(Error::<T>::RevenueNotFinal)?;
+			let (paid_usd, _) = ComputeWindowPaid::<T>::get(window);
+			ensure!(
+				st::within_revenue_cap(
+					paid_usd,
+					input.usd,
+					charged,
+					params.share_bps,
+					params.tol_bps
+				),
+				Error::<T>::RevenueCapExceeded
+			);
+
+			let price = Self::fresh_alpha_price()?;
+			ensure!(input.price == price, Error::<T>::AlphaPriceMismatch);
+			let alpha = st::alpha_for(input.usd, price).ok_or(Error::<T>::AlphaOverflow)?;
+
+			if revision == 0 {
+				WindowParams::<T>::insert(
+					window,
+					(input.params_version, input.params_hash, input.formula_version),
+				);
+			}
+			let event = Event::ComputeApprovalSubmitted {
+				window,
+				revision,
+				parts: input.parts,
+				usd: input.usd,
+				price,
+				params_version: input.params_version,
+				formula_version: input.formula_version,
+				payable_root: input.payable_root,
+				evidence_root: input.evidence_root,
+			};
+			let parts = input.parts;
+			ComputeApproval::<T>::insert(
+				(window, revision),
+				st::Approval { input, approval_digest: digest },
+			);
+			ComputeProgress::<T>::insert(
+				(window, revision),
+				st::Progress {
+					next_part: 0,
+					last_family: Self::zero_account(),
+					usd_paid: 0,
+					alpha_paid: 0,
+					completed_day: None,
+				},
+			);
+			ComputeApprovedUnpaid::<T>::mutate(|r| *r = r.saturating_add(alpha));
+			Self::deposit_event(event);
+
+			if parts == 0 {
+				Self::complete_approval(window, revision, today);
+			}
+			Ok(Pays::No.into())
+		}
+
+		/// Pay part `part` of the approval of `(window, revision)`.
+		///
+		/// Origin: a submitter. Every check runs before any transfer; the
+		/// call is one storage transaction. A transfer that fails is moved to
+		/// the owed account and claimable once by the family. Feeless on
+		/// success.
+		#[pallet::call_index(11)]
+		#[pallet::weight(<T as Config>::WeightInfo::pay_compute_part(T::MaxEntriesPerPart::get()))]
+		pub fn pay_compute_part(
+			origin: OriginFor<T>,
+			window: u32,
+			revision: u8,
+			part: u8,
+			entries: BoundedVec<st::Entry<T::AccountId>, T::MaxEntriesPerPart>,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+			Self::ensure_switches()?;
+			Self::ensure_submitter(&who)?;
+
+			let approval = ComputeApproval::<T>::get((window, revision))
+				.ok_or(Error::<T>::NoApproval)?
+				.input;
+			let mut progress =
+				ComputeProgress::<T>::get((window, revision)).ok_or(Error::<T>::NoApproval)?;
+			ensure!(
+				progress.completed_day.is_none()
+					&& part == progress.next_part
+					&& part < approval.parts,
+				Error::<T>::PartOutOfOrder
+			);
+			ensure!(!entries.is_empty(), Error::<T>::EmptyPart);
+			let is_last = part.saturating_add(1) == approval.parts;
+			// Canonical cut: every part but the last is full.
+			ensure!(
+				is_last || entries.len() == T::MaxEntriesPerPart::get() as usize,
+				Error::<T>::NonCanonicalPart
+			);
+			let expected = approval
+				.part_hashes
+				.get(usize::from(part))
+				.ok_or(Error::<T>::PartOutOfOrder)?;
+			ensure!(
+				st::part_hash(&Self::genesis_hash(), window, revision, part, &entries) == *expected,
+				Error::<T>::PartHashMismatch
+			);
+
+			// No predecessor before the first entry of part 0.
+			let mut last = if part == 0 { None } else { Some(progress.last_family.clone()) };
+			let mut usd_total = progress.usd_paid;
+			let mut part_usd: u128 = 0;
+			let mut part_alpha: u128 = 0;
+			for entry in entries.iter() {
+				ensure!(
+					last.as_ref().map_or(true, |prev| entry.family > *prev),
+					Error::<T>::FamiliesNotAscending
+				);
+				ensure!(entry.usd > 0, Error::<T>::ZeroUsd);
+				ensure!(
+					st::alpha_for(entry.usd, approval.price) == Some(entry.alpha),
+					Error::<T>::AlphaMismatch
+				);
+				usd_total = usd_total
+					.checked_add(entry.usd)
+					.filter(|total| *total <= approval.usd)
+					.ok_or(Error::<T>::TotalsExceeded)?;
+				part_usd = part_usd.saturating_add(entry.usd);
+				part_alpha = part_alpha.checked_add(entry.alpha).ok_or(Error::<T>::AlphaOverflow)?;
+				last = Some(entry.family.clone());
+			}
+			if is_last {
+				ensure!(usd_total == approval.usd, Error::<T>::TotalsMismatch);
+			}
+
+			ensure!(
+				part_alpha <= Self::settlement_spendable(),
+				Error::<T>::InsufficientSettlementFunds
+			);
+			let today = T::ComputeRevenue::current_window();
+			let day = u64::from(today);
+			let (counter_day, spent) = ComputeDailyAlpha::<T>::get();
+			let spent = if counter_day == day { spent } else { 0 };
+			let max_daily = ComputeMaxDailyAlpha::<T>::get();
+			let spent = spent
+				.checked_add(part_alpha)
+				.filter(|s| *s <= max_daily)
+				.ok_or(Error::<T>::DailyAlphaCapExceeded)?;
+
+			let settlement = Self::settlement_account();
+			for entry in entries.iter() {
+				if entry.alpha == 0 {
+					continue;
+				}
+				Self::pay_or_owe(&settlement, &entry.family, entry.alpha.saturated_into())?;
+			}
+
+			progress.next_part = part.saturating_add(1);
+			if let Some(last) = last {
+				progress.last_family = last;
+			}
+			progress.usd_paid = usd_total;
+			progress.alpha_paid = progress.alpha_paid.saturating_add(part_alpha);
+			ComputeProgress::<T>::insert((window, revision), &progress);
+			ComputeDailyAlpha::<T>::put((day, spent));
+			ComputeApprovedUnpaid::<T>::mutate(|r| *r = r.saturating_sub(part_alpha));
+			Self::deposit_event(Event::ComputePartPaid {
+				window,
+				revision,
+				part,
+				usd: part_usd,
+				alpha: part_alpha,
+			});
+
+			if is_last {
+				Self::complete_approval(window, revision, today);
+			}
+			Ok(Pays::No.into())
+		}
+
+		/// Claim everything owed to the caller.
+		#[pallet::call_index(12)]
+		#[pallet::weight(<T as Config>::WeightInfo::claim_compute_owed())]
+		pub fn claim_compute_owed(origin: OriginFor<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			Self::ensure_switches()?;
+			let amount = ComputeOwed::<T>::get(&who);
+			ensure!(!amount.is_zero(), Error::<T>::NothingOwed);
+			T::Currency::transfer(
+				&Self::owed_account(),
+				&who,
+				amount,
+				ExistenceRequirement::KeepAlive,
+			)?;
+			ComputeOwed::<T>::remove(&who);
+			ComputeOwedTotal::<T>::mutate(|t| *t = t.saturating_sub(amount));
+			Self::deposit_event(Event::ComputeOwedClaimed { family: who, alpha: amount });
+			Ok(())
+		}
+
+		/// Move `amount` from the caller into the settlement account.
+		#[pallet::call_index(13)]
+		#[pallet::weight(<T as Config>::WeightInfo::fund_compute_settlement())]
+		pub fn fund_compute_settlement(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
+			T::Currency::transfer(
+				&who,
+				&Self::settlement_account(),
+				amount,
+				ExistenceRequirement::KeepAlive,
+			)?;
+			Self::deposit_event(Event::ComputeSettlementFunded { who, amount });
+			Ok(())
+		}
+
+		/// Revoke an approval nothing has been paid from yet.
+		///
+		/// Origin: a submitter; `backend_sig` by an approver key over
+		/// [`st::revoke_digest`]. The `(window, revision)` slot can then be
+		/// approved again. Works with the switches off. Feeless on success.
+		#[pallet::call_index(14)]
+		#[pallet::weight(<T as Config>::WeightInfo::revoke_compute_approval())]
+		pub fn revoke_compute_approval(
+			origin: OriginFor<T>,
+			window: u32,
+			revision: u8,
+			backend_sig: sr25519::Signature,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+			Self::ensure_submitter(&who)?;
+			let approval =
+				ComputeApproval::<T>::get((window, revision)).ok_or(Error::<T>::NoApproval)?;
+			let progress =
+				ComputeProgress::<T>::get((window, revision)).ok_or(Error::<T>::NoApproval)?;
+			ensure!(
+				progress.next_part == 0 && progress.completed_day.is_none(),
+				Error::<T>::ApprovalAlreadyStarted
+			);
+			let digest = st::revoke_digest(
+				&Self::genesis_hash(),
+				window,
+				revision,
+				&approval.approval_digest,
+			);
+			Self::ensure_approver_signature(&digest, &backend_sig)?;
+
+			ComputeApproval::<T>::remove((window, revision));
+			ComputeProgress::<T>::remove((window, revision));
+			if revision == 0 {
+				WindowParams::<T>::remove(window);
+			}
+			let reserved = approval.reserved_alpha();
+			ComputeApprovedUnpaid::<T>::mutate(|r| *r = r.saturating_sub(reserved));
+			Self::deposit_event(Event::ComputeApprovalRevoked { window, revision });
+			Ok(Pays::No.into())
+		}
+
+		/// Root schedules a settlement change, applied by anyone once
+		/// `RootChangeDelay` has passed. A change of the same kind replaces
+		/// the pending one and restarts the delay.
+		#[pallet::call_index(15)]
+		#[pallet::weight(<T as Config>::WeightInfo::schedule_compute_root_change())]
+		pub fn schedule_compute_root_change(
+			origin: OriginFor<T>,
+			change: st::RootChange<T::AccountId>,
+		) -> DispatchResult {
+			T::SettlementRootOrigin::ensure_origin(origin)?;
+			Self::validate_root_change(&change)?;
+			let kind = change.kind();
+			let effective = frame_system::Pallet::<T>::block_number()
+				.saturating_add(T::RootChangeDelay::get());
+			PendingRootChange::<T>::insert(kind, (change, effective));
+			Self::deposit_event(Event::RootChangeScheduled { kind, effective });
+			Ok(())
+		}
+
+		/// Apply a pending settlement change whose delay has passed. Any
+		/// signed origin; the change is re-validated against current state.
+		#[pallet::call_index(16)]
+		#[pallet::weight(<T as Config>::WeightInfo::apply_compute_root_change())]
+		pub fn apply_compute_root_change(origin: OriginFor<T>, kind: st::ChangeKind) -> DispatchResult {
+			ensure_signed(origin)?;
+			let (change, effective) =
+				PendingRootChange::<T>::get(kind).ok_or(Error::<T>::NoPendingChange)?;
+			ensure!(
+				frame_system::Pallet::<T>::block_number() >= effective,
+				Error::<T>::ChangeNotDue
+			);
+			Self::validate_root_change(&change)?;
+			PendingRootChange::<T>::remove(kind);
+			Self::apply_root_change(change)?;
+			Self::deposit_event(Event::RootChangeApplied { kind });
+			Ok(())
+		}
+
+		/// Root drops a pending settlement change.
+		#[pallet::call_index(17)]
+		#[pallet::weight(<T as Config>::WeightInfo::cancel_compute_root_change())]
+		pub fn cancel_compute_root_change(origin: OriginFor<T>, kind: st::ChangeKind) -> DispatchResult {
+			T::SettlementRootOrigin::ensure_origin(origin)?;
+			ensure!(PendingRootChange::<T>::contains_key(kind), Error::<T>::NoPendingChange);
+			PendingRootChange::<T>::remove(kind);
+			Self::deposit_event(Event::RootChangeCancelled { kind });
+			Ok(())
+		}
+
+		/// Switch settlement off at once, and drop a pending enable. The
+		/// admin or root.
+		#[pallet::call_index(18)]
+		#[pallet::weight(<T as Config>::WeightInfo::disable_compute_settlement())]
+		pub fn disable_compute_settlement(origin: OriginFor<T>) -> DispatchResult {
+			if let Err(origin) = T::AdminOrigin::try_origin(origin) {
+				T::SettlementRootOrigin::ensure_origin(origin)?;
+			}
+			ComputeSettlementEnabled::<T>::put(false);
+			PendingRootChange::<T>::remove(st::ChangeKind::Enable);
+			Self::deposit_event(Event::ComputeSettlementEnabledChanged { enabled: false });
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
+		/// Settlement funds (`cmp-settle`). Unreachable from every other
+		/// bank path, which only spends [`Self::account_id`].
+		pub fn settlement_account() -> T::AccountId {
+			T::PalletId::get().into_sub_account_truncating(b"cmp-settle")
+		}
+
+		/// Failed settlement transfers (`cmp-owed`), claimable by families.
+		pub fn owed_account() -> T::AccountId {
+			T::PalletId::get().into_sub_account_truncating(b"cmp-owed")
+		}
+
+		/// Settlement balance above its seed (the existential deposit).
+		pub fn settlement_spendable() -> u128 {
+			T::Currency::free_balance(&Self::settlement_account())
+				.saturating_sub(T::Currency::minimum_balance())
+				.saturated_into()
+		}
+
+		/// The chain's block 0 hash, bound into every settlement digest.
+		pub fn genesis_hash() -> H256 {
+			let hash = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
+			H256::decode(&mut &hash.encode()[..]).unwrap_or_default()
+		}
+
+		/// The all-zero account, `Progress::last_family` before part 0.
+		fn zero_account() -> T::AccountId {
+			T::AccountId::decode(&mut sp_runtime::traits::TrailingZeroInput::zeroes())
+				.expect("an all-zero input decodes any fixed-width account id; qed")
+		}
+
+		fn ensure_switches() -> DispatchResult {
+			ensure!(ComputeSettlementEnabled::<T>::get(), Error::<T>::ComputeSettlementDisabled);
+			ensure!(DistributionEnabled::<T>::get(), Error::<T>::DistributionDisabled);
+			Ok(())
+		}
+
+		fn ensure_submitter(who: &T::AccountId) -> DispatchResult {
+			ensure!(
+				ComputeSettlementSubmitters::<T>::get().contains(who),
+				Error::<T>::NotComputeSubmitter
+			);
+			Ok(())
+		}
+
+		/// The account an approver key would sign transactions as.
+		fn approver_account(key: &sr25519::Public) -> Option<T::AccountId> {
+			T::AccountId::decode(&mut &key.0[..]).ok()
+		}
+
+		/// Submitters and approvers: non-empty, unique, disjoint, and none
+		/// holding another privileged role.
+		pub(crate) fn validate_keys(
+			submitters: &[T::AccountId],
+			approvers: &[sr25519::Public],
+		) -> DispatchResult {
+			ensure!(!submitters.is_empty() && !approvers.is_empty(), Error::<T>::InvalidSettlementKeys);
+			let mut accounts: Vec<T::AccountId> = submitters.to_vec();
+			for key in approvers {
+				accounts
+					.push(Self::approver_account(key).ok_or(Error::<T>::InvalidSettlementKeys)?);
+			}
+			for (i, a) in accounts.iter().enumerate() {
+				ensure!(!accounts[..i].contains(a), Error::<T>::InvalidSettlementKeys);
+				ensure!(
+					!T::SettlementKeyRoles::has_other_role(a),
+					Error::<T>::SettlementKeyHasOtherRole
+				);
+			}
+			Ok(())
+		}
+
+		fn ensure_current_keys_valid() -> DispatchResult {
+			Self::validate_keys(
+				&ComputeSettlementSubmitters::<T>::get(),
+				&ComputeSettlementApproverKeys::<T>::get(),
+			)
+		}
+
+		fn ensure_approver_signature(digest: &H256, sig: &sr25519::Signature) -> DispatchResult {
+			let ok = ComputeSettlementApproverKeys::<T>::get()
+				.iter()
+				.any(|key| sp_io::crypto::sr25519_verify(sig, digest.as_bytes(), key));
+			ensure!(ok, Error::<T>::BadApproverSignature);
+			Ok(())
+		}
+
+		/// `AlphaPrice`, refused when unset or older than `MaxAlphaPriceAge`.
+		fn fresh_alpha_price() -> Result<u128, DispatchError> {
+			let (price, updated_at) = T::AlphaPrice::alpha_price();
+			ensure!(price > 0, Error::<T>::AlphaPriceStale);
+			let updated_at = updated_at.ok_or(Error::<T>::AlphaPriceStale)?;
+			let age = frame_system::Pallet::<T>::block_number().saturating_sub(updated_at);
+			ensure!(age <= T::MaxAlphaPriceAge::get(), Error::<T>::AlphaPriceStale);
+			Ok(price)
+		}
+
+		/// Order, revision and params rules; returns the params the approval
+		/// is checked under (the latest version for revision 0, the pinned
+		/// one for later revisions).
+		fn check_order_and_params(
+			window: u32,
+			revision: u8,
+			today: u32,
+			input: &st::ApprovalInput,
+		) -> Result<st::PayoutParams, DispatchError> {
+			ensure!(input.formula_version == st::FORMULA_VERSION, Error::<T>::ParamsMismatch);
+			let (version, hash, formula, params) = if revision == 0 {
+				ensure!(window == NextComputeWindow::<T>::get(), Error::<T>::WindowOutOfOrder);
+				let (version, params) =
+					ComputePayoutParams::<T>::get().ok_or(Error::<T>::ParamsNotSet)?;
+				(version, st::params_hash(&params), st::FORMULA_VERSION, params)
+			} else {
+				ensure!(
+					today <= window.saturating_add(T::ComputeRevisionHorizon::get()),
+					Error::<T>::RevisionTooLate
+				);
+				let previous = ComputeProgress::<T>::get((window, revision - 1))
+					.ok_or(Error::<T>::RevisionOutOfOrder)?;
+				let done = previous.completed_day.ok_or(Error::<T>::RevisionOutOfOrder)?;
+				ensure!(done < today, Error::<T>::RevisionSameDay);
+				let (version, hash, formula) =
+					WindowParams::<T>::get(window).ok_or(Error::<T>::RevisionOutOfOrder)?;
+				let params =
+					ComputeParamsHistory::<T>::get(version).ok_or(Error::<T>::ParamsNotSet)?;
+				(version, hash, formula, params)
+			};
+			ensure!(
+				input.params_version == version
+					&& input.formula_version == formula
+					&& input.params_hash == hash,
+				Error::<T>::ParamsMismatch
+			);
+			Ok(params)
+		}
+
+		/// Transfer to `family`, or move the amount to the owed account if
+		/// that transfer fails. Only the move to the owed account may fail
+		/// the call.
+		fn pay_or_owe(
+			settlement: &T::AccountId,
+			family: &T::AccountId,
+			amount: BalanceOf<T>,
+		) -> DispatchResult {
+			let paid = with_storage_layer(|| {
+				T::Currency::transfer(settlement, family, amount, ExistenceRequirement::KeepAlive)
+			});
+			if paid.is_ok() {
+				Self::deposit_event(Event::ComputeMinerSettled {
+					family: family.clone(),
+					alpha: amount,
+				});
+				return Ok(());
+			}
+			T::Currency::transfer(
+				settlement,
+				&Self::owed_account(),
+				amount,
+				ExistenceRequirement::KeepAlive,
+			)
+			.map_err(|_| Error::<T>::OwedTransferFailed)?;
+			ComputeOwed::<T>::mutate(family, |o| *o = o.saturating_add(amount));
+			ComputeOwedTotal::<T>::mutate(|t| *t = t.saturating_add(amount));
+			Self::deposit_event(Event::ComputeOwedRecorded { family: family.clone(), alpha: amount });
+			Ok(())
+		}
+
+		/// Mark `(window, revision)` complete on `today`, add it to the
+		/// window's paid totals, release the rounding dust of its reservation;
+		/// revision 0 opens the next window.
+		fn complete_approval(window: u32, revision: u8, today: u32) {
+			let Some(approval) = ComputeApproval::<T>::get((window, revision)) else { return };
+			let Some(mut progress) = ComputeProgress::<T>::get((window, revision)) else { return };
+			progress.completed_day = Some(today);
+			let dust = approval.reserved_alpha().saturating_sub(progress.alpha_paid);
+			ComputeApprovedUnpaid::<T>::mutate(|r| *r = r.saturating_sub(dust));
+			ComputeWindowPaid::<T>::mutate(window, |(usd, alpha)| {
+				*usd = usd.saturating_add(progress.usd_paid);
+				*alpha = alpha.saturating_add(progress.alpha_paid);
+			});
+			ComputeProgress::<T>::insert((window, revision), &progress);
+			if revision == 0 {
+				NextComputeWindow::<T>::put(window.saturating_add(1));
+			}
+			Self::deposit_event(Event::ComputeWindowCompleted {
+				window,
+				revision,
+				usd: progress.usd_paid,
+				alpha: progress.alpha_paid,
+			});
+		}
+
+		/// Checks a change can be scheduled or applied against current state.
+		fn validate_root_change(change: &st::RootChange<T::AccountId>) -> DispatchResult {
+			match change {
+				st::RootChange::Keys { submitters, approvers } => {
+					Self::validate_keys(submitters, approvers)
+				},
+				st::RootChange::Params(p) => {
+					// `r + ε < 1` is the wash-trading bound (G1).
+					ensure!(
+						u32::from(p.share_bps) + u32::from(p.tol_bps) < st::BPS
+							&& p.share_bps > 0 && p.vcpu_hour_uusd > 0,
+						Error::<T>::InvalidParams
+					);
+					Ok(())
+				},
+				st::RootChange::MaxDailyAlpha(_) => Ok(()),
+				st::RootChange::FirstWindow(_) => {
+					ensure!(
+						FirstComputeWindow::<T>::get().is_none(),
+						Error::<T>::FirstWindowAlreadySet
+					);
+					Ok(())
+				},
+				st::RootChange::Enable | st::RootChange::RevenueAccount(_) => Ok(()),
+				st::RootChange::Defund(amount) => {
+					ensure!(*amount > 0, Error::<T>::ZeroAmount);
+					Ok(())
+				},
+			}
+		}
+
+		fn apply_root_change(change: st::RootChange<T::AccountId>) -> DispatchResult {
+			match change {
+				st::RootChange::Keys { submitters, approvers } => {
+					ComputeSettlementSubmitters::<T>::put(submitters);
+					ComputeSettlementApproverKeys::<T>::put(approvers);
+				},
+				st::RootChange::Params(params) => {
+					let version =
+						ComputePayoutParams::<T>::get().map_or(1, |(v, _)| v.saturating_add(1));
+					ComputePayoutParams::<T>::put((version, params));
+					ComputeParamsHistory::<T>::insert(version, params);
+				},
+				st::RootChange::MaxDailyAlpha(max) => ComputeMaxDailyAlpha::<T>::put(max),
+				st::RootChange::FirstWindow(window) => {
+					FirstComputeWindow::<T>::put(window);
+					NextComputeWindow::<T>::put(window);
+				},
+				st::RootChange::Enable => {
+					ComputeSettlementEnabled::<T>::put(true);
+					Self::deposit_event(Event::ComputeSettlementEnabledChanged { enabled: true });
+				},
+				st::RootChange::RevenueAccount(account) => {
+					ComputeRevenueAccount::<T>::put(account);
+				},
+				st::RootChange::Defund(amount) => {
+					let to = ComputeRevenueAccount::<T>::get().ok_or(Error::<T>::NoRevenueAccount)?;
+					let headroom = Self::settlement_spendable()
+						.saturating_sub(ComputeApprovedUnpaid::<T>::get());
+					let amount = amount.min(headroom);
+					ensure!(amount > 0, Error::<T>::NothingToDefund);
+					let amount: BalanceOf<T> = amount.saturated_into();
+					T::Currency::transfer(
+						&Self::settlement_account(),
+						&to,
+						amount,
+						ExistenceRequirement::KeepAlive,
+					)?;
+					Self::deposit_event(Event::ComputeSettlementDefunded { to, amount });
+				},
+			}
+			Ok(())
+		}
 		/// The bank sovereign account.
 		pub fn account_id() -> T::AccountId {
 			T::PalletId::get().into_account_truncating()

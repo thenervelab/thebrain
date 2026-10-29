@@ -24,7 +24,7 @@ use sp_std::marker::PhantomData;
 /// `NodeWeightByChild`) for each of at most `MaxChildrenTotal` children.
 const SOURCE_SCAN_READS: u64 = 1_000 + 3 * 1_000;
 
-pub trait WeightInfo {
+pub trait WeightInfo: SettlementWeightInfo {
 	fn deposit() -> Weight;
 	fn add_requester() -> Weight;
 	fn remove_requester() -> Weight;
@@ -128,4 +128,87 @@ impl WeightInfo for () {
 					.saturating_mul(n.into()),
 			)
 	}
+}
+
+/// Weights of the compute settlement calls (10-18).
+///
+/// Hand-set upper estimates, the same convention as the rest of this file;
+/// `benchmarking.rs` measures each call at its worst case (four approver keys
+/// tried, `pay_compute_part` at `MaxEntriesPerPart` entries with every
+/// transfer failing over to the owed account) and the figures below are kept
+/// above those measurements. Reads and writes are counted from the code.
+pub trait SettlementWeightInfo {
+	fn submit_compute_approval() -> Weight;
+	fn pay_compute_part(n: u32) -> Weight;
+	fn claim_compute_owed() -> Weight;
+	fn fund_compute_settlement() -> Weight;
+	fn revoke_compute_approval() -> Weight;
+	fn schedule_compute_root_change() -> Weight;
+	fn apply_compute_root_change() -> Weight;
+	fn cancel_compute_root_change() -> Weight;
+	fn disable_compute_settlement() -> Weight;
+}
+
+fn settlement_weight<W: Get<frame_support::weights::RuntimeDbWeight>>(
+	ps: u64,
+	reads: u64,
+	writes: u64,
+) -> Weight {
+	Weight::from_parts(ps, 0)
+		.saturating_add(W::get().reads(reads))
+		.saturating_add(W::get().writes(writes))
+}
+
+macro_rules! settlement_weights {
+	($db:ty) => {
+		fn submit_compute_approval() -> Weight {
+			// Up to 4 sr25519 verifications (~60 µs each), key-role scans,
+			// ~22 reads (switches, keys, three role lists, genesis hash,
+			// order, params, pin, revenue, paid, price) and 6 writes
+			// (approval, progress, pin, reservation, completion).
+			settlement_weight::<$db>(400_000_000, 22, 6)
+		}
+		fn pay_compute_part(n: u32) -> Weight {
+			// Fixed: switches, submitter, approval, progress, genesis hash,
+			// settlement balance, params, daily counter, clock; writes
+			// progress, window paid, daily counter, reservation, completion.
+			// Per entry, worst case: a failed transfer (2 reads) then the
+			// transfer to the owed account (2 reads, 2 writes) and the owed
+			// map and total (2 reads, 2 writes).
+			settlement_weight::<$db>(120_000_000, 14, 7).saturating_add(
+				settlement_weight::<$db>(160_000_000, 6, 4).saturating_mul(n.into()),
+			)
+		}
+		fn claim_compute_owed() -> Weight {
+			settlement_weight::<$db>(70_000_000, 6, 4)
+		}
+		fn fund_compute_settlement() -> Weight {
+			settlement_weight::<$db>(60_000_000, 2, 2)
+		}
+		fn revoke_compute_approval() -> Weight {
+			settlement_weight::<$db>(350_000_000, 6, 4)
+		}
+		fn schedule_compute_root_change() -> Weight {
+			// Key validation reads the three role lists.
+			settlement_weight::<$db>(60_000_000, 5, 1)
+		}
+		fn apply_compute_root_change() -> Weight {
+			// Re-validation plus the heaviest change (defund: a transfer).
+			settlement_weight::<$db>(120_000_000, 10, 6)
+		}
+		fn cancel_compute_root_change() -> Weight {
+			settlement_weight::<$db>(15_000_000, 1, 1)
+		}
+		fn disable_compute_settlement() -> Weight {
+			settlement_weight::<$db>(15_000_000, 0, 2)
+		}
+	};
+}
+
+impl<T: frame_system::Config> SettlementWeightInfo for SubstrateWeight<T> {
+	settlement_weights!(T::DbWeight);
+}
+
+impl SettlementWeightInfo for () {
+	settlement_weights!(RocksDbWeight);
 }

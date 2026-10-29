@@ -118,6 +118,86 @@ impl pallet_hippocampus::Config for Test {
 	type ComputeMinerWeights = MockComputeWeights;
 	type MaxComputeMinersPerPayout = ConstU32<16>;
 	type WeightInfo = ();
+	type ComputeRevenue = MockRevenue;
+	type AlphaPrice = MockAlphaPrice;
+	type MaxAlphaPriceAge = MaxAlphaPriceAge;
+	type SettlementKeyRoles = MockKeyRoles;
+	type SettlementRootOrigin = frame_system::EnsureRoot<AccountId>;
+	type RootChangeDelay = RootChangeDelay;
+	type MaxEntriesPerPart = ConstU32<64>;
+	type ComputeRevisionHorizon = ConstU32<160>;
+}
+
+parameter_types! {
+	pub const MaxAlphaPriceAge: u64 = 28_800;
+	pub const RootChangeDelay: u64 = 28_800;
+}
+
+thread_local! {
+	static CURRENT_WINDOW: RefCell<u32> = const { RefCell::new(0) };
+	static CHARGED: RefCell<Vec<(u32, u128)>> = const { RefCell::new(Vec::new()) };
+	static PRICE: RefCell<(u128, Option<u64>)> = const { RefCell::new((0, None)) };
+	static OTHER_ROLES: RefCell<Vec<AccountId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The UTC day the mock clock is in.
+pub fn set_current_window(window: u32) {
+	CURRENT_WINDOW.with(|w| *w.borrow_mut() = window);
+}
+
+/// Make `window` final with `charged` value-backed compute revenue.
+pub fn set_final_charged(window: u32, charged: u128) {
+	CHARGED.with(|c| {
+		let mut c = c.borrow_mut();
+		c.retain(|(w, _)| *w != window);
+		c.push((window, charged));
+	});
+}
+
+/// Make `window` not final.
+pub fn clear_final_charged(window: u32) {
+	CHARGED.with(|c| c.borrow_mut().retain(|(w, _)| *w != window));
+}
+
+pub fn set_alpha_price(price: u128, updated_at: Option<u64>) {
+	PRICE.with(|p| *p.borrow_mut() = (price, updated_at));
+}
+
+/// Give `who` another privileged role (credits / billing authority, cap admin).
+pub fn give_other_role(who: AccountId) {
+	OTHER_ROLES.with(|r| r.borrow_mut().push(who));
+}
+
+pub struct MockRevenue;
+impl pallet_hippocampus::ComputeRevenueSource for MockRevenue {
+	fn current_window() -> u32 {
+		CURRENT_WINDOW.with(|w| *w.borrow())
+	}
+	fn final_charged(window: u32) -> Option<u128> {
+		CHARGED.with(|c| c.borrow().iter().find(|(w, _)| *w == window).map(|(_, v)| *v))
+	}
+	#[cfg(feature = "runtime-benchmarks")]
+	fn bench_set_final_charged(window: u32, charged: u128) {
+		set_final_charged(window, charged);
+	}
+}
+
+pub struct MockAlphaPrice;
+impl pallet_hippocampus::AlphaPriceSource<u64> for MockAlphaPrice {
+	fn alpha_price() -> (u128, Option<u64>) {
+		PRICE.with(|p| *p.borrow())
+	}
+	#[cfg(feature = "runtime-benchmarks")]
+	fn bench_set_price(price: u128) {
+		set_alpha_price(price, Some(System::block_number()));
+	}
+}
+
+pub struct MockKeyRoles;
+impl pallet_hippocampus::SettlementKeyRoles<AccountId> for MockKeyRoles {
+	fn has_other_role(who: &AccountId) -> bool {
+		OTHER_ROLES.with(|r| r.borrow().contains(who))
+	}
 }
 
 pub fn alice() -> AccountId {
@@ -153,6 +233,10 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 		System::set_block_number(1);
 		set_storage_miners(Vec::new());
 		set_compute_miners(Vec::new());
+		set_current_window(0);
+		CHARGED.with(|c| c.borrow_mut().clear());
+		set_alpha_price(0, None);
+		OTHER_ROLES.with(|r| r.borrow_mut().clear());
 	});
 	ext
 }
