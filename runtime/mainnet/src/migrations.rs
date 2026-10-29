@@ -475,3 +475,100 @@ impl<T: pallet_credits::Config> OnRuntimeUpgrade for InitAlphaPriceUpdatedAt<T> 
 		T::DbWeight::get().reads_writes(3, 1)
 	}
 }
+
+/// Hippocampus v1 → v2: compute miner settlement. Stamps the version only:
+/// the new storage starts empty, so the settlement switch is off, there are
+/// no keys, params or first window, and no balance moves. The legacy bank
+/// (account, ledgers, compartments, switch, epoch cursor) is untouched.
+///
+/// Guarded on the on-chain version, after `ActivateMinerPaymentBank` (which
+/// takes a v0 chain to v1).
+pub struct HippocampusComputeSettlementV2<T>(sp_std::marker::PhantomData<T>);
+
+/// What `HippocampusComputeSettlementV2` must leave unchanged.
+#[derive(Encode, Decode, PartialEq, Eq, RuntimeDebug)]
+pub struct LegacyBankState {
+	pub bank_free: u128,
+	pub deposited: sp_std::vec::Vec<u128>,
+	pub total_paid_out: u128,
+	pub emission_paid_out: u128,
+	pub compute_emission_paid_out: u128,
+	pub period_amount: u128,
+	pub distribution_enabled: bool,
+	pub last_paid_compute_epoch: Option<u64>,
+}
+
+impl<T> HippocampusComputeSettlementV2<T>
+where
+	T: pallet_hippocampus::Config,
+{
+	/// Snapshot of the legacy bank, for the before/after comparison.
+	pub fn legacy_bank_state() -> LegacyBankState {
+		use pallet_hippocampus::DepositType::*;
+		use sp_runtime::SaturatedConversion;
+		LegacyBankState {
+			bank_free: pallet_hippocampus::Pallet::<T>::balance().saturated_into(),
+			deposited: [MarketplaceRevenue, Emission, Grant, Fees, Other, ComputeEmission]
+				.into_iter()
+				.map(|kind| pallet_hippocampus::TotalDeposited::<T>::get(kind).saturated_into())
+				.collect(),
+			total_paid_out: pallet_hippocampus::TotalPaidOut::<T>::get().saturated_into(),
+			emission_paid_out: pallet_hippocampus::EmissionPaidOut::<T>::get().saturated_into(),
+			compute_emission_paid_out: pallet_hippocampus::ComputeEmissionPaidOut::<T>::get()
+				.saturated_into(),
+			period_amount: pallet_hippocampus::MinerPayoutPeriodAmount::<T>::get().saturated_into(),
+			distribution_enabled: pallet_hippocampus::DistributionEnabled::<T>::get(),
+			last_paid_compute_epoch: pallet_hippocampus::LastPaidComputeEpoch::<T>::get(),
+		}
+	}
+
+	/// Settlement is inert: switch off, no keys, params or first window.
+	pub fn settlement_inert() -> bool {
+		!pallet_hippocampus::ComputeSettlementEnabled::<T>::get()
+			&& pallet_hippocampus::ComputeSettlementSubmitters::<T>::get().is_empty()
+			&& pallet_hippocampus::ComputeSettlementApproverKeys::<T>::get().is_empty()
+			&& pallet_hippocampus::ComputePayoutParams::<T>::get().is_none()
+			&& pallet_hippocampus::FirstComputeWindow::<T>::get().is_none()
+			&& pallet_hippocampus::InFlightApproval::<T>::get().is_none()
+	}
+}
+
+impl<T> OnRuntimeUpgrade for HippocampusComputeSettlementV2<T>
+where
+	T: pallet_hippocampus::Config,
+{
+	fn on_runtime_upgrade() -> Weight {
+		if pallet_hippocampus::Pallet::<T>::on_chain_storage_version() != 1 {
+			return T::DbWeight::get().reads(1);
+		}
+		StorageVersion::new(2).put::<pallet_hippocampus::Pallet<T>>();
+		log::info!(target: "runtime::migration", "hippocampus v2: compute settlement, switch off");
+		T::DbWeight::get().reads_writes(1, 1)
+	}
+
+	#[cfg(feature = "try-runtime")]
+	fn pre_upgrade() -> Result<sp_std::vec::Vec<u8>, sp_runtime::TryRuntimeError> {
+		let version = pallet_hippocampus::Pallet::<T>::on_chain_storage_version();
+		Ok((version, Self::legacy_bank_state()).encode())
+	}
+
+	#[cfg(feature = "try-runtime")]
+	fn post_upgrade(state: sp_std::vec::Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+		let (version, before) = <(StorageVersion, LegacyBankState)>::decode(&mut &state[..])
+			.map_err(|_| sp_runtime::TryRuntimeError::Other("bad pre_upgrade state"))?;
+		frame_support::ensure!(
+			Self::legacy_bank_state() == before,
+			"hippocampus v2 changed the legacy bank state"
+		);
+		// Only when this upgrade crossed into v2: a live v2 chain may have
+		// settlement configured.
+		if version == StorageVersion::new(1) {
+			frame_support::ensure!(
+				pallet_hippocampus::Pallet::<T>::on_chain_storage_version() == 2,
+				"hippocampus storage version was not advanced to 2"
+			);
+			frame_support::ensure!(Self::settlement_inert(), "settlement is not inert after v2");
+		}
+		Ok(())
+	}
+}

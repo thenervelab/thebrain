@@ -95,7 +95,11 @@ pub mod pallet {
 	pub struct Pallet<T>(_);
 
 	/// The current storage version.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+	///
+	/// Version 3 adds the compute revenue accumulator
+	/// (`ComputeChargedByWindow`, `BatchBackedCredits`, `FrozenComputeCharge`,
+	/// `ComputeChargedPruneFrom`): new maps only, no data migration.
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
 
 	/// How many empty due-days the renewal drain may skip past in one tick.
 	///
@@ -183,7 +187,12 @@ pub mod pallet {
 		/// replay any more. Nothing depends on it running promptly: an
 		/// unpruned record is only storage, never a wrong answer.
 		fn on_idle(_n: BlockNumberFor<T>, remaining_weight: Weight) -> Weight {
-			Self::prune_compute_usage(remaining_weight)
+			let mut used = Self::prune_compute_usage(remaining_weight);
+			used = used
+				.saturating_add(Self::prune_compute_charged(remaining_weight.saturating_sub(used)));
+			used.saturating_add(Self::sweep_frozen_compute_charges(
+				remaining_weight.saturating_sub(used),
+			))
 		}
 
 		fn integrity_test() {
@@ -196,6 +205,12 @@ pub mod pallet {
 			assert!(
 				T::MaxComputeUsageRowsPerCall::get() > 0,
 				"MaxComputeUsageRowsPerCall must allow at least one row"
+			);
+			// A window must stay readable until its revenue is final.
+			assert!(
+				u64::from(T::ComputeRevenueRetention::get()).saturating_mul(24)
+					> T::MaxComputeBillingLag::get().saturating_add(24),
+				"ComputeRevenueRetention must outlast MaxComputeBillingLag"
 			);
 		}
 	}
@@ -387,6 +402,12 @@ pub mod pallet {
 
 		/// Measured cost of the units the billing hook meters itself in.
 		type WeightInfo: crate::weights::WeightInfo;
+
+		/// Windows (UTC days) `ComputeChargedByWindow` is kept, and the
+		/// horizon within which an unfrozen escrowed charge still counts.
+		/// Matches compute settlement's revision horizon (160).
+		#[pallet::constant]
+		type ComputeRevenueRetention: Get<u32>;
     }
 
 	// const LOCK_BLOCK_EXPIRATION: u32 = 3;
@@ -1003,6 +1024,21 @@ pub mod pallet {
 		MaxAccountChargeCapOverrideUpdated {
 			max: u128,
 		},
+		/// Value-backed `Compute` revenue was counted for a source window:
+		/// `charged` into `ComputeChargedByWindow`, `escrowed` into
+		/// `FrozenComputeCharge` (frozen batches, counted at unfreeze).
+		ComputeRevenueCounted {
+			window: u32,
+			charged: u128,
+			escrowed: u128,
+		},
+		/// A batch's escrowed compute revenue moved into its source windows
+		/// (`released`) or was dropped as past retention (`dropped`).
+		FrozenComputeChargeReleased {
+			batch_id: u64,
+			released: u128,
+			dropped: u128,
+		},
 	}
 
 	#[pallet::error]
@@ -1107,6 +1143,9 @@ pub mod pallet {
 		/// billing authority, letting one stolen key raise the caps it bills
 		/// against.
 		AdminIsBillingAuthority,
+		/// `release_frozen_charge` on a batch that does not exist or is still
+		/// inside its chargeback window.
+		BatchStillFrozen,
 	}
 
 	#[pallet::storage]
@@ -1384,6 +1423,47 @@ pub mod pallet {
 	/// owned by the account, so it can never be charged back.
 	#[pallet::storage]
 	pub type LastPurchaseBatch<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u64>;
+
+	/// Value-backed `Compute` revenue debited for each source window (UTC
+	/// day of service, `period / 24`), in credits. The revenue cap of compute
+	/// settlement (pallet-hippocampus).
+	///
+	/// Grows and never decreases: direct debits until the window is past
+	/// `MaxComputeBillingLag`, then escrowed charges as their batches
+	/// unfreeze. Pruned once `ComputeRevenueRetention` windows behind.
+	#[pallet::storage]
+	pub type ComputeChargedByWindow<T: Config> =
+		StorageMap<_, Twox64Concat, u32, u128, ValueQuery>;
+
+	/// Credits of the batch backed by alpha that reached the bank, valued at
+	/// the purchase price (`buy_credits`) or the spot at deposit:
+	/// `min(credits, alpha_to_credits(landed_alpha, price))`, summed over a
+	/// purchase batch's top-ups. Out of the batch's `credit_amount`: each
+	/// credit consumed carries `BatchBackedCredits / credit_amount` of
+	/// backing. Absent = nothing backed (every batch created before this
+	/// record existed, refund batches, minted credits). Batches from before
+	/// the upgrade are deliberately not backfilled: their credits count 0
+	/// toward the cap (conservative); a backfill would be its own migration.
+	#[pallet::storage]
+	pub type BatchBackedCredits<T: Config> = StorageMap<_, Twox64Concat, u64, u128, ValueQuery>;
+
+	/// Value-backed `Compute` revenue consumed from a frozen batch (inside
+	/// its chargeback window), by batch and source window. Moved into
+	/// `ComputeChargedByWindow` when the batch unfreezes; deleted by a
+	/// chargeback.
+	#[pallet::storage]
+	pub type FrozenComputeCharge<T: Config> =
+		StorageDoubleMap<_, Twox64Concat, u64, Twox64Concat, u32, u128, ValueQuery>;
+
+	/// Oldest window that may still hold a `ComputeChargedByWindow` entry,
+	/// where `on_idle` pruning resumes. `None` when nothing was ever counted.
+	#[pallet::storage]
+	pub type ComputeChargedPruneFrom<T: Config> = StorageValue<_, u32, OptionQuery>;
+
+	/// Where the `on_idle` walk over `FrozenComputeCharge` resumes (a raw
+	/// key); `None` to start from the beginning.
+	#[pallet::storage]
+	pub type FrozenChargeSweepCursor<T: Config> = StorageValue<_, Vec<u8>, OptionQuery>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -1956,7 +2036,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(15)]
-		#[pallet::weight((0, Pays::No))]
+		#[pallet::weight((<T as Config>::WeightInfo::chargeback(), Pays::No))]
 		pub fn chargeback(origin: OriginFor<T>, batch_id: u64) -> DispatchResult {
 			// Ensure the caller is a signed origin (admin check)
 			ensure_root(origin)?;
@@ -2491,7 +2571,9 @@ pub mod pallet {
 				if owed == 0 {
 					continue;
 				}
-				if Self::collect_compute_credits(&who, owed) {
+				// Collected arrears carry no kind on chain, so they never count
+				// as compute revenue (chain spec §2.2).
+				if Self::collect_compute_credits(&who, owed).is_some() {
 					Self::deposit_event(Event::ComputeArrearsSettled { who, amount: owed });
 				} else {
 					let available = CreditsPallet::<T>::get_free_credits(&who);
@@ -2774,10 +2856,51 @@ pub mod pallet {
 			Self::deposit_event(Event::MaxAccountChargeCapOverrideUpdated { max });
 			Ok(())
 		}
+
+		/// Move a batch's escrowed compute revenue (`FrozenComputeCharge`)
+		/// into its source windows once the batch is past its chargeback
+		/// window. Permissionless; the alpha release sweep does the same
+		/// lazily. Windows past `ComputeRevenueRetention` are dropped.
+		#[pallet::call_index(48)]
+		#[pallet::weight(<T as Config>::WeightInfo::release_frozen_charge())]
+		pub fn release_frozen_charge(origin: OriginFor<T>, batch_id: u64) -> DispatchResult {
+			ensure_signed(origin)?;
+			let batch = Batches::<T>::get(batch_id).ok_or(Error::<T>::BatchStillFrozen)?;
+			ensure!(Self::batch_unfrozen(&batch), Error::<T>::BatchStillFrozen);
+			Self::release_frozen_compute_charge(batch_id);
+			Ok(())
+		}
 	}
 
 	/// Longest referral code `buy_credits` accepts, in bytes.
 	pub const MAX_REFERRAL_CODE_LEN: usize = 64;
+
+	/// Most `FrozenComputeCharge` windows one release moves. A batch is frozen
+	/// for 15 × 28_800 blocks (30 days at 6 s) and rows can be backdated by
+	/// `MaxComputeBillingLag`, so a batch spans ~34 windows; anything left
+	/// over is moved by the next release.
+	pub const MAX_FROZEN_WINDOWS_PER_RELEASE: u32 = 48;
+
+	/// Most frozen batches one compute debit escrows revenue for.
+	pub const MAX_FROZEN_ESCROWS_PER_DEBIT: u32 = 2;
+
+	/// Backed credits one debit took from one batch.
+	pub(crate) struct BackedTake {
+		pub batch_id: u64,
+		/// `BatchBackedCredits` taken, pro rata to the credits taken.
+		pub backed: u128,
+		/// Taken while the batch was inside its chargeback window.
+		pub frozen: bool,
+	}
+
+	/// `floor(a × b / c)` in U256; 0 when `c` is 0.
+	pub(crate) fn mul_div_floor(a: u128, b: u128, c: u128) -> u128 {
+		if c == 0 {
+			return 0;
+		}
+		let v = U256::from(a).saturating_mul(U256::from(b)) / U256::from(c);
+		u128::try_from(v).unwrap_or(u128::MAX)
+	}
 
 	/// Who pays the alpha backing of a new batch into the bank.
 	enum BackingSource<AccountId> {
@@ -3276,7 +3399,12 @@ pub mod pallet {
 
 			// Nothing new to bill leaves any arrears for `settle_compute_arrears`
 			// rather than attempting them on every idle hour.
-			let outcome = if billable == 0 || Self::collect_compute_credits(who, owed) {
+			let collected =
+				if billable == 0 { Some(Vec::new()) } else { Self::collect_compute_credits(who, owed) };
+			let outcome = if let Some(takes) = collected {
+				if billable > 0 {
+					Self::count_compute_revenue(period, amount, billable, owed, breakdown, &takes);
+				}
 				let arrears_collected = if billable == 0 { 0 } else { arrears };
 				Self::deposit_event(match breakdown {
 					None => Event::ComputeUsageCharged {
@@ -3367,21 +3495,274 @@ pub mod pallet {
 		}
 
 		/// Debit exactly `owed` compute credits from `who`, clearing their
-		/// arrears, or debit nothing. Returns whether the debit happened.
+		/// arrears, or debit nothing. Returns the backed credits taken from
+		/// each batch if the debit happened, `None` if not.
 		///
 		/// Its own storage layer, so a failure part-way through the debit, the
 		/// arrears clear or the referral accrual reverts all of them and nothing
 		/// else the calling extrinsic has already done.
-		fn collect_compute_credits(who: &T::AccountId, owed: u128) -> bool {
-			with_transaction(|| match Self::consume_credits(who.clone(), owed) {
-				Ok(()) => {
+		fn collect_compute_credits(who: &T::AccountId, owed: u128) -> Option<Vec<BackedTake>> {
+			with_transaction(|| match Self::consume_credits_tracked(who.clone(), owed) {
+				Ok(takes) => {
 					ComputeArrears::<T>::remove(who);
 					Self::accrue_hourly_referral_commission(who, owed);
-					TransactionOutcome::Commit(Ok::<(), DispatchError>(()))
+					TransactionOutcome::Commit(Ok::<_, DispatchError>(takes))
 				},
 				Err(e) => TransactionOutcome::Rollback(Err(e)),
 			})
-			.is_ok()
+			.ok()
+		}
+
+		/// The source window of a compute period: its UTC day.
+		pub fn compute_window_of(period: u64) -> u32 {
+			u32::try_from(period / 24).unwrap_or(u32::MAX)
+		}
+
+		/// The UTC day the chain clock is in.
+		pub fn current_compute_window() -> u32 {
+			Self::compute_window_of(Self::current_compute_period())
+		}
+
+		/// `ComputeChargedByWindow[window]` once no direct debit can still
+		/// land in it (its last hour is past `MaxComputeBillingLag`), else
+		/// `None`. Escrowed charges may still add to it later.
+		pub fn final_compute_charged(window: u32) -> Option<u128> {
+			let window_end = (u64::from(window) + 1).saturating_mul(24);
+			let final_from = window_end.saturating_add(T::MaxComputeBillingLag::get());
+			(Self::current_compute_period() >= final_from)
+				.then(|| ComputeChargedByWindow::<T>::get(window))
+		}
+
+		/// Count the value-backed `Compute` share of a charged usage row.
+		///
+		/// `owed` (the row's `billable` plus collected arrears) was debited as
+		/// `takes`; the compute share of it is the row's `Compute` line (none of
+		/// a v1 row) scaled to `billable`. Each batch's backed take counts
+		/// `backed × compute_billable / owed`: arrears and non-compute kinds
+		/// never count, nor do unbacked credits. Frozen batches go to escrow.
+		fn count_compute_revenue(
+			period: u64,
+			amount: u128,
+			billable: u128,
+			owed: u128,
+			breakdown: Option<&UsageBreakdown>,
+			takes: &[BackedTake],
+		) {
+			// A v1 row has no breakdown, so nothing attributes it to `Compute`:
+			// it counts nothing (fail closed — a row that cannot be attributed
+			// never raises the cap). Settlement needs usage through v2.
+			let compute_amount = match breakdown {
+				None => 0,
+				Some(lines) => lines
+					.iter()
+					.find(|(kind, _)| *kind == UsageKind::Compute)
+					.map_or(0, |(_, value)| *value),
+			};
+			let compute_billable = mul_div_floor(compute_amount, billable, amount);
+			if compute_billable == 0 || owed == 0 {
+				return;
+			}
+			let window = Self::compute_window_of(period);
+			let mut charged: u128 = 0;
+			let mut escrowed: u128 = 0;
+			let mut frozen_writes: u32 = 0;
+			for take in takes {
+				let counted = mul_div_floor(take.backed, compute_billable, owed);
+				if counted == 0 {
+					continue;
+				}
+				if take.frozen {
+					// Bounded for the row weight. A debit drains every batch it
+					// walks but the last, so more than this is not expected;
+					// beyond it the escrow is dropped, which only lowers the
+					// revenue cap.
+					if frozen_writes >= MAX_FROZEN_ESCROWS_PER_DEBIT {
+						continue;
+					}
+					frozen_writes += 1;
+					FrozenComputeCharge::<T>::mutate(take.batch_id, window, |v| {
+						*v = v.saturating_add(counted)
+					});
+					escrowed = escrowed.saturating_add(counted);
+				} else {
+					charged = charged.saturating_add(counted);
+				}
+			}
+			if charged > 0 {
+				Self::add_compute_charged(window, charged);
+			}
+			if charged > 0 || escrowed > 0 {
+				Self::deposit_event(Event::ComputeRevenueCounted { window, charged, escrowed });
+			}
+		}
+
+		fn add_compute_charged(window: u32, amount: u128) {
+			ComputeChargedByWindow::<T>::mutate(window, |v| *v = v.saturating_add(amount));
+			ComputeChargedPruneFrom::<T>::mutate(|from| {
+				*from = Some(from.map_or(window, |f| f.min(window)))
+			});
+		}
+
+		/// A batch's chargeback window has passed (or it was never frozen).
+		pub(crate) fn batch_unfrozen(batch: &Batch<T::AccountId, BlockNumberFor<T>>) -> bool {
+			!batch.is_frozen || <frame_system::Pallet<T>>::block_number() >= batch.release_time
+		}
+
+		/// Move up to `MAX_FROZEN_WINDOWS_PER_RELEASE` of `batch_id`'s escrowed
+		/// compute charges into their source windows, dropping windows past
+		/// `ComputeRevenueRetention`. Returns how many entries it took.
+		pub(crate) fn release_frozen_compute_charge(batch_id: u64) -> u32 {
+			let current = Self::current_compute_window();
+			let retention = T::ComputeRevenueRetention::get();
+			let entries: Vec<(u32, u128)> = FrozenComputeCharge::<T>::iter_prefix(batch_id)
+				.take(MAX_FROZEN_WINDOWS_PER_RELEASE as usize)
+				.collect();
+			let mut released: u128 = 0;
+			let mut dropped: u128 = 0;
+			for (window, amount) in entries.iter() {
+				FrozenComputeCharge::<T>::remove(batch_id, window);
+				if current <= window.saturating_add(retention) {
+					Self::add_compute_charged(*window, *amount);
+					released = released.saturating_add(*amount);
+				} else {
+					dropped = dropped.saturating_add(*amount);
+				}
+			}
+			if !entries.is_empty() {
+				Self::deposit_event(Event::FrozenComputeChargeReleased { batch_id, released, dropped });
+			}
+			u32::try_from(entries.len()).unwrap_or(u32::MAX)
+		}
+
+		/// `reads` + `writes` of the accumulator's maps, with FRAME's
+		/// unbounded-map proof allowance per read (as `prune_compute_usage`).
+		fn accumulator_access(reads: u64, writes: u64) -> Weight {
+			const PROOF_PER_ACCESS: u64 = 2_600;
+			T::DbWeight::get()
+				.reads_writes(reads, writes)
+				.saturating_add(Weight::from_parts(0, PROOF_PER_ACCESS.saturating_mul(reads)))
+		}
+
+		/// Move escrowed compute charges of batches past their chargeback
+		/// window into their source windows, a page at a time within `limit`.
+		///
+		/// Walks `FrozenComputeCharge` only (escrowed card batches inside the
+		/// last ~30 days), so it costs nothing on the alpha release sweep. A
+		/// batch still frozen is skipped and seen again on the next round; an
+		/// entry whose batch no longer exists (charged back, cleanup cut
+		/// short) is deleted without counting. `release_frozen_charge`
+		/// releases one batch at once for anyone who does not want to wait.
+		pub(crate) fn sweep_frozen_compute_charges(limit: Weight) -> Weight {
+			const MAX_ENTRIES_PER_RUN: usize = 64;
+			let mut meter = WeightMeter::with_limit(limit);
+			// The cursor in and out, the clock and the block number in.
+			if meter.try_consume(Self::accumulator_access(3, 1)).is_err() {
+				return Weight::zero();
+			}
+			// The entry, its batch, the window total and the prune cursor in;
+			// the entry, the window total and the cursor out.
+			let per_entry = Self::accumulator_access(4, 3);
+			let affordable = Self::accounts_affordable(&meter, per_entry).min(MAX_ENTRIES_PER_RUN);
+			if affordable == 0 {
+				return meter.consumed();
+			}
+			let page: Vec<(u64, u32, u128)> = match FrozenChargeSweepCursor::<T>::get() {
+				Some(key) => FrozenComputeCharge::<T>::iter_from(key).take(affordable).collect(),
+				None => FrozenComputeCharge::<T>::iter().take(affordable).collect(),
+			};
+			let Some(&(last_batch, last_window, _)) = page.last() else {
+				FrozenChargeSweepCursor::<T>::kill();
+				return meter.consumed();
+			};
+			let resume_from = FrozenComputeCharge::<T>::hashed_key_for(last_batch, last_window);
+			let exhausted = page.len() < affordable;
+
+			/// What the sweep knows of the batch it is on.
+			#[derive(Clone, Copy, PartialEq)]
+			enum State {
+				Frozen,
+				Unfrozen,
+				Gone,
+			}
+			let current = Self::current_compute_window();
+			let now_block = <frame_system::Pallet<T>>::block_number();
+			let retention = T::ComputeRevenueRetention::get();
+			let mut batch: Option<(u64, State, u128, u128)> = None;
+			let flush = |b: Option<(u64, State, u128, u128)>| {
+				if let Some((batch_id, State::Unfrozen, released, dropped)) = b {
+					if released > 0 || dropped > 0 {
+						Self::deposit_event(Event::FrozenComputeChargeReleased {
+							batch_id,
+							released,
+							dropped,
+						});
+					}
+				}
+			};
+			for (batch_id, window, amount) in page.iter().copied() {
+				meter.consume(per_entry);
+				if batch.map_or(true, |(b, ..)| b != batch_id) {
+					flush(batch);
+					let state = match Batches::<T>::get(batch_id) {
+						None => State::Gone,
+						Some(b) if !b.is_frozen || now_block >= b.release_time => State::Unfrozen,
+						Some(_) => State::Frozen,
+					};
+					batch = Some((batch_id, state, 0, 0));
+				}
+				let Some((_, state, released, dropped)) = batch.as_mut() else { continue };
+				match *state {
+					State::Frozen => continue,
+					State::Gone => FrozenComputeCharge::<T>::remove(batch_id, window),
+					State::Unfrozen => {
+						FrozenComputeCharge::<T>::remove(batch_id, window);
+						if current <= window.saturating_add(retention) {
+							Self::add_compute_charged(window, amount);
+							*released = released.saturating_add(amount);
+						} else {
+							*dropped = dropped.saturating_add(amount);
+						}
+					},
+				}
+			}
+			flush(batch);
+
+			if exhausted {
+				FrozenChargeSweepCursor::<T>::kill();
+			} else {
+				FrozenChargeSweepCursor::<T>::put(resume_from);
+			}
+			meter.consumed()
+		}
+
+		/// Prune `ComputeChargedByWindow` windows more than
+		/// `ComputeRevenueRetention` behind, within `limit`.
+		pub(crate) fn prune_compute_charged(limit: Weight) -> Weight {
+			const MAX_WINDOWS_PER_RUN: u32 = 8;
+			let mut meter = WeightMeter::with_limit(limit);
+			// The cursor and the clock in, the cursor out.
+			if meter.try_consume(Self::accumulator_access(2, 1)).is_err() {
+				return Weight::zero();
+			}
+			let Some(mut from) = ComputeChargedPruneFrom::<T>::get() else {
+				return meter.consumed();
+			};
+			let current = Self::current_compute_window();
+			let retention = T::ComputeRevenueRetention::get();
+			let per_window = Self::accumulator_access(1, 1);
+			let mut done = 0u32;
+			while done < MAX_WINDOWS_PER_RUN
+				&& from.saturating_add(retention) < current
+				&& meter.try_consume(per_window).is_ok()
+			{
+				ComputeChargedByWindow::<T>::remove(from);
+				from = from.saturating_add(1);
+				done += 1;
+			}
+			if done > 0 {
+				ComputeChargedPruneFrom::<T>::put(from);
+			}
+			meter.consumed()
 		}
 
 		/// Drop `ComputeUsageCharged` periods that have fallen more than
@@ -5766,6 +6147,9 @@ pub mod pallet {
 			freeze_for_chargeback: bool,
 			code: Option<Vec<u8>>,
 		) -> DispatchResult {
+			// The deposit's alpha is valued at the spot; with no fresh price
+			// nothing is counted as backed (chain spec §2.2).
+			let spot = Self::fresh_alpha_price().ok();
 			Self::create_batch(
 				sender,
 				credit_amount,
@@ -5773,6 +6157,7 @@ pub mod pallet {
 				freeze_for_chargeback,
 				code,
 				BackingSource::SudoBestEffort,
+				spot,
 			)
 			.map(|_| ())
 		}
@@ -5824,13 +6209,21 @@ pub mod pallet {
 					false,
 					code,
 					BackingSource::Buyer(who.clone()),
+					Some(alpha_price),
 				)?;
 				LastPurchaseBatch::<T>::insert(&who, batch_id);
 				batch_id
 			} else {
 				let batch_id =
 					LastPurchaseBatch::<T>::get(&who).ok_or(Error::<T>::TooManyBatches)?;
-				Self::top_up_purchase_batch(&who, batch_id, credit_amount, alpha_amount, code)?;
+				Self::top_up_purchase_batch(
+					&who,
+					batch_id,
+					credit_amount,
+					alpha_amount,
+					alpha_price,
+					code,
+				)?;
 				batch_id
 			};
 
@@ -5851,13 +6244,20 @@ pub mod pallet {
 		/// Blending purchases made at different prices into one batch is
 		/// sound: the batch is unfrozen and fully backed, so consumption only
 		/// ever releases its alpha pro rata, and the totals stay exact.
+		///
+		/// The purchase adds its own value-backed credits to the batch:
+		/// `min(credit_amount, alpha_to_credits(alpha_amount, alpha_price))`,
+		/// the buyer's alpha being mandatory and fully landed.
 		fn top_up_purchase_batch(
 			who: &T::AccountId,
 			batch_id: u64,
 			credit_amount: u128,
 			alpha_amount: u128,
+			alpha_price: u128,
 			code: Option<Vec<u8>>,
 		) -> DispatchResult {
+			let backed = Self::backed_credits(credit_amount, alpha_amount, Some(alpha_price));
+			BatchBackedCredits::<T>::mutate(batch_id, |b| *b = b.saturating_add(backed));
 			Batches::<T>::try_mutate(batch_id, |batch| -> DispatchResult {
 				let batch = batch.as_mut().ok_or(Error::<T>::TooManyBatches)?;
 				ensure!(batch.owner == *who && !batch.is_frozen, Error::<T>::TooManyBatches);
@@ -5914,8 +6314,23 @@ pub mod pallet {
 			u128::try_from(credits).map_err(|_| Error::<T>::CreditAmountOverflow.into())
 		}
 
+		/// `min(credits, alpha_to_credits(landed_alpha, price))`; 0 without a
+		/// price or alpha.
+		fn backed_credits(credits: u128, landed_alpha: u128, price: Option<u128>) -> u128 {
+			match price {
+				Some(price) if landed_alpha > 0 => Self::alpha_to_credits(landed_alpha, price)
+					.unwrap_or(u128::MAX)
+					.min(credits),
+				_ => 0,
+			}
+		}
+
 		/// Create a batch for `sender`, mint its credits and route its alpha
 		/// backing to the bank from `source`. Returns the new batch id.
+		///
+		/// Records the batch's value-backed credits at `backing_price` (the
+		/// purchase price, or the spot at deposit; `None` backs nothing),
+		/// counting only the alpha that actually reached the bank.
 		fn create_batch(
 			sender: T::AccountId,
 			credit_amount: u128,
@@ -5923,6 +6338,7 @@ pub mod pallet {
 			freeze_for_chargeback: bool,
 			code: Option<Vec<u8>>,
 			source: BackingSource<T::AccountId>,
+			backing_price: Option<u128>,
 		) -> Result<u64, DispatchError> {
 			let batch_id = NextBatchId::<T>::get();
 
@@ -5993,20 +6409,40 @@ pub mod pallet {
 				}
 			}
 
+			let landed = alpha_amount.saturating_sub(UnbackedBatchAlpha::<T>::get(batch_id));
+			let backed = Self::backed_credits(credit_amount, landed, backing_price);
+			if backed > 0 {
+				BatchBackedCredits::<T>::insert(batch_id, backed);
+			}
+
 			Self::deposit_event(Event::BatchDeposited { owner: sender, batch_id });
 
 			Ok(batch_id)
 		}
 
 		/// Consume user credits from their batches
-		#[transactional]
 		pub fn consume_credits(sender: T::AccountId, credits: u128) -> DispatchResult {
+			Self::consume_credits_tracked(sender, credits).map(|_| ())
+		}
+
+		/// [`Self::consume_credits`], returning the value-backed credits taken
+		/// from each batch: `credits_taken × BatchBackedCredits /
+		/// credit_amount`, floored and never above the credits taken.
+		/// Consumption is pro rata, so this is the chain spec's
+		/// `credits_taken × backed_remaining / remaining_credits` without a
+		/// write per batch.
+		#[transactional]
+		pub(crate) fn consume_credits_tracked(
+			sender: T::AccountId,
+			credits: u128,
+		) -> Result<Vec<BackedTake>, DispatchError> {
 			let block_number = <frame_system::Pallet<T>>::block_number();
 			// NOTE: referral discounts should NOT apply here, because this function is used for
 			// recurring subscription charges and other billing paths (e.g. per-GB storage charging).
 			//
 			// Referral discount + referral rewards are handled explicitly at subscription purchase time.
 			let mut remaining = credits;
+			let mut takes: Vec<BackedTake> = Vec::new();
 
 			if let Some(batch_ids) = UserBatches::<T>::get(&sender) {
 				for batch_id in batch_ids {
@@ -6037,6 +6473,24 @@ pub mod pallet {
 						// Safety: Ensure we don't release more alpha than remaining
 						let alpha_to_release_u128 =
 							alpha_to_release.min(U256::from(batch.remaining_alpha)).as_u128();
+
+						// Value-backed credits go with the credits taken, pro rata:
+						// every credit of the batch carries the same backed share
+						// `BatchBackedCredits / credit_amount`, so nothing is
+						// written back here (one read per batch actually drawn).
+						if credits_to_take > 0 {
+							let backed_ref = BatchBackedCredits::<T>::get(batch_id);
+							let backed =
+								mul_div_floor(credits_to_take, backed_ref, batch.credit_amount)
+									.min(credits_to_take);
+							if backed > 0 {
+								takes.push(BackedTake {
+									batch_id,
+									backed,
+									frozen: batch.is_frozen && block_number < batch.release_time,
+								});
+							}
+						}
 
 						// Update batch credits first (needed for future calculations in this batch)
 						batch.remaining_credits =
@@ -6098,7 +6552,7 @@ pub mod pallet {
 
 			Self::deposit_event(Event::CreditsConsumed { owner: sender, credits });
 
-			Ok(())
+			Ok(takes)
 		}
 
 		/// Consume a release of `released` alpha from `batch_id`: split off the
@@ -6130,6 +6584,17 @@ pub mod pallet {
 						&& <frame_system::Pallet<T>>::block_number() < batch.release_time,
 					"Invalid chargeback"
 				);
+
+				// Revenue the reversed batch paid for compute never counts: its
+				// escrowed charges and its remaining backing are deleted. The
+				// clear is bounded; anything past the bound belongs to a batch
+				// removed below, which the `on_idle` sweep deletes uncounted.
+				let _ = FrozenComputeCharge::<T>::clear_prefix(
+					batch_id,
+					MAX_FROZEN_WINDOWS_PER_RELEASE.saturating_mul(2),
+					None,
+				);
+				BatchBackedCredits::<T>::remove(batch_id);
 
 				// Decrease the total locked Alpha by the remaining Alpha in the batch
 				let total_alpha_to_remove =

@@ -197,17 +197,28 @@ fn hourly_spend(setup: impl FnOnce(&AccountId)) -> u128 {
 /// the block is just produced heavier.
 #[test]
 fn the_hourly_sweep_is_bounded_per_tick_and_reaches_everyone() {
-	let baseline = baseline_without_users();
-	new_test_ext().execute_with(|| {
-		// Enough users that one tick cannot afford them all.
-		let total = 300u32;
+	// Enough users that one tick cannot afford them all.
+	let total = 300u32;
+	let user = |n: u32| {
+		let mut raw = [0u8; 32];
+		raw[0] = 0xC0;
+		raw[1..5].copy_from_slice(&n.to_le_bytes());
+		AccountId32::new(raw)
+	};
+	// The same deposits without metric rows: the batches they open are walked
+	// by the alpha release sweep, which has its own budget, so they belong in
+	// the baseline and not in what the hourly sweep is measured against.
+	let baseline = new_test_ext().execute_with(|| {
 		for n in 0..total {
-			let mut raw = [0u8; 32];
-			raw[0] = 0xC0;
-			raw[1..5].copy_from_slice(&n.to_le_bytes());
-			let user = AccountId32::new(raw);
-			deposit_credits(&user, 1_000_000);
-			report_usage(&user, DRIVE_BYTES, S3_BYTES);
+			deposit_credits(&user(n), 1_000_000);
+		}
+		System::set_block_number(HOURLY_STEP);
+		Marketplace::on_initialize(HOURLY_STEP).ref_time()
+	});
+	new_test_ext().execute_with(|| {
+		for n in 0..total {
+			deposit_credits(&user(n), 1_000_000);
+			report_usage(&user(n), DRIVE_BYTES, S3_BYTES);
 		}
 
 		let budget = <Runtime as pallet_marketplace::Config>::HourlyWeightBudget::get()

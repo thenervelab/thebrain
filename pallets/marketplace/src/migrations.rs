@@ -131,22 +131,46 @@ impl<T: Config> OnRuntimeUpgrade for Migrate<T> {
 		// and it folds in the `paid_per_month` backfill v0 owed. A chain still on
 		// v0 must not run the old backfill first — it iterates with the *new*
 		// types and would drop every row it cannot decode.
+		let mut weight = T::DbWeight::get().reads(1);
 		if current_version < 2 {
-			let weight = Self::migrate_to_v2();
+			weight = weight.saturating_add(Self::migrate_to_v2());
 			StorageVersion::new(2).put::<Pallet<T>>();
-			weight
+		}
+		// v3: the compute revenue accumulator. New maps only, all empty at
+		// the upgrade; batches created before it carry no
+		// `BatchBackedCredits` and so count nothing (conservative).
+		if current_version < 3 {
+			StorageVersion::new(3).put::<Pallet<T>>();
+			weight = weight.saturating_add(T::DbWeight::get().writes(1));
 		} else {
 			log::info!("Skipping marketplace migration, already migrated.");
-			Weight::zero()
 		}
+		weight
 	}
 
 	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+	fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
+		Ok(StorageVersion::get::<Pallet<T>>().encode())
+	}
+
+	#[cfg(feature = "try-runtime")]
+	fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+		let before = StorageVersion::decode(&mut &state[..])
+			.map_err(|_| sp_runtime::TryRuntimeError::Other("bad pre_upgrade state"))?;
 		ensure!(
-			StorageVersion::get::<Pallet<T>>() == StorageVersion::new(2),
-			"marketplace storage version was not advanced to 2"
+			StorageVersion::get::<Pallet<T>>() == StorageVersion::new(3),
+			"marketplace storage version was not advanced to 3"
 		);
+		// Only when this upgrade crossed into v3: a live v3 chain holds
+		// revenue legitimately.
+		if before < StorageVersion::new(3) {
+			ensure!(
+				ComputeChargedByWindow::<T>::iter().next().is_none()
+					&& BatchBackedCredits::<T>::iter().next().is_none()
+					&& FrozenComputeCharge::<T>::iter().next().is_none(),
+				"compute revenue accumulator must start empty"
+			);
+		}
 
 		// Both maps must decode under the new shapes, and no plan may claim both
 		// storage flavours — that would occupy two per-account slots at once.

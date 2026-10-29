@@ -134,7 +134,8 @@ fn existing_plans_survive_and_become_non_s3() {
 		assert!(!compute.is_storage_plan);
 		assert!(!compute.is_s3_plan);
 
-		assert_eq!(StorageVersion::get::<pallet_marketplace::Pallet<Runtime>>(), 2);
+		// v2, then the v3 accumulator bump (new maps only).
+		assert_eq!(StorageVersion::get::<pallet_marketplace::Pallet<Runtime>>(), 3);
 	});
 }
 
@@ -246,6 +247,7 @@ fn the_migration_does_not_run_twice() {
 		run_upgrade();
 
 		assert!(Marketplace::plans(plan_id(b"s3")).expect("s3 plan exists").is_s3_plan);
-		assert_eq!(StorageVersion::get::<pallet_marketplace::Pallet<Runtime>>(), 2);
+		// v2, then the v3 accumulator bump (new maps only).
+		assert_eq!(StorageVersion::get::<pallet_marketplace::Pallet<Runtime>>(), 3);
 	});
 }

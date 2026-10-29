@@ -102,6 +102,51 @@ pub trait WeightInfo {
 
 	/// `set_fee_kind_caps` adding a kind to a full-but-one `FeeCapConfig`.
 	fn set_fee_kind_caps() -> Weight;
+
+	/// Moving one batch's escrowed compute revenue into its windows
+	/// (`release_frozen_charge`, and per batch in the alpha release sweep).
+	fn release_frozen_charge() -> Weight {
+		release_frozen_charge()
+	}
+
+	/// `chargeback` (root): it declared no weight before, which was already
+	/// wrong and is more so with the escrow clear.
+	fn chargeback() -> Weight {
+		chargeback()
+	}
+}
+
+/// `chargeback`, estimated from counted access: the batch, `UserBatches`,
+/// `AlphaBalances`, `UnbackedBatchAlpha`, the backing tally, the pending
+/// refunds, the sudo key, a bank transfer (two accounts plus the bank's
+/// ledgers), `FreeCredits` and `TotalCreditsPurchased` read and written;
+/// `BatchBackedCredits` and up to `2 × MAX_FROZEN_WINDOWS_PER_RELEASE`
+/// `FrozenComputeCharge` entries removed.
+fn chargeback() -> Weight {
+	// The escrow clear walks each entry it deletes (a read, a write and
+	// FRAME's unbounded-map proof allowance) plus the probe that ends it.
+	// `UserBatches` is priced at one entry as before; it is unbounded for
+	// authority deposits on `main` already (see #62).
+	let escrow = u64::from(crate::MAX_FROZEN_WINDOWS_PER_RELEASE) * 2;
+	Weight::from_parts(80_000_000, 40_000 + 2_600 * (escrow + 1))
+		.saturating_add(RocksDbWeight::get().reads(16 + escrow + 1))
+		.saturating_add(RocksDbWeight::get().writes(14 + 1 + escrow))
+}
+
+/// The batch, then for up to `MAX_FROZEN_WINDOWS_PER_RELEASE` windows the
+/// escrow entry (read, removed), the window total (read, written) and the
+/// prune cursor (read, written). Estimated from counted access, like
+/// `compute_row`.
+fn release_frozen_charge() -> Weight {
+	let windows = u64::from(crate::MAX_FROZEN_WINDOWS_PER_RELEASE);
+	Weight::from_parts(20_000_000, 2_600)
+		.saturating_add(RocksDbWeight::get().reads(2))
+		.saturating_add(
+			Weight::from_parts(3_000_000, 5_200)
+				.saturating_add(RocksDbWeight::get().reads(3))
+				.saturating_add(RocksDbWeight::get().writes(3))
+				.saturating_mul(windows),
+		)
 }
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
@@ -148,10 +193,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// (`SubscriptionRenewed` / `SubscriptionRenewalFailed`) added after the
 	/// measurement: one per subscription per cycle, 15 in the measured case,
 	/// at 10µs each.
+	///
+	/// And, since marketplace v3, one `BatchBackedCredits` read per debit
+	/// (15 in the measured case), the value-backed share each debit carries.
 	fn charge_account_due() -> Weight {
 		Weight::from_parts(526_900_000, 1341)
 			.saturating_add(Weight::from_parts(150_000_000, 0))
-			.saturating_add(RocksDbWeight::get().reads(8))
+			.saturating_add(RocksDbWeight::get().reads(8 + 15))
 			.saturating_add(RocksDbWeight::get().writes(22))
 	}
 
@@ -193,7 +241,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// accounting, on top of the probe.
 	fn hourly_charge() -> Weight {
 		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(13))
+			.saturating_add(RocksDbWeight::get().reads(13 + 1))
 			.saturating_add(RocksDbWeight::get().writes(11))
 	}
 
@@ -216,8 +264,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// `compute_row` plus the `AccountChargeCapOverride` read.
 	fn submit_compute_usage(n: u32) -> Weight {
 		Weight::from_parts(50_000_000, 2_000)
-			.saturating_add(RocksDbWeight::get().reads(4))
-			.saturating_add(RocksDbWeight::get().writes(3))
+			.saturating_add(RocksDbWeight::get().reads(6))
+			.saturating_add(RocksDbWeight::get().writes(5))
 			.saturating_add(submit_row().saturating_mul(n.into()))
 	}
 
@@ -255,7 +303,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 impl WeightInfo for () {
 	fn charge_account_due() -> Weight {
 		Weight::from_parts(156_200_000, 1309)
-			.saturating_add(RocksDbWeight::get().reads(7))
+			.saturating_add(RocksDbWeight::get().reads(7 + 15))
 			.saturating_add(RocksDbWeight::get().writes(11))
 	}
 
@@ -283,7 +331,7 @@ impl WeightInfo for () {
 
 	fn hourly_charge() -> Weight {
 		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(13))
+			.saturating_add(RocksDbWeight::get().reads(13 + 1))
 			.saturating_add(RocksDbWeight::get().writes(11))
 	}
 
@@ -304,8 +352,8 @@ impl WeightInfo for () {
 	/// `compute_row` plus the `AccountChargeCapOverride` read.
 	fn submit_compute_usage(n: u32) -> Weight {
 		Weight::from_parts(50_000_000, 2_000)
-			.saturating_add(RocksDbWeight::get().reads(4))
-			.saturating_add(RocksDbWeight::get().writes(3))
+			.saturating_add(RocksDbWeight::get().reads(6))
+			.saturating_add(RocksDbWeight::get().writes(5))
 			.saturating_add(submit_row().saturating_mul(n.into()))
 	}
 
@@ -359,10 +407,17 @@ impl WeightInfo for () {
 /// trie path included — over the 25 the path actually reads. At these
 /// figures a full 250-row call is ~0.8s, inside the normal-class share of a
 /// 2s block.
+///
+/// Compute revenue accumulator (marketplace v3), on top: one
+/// `BatchBackedCredits` read per batch drawn (16) and up to
+/// `MAX_FROZEN_ESCROWS_PER_DEBIT` (2) `FrozenComputeCharge` read-writes, plus
+/// 20µs. The window total and its prune cursor are one key each for the
+/// whole call (every row of a call is for the same period), so they sit in
+/// the calls' fixed part. A full 250-row call grows to ~0.97s.
 fn compute_row() -> Weight {
-	Weight::from_parts(200_000_000, 66_000)
-		.saturating_add(RocksDbWeight::get().reads(28))
-		.saturating_add(RocksDbWeight::get().writes(24))
+	Weight::from_parts(220_000_000, 66_000 + 18 * 2_600)
+		.saturating_add(RocksDbWeight::get().reads(28 + 16 + 2))
+		.saturating_add(RocksDbWeight::get().writes(24 + 2))
 }
 
 /// One `submit_compute_usage` / `submit_usage_v2` row: `compute_row` plus

@@ -265,6 +265,8 @@ fn compute_debtor<T: Config>(index: u32) -> T::AccountId {
 		},
 	);
 	UnbackedBatchAlpha::<T>::insert(funded, FUNDING / 4);
+	// Backed, so a `Compute` line takes the revenue accumulator's path.
+	BatchBackedCredits::<T>::insert(funded, FUNDING);
 	TotalUndistributedBacking::<T>::mutate(|t| *t = t.saturating_add(FUNDING.saturating_mul(2)));
 	pallet_credits::AlphaBalances::<T>::mutate(&who, |a| {
 		*a = a.saturating_add(FUNDING.saturating_mul(2))
@@ -401,8 +403,10 @@ mod benchmarks {
 		for kind in &ALL_USAGE_KINDS[ALL_USAGE_KINDS.len() - MAX_FEE_KINDS as usize..] {
 			FeeCapConfig::<T>::insert(kind, generous);
 		}
-		// The last `k` kinds, so the fee kinds are always among them.
-		let kinds = &ALL_USAGE_KINDS[ALL_USAGE_KINDS.len() - k as usize..];
+		// `Compute` (the revenue accumulator's line) and the last `k - 1`
+		// kinds, so the fee kinds are always among them.
+		let mut kinds = vec![UsageKind::Compute];
+		kinds.extend_from_slice(&ALL_USAGE_KINDS[ALL_USAGE_KINDS.len() - (k as usize - 1)..]);
 		let breakdown: UsageBreakdown = kinds
 			.iter()
 			.map(|kind| (*kind, USAGE_LINE))
@@ -471,5 +475,37 @@ mod benchmarks {
 		_(RawOrigin::Signed(buyer.clone()), alpha, 0, Some(code));
 
 		assert_eq!(CreditsPallet::<T>::get_free_credits(&buyer), 2_000_000_000_000_000_000);
+	}
+
+	/// Releasing an unfrozen batch's escrowed compute revenue at its worst:
+	/// `MAX_FROZEN_WINDOWS_PER_RELEASE` windows, every one still retained.
+	#[benchmark]
+	fn release_frozen_charge() {
+		let owner: T::AccountId = account("card", 0, SEED);
+		let batch_id = NextBatchId::<T>::get();
+		Batches::<T>::insert(
+			batch_id,
+			Batch {
+				owner: owner.clone(),
+				credit_amount: FUNDING,
+				alpha_amount: FUNDING,
+				remaining_credits: FUNDING,
+				remaining_alpha: FUNDING,
+				pending_alpha: 0,
+				is_frozen: false,
+				release_time: BlockNumberFor::<T>::from(0u32),
+			},
+		);
+		NextBatchId::<T>::put(batch_id.saturating_add(1));
+		let current = Marketplace::<T>::current_compute_window();
+		for w in 0..crate::MAX_FROZEN_WINDOWS_PER_RELEASE {
+			FrozenComputeCharge::<T>::insert(batch_id, current.saturating_sub(w), 1_000u128);
+		}
+		let caller: T::AccountId = whitelisted_caller();
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(caller), batch_id);
+
+		assert!(FrozenComputeCharge::<T>::iter_prefix(batch_id).next().is_none());
 	}
 }

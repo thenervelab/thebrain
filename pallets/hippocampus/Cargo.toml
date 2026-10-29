@@ -21,13 +21,15 @@ frame-system.workspace = true
 sp-std = { workspace = true, default-features = false }
 sp-core = { workspace = true, default-features = false }
 sp-runtime = { workspace = true, default-features = false }
+sp-io = { workspace = true, default-features = false }
 log = { version = "0.4.22", default-features = false }
 payment-math = { workspace = true }
 
 [dev-dependencies]
-sp-io = { workspace = true, default-features = false, features = ["std"] }
 pallet-balances = { workspace = true, default-features = false, features = ["std"] }
 sp-keyring = { workspace = true }
+hex = { workspace = true, features = ["std"] }
+sp-keystore = { workspace = true, features = ["std"] }
 
 [features]
 default = ["std"]
@@ -40,6 +42,7 @@ std = [
     "sp-std/std",
     "sp-runtime/std",
     "sp-core/std",
+    "sp-io/std",
     "payment-math/std",
 ]
 runtime-benchmarks = [
