@@ -506,6 +506,75 @@ impl pallet_hippocampus::Config for Runtime {
 	// every `pay_compute_miners` call fails with `TooManyComputeMiners`.
 	type MaxComputeMinersPerPayout = ConstU32<640>;
 	type WeightInfo = pallet_hippocampus::weights::SubstrateWeight<Runtime>;
+	type ComputeRevenue = MarketplaceComputeRevenue;
+	type AlphaPrice = CreditsAlphaPrice;
+	type MaxAlphaPriceAge = MaxAlphaPriceAge;
+	type SettlementKeyRoles = SettlementKeyRoles;
+	type SettlementRootOrigin = frame_system::EnsureRoot<AccountId>;
+	type RootChangeDelay = ComputeSettlementRootChangeDelay;
+	type MaxEntriesPerPart = ConstU32<64>;
+	type ComputeRevisionHorizon = ComputeRevisionHorizon;
+}
+
+parameter_types! {
+	/// Settlement keys, params, the first window, enabling and defunding take
+	/// effect this long after root schedules them.
+	pub const ComputeSettlementRootChangeDelay: BlockNumber = 2 * DAYS;
+	/// Windows (UTC days) a compute window can still be revised for escrowed
+	/// hours, and how long the marketplace keeps its revenue: the same 160.
+	pub const ComputeRevisionHorizon: u32 = 160;
+}
+
+/// Adapter: compute settlement reads the marketplace's value-backed compute
+/// revenue per source window and the chain clock's UTC day.
+pub struct MarketplaceComputeRevenue;
+impl pallet_hippocampus::ComputeRevenueSource for MarketplaceComputeRevenue {
+	fn current_window() -> u32 {
+		pallet_marketplace::Pallet::<Runtime>::current_compute_window()
+	}
+
+	fn final_charged(window: u32) -> Option<u128> {
+		pallet_marketplace::Pallet::<Runtime>::final_compute_charged(window)
+	}
+
+	#[cfg(feature = "runtime-benchmarks")]
+	fn bench_set_final_charged(window: u32, charged: u128) {
+		// Put the clock past the window's billing lag, then record it.
+		let final_period = (u64::from(window) + 1) * 24 + MaxComputeBillingLag::get();
+		pallet_timestamp::Now::<Runtime>::put(
+			final_period * pallet_marketplace::COMPUTE_BILLING_PERIOD_MS,
+		);
+		pallet_marketplace::ComputeChargedByWindow::<Runtime>::insert(window, charged);
+	}
+}
+
+/// Adapter: compute settlement snapshots `Credits.AlphaPrice` at approval.
+pub struct CreditsAlphaPrice;
+impl pallet_hippocampus::AlphaPriceSource<BlockNumber> for CreditsAlphaPrice {
+	fn alpha_price() -> (u128, Option<BlockNumber>) {
+		(
+			pallet_credits::AlphaPrice::<Runtime>::get(),
+			pallet_credits::AlphaPriceUpdatedAt::<Runtime>::get(),
+		)
+	}
+
+	#[cfg(feature = "runtime-benchmarks")]
+	fn bench_set_price(price: u128) {
+		pallet_credits::AlphaPrice::<Runtime>::put(price);
+		pallet_credits::AlphaPriceUpdatedAt::<Runtime>::put(System::block_number());
+	}
+}
+
+/// A compute settlement key (vali submitter or backend approver) must not
+/// also be a credits authority (mints credits, sets `AlphaPrice`), a compute
+/// billing authority or a charge-cap admin.
+pub struct SettlementKeyRoles;
+impl pallet_hippocampus::SettlementKeyRoles<AccountId> for SettlementKeyRoles {
+	fn has_other_role(who: &AccountId) -> bool {
+		pallet_credits::Pallet::<Runtime>::ensure_is_authority(who).is_ok()
+			|| pallet_marketplace::ComputeBillingAuthorities::<Runtime>::get().contains(who)
+			|| pallet_marketplace::ChargeCapAdmins::<Runtime>::get().contains(who)
+	}
 }
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -593,7 +662,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92022,
+	spec_version: 92023,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1169,6 +1238,7 @@ impl pallet_marketplace::Config for Runtime {
 	type MinBuyAlpha = MinBuyAlpha;
 	type MaxBatchesPerBuyer = MaxBatchesPerBuyer;
 	type WeightInfo = pallet_marketplace::weights::SubstrateWeight<Runtime>;
+	type ComputeRevenueRetention = ComputeRevisionHorizon;
 }
 
 parameter_types! {
@@ -2387,6 +2457,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 type Migrations = (
 	migrations::ActivateMinerPaymentBank<Runtime>,
 	migrations::InitAlphaPriceUpdatedAt<Runtime>,
+	migrations::HippocampusComputeSettlementV2<Runtime>,
 );
 
 /// Block type as expected by this runtime.
@@ -2978,6 +3049,7 @@ mod benches {
 		[pallet_alpha_bridge, AlphaBridge]
 		[pallet_compute_scoring, ComputeScoring]
 		[pallet_marketplace, Marketplace]
+		[pallet_hippocampus, Hippocampus]
 	);
 }
 
