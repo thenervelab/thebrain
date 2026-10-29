@@ -188,6 +188,12 @@ fn legacy_miner_with_no_uid_is_bound_by_the_next_crush_map() {
 			},
 		);
 		pallet_arion::NodeIdToChild::<Runtime>::insert(node_id, &child);
+		// A registered legacy miner is in the active index (settlement walks it);
+		// only its uid was missing. Reflect that so the payout assertion is real.
+		pallet_arion::FamilyChildren::<Runtime>::mutate(&family, |v| {
+			v.try_push(child.clone()).expect("under MaxChildrenPerFamily");
+		});
+		pallet_arion::FamilyActiveChildren::<Runtime>::mutate(&family, |n| *n += 1);
 		assert!(ChildMinerUid::<Runtime>::get(&child).is_none(), "legacy: no uid on chain");
 
 		// The upgrade runs; the reverse-index migration has nothing to work with.
@@ -237,6 +243,12 @@ fn migration_binds_legacy_miners_from_the_already_published_map() {
 		pallet_arion::NodeIdToChild::<Runtime>::insert(node_id, &child);
 		ChildMinerUid::<Runtime>::remove(&child);
 		MinerUidToChild::<Runtime>::remove(4_242);
+		// A registered legacy miner is in the active index (settlement walks it);
+		// only its uid was missing. Reflect that so the payout assertion is real.
+		pallet_arion::FamilyChildren::<Runtime>::mutate(&family, |v| {
+			v.try_push(child.clone()).expect("under MaxChildrenPerFamily");
+		});
+		pallet_arion::FamilyActiveChildren::<Runtime>::mutate(&family, |n| *n += 1);
 
 		// The upgrade alone binds them — no new map, no operator action.
 		<pallet_arion::Pallet<Runtime> as Hooks<BlockNumber>>::on_runtime_upgrade();
@@ -551,7 +563,7 @@ fn bulk_bind_runs_on_a_chain_already_at_storage_version_one() {
 		);
 		assert_eq!(
 			pallet_arion::Pallet::<Runtime>::on_chain_storage_version(),
-			3,
+			4,
 			"version advances so the step is not repeated"
 		);
 	});

@@ -7,8 +7,8 @@ use hippius_mainnet_runtime::{
 	RuntimeOrigin, System,
 };
 use pallet_arion::{
-	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, MinerAccruals, MinerStats,
-	MinerStatsUpdate,
+	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, FamilyActiveChildren,
+	FamilyChildren, MinerAccruals, MinerStats, MinerStatsUpdate,
 };
 use sp_core::crypto::Ss58Codec;
 use sp_runtime::{AccountId32, BuildStorage};
@@ -45,6 +45,12 @@ fn register_miner(family: &AccountId, child: &AccountId, uid: u32) {
 	);
 	ChildMinerUid::<Runtime>::insert(child, uid);
 	pallet_arion::MinerUidToChild::<Runtime>::insert(uid, child.clone());
+	// Settlement walks `FamilyChildren` (bounded active index); list the child
+	// there as `register_child` would, or it is never reached.
+	FamilyChildren::<Runtime>::mutate(family, |v| {
+		v.try_push(child.clone()).expect("under MaxChildrenPerFamily");
+	});
+	FamilyActiveChildren::<Runtime>::mutate(family, |n| *n += 1);
 }
 
 fn submit_stats(uid: u32, bytes: u128) {

@@ -21,8 +21,9 @@ use hippius_mainnet_runtime::{
 	AccountId, Arion, Balances, BlockNumber, Hippocampus, ProxyType, Runtime, RuntimeOrigin, System,
 };
 use pallet_arion::{
-	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, CrushParams, FamilyArrears,
-	MinerAccruals, MinerRecord, MinerStats, MinerStatsUpdate, MinerUidToChild,
+	ChildMinerUid, ChildRegistration, ChildRegistrations, ChildStatus, CrushParams,
+	FamilyActiveChildren, FamilyArrears, FamilyChildren, MinerAccruals, MinerRecord, MinerStats,
+	MinerStatsUpdate, MinerUidToChild,
 };
 use parity_scale_codec::Encode;
 use sp_core::{crypto::Ss58Codec, ed25519, Pair};
@@ -111,6 +112,12 @@ fn register_miner_storage(family: &AccountId, child: &AccountId, uid: u32) {
 		ChildMinerUid::<Runtime>::insert(child, uid);
 		MinerUidToChild::<Runtime>::insert(uid, child.clone());
 	}
+	// Settlement walks `FamilyChildren` (bounded active index), so an Active
+	// child must be listed there as `register_child` would, or it is not paid.
+	FamilyChildren::<Runtime>::mutate(family, |v| {
+		v.try_push(child.clone()).expect("under MaxChildrenPerFamily");
+	});
+	FamilyActiveChildren::<Runtime>::mutate(family, |n| *n += 1);
 }
 
 fn submit_stats(uid: u32, bytes: u128) {
@@ -507,6 +514,12 @@ fn uid_zero_is_never_paid() {
 			},
 		);
 		ChildMinerUid::<Runtime>::insert(&child, 0u32);
+		// List it in the active index so settlement actually reaches it and the
+		// uid==0 guard is what skips it (not mere absence from the walk).
+		FamilyChildren::<Runtime>::mutate(&family, |v| {
+			v.try_push(child.clone()).expect("under MaxChildrenPerFamily");
+		});
+		FamilyActiveChildren::<Runtime>::mutate(&family, |n| *n += 1);
 		// Reverse index for 0 would be toxic; leave it empty like production.
 		submit_stats(0, 100 * GIB);
 		// Even if stats wrote something, settlement skips uid==0.
