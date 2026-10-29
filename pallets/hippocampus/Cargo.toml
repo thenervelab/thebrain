@@ -29,6 +29,7 @@ payment-math = { workspace = true }
 pallet-balances = { workspace = true, default-features = false, features = ["std"] }
 sp-keyring = { workspace = true }
 hex = { workspace = true, features = ["std"] }
+sp-keystore = { workspace = true, features = ["std"] }
 
 [features]
 default = ["std"]

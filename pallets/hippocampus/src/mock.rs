@@ -229,6 +229,10 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 	.unwrap();
 
 	let mut ext = sp_io::TestExternalities::new(t);
+	// Benchmarks sign approvals through the keystore host functions.
+	ext.register_extension(sp_keystore::KeystoreExt(std::sync::Arc::new(
+		sp_keystore::testing::MemoryKeystore::new(),
+	)));
 	ext.execute_with(|| {
 		System::set_block_number(1);
 		set_storage_miners(Vec::new());
