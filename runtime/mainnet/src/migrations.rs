@@ -548,22 +548,27 @@ where
 
 	#[cfg(feature = "try-runtime")]
 	fn pre_upgrade() -> Result<sp_std::vec::Vec<u8>, sp_runtime::TryRuntimeError> {
-		Ok(Self::legacy_bank_state().encode())
+		let version = pallet_hippocampus::Pallet::<T>::on_chain_storage_version();
+		Ok((version, Self::legacy_bank_state()).encode())
 	}
 
 	#[cfg(feature = "try-runtime")]
 	fn post_upgrade(state: sp_std::vec::Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-		let before = LegacyBankState::decode(&mut &state[..])
+		let (version, before) = <(StorageVersion, LegacyBankState)>::decode(&mut &state[..])
 			.map_err(|_| sp_runtime::TryRuntimeError::Other("bad pre_upgrade state"))?;
 		frame_support::ensure!(
 			Self::legacy_bank_state() == before,
 			"hippocampus v2 changed the legacy bank state"
 		);
-		frame_support::ensure!(
-			pallet_hippocampus::Pallet::<T>::on_chain_storage_version() == 2,
-			"hippocampus storage version was not advanced to 2"
-		);
-		frame_support::ensure!(Self::settlement_inert(), "settlement is not inert after v2");
+		// Only when this upgrade crossed into v2: a live v2 chain may have
+		// settlement configured.
+		if version == StorageVersion::new(1) {
+			frame_support::ensure!(
+				pallet_hippocampus::Pallet::<T>::on_chain_storage_version() == 2,
+				"hippocampus storage version was not advanced to 2"
+			);
+			frame_support::ensure!(Self::settlement_inert(), "settlement is not inert after v2");
+		}
 		Ok(())
 	}
 }

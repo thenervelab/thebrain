@@ -2036,7 +2036,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(15)]
-		#[pallet::weight((0, Pays::No))]
+		#[pallet::weight((<T as Config>::WeightInfo::chargeback(), Pays::No))]
 		pub fn chargeback(origin: OriginFor<T>, batch_id: u64) -> DispatchResult {
 			// Ensure the caller is a signed origin (admin check)
 			ensure_root(origin)?;
@@ -3655,8 +3655,8 @@ pub mod pallet {
 		pub(crate) fn sweep_frozen_compute_charges(limit: Weight) -> Weight {
 			const MAX_ENTRIES_PER_RUN: usize = 64;
 			let mut meter = WeightMeter::with_limit(limit);
-			// The cursor in and out.
-			if meter.try_consume(Self::accumulator_access(1, 1)).is_err() {
+			// The cursor in and out, the clock and the block number in.
+			if meter.try_consume(Self::accumulator_access(3, 1)).is_err() {
 				return Weight::zero();
 			}
 			// The entry, its batch, the window total and the prune cursor in;
@@ -3685,6 +3685,7 @@ pub mod pallet {
 				Gone,
 			}
 			let current = Self::current_compute_window();
+			let now_block = <frame_system::Pallet<T>>::block_number();
 			let retention = T::ComputeRevenueRetention::get();
 			let mut batch: Option<(u64, State, u128, u128)> = None;
 			let flush = |b: Option<(u64, State, u128, u128)>| {
@@ -3704,7 +3705,7 @@ pub mod pallet {
 					flush(batch);
 					let state = match Batches::<T>::get(batch_id) {
 						None => State::Gone,
-						Some(b) if Self::batch_unfrozen(&b) => State::Unfrozen,
+						Some(b) if !b.is_frozen || now_block >= b.release_time => State::Unfrozen,
 						Some(_) => State::Frozen,
 					};
 					batch = Some((batch_id, state, 0, 0));

@@ -108,6 +108,25 @@ pub trait WeightInfo {
 	fn release_frozen_charge() -> Weight {
 		release_frozen_charge()
 	}
+
+	/// `chargeback` (root): it declared no weight before, which was already
+	/// wrong and is more so with the escrow clear.
+	fn chargeback() -> Weight {
+		chargeback()
+	}
+}
+
+/// `chargeback`, estimated from counted access: the batch, `UserBatches`,
+/// `AlphaBalances`, `UnbackedBatchAlpha`, the backing tally, the pending
+/// refunds, the sudo key, a bank transfer (two accounts plus the bank's
+/// ledgers), `FreeCredits` and `TotalCreditsPurchased` read and written;
+/// `BatchBackedCredits` and up to `2 × MAX_FROZEN_WINDOWS_PER_RELEASE`
+/// `FrozenComputeCharge` entries removed.
+fn chargeback() -> Weight {
+	let escrow = u64::from(crate::MAX_FROZEN_WINDOWS_PER_RELEASE) * 2;
+	Weight::from_parts(80_000_000, 40_000)
+		.saturating_add(RocksDbWeight::get().reads(16))
+		.saturating_add(RocksDbWeight::get().writes(14 + 1 + escrow))
 }
 
 /// The batch, then for up to `MAX_FROZEN_WINDOWS_PER_RELEASE` windows the

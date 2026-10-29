@@ -183,7 +183,9 @@ macro_rules! settlement_weights {
 			settlement_weight::<$db>(70_000_000, 6, 4)
 		}
 		fn fund_compute_settlement() -> Weight {
-			settlement_weight::<$db>(60_000_000, 2, 2)
+			// Worst case: the owed account seeded first (its balance read, a
+			// second transfer), then the settlement transfer.
+			settlement_weight::<$db>(110_000_000, 5, 4)
 		}
 		fn revoke_compute_approval() -> Weight {
 			settlement_weight::<$db>(350_000_000, 6, 4)

@@ -188,13 +188,20 @@ mod benchmarks {
 		assert!(ComputeOwed::<T>::get(&family).is_zero());
 	}
 
+	/// The first funding: the owed account does not exist yet, so the call
+	/// seeds it before funding the settlement account (two transfers).
 	#[benchmark]
 	fn fund_compute_settlement() {
 		let (caller, _) = setup::<T>();
+		fund::<T>(&Pallet::<T>::owed_account(), 0);
 		let amount: BalanceOf<T> = 1_000_000u128.saturated_into();
 
 		#[extrinsic_call]
 		_(RawOrigin::Signed(caller), amount);
+
+		assert!(
+			T::Currency::free_balance(&Pallet::<T>::owed_account()) >= T::Currency::minimum_balance()
+		);
 	}
 
 	#[benchmark]
