@@ -149,17 +149,28 @@ impl<T: Config> OnRuntimeUpgrade for Migrate<T> {
 	}
 
 	#[cfg(feature = "try-runtime")]
-	fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+	fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
+		Ok(StorageVersion::get::<Pallet<T>>().encode())
+	}
+
+	#[cfg(feature = "try-runtime")]
+	fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+		let before = StorageVersion::decode(&mut &state[..])
+			.map_err(|_| sp_runtime::TryRuntimeError::Other("bad pre_upgrade state"))?;
 		ensure!(
 			StorageVersion::get::<Pallet<T>>() == StorageVersion::new(3),
 			"marketplace storage version was not advanced to 3"
 		);
-		ensure!(
-			ComputeChargedByWindow::<T>::iter().next().is_none()
-				&& BatchBackedCredits::<T>::iter().next().is_none()
-				&& FrozenComputeCharge::<T>::iter().next().is_none(),
-			"compute revenue accumulator must start empty"
-		);
+		// Only when this upgrade crossed into v3: a live v3 chain holds
+		// revenue legitimately.
+		if before < StorageVersion::new(3) {
+			ensure!(
+				ComputeChargedByWindow::<T>::iter().next().is_none()
+					&& BatchBackedCredits::<T>::iter().next().is_none()
+					&& FrozenComputeCharge::<T>::iter().next().is_none(),
+				"compute revenue accumulator must start empty"
+			);
+		}
 
 		// Both maps must decode under the new shapes, and no plan may claim both
 		// storage flavours — that would occupy two per-account slots at once.

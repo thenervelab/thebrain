@@ -710,6 +710,9 @@ pub mod pallet {
 		NonCanonicalPart,
 		/// Another approval is being paid; one at a time.
 		ApprovalInFlight,
+		/// The settlement or owed account holds less than the existential
+		/// deposit; `fund_compute_settlement` seeds both.
+		SettlementNotSeeded,
 	}
 
 	#[pallet::call]
@@ -1261,13 +1264,19 @@ pub mod pallet {
 				.filter(|s| *s <= max_daily)
 				.ok_or(Error::<T>::DailyAlphaCapExceeded)?;
 
+			// All or nothing: one entry that can neither be paid nor owed
+			// undoes the transfers before it (the dispatch is transactional
+			// too; this keeps it so for any internal caller).
 			let settlement = Self::settlement_account();
-			for entry in entries.iter() {
-				if entry.alpha == 0 {
-					continue;
+			with_storage_layer(|| -> DispatchResult {
+				for entry in entries.iter() {
+					if entry.alpha == 0 {
+						continue;
+					}
+					Self::pay_or_owe(&settlement, &entry.family, entry.alpha.saturated_into())?;
 				}
-				Self::pay_or_owe(&settlement, &entry.family, entry.alpha.saturated_into())?;
-			}
+				Ok(())
+			})?;
 
 			progress.next_part = part.saturating_add(1);
 			if let Some(last) = last {
@@ -1312,12 +1321,26 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Move `amount` from the caller into the settlement account.
+		/// Move `amount` from the caller into the settlement account. While
+		/// the owed account holds less than the existential deposit, the
+		/// caller also seeds it with that deposit, so failed payments can land
+		/// there and be claimed in full.
 		#[pallet::call_index(13)]
 		#[pallet::weight(<T as Config>::WeightInfo::fund_compute_settlement())]
 		pub fn fund_compute_settlement(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
+			let owed = Self::owed_account();
+			let ed = T::Currency::minimum_balance();
+			let owed_free = T::Currency::free_balance(&owed);
+			if owed_free < ed {
+				T::Currency::transfer(
+					&who,
+					&owed,
+					ed.saturating_sub(owed_free),
+					ExistenceRequirement::KeepAlive,
+				)?;
+			}
 			T::Currency::transfer(
 				&who,
 				&Self::settlement_account(),
@@ -1406,8 +1429,10 @@ pub mod pallet {
 				Error::<T>::ChangeNotDue
 			);
 			Self::validate_root_change(&change)?;
-			PendingRootChange::<T>::remove(kind);
+			// Applied before the record is dropped: a change that fails (say
+			// a defund with nothing to move) stays pending.
 			Self::apply_root_change(change)?;
+			PendingRootChange::<T>::remove(kind);
 			Self::deposit_event(Event::RootChangeApplied { kind });
 			Ok(())
 		}
@@ -1680,6 +1705,14 @@ pub mod pallet {
 					NextComputeWindow::<T>::put(window);
 				},
 				st::RootChange::Enable => {
+					// Both accounts must exist: every transfer out is
+					// `KeepAlive`, and a failed payment needs the owed account.
+					let ed = T::Currency::minimum_balance();
+					ensure!(
+						T::Currency::free_balance(&Self::settlement_account()) >= ed
+							&& T::Currency::free_balance(&Self::owed_account()) >= ed,
+						Error::<T>::SettlementNotSeeded
+					);
 					ComputeSettlementEnabled::<T>::put(true);
 					Self::deposit_event(Event::ComputeSettlementEnabledChanged { enabled: true });
 				},

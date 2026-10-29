@@ -1441,7 +1441,9 @@ pub mod pallet {
 	/// purchase batch's top-ups. Out of the batch's `credit_amount`: each
 	/// credit consumed carries `BatchBackedCredits / credit_amount` of
 	/// backing. Absent = nothing backed (every batch created before this
-	/// record existed, refund batches, minted credits).
+	/// record existed, refund batches, minted credits). Batches from before
+	/// the upgrade are deliberately not backfilled: their credits count 0
+	/// toward the cap (conservative); a backfill would be its own migration.
 	#[pallet::storage]
 	pub type BatchBackedCredits<T: Config> = StorageMap<_, Twox64Concat, u64, u128, ValueQuery>;
 
@@ -3534,7 +3536,7 @@ pub mod pallet {
 		/// Count the value-backed `Compute` share of a charged usage row.
 		///
 		/// `owed` (the row's `billable` plus collected arrears) was debited as
-		/// `takes`; the compute share of it is the row's `Compute` line (all of
+		/// `takes`; the compute share of it is the row's `Compute` line (none of
 		/// a v1 row) scaled to `billable`. Each batch's backed take counts
 		/// `backed × compute_billable / owed`: arrears and non-compute kinds
 		/// never count, nor do unbacked credits. Frozen batches go to escrow.
@@ -3546,8 +3548,11 @@ pub mod pallet {
 			breakdown: Option<&UsageBreakdown>,
 			takes: &[BackedTake],
 		) {
+			// A v1 row has no breakdown, so nothing attributes it to `Compute`:
+			// it counts nothing (fail closed — a row that cannot be attributed
+			// never raises the cap). Settlement needs usage through v2.
 			let compute_amount = match breakdown {
-				None => amount,
+				None => 0,
 				Some(lines) => lines
 					.iter()
 					.find(|(kind, _)| *kind == UsageKind::Compute)
@@ -3629,42 +3634,61 @@ pub mod pallet {
 			u32::try_from(entries.len()).unwrap_or(u32::MAX)
 		}
 
+		/// `reads` + `writes` of the accumulator's maps, with FRAME's
+		/// unbounded-map proof allowance per read (as `prune_compute_usage`).
+		fn accumulator_access(reads: u64, writes: u64) -> Weight {
+			const PROOF_PER_ACCESS: u64 = 2_600;
+			T::DbWeight::get()
+				.reads_writes(reads, writes)
+				.saturating_add(Weight::from_parts(0, PROOF_PER_ACCESS.saturating_mul(reads)))
+		}
+
 		/// Move escrowed compute charges of batches past their chargeback
 		/// window into their source windows, a page at a time within `limit`.
 		///
 		/// Walks `FrozenComputeCharge` only (escrowed card batches inside the
 		/// last ~30 days), so it costs nothing on the alpha release sweep. A
-		/// batch still frozen is skipped and seen again on the next round;
-		/// `release_frozen_charge` releases one batch at once for anyone who
-		/// does not want to wait.
+		/// batch still frozen is skipped and seen again on the next round; an
+		/// entry whose batch no longer exists (charged back, cleanup cut
+		/// short) is deleted without counting. `release_frozen_charge`
+		/// releases one batch at once for anyone who does not want to wait.
 		pub(crate) fn sweep_frozen_compute_charges(limit: Weight) -> Weight {
 			const MAX_ENTRIES_PER_RUN: usize = 64;
-			let overhead = T::DbWeight::get().reads_writes(1, 1);
-			// The entry, its batch, the window total and the prune cursor in;
-			// the entry, the window total and the cursor out.
-			let per_entry = T::DbWeight::get().reads_writes(4, 3);
-			if limit.any_lt(overhead.saturating_add(per_entry)) {
+			let mut meter = WeightMeter::with_limit(limit);
+			// The cursor in and out.
+			if meter.try_consume(Self::accumulator_access(1, 1)).is_err() {
 				return Weight::zero();
 			}
-			let by_time = (limit.ref_time().saturating_sub(overhead.ref_time()))
-				/ per_entry.ref_time().max(1);
-			let affordable = (by_time as usize).min(MAX_ENTRIES_PER_RUN);
+			// The entry, its batch, the window total and the prune cursor in;
+			// the entry, the window total and the cursor out.
+			let per_entry = Self::accumulator_access(4, 3);
+			let affordable = Self::accounts_affordable(&meter, per_entry).min(MAX_ENTRIES_PER_RUN);
+			if affordable == 0 {
+				return meter.consumed();
+			}
 			let page: Vec<(u64, u32, u128)> = match FrozenChargeSweepCursor::<T>::get() {
 				Some(key) => FrozenComputeCharge::<T>::iter_from(key).take(affordable).collect(),
 				None => FrozenComputeCharge::<T>::iter().take(affordable).collect(),
 			};
 			let Some(&(last_batch, last_window, _)) = page.last() else {
 				FrozenChargeSweepCursor::<T>::kill();
-				return overhead;
+				return meter.consumed();
 			};
 			let resume_from = FrozenComputeCharge::<T>::hashed_key_for(last_batch, last_window);
 			let exhausted = page.len() < affordable;
 
+			/// What the sweep knows of the batch it is on.
+			#[derive(Clone, Copy, PartialEq)]
+			enum State {
+				Frozen,
+				Unfrozen,
+				Gone,
+			}
 			let current = Self::current_compute_window();
 			let retention = T::ComputeRevenueRetention::get();
-			let mut batch_state: Option<(u64, bool, u128, u128)> = None;
-			let flush = |state: Option<(u64, bool, u128, u128)>| {
-				if let Some((batch_id, true, released, dropped)) = state {
+			let mut batch: Option<(u64, State, u128, u128)> = None;
+			let flush = |b: Option<(u64, State, u128, u128)>| {
+				if let Some((batch_id, State::Unfrozen, released, dropped)) = b {
 					if released > 0 || dropped > 0 {
 						Self::deposit_event(Event::FrozenComputeChargeReleased {
 							batch_id,
@@ -3675,65 +3699,69 @@ pub mod pallet {
 				}
 			};
 			for (batch_id, window, amount) in page.iter().copied() {
-				if batch_state.map_or(true, |(b, ..)| b != batch_id) {
-					flush(batch_state);
-					// A batch that no longer exists was charged back, which
-					// already deleted its escrow; treat a stray entry as frozen.
-					let unfrozen =
-						Batches::<T>::get(batch_id).map_or(false, |b| Self::batch_unfrozen(&b));
-					batch_state = Some((batch_id, unfrozen, 0, 0));
+				meter.consume(per_entry);
+				if batch.map_or(true, |(b, ..)| b != batch_id) {
+					flush(batch);
+					let state = match Batches::<T>::get(batch_id) {
+						None => State::Gone,
+						Some(b) if Self::batch_unfrozen(&b) => State::Unfrozen,
+						Some(_) => State::Frozen,
+					};
+					batch = Some((batch_id, state, 0, 0));
 				}
-				let Some((_, true, released, dropped)) = batch_state.as_mut() else {
-					continue;
-				};
-				FrozenComputeCharge::<T>::remove(batch_id, window);
-				if current <= window.saturating_add(retention) {
-					Self::add_compute_charged(window, amount);
-					*released = released.saturating_add(amount);
-				} else {
-					*dropped = dropped.saturating_add(amount);
+				let Some((_, state, released, dropped)) = batch.as_mut() else { continue };
+				match *state {
+					State::Frozen => continue,
+					State::Gone => FrozenComputeCharge::<T>::remove(batch_id, window),
+					State::Unfrozen => {
+						FrozenComputeCharge::<T>::remove(batch_id, window);
+						if current <= window.saturating_add(retention) {
+							Self::add_compute_charged(window, amount);
+							*released = released.saturating_add(amount);
+						} else {
+							*dropped = dropped.saturating_add(amount);
+						}
+					},
 				}
 			}
-			flush(batch_state);
+			flush(batch);
 
 			if exhausted {
 				FrozenChargeSweepCursor::<T>::kill();
 			} else {
 				FrozenChargeSweepCursor::<T>::put(resume_from);
 			}
-			overhead.saturating_add(per_entry.saturating_mul(page.len() as u64))
+			meter.consumed()
 		}
 
 		/// Prune `ComputeChargedByWindow` windows more than
 		/// `ComputeRevenueRetention` behind, within `limit`.
 		pub(crate) fn prune_compute_charged(limit: Weight) -> Weight {
 			const MAX_WINDOWS_PER_RUN: u32 = 8;
-			let probe = T::DbWeight::get().reads_writes(1, 1);
-			let overhead = T::DbWeight::get().reads_writes(2, 1);
-			let mut used = Weight::zero();
-			if limit.any_lt(overhead.saturating_add(probe)) {
-				return used;
+			let mut meter = WeightMeter::with_limit(limit);
+			// The cursor and the clock in, the cursor out.
+			if meter.try_consume(Self::accumulator_access(2, 1)).is_err() {
+				return Weight::zero();
 			}
 			let Some(mut from) = ComputeChargedPruneFrom::<T>::get() else {
-				return T::DbWeight::get().reads(1);
+				return meter.consumed();
 			};
-			used = used.saturating_add(overhead);
 			let current = Self::current_compute_window();
 			let retention = T::ComputeRevenueRetention::get();
+			let per_window = Self::accumulator_access(1, 1);
 			let mut done = 0u32;
 			while done < MAX_WINDOWS_PER_RUN
 				&& from.saturating_add(retention) < current
-				&& used.saturating_add(probe).all_lte(limit)
+				&& meter.try_consume(per_window).is_ok()
 			{
 				ComputeChargedByWindow::<T>::remove(from);
 				from = from.saturating_add(1);
 				done += 1;
-				used = used.saturating_add(probe);
 			}
 			if done > 0 {
 				ComputeChargedPruneFrom::<T>::put(from);
 			}
-			used
+			meter.consumed()
 		}
 
 		/// Drop `ComputeUsageCharged` periods that have fallen more than
@@ -6557,8 +6585,14 @@ pub mod pallet {
 				);
 
 				// Revenue the reversed batch paid for compute never counts: its
-				// escrowed charges and its remaining backing are deleted.
-				let _ = FrozenComputeCharge::<T>::clear_prefix(batch_id, u32::MAX, None);
+				// escrowed charges and its remaining backing are deleted. The
+				// clear is bounded; anything past the bound belongs to a batch
+				// removed below, which the `on_idle` sweep deletes uncounted.
+				let _ = FrozenComputeCharge::<T>::clear_prefix(
+					batch_id,
+					MAX_FROZEN_WINDOWS_PER_RELEASE.saturating_mul(2),
+					None,
+				);
 				BatchBackedCredits::<T>::remove(batch_id);
 
 				// Decrease the total locked Alpha by the remaining Alpha in the batch

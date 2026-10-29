@@ -151,19 +151,28 @@ fn only_the_value_backed_compute_share_counts() {
 		// v2: only the Compute line counts.
 		submit_v2(PERIOD, vec![row(&alice, &[(UsageKind::Compute, 600), (UsageKind::Bandwidth, 400)], 1)]);
 		assert_eq!(charged(W), 600);
-		// v1 rows predate kinds and are compute usage: all of it counts.
+		// A v1 row has no breakdown: it cannot be attributed to Compute, so
+		// it counts nothing (fail closed), though the account is charged.
+		let bob_before = Credits::get_free_credits(&bob);
 		assert_ok!(Marketplace::submit_compute_usage(
 			RuntimeOrigin::signed(biller()),
 			PERIOD,
 			vec![(bob.clone(), 500, H256::repeat_byte(2))]
 		));
-		assert_eq!(charged(W), 1_100);
+		assert_eq!(Credits::get_free_credits(&bob), bob_before - 500);
+		assert_eq!(charged(W), 600);
 		// A duplicate adds nothing.
 		submit_v2(PERIOD, vec![row(&alice, &[(UsageKind::Compute, 600), (UsageKind::Bandwidth, 400)], 1)]);
-		assert_eq!(charged(W), 1_100);
+		assert_eq!(charged(W), 600);
 		// A conflict adds nothing.
 		submit_v2(PERIOD, vec![row(&alice, &[(UsageKind::Compute, 700)], 9)]);
-		assert_eq!(charged(W), 1_100);
+		assert_eq!(charged(W), 600);
+		// Nor does a refused row (above the per-account cap).
+		let carol = account(12);
+		deposit(&carol, 10_000_000_000, 10_000_000_000, false);
+		submit_v2(PERIOD, vec![row(&carol, &[(UsageKind::Compute, 1_000_000_001)], 3)]);
+		assert_eq!(Credits::get_free_credits(&carol), 10_000_000_000);
+		assert_eq!(charged(W), 600);
 	});
 }
 
@@ -401,6 +410,9 @@ fn configure_settlement(first: u32) {
 	root_apply(RootChange::Params(params()));
 	root_apply(RootChange::MaxDailyAlpha(1_000_000_000_000));
 	root_apply(RootChange::FirstWindow(first));
+	// Seeds the owed account too; enabling refuses unseeded accounts.
+	assert_ok!(Hippocampus::fund_compute_settlement(RuntimeOrigin::signed(sudo()), 1_000_000));
+	assert_eq!(Balances::free_balance(Hippocampus::owed_account()), ED);
 	root_apply(RootChange::Enable);
 	assert_ok!(Credits::set_alpha_price(RuntimeOrigin::signed(depositor()), PRICE));
 }
@@ -442,7 +454,6 @@ fn billing_revenue_bounds_and_funds_a_settlement() {
 		configure_settlement(W);
 		make_final(W);
 		let bank_before = Balances::free_balance(Hippocampus::account_id());
-		assert_ok!(Hippocampus::fund_compute_settlement(RuntimeOrigin::signed(sudo()), 1_000_000));
 
 		// r + ε = 50.1 %: 501_000 credits at most; one more is refused.
 		let family = account(30);
@@ -474,10 +485,45 @@ fn billing_revenue_bounds_and_funds_a_settlement() {
 }
 
 #[test]
+fn a_payment_below_ed_is_owed_and_claimed_in_full() {
+	new_test_ext().execute_with(|| {
+		let customer = account(10);
+		deposit(&customer, 10_000_000, 10_000_000, false);
+		submit_v2(PERIOD, vec![row(&customer, &[(UsageKind::Compute, 1_000_000)], 1)]);
+		configure_settlement(W);
+		make_final(W);
+		// A fresh family paid less than the ED: the transfer fails, the
+		// amount moves to the (seeded) owed account.
+		let family = account(31);
+		let owed = vec![Entry { family: family.clone(), usd: ED - 1, alpha: ED - 1 }];
+		let i = input(W, &owed);
+		let s = sign(W, &i);
+		assert_ok!(Hippocampus::submit_compute_approval(RuntimeOrigin::signed(vali()), W, 0, i, s));
+		assert_ok!(Hippocampus::pay_compute_part(
+			RuntimeOrigin::signed(vali()),
+			W,
+			0,
+			0,
+			BoundedVec::try_from(owed).unwrap()
+		));
+		assert_eq!(pallet_hippocampus::ComputeOwed::<Runtime>::get(&family), ED - 1);
+		assert_eq!(Balances::free_balance(Hippocampus::owed_account()), ED + ED - 1);
+		// Once the family exists it claims all of it; the seed stays.
+		let _ = Balances::deposit_creating(&family, ED);
+		assert_ok!(Hippocampus::claim_compute_owed(RuntimeOrigin::signed(family.clone())));
+		assert_eq!(Balances::free_balance(&family), ED + ED - 1);
+		assert_eq!(Balances::free_balance(Hippocampus::owed_account()), ED);
+		assert_noop!(
+			Hippocampus::claim_compute_owed(RuntimeOrigin::signed(family)),
+			pallet_hippocampus::Error::<Runtime>::NothingOwed
+		);
+	});
+}
+
+#[test]
 fn legacy_bank_payouts_work_beside_settlement() {
 	new_test_ext().execute_with(|| {
 		configure_settlement(W);
-		assert_ok!(Hippocampus::fund_compute_settlement(RuntimeOrigin::signed(sudo()), 1_000_000));
 		let settlement = Balances::free_balance(Hippocampus::settlement_account());
 		assert_ok!(Hippocampus::deposit(
 			RuntimeOrigin::signed(sudo()),

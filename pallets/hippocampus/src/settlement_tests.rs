@@ -76,24 +76,20 @@ fn fresh_price(price: u128) {
 	set_alpha_price(price, Some(System::block_number()));
 }
 
-/// Keys, params v1, first window `W`, switch on, fresh price, `W` final with
-/// `CHARGED` revenue, settlement funded and the owed account seeded.
+/// Keys, params v1, first window `W`, settlement funded (which seeds the
+/// owed account with the ED), switch on, fresh price, `W` final with
+/// `CHARGED` revenue.
 fn setup() {
 	root_apply(keys_change(vec![submitter()], vec![approver().public()]));
 	root_apply(RootChange::Params(params()));
 	root_apply(RootChange::MaxDailyAlpha(1_000_000));
 	root_apply(RootChange::FirstWindow(W));
+	assert_ok!(Hippocampus::fund_compute_settlement(RuntimeOrigin::signed(alice()), FUNDED));
+	assert_eq!(Balances::free_balance(Hippocampus::owed_account()), EXISTENTIAL_DEPOSIT);
 	root_apply(RootChange::Enable);
 	fresh_price(PRICE);
 	set_current_window(W + 8);
 	set_final_charged(W, CHARGED);
-	assert_ok!(Hippocampus::fund_compute_settlement(RuntimeOrigin::signed(alice()), FUNDED));
-	let _ = Balances::transfer(
-		&alice(),
-		&Hippocampus::owed_account(),
-		100,
-		frame_support::traits::ExistenceRequirement::KeepAlive,
-	);
 }
 
 fn entry(seed: u8, usd: u128) -> Entry<AccountId> {
@@ -253,10 +249,11 @@ fn contract_vector_settles_end_to_end_with_its_revision() {
 		root_apply(RootChange::Params(params()));
 		root_apply(RootChange::MaxDailyAlpha(u128::MAX));
 		root_apply(RootChange::FirstWindow(V_WINDOW));
+		let _ = Balances::deposit_creating(&Hippocampus::settlement_account(), 1_000_000_000_000_000_000);
+		let _ = Balances::deposit_creating(&Hippocampus::owed_account(), EXISTENTIAL_DEPOSIT);
 		root_apply(RootChange::Enable);
 		fresh_price(V_PRICE);
 		set_current_window(V_WINDOW + 8);
-		let _ = Balances::deposit_creating(&Hippocampus::settlement_account(), 1_000_000_000_000_000_000);
 		for s in 1..=3u8 {
 			let _ = Balances::deposit_creating(&family(s), 1_000);
 		}
@@ -409,7 +406,7 @@ fn failed_transfer_is_owed_and_claimable_once() {
 		assert_ok!(pay(W, 0, 0, parts[0].clone()));
 		assert_eq!(ComputeOwed::<Test>::get(family(9)), 5);
 		assert_eq!(ComputeOwedTotal::<Test>::get(), 5);
-		assert_eq!(Balances::free_balance(Hippocampus::owed_account()), 105);
+		assert_eq!(Balances::free_balance(Hippocampus::owed_account()), EXISTENTIAL_DEPOSIT + 5);
 		System::assert_has_event(Event::ComputeOwedRecorded { family: family(9), alpha: 5 }.into());
 		// Counted as paid: the window completes.
 		assert_eq!(NextComputeWindow::<Test>::get(), W + 1);
@@ -452,10 +449,48 @@ fn unseeded_owed_account_fails_the_whole_part() {
 		let parts = vec![vec![entry(1, 1_000), entry(9, 5)]];
 		let _ = Balances::deposit_creating(&family(1), 100);
 		approve(W, 0, &parts);
+		let settlement_before = Balances::free_balance(Hippocampus::settlement_account());
+		let reserved_before = ApprovedUnpaidAlpha::<Test>::get();
+		let daily_before = ComputeDailyAlpha::<Test>::get();
 		assert_refused(pay(W, 0, 0, parts[0].clone()), Error::<Test>::OwedTransferFailed);
-		// Nothing moved, the part is still next.
+		// Nothing moved, the part is still next: the earlier entry's payment
+		// is undone with the rest, so a retry cannot pay it twice.
 		assert_eq!(Balances::free_balance(family(1)), 100);
+		assert_eq!(Balances::free_balance(Hippocampus::settlement_account()), settlement_before);
 		assert_eq!(ComputeProgress::<Test>::get((W, 0)).unwrap().next_part, 0);
+		assert_eq!(ApprovedUnpaidAlpha::<Test>::get(), reserved_before);
+		assert_eq!(ComputeDailyAlpha::<Test>::get(), daily_before);
+		assert_eq!(ComputeOwedTotal::<Test>::get(), 0);
+		// Seeded again, the same part pays once.
+		let _ = Balances::deposit_creating(&Hippocampus::owed_account(), EXISTENTIAL_DEPOSIT);
+		assert_ok!(pay(W, 0, 0, parts[0].clone()));
+		assert_eq!(Balances::free_balance(family(1)), 1_100);
+		assert_eq!(ComputeOwed::<Test>::get(family(9)), 5);
+	});
+}
+
+#[test]
+fn enable_needs_both_accounts_seeded() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::schedule_compute_root_change(RuntimeOrigin::root(), RootChange::Enable));
+		System::set_block_number(System::block_number() + DELAY);
+		assert_noop!(
+			Hippocampus::apply_compute_root_change(RuntimeOrigin::signed(alice()), ChangeKind::Enable),
+			Error::<Test>::SettlementNotSeeded
+		);
+		// The refused apply keeps the change pending.
+		assert!(PendingRootChange::<Test>::get(ChangeKind::Enable).is_some());
+		let _ = Balances::deposit_creating(&Hippocampus::settlement_account(), 1_000);
+		assert_noop!(
+			Hippocampus::apply_compute_root_change(RuntimeOrigin::signed(alice()), ChangeKind::Enable),
+			Error::<Test>::SettlementNotSeeded
+		);
+		// Funding seeds the owed account too.
+		assert_ok!(Hippocampus::fund_compute_settlement(RuntimeOrigin::signed(alice()), 1_000));
+		assert_eq!(Balances::free_balance(Hippocampus::owed_account()), EXISTENTIAL_DEPOSIT);
+		assert_ok!(Hippocampus::apply_compute_root_change(RuntimeOrigin::signed(alice()), ChangeKind::Enable));
+		assert!(ComputeSettlementEnabled::<Test>::get());
+		// An owed claim leaves the seed behind, so it can be claimed in full.
 	});
 }
 
@@ -609,6 +644,7 @@ fn admin_can_only_disable() {
 #[test]
 fn root_change_waits_for_its_delay() {
 	new_test_ext().execute_with(|| {
+		assert_ok!(Hippocampus::fund_compute_settlement(RuntimeOrigin::signed(alice()), 1_000));
 		assert_ok!(Hippocampus::schedule_compute_root_change(RuntimeOrigin::root(), RootChange::Enable));
 		System::set_block_number(System::block_number() + DELAY - 1);
 		assert_noop!(
