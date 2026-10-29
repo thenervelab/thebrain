@@ -452,6 +452,38 @@ impl pallet_arion::Config for Runtime {
 	type TokenPriceUsd = AlphaTokenPriceUsd;
 	type SettlementInterval = ArionSettlementInterval;
 	type MaxDepartedPayoutsPerBlock = ConstU32<10>;
+	#[cfg(feature = "runtime-benchmarks")]
+	type BenchmarkHelper = ArionBenchHelper;
+}
+
+/// Cross-pallet setup for the arion benchmarks (see
+/// `pallet_arion::ArionBenchmarkHelper`): the payout bank and USD token price
+/// feed live in other pallets, and `register_child`'s proxy check is this
+/// runtime's `ProxyVerifier`, none of which the arion crate can reach alone.
+#[cfg(feature = "runtime-benchmarks")]
+pub struct ArionBenchHelper;
+#[cfg(feature = "runtime-benchmarks")]
+impl pallet_arion::ArionBenchmarkHelper<AccountId, Balance> for ArionBenchHelper {
+	fn set_token_price(price: u128) {
+		pallet_credits::AlphaPrice::<Runtime>::put(price);
+	}
+
+	fn prime_payout_source(requester: &AccountId, amount: Balance) {
+		use frame_support::traits::Currency;
+		pallet_hippocampus::DistributionEnabled::<Runtime>::put(true);
+		pallet_hippocampus::WhitelistedRequesters::<Runtime>::insert(requester, ());
+		let bank = pallet_hippocampus::Pallet::<Runtime>::account_id();
+		let _ = <Balances as Currency<AccountId>>::deposit_creating(&bank, amount);
+	}
+
+	fn authorize_child(family: &AccountId, child: &AccountId) {
+		let _ = pallet_proxy::Pallet::<Runtime>::add_proxy_delegate(
+			family,
+			child.clone(),
+			ProxyType::Any,
+			0u32.into(),
+		);
+	}
 }
 
 parameter_types! {
@@ -2979,6 +3011,7 @@ mod benches {
 		[pallet_alpha_bridge, AlphaBridge]
 		[pallet_compute_scoring, ComputeScoring]
 		[pallet_marketplace, Marketplace]
+		[pallet_arion, Arion]
 	);
 }
 

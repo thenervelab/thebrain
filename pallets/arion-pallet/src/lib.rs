@@ -3,6 +3,9 @@
 pub mod weights;
 pub use weights::WeightInfo;
 
+#[cfg(feature = "runtime-benchmarks")]
+pub mod benchmarking;
+
 // `pallet-arion`
 //
 // Minimal scaffold for Arion’s **on-chain CRUSH map** + **periodic miner stats**.
@@ -36,6 +39,22 @@ use sp_staking::StakingInterface;
 use sp_std::{collections::btree_map::BTreeMap, prelude::*};
 
 pub use pallet::*;
+
+/// Runtime-provided setup for the arion benchmarks, covering the cross-pallet
+/// state the arion crate cannot reach on its own: the payout bank and the USD
+/// token price feed live in other pallets, and the proxy authorization that
+/// `register_child` requires is the runtime's `ProxyVerifier`. Implemented by
+/// the runtime under `runtime-benchmarks`; never compiled otherwise.
+#[cfg(feature = "runtime-benchmarks")]
+pub trait ArionBenchmarkHelper<AccountId, Balance> {
+	/// Set the USD token price feed so settlement does not early-return.
+	fn set_token_price(price: u128);
+	/// Fund the payout source with `amount` and authorize `requester` to draw
+	/// from it, so `PayoutSource::request_payment` succeeds in the benchmark.
+	fn prime_payout_source(requester: &AccountId, amount: Balance);
+	/// Make `ProxyVerifier::can_register_child(family, child)` return true.
+	fn authorize_child(family: &AccountId, child: &AccountId);
+}
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -787,6 +806,10 @@ pub mod pallet {
 		/// payouts (debt is still recorded and waits for a non-zero setting).
 		#[pallet::constant]
 		type MaxDepartedPayoutsPerBlock: Get<u32>;
+
+		/// Benchmark-only cross-pallet setup helper (see [`ArionBenchmarkHelper`]).
+		#[cfg(feature = "runtime-benchmarks")]
+		type BenchmarkHelper: ArionBenchmarkHelper<Self::AccountId, BalanceOf<Self>>;
 	}
 
 	/// Storage version 1: `MinerUidToChild` reverse index (uid uniqueness).
@@ -1948,7 +1971,7 @@ pub mod pallet {
 		/// aggregate per family, pull funds from the payout source, distribute
 		/// pro-rata on shortfall (delta → [`FamilyArrears`]) and bond each
 		/// payout as stake on the family account.
-		fn settle_miner_payments(now: BlockNumberFor<T>) {
+		pub(crate) fn settle_miner_payments(now: BlockNumberFor<T>) {
 			let price = UsdPerGibBlock::new(MinerPriceUsdPerGbBlock::<T>::get());
 			if price.get() == 0 {
 				Self::deposit_event(Event::MinerPaymentSkipped {
