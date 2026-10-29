@@ -5573,12 +5573,30 @@ pub mod pallet {
 					// A free tier, or a rounding floor of zero: nothing to bill,
 					// but the clock still moves so the hours do not pile up as
 					// phantom arrears against a later non-zero price.
+					//
+					// Advance by the whole hours *elapsed*, not by `periods`.
+					// `MAX_CATCHUP_HOURS` bounds the work of *charging* arrears,
+					// and there is nothing to charge here, so the same reasoning
+					// as the plan-covered/empty branch above applies: settling in
+					// 24-hour steps would leave the marker behind by
+					// (elapsed_hours - MAX_CATCHUP_HOURS) hours. Those hours were
+					// free when they elapsed, but a frozen marker turns them into
+					// arrears that the first sweep after `PricePerGbs` is raised
+					// above 0 would bill at the new, non-zero rate.
+					//
+					// Only for a user who actually has a marker, for the same
+					// reason as that branch: an absent marker reads as block zero,
+					// already fails safe to a single hour on first sight, and
+					// writing one here would put a row on every free-tier account.
 					if per_period == 0 {
-						let _ = Self::advance_storage_last_charged_at(
-							&user,
-							last_charged_at
-								.saturating_add(blocks_per_hour.saturating_mul(periods.into())),
-						);
+						if !stored_last_charged_at.is_zero() {
+							let _ = Self::advance_storage_last_charged_at(
+								&user,
+								last_charged_at.saturating_add(
+									blocks_per_hour.saturating_mul(elapsed_hours.into()),
+								),
+							);
+						}
 						continue;
 					}
 
