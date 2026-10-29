@@ -123,9 +123,13 @@ pub trait WeightInfo {
 /// `BatchBackedCredits` and up to `2 × MAX_FROZEN_WINDOWS_PER_RELEASE`
 /// `FrozenComputeCharge` entries removed.
 fn chargeback() -> Weight {
+	// The escrow clear walks each entry it deletes (a read, a write and
+	// FRAME's unbounded-map proof allowance) plus the probe that ends it.
+	// `UserBatches` is priced at one entry as before; it is unbounded for
+	// authority deposits on `main` already (see #62).
 	let escrow = u64::from(crate::MAX_FROZEN_WINDOWS_PER_RELEASE) * 2;
-	Weight::from_parts(80_000_000, 40_000)
-		.saturating_add(RocksDbWeight::get().reads(16))
+	Weight::from_parts(80_000_000, 40_000 + 2_600 * (escrow + 1))
+		.saturating_add(RocksDbWeight::get().reads(16 + escrow + 1))
 		.saturating_add(RocksDbWeight::get().writes(14 + 1 + escrow))
 }
 
