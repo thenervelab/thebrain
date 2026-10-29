@@ -4732,3 +4732,1054 @@ mod vali_submitter {
         });
     }
 }
+
+// =====================================================================
+// compute-miner-pay §3 — per-tier prices beside the RU MinerPrice alias
+// =====================================================================
+
+mod tier_prices {
+    use super::*;
+    use crate::pallet::{
+        DiskTier, LastPriceChangeBlock, LastTierPriceChangeBlock, MinerPrice, NodeIdToChild,
+        PendingPriceChange, PendingTierPriceChange, PriceChange, PriceMagnitudeAnchor,
+        TierMigrationCursor, TierMigrationStatus, TierPrice, TierPriceBounds,
+        TierPriceMagnitudeAnchor,
+    };
+    use codec::{Decode, MaxEncodedLen};
+    use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+    use sp_runtime::DispatchError;
+
+    const NODE: [u8; 32] = [0xC1; 32];
+    const NODE_B: [u8; 32] = [0xC2; 32];
+    const NODE_C: [u8; 32] = [0xC3; 32];
+    const OP: AccountId = 1;
+    const OP_B: AccountId = 2;
+    const OP_C: AccountId = 3;
+    const WIDE: (u128, u128) = (1, 1_000_000_000);
+
+    /// Operators + legacy bounds + fast policy (interval 10, notice 5,
+    /// step 3/2), exactly as the legacy `marketplace` tests.
+    fn setup() {
+        NodeIdToChild::<TestRuntime>::insert(NODE, OP);
+        NodeIdToChild::<TestRuntime>::insert(NODE_B, OP_B);
+        NodeIdToChild::<TestRuntime>::insert(NODE_C, OP_C);
+        assert_ok!(ComputeScoring::set_price_bounds(
+            RuntimeOrigin::root(),
+            1,
+            Some(1_000_000_000)
+        ));
+        assert_ok!(ComputeScoring::set_price_change_policy(
+            RuntimeOrigin::root(),
+            10,
+            5,
+            3,
+            2
+        ));
+    }
+
+    fn set_all_tier_bounds(bounds: (u128, u128)) {
+        for tier in DiskTier::ALL {
+            assert_ok!(ComputeScoring::set_tier_price_bounds(
+                RuntimeOrigin::root(),
+                tier,
+                bounds.0,
+                bounds.1
+            ));
+        }
+    }
+
+    fn migrate_all() {
+        assert_ok!(ComputeScoring::migrate_tier_prices(
+            RuntimeOrigin::root(),
+            100
+        ));
+        assert_eq!(
+            TierMigrationCursor::<TestRuntime>::get(),
+            TierMigrationStatus::Done
+        );
+        assert_ok!(ComputeScoring::check_tier_alias());
+    }
+
+    fn go_live() {
+        setup();
+        set_all_tier_bounds(WIDE);
+        migrate_all();
+    }
+
+    fn announce_tier(
+        node: [u8; 32],
+        op: AccountId,
+        tier: DiskTier,
+        price: u128,
+    ) -> sp_runtime::DispatchResult {
+        ComputeScoring::announce_tier_price_change(RuntimeOrigin::signed(op), node, tier, price)
+    }
+
+    fn pending(node: [u8; 32], tier: DiskTier) -> Option<u128> {
+        PendingTierPriceChange::<TestRuntime>::get(node, tier).map(|p| p.new_price)
+    }
+
+    // --- types and registry compatibility ------------------------------
+
+    #[test]
+    fn disk_tier_encoding_is_pinned() {
+        assert_eq!(DiskTier::Nvme.encode(), vec![0u8]);
+        assert_eq!(DiskTier::Ssd.encode(), vec![1u8]);
+        assert_eq!(DiskTier::Hdd.encode(), vec![2u8]);
+        assert_eq!(DiskTier::decode(&mut &[2u8][..]).unwrap(), DiskTier::Hdd);
+        assert!(DiskTier::decode(&mut &[3u8][..]).is_err());
+        assert_eq!(DiskTier::max_encoded_len(), 1);
+    }
+
+    /// hippius-onchain-registry decodes `MinerPrice` as a raw `u128` and
+    /// enumerates `PendingPriceChange` with a fixed key length: both the
+    /// key shape and the value encoding must survive the alias writes.
+    #[test]
+    fn legacy_items_keep_their_scale_types_and_keys() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                10_000
+            ));
+            System::set_block_number(6);
+            assert_ok!(ComputeScoring::apply_price_change(
+                RuntimeOrigin::signed(9),
+                NODE
+            ));
+            System::set_block_number(20);
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                9_000
+            ));
+
+            let key_for = |item: &[u8]| {
+                let mut k =
+                    frame_support::storage::storage_prefix(b"ComputeScoring", item).to_vec();
+                k.extend_from_slice(&sp_io::hashing::blake2_128(&NODE));
+                k.extend_from_slice(&NODE);
+                k
+            };
+            // 32 (prefix) + 16 (blake2_128) + 32 (node id) = 80 bytes.
+            let price_key = key_for(b"MinerPrice");
+            assert_eq!(price_key.len(), 80);
+            assert_eq!(MinerPrice::<TestRuntime>::hashed_key_for(NODE), price_key);
+            let raw = sp_io::storage::get(&price_key).expect("MinerPrice written");
+            assert_eq!(raw.len(), 16);
+            assert_eq!(u128::decode(&mut &raw[..]).unwrap(), 10_000);
+
+            let pending_key = key_for(b"PendingPriceChange");
+            assert_eq!(
+                PendingPriceChange::<TestRuntime>::hashed_key_for(NODE),
+                pending_key
+            );
+            let raw = sp_io::storage::get(&pending_key).expect("PendingPriceChange written");
+            // u128 new_price ++ u64 effective_block (mock BlockNumber).
+            assert_eq!(raw.len(), 24);
+            let decoded = <(u128, u64)>::decode(&mut &raw[..]).unwrap();
+            assert_eq!(decoded, (9_000, 25));
+            assert_eq!(
+                PriceChange {
+                    new_price: 9_000u128,
+                    effective_block: 25u64
+                }
+                .encode(),
+                raw.to_vec()
+            );
+        });
+    }
+
+    // --- storage version -------------------------------------------------
+
+    #[test]
+    fn storage_version_bumps_zero_to_one_once() {
+        new_test_ext().execute_with(|| {
+            assert_eq!(ComputeScoring::in_code_storage_version(), 1);
+            StorageVersion::new(0).put::<ComputeScoring>();
+            crate::migrations::MigrateV0ToV1::<TestRuntime>::on_runtime_upgrade();
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 1);
+            // Re-running is a no-op (VersionedMigration checks FROM).
+            crate::migrations::MigrateV0ToV1::<TestRuntime>::on_runtime_upgrade();
+            assert_eq!(ComputeScoring::on_chain_storage_version(), 1);
+            // No price data moved: that is the cursor call's job.
+            assert_eq!(
+                TierMigrationCursor::<TestRuntime>::get(),
+                TierMigrationStatus::NotStarted
+            );
+        });
+    }
+
+    // --- conversion ------------------------------------------------------
+
+    /// Index 49 stores the RU price exactly: the nvme tier price it writes
+    /// is the exact alias preimage. The floor conversion would round-trip
+    /// `p → p − 1` (the double floor the review flagged).
+    #[test]
+    fn ru_round_trip_has_no_double_floor_drift() {
+        new_test_ext().execute_with(|| {
+            let (num, den) = DEFAULT_TIER_RATIOS[0];
+            let mut floor_drift = 0;
+            for p in 1u128..=5_000 {
+                let t = ComputeScoring::ru_to_nvme_exact(p).expect("k_num ≥ k_den: representable");
+                assert_eq!(ComputeScoring::nvme_to_ru(t), p);
+                // Smallest preimage: one less aliases below p.
+                assert!(ComputeScoring::nvme_to_ru(t - 1) < p);
+                if ComputeScoring::nvme_to_ru(p * num / den) != p {
+                    floor_drift += 1;
+                }
+            }
+            assert!(
+                floor_drift > 0,
+                "the floor conversion drifts, the exact one must not"
+            );
+        });
+    }
+
+    // --- refusals before / around the migration --------------------------
+
+    #[test]
+    fn tier_calls_refused_before_migration() {
+        new_test_ext().execute_with(|| {
+            setup();
+            set_all_tier_bounds(WIDE);
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Nvme, 100),
+                Error::<TestRuntime>::TierPricesNotMigrated
+            );
+            assert_noop!(
+                ComputeScoring::apply_tier_price_change(
+                    RuntimeOrigin::signed(9),
+                    NODE,
+                    DiskTier::Nvme
+                ),
+                Error::<TestRuntime>::TierPricesNotMigrated
+            );
+            // The legacy path is untouched before the migration.
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                100
+            ));
+            assert!(PendingTierPriceChange::<TestRuntime>::get(NODE, DiskTier::Nvme).is_none());
+        });
+    }
+
+    #[test]
+    fn migration_refused_for_non_admin() {
+        new_test_ext().execute_with(|| {
+            setup();
+            set_all_tier_bounds(WIDE);
+            assert_noop!(
+                ComputeScoring::migrate_tier_prices(RuntimeOrigin::signed(OP), 10),
+                DispatchError::BadOrigin
+            );
+            // The configured admin authority is accepted.
+            assert_ok!(ComputeScoring::migrate_tier_prices(
+                RuntimeOrigin::signed(ADMIN_AUTHORITY),
+                10
+            ));
+        });
+    }
+
+    #[test]
+    fn migration_refused_twice() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_noop!(
+                ComputeScoring::migrate_tier_prices(RuntimeOrigin::root(), 10),
+                Error::<TestRuntime>::TierMigrationAlreadyDone
+            );
+        });
+    }
+
+    #[test]
+    fn migration_refused_without_every_tier_bound() {
+        new_test_ext().execute_with(|| {
+            setup();
+            assert_ok!(ComputeScoring::set_tier_price_bounds(
+                RuntimeOrigin::root(),
+                DiskTier::Nvme,
+                1,
+                100
+            ));
+            assert_noop!(
+                ComputeScoring::migrate_tier_prices(RuntimeOrigin::root(), 10),
+                Error::<TestRuntime>::PriceBoundsNotConfigured
+            );
+        });
+    }
+
+    #[test]
+    fn set_tier_price_bounds_is_admin_only_and_ordered() {
+        new_test_ext().execute_with(|| {
+            assert_noop!(
+                ComputeScoring::set_tier_price_bounds(
+                    RuntimeOrigin::signed(OP),
+                    DiskTier::Ssd,
+                    1,
+                    2
+                ),
+                DispatchError::BadOrigin
+            );
+            assert_noop!(
+                ComputeScoring::set_tier_price_bounds(RuntimeOrigin::root(), DiskTier::Ssd, 3, 2),
+                Error::<TestRuntime>::InvalidPricePolicy
+            );
+            assert_ok!(ComputeScoring::set_tier_price_bounds(
+                RuntimeOrigin::root(),
+                DiskTier::Ssd,
+                2,
+                3
+            ));
+            assert_eq!(
+                TierPriceBounds::<TestRuntime>::get(DiskTier::Ssd),
+                Some((2, 3))
+            );
+            // Before the migration the RU bounds are left alone.
+            assert_eq!(PriceCeiling::<TestRuntime>::get(), None);
+        });
+    }
+
+    // --- the migration ---------------------------------------------------
+
+    #[test]
+    fn migration_converts_each_tier_with_exact_ratios() {
+        new_test_ext().execute_with(|| {
+            setup();
+            MinerPrice::<TestRuntime>::insert(NODE, 10_000);
+            LastPriceChangeBlock::<TestRuntime>::insert(NODE, 1);
+            set_all_tier_bounds(WIDE);
+            migrate_all();
+
+            // nvme 7/5 (exact preimage), ssd 14/9 (floor), hdd 5/2.
+            assert_eq!(
+                TierPrice::<TestRuntime>::get(NODE, DiskTier::Nvme),
+                Some(14_000)
+            );
+            assert_eq!(
+                TierPrice::<TestRuntime>::get(NODE, DiskTier::Ssd),
+                Some(15_555)
+            );
+            assert_eq!(
+                TierPrice::<TestRuntime>::get(NODE, DiskTier::Hdd),
+                Some(25_000)
+            );
+            for tier in DiskTier::ALL {
+                assert_eq!(
+                    TierPriceMagnitudeAnchor::<TestRuntime>::get(NODE, tier),
+                    TierPrice::<TestRuntime>::get(NODE, tier)
+                );
+                assert_eq!(LastTierPriceChangeBlock::<TestRuntime>::get(NODE, tier), 1);
+            }
+            // Alias unchanged in RU units.
+            assert_eq!(MinerPrice::<TestRuntime>::get(NODE), Some(10_000));
+            // Nodes without a price get none.
+            assert!(TierPrice::<TestRuntime>::get(NODE_B, DiskTier::Nvme).is_none());
+            assert!(MinerPrice::<TestRuntime>::get(NODE_B).is_none());
+            // RU bounds reset to the image of the nvme bounds.
+            assert_eq!(
+                PriceFloor::<TestRuntime>::get(),
+                ComputeScoring::nvme_to_ru(WIDE.0)
+            );
+            assert_eq!(
+                PriceCeiling::<TestRuntime>::get(),
+                Some(ComputeScoring::nvme_to_ru(WIDE.1))
+            );
+        });
+    }
+
+    #[test]
+    fn migration_carries_pending_decrease_and_drops_pending_increase() {
+        new_test_ext().execute_with(|| {
+            setup();
+            let not_due = PriceChange {
+                new_price: 8_000u128,
+                effective_block: 50u64,
+            };
+            MinerPrice::<TestRuntime>::insert(NODE, 10_000);
+            PendingPriceChange::<TestRuntime>::insert(NODE, not_due.clone());
+            MinerPrice::<TestRuntime>::insert(NODE_B, 10_000);
+            PendingPriceChange::<TestRuntime>::insert(
+                NODE_B,
+                PriceChange {
+                    new_price: 12_000u128,
+                    effective_block: 50u64,
+                },
+            );
+            // A pending already past its notice is the consumed price.
+            MinerPrice::<TestRuntime>::insert(NODE_C, 10_000);
+            PendingPriceChange::<TestRuntime>::insert(
+                NODE_C,
+                PriceChange {
+                    new_price: 12_000u128,
+                    effective_block: 1u64,
+                },
+            );
+            set_all_tier_bounds(WIDE);
+            migrate_all();
+
+            // Decrease carried, converted per tier, same effective block.
+            assert_eq!(pending(NODE, DiskTier::Nvme), Some(11_200));
+            assert_eq!(pending(NODE, DiskTier::Ssd), Some(12_444));
+            assert_eq!(pending(NODE, DiskTier::Hdd), Some(20_000));
+            for tier in DiskTier::ALL {
+                assert_eq!(
+                    PendingTierPriceChange::<TestRuntime>::get(NODE, tier)
+                        .unwrap()
+                        .effective_block,
+                    50
+                );
+            }
+            assert_eq!(PendingPriceChange::<TestRuntime>::get(NODE), Some(not_due));
+
+            // Increase dropped everywhere, with an event.
+            for tier in DiskTier::ALL {
+                assert!(pending(NODE_B, tier).is_none());
+            }
+            assert!(PendingPriceChange::<TestRuntime>::get(NODE_B).is_none());
+            assert_eq!(MinerPrice::<TestRuntime>::get(NODE_B), Some(10_000));
+            System::assert_has_event(
+                ComputeEvent::PendingPriceIncreaseDropped {
+                    node_id: NODE_B,
+                    new_price: 12_000,
+                }
+                .into(),
+            );
+
+            // Due pending taken as the price.
+            assert_eq!(MinerPrice::<TestRuntime>::get(NODE_C), Some(12_000));
+            assert_eq!(
+                TierPrice::<TestRuntime>::get(NODE_C, DiskTier::Nvme),
+                Some(16_800)
+            );
+            assert!(PendingPriceChange::<TestRuntime>::get(NODE_C).is_none());
+        });
+    }
+
+    #[test]
+    fn migration_clamps_to_tier_bounds_and_alias_follows() {
+        new_test_ext().execute_with(|| {
+            setup();
+            MinerPrice::<TestRuntime>::insert(NODE, 10_000);
+            set_all_tier_bounds((1, 12_000));
+            migrate_all();
+            assert_eq!(
+                TierPrice::<TestRuntime>::get(NODE, DiskTier::Nvme),
+                Some(12_000)
+            );
+            assert_eq!(
+                TierPrice::<TestRuntime>::get(NODE, DiskTier::Hdd),
+                Some(12_000)
+            );
+            // floor(12_000 × 5 / 7) = 8_571.
+            assert_eq!(MinerPrice::<TestRuntime>::get(NODE), Some(8_571));
+        });
+    }
+
+    #[test]
+    fn migration_runs_in_cursor_batches_and_blocks_price_calls_meanwhile() {
+        new_test_ext().execute_with(|| {
+            setup();
+            for node in [NODE, NODE_B, NODE_C] {
+                MinerPrice::<TestRuntime>::insert(node, 10_000);
+            }
+            set_all_tier_bounds(WIDE);
+
+            assert_ok!(ComputeScoring::migrate_tier_prices(
+                RuntimeOrigin::root(),
+                1
+            ));
+            assert!(matches!(
+                TierMigrationCursor::<TestRuntime>::get(),
+                TierMigrationStatus::InProgress { .. }
+            ));
+            System::assert_last_event(
+                ComputeEvent::TierMigrationBatch {
+                    processed: 1,
+                    complete: false,
+                }
+                .into(),
+            );
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP), NODE, 10_000),
+                Error::<TestRuntime>::TierMigrationInProgress
+            );
+            assert_noop!(
+                ComputeScoring::apply_price_change(RuntimeOrigin::signed(9), NODE),
+                Error::<TestRuntime>::TierMigrationInProgress
+            );
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Ssd, 10_000),
+                Error::<TestRuntime>::TierMigrationInProgress
+            );
+            assert_noop!(
+                ComputeScoring::set_price_bounds(RuntimeOrigin::root(), 1, Some(10)),
+                Error::<TestRuntime>::TierMigrationInProgress
+            );
+            // Tier bounds are frozen too: every node clamps against the same.
+            assert_noop!(
+                ComputeScoring::set_tier_price_bounds(RuntimeOrigin::root(), DiskTier::Nvme, 1, 10),
+                Error::<TestRuntime>::TierMigrationInProgress
+            );
+
+            assert_ok!(ComputeScoring::migrate_tier_prices(
+                RuntimeOrigin::root(),
+                1
+            ));
+            assert_ok!(ComputeScoring::migrate_tier_prices(
+                RuntimeOrigin::root(),
+                1
+            ));
+            // The last batch sees the end of the key space: complete.
+            System::assert_last_event(
+                ComputeEvent::TierMigrationBatch {
+                    processed: 1,
+                    complete: true,
+                }
+                .into(),
+            );
+            assert_eq!(
+                TierMigrationCursor::<TestRuntime>::get(),
+                TierMigrationStatus::Done
+            );
+            for node in [NODE, NODE_B, NODE_C] {
+                assert_eq!(
+                    TierPrice::<TestRuntime>::get(node, DiskTier::Nvme),
+                    Some(14_000)
+                );
+            }
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
+    // --- index 49 / 51 / 52 in the alias period ---------------------------
+
+    #[test]
+    fn index_49_stores_the_ru_price_exactly_and_converts_to_nvme() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                10_001
+            ));
+            // ceil(10_001 × 7 / 5) = 14_002; floor(14_002 × 5 / 7) = 10_001.
+            assert_eq!(pending(NODE, DiskTier::Nvme), Some(14_002));
+            assert_eq!(
+                PendingPriceChange::<TestRuntime>::get(NODE)
+                    .unwrap()
+                    .new_price,
+                10_001
+            );
+            assert!(pending(NODE, DiskTier::Ssd).is_none());
+            assert_ok!(ComputeScoring::check_tier_alias());
+
+            System::set_block_number(6);
+            assert_eq!(ComputeScoring::effective_price(&NODE), Some(10_001));
+            assert_ok!(ComputeScoring::apply_price_change(
+                RuntimeOrigin::signed(9),
+                NODE
+            ));
+            assert_eq!(MinerPrice::<TestRuntime>::get(NODE), Some(10_001));
+            assert_eq!(
+                TierPrice::<TestRuntime>::get(NODE, DiskTier::Nvme),
+                Some(14_002)
+            );
+            assert!(PendingTierPriceChange::<TestRuntime>::get(NODE, DiskTier::Nvme).is_none());
+            assert!(PendingPriceChange::<TestRuntime>::get(NODE).is_none());
+            assert_ok!(ComputeScoring::check_tier_alias());
+
+            // The shared interval clock: a tier announce is too soon too.
+            System::set_block_number(8);
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Nvme, 14_002),
+                Error::<TestRuntime>::PriceChangeTooSoon
+            );
+        });
+    }
+
+    /// With the published ratios, every RU price round-trips exactly:
+    /// through the conversion functions, through index 49 (announce +
+    /// apply) and through the migration, with no `p → p − 1` drift.
+    #[test]
+    fn spec_ratios_round_trip_ru_prices_exactly_through_index_49() {
+        use crate::pallet::SPEC_TIER_PRICE_RATIOS;
+        let (num, den) = SPEC_TIER_PRICE_RATIOS[0];
+        assert!(
+            num >= den,
+            "nvme k_num ≥ k_den: every RU price representable"
+        );
+
+        new_test_ext().execute_with(|| {
+            mock_set_tier_ratios(SPEC_TIER_PRICE_RATIOS);
+            let mut floor_drift = 0;
+            for p in 1u128..=50_000 {
+                let t = ComputeScoring::ru_to_nvme_exact(p).expect("representable");
+                assert_eq!(ComputeScoring::nvme_to_ru(t), p);
+                if ComputeScoring::nvme_to_ru(p * num / den) != p {
+                    floor_drift += 1;
+                }
+            }
+            assert!(floor_drift > 0, "the floor conversion would drift");
+        });
+
+        for p in [1u128, 4_999, 5_000, 5_001, 9_999, 12_345, 14_999, 15_000] {
+            new_test_ext().execute_with(|| {
+                mock_set_tier_ratios(SPEC_TIER_PRICE_RATIOS);
+                setup();
+                // Live today: RU 5000 / 15000; the node priced at p.
+                MinerPrice::<TestRuntime>::insert(NODE, p);
+                set_all_tier_bounds(WIDE);
+                migrate_all();
+                assert_eq!(MinerPrice::<TestRuntime>::get(NODE), Some(p));
+
+                System::set_block_number(20);
+                assert_ok!(ComputeScoring::announce_price_change(
+                    RuntimeOrigin::signed(OP_B),
+                    NODE_B,
+                    p
+                ));
+                assert_eq!(
+                    PendingPriceChange::<TestRuntime>::get(NODE_B)
+                        .unwrap()
+                        .new_price,
+                    p
+                );
+                System::set_block_number(25);
+                assert_ok!(ComputeScoring::apply_price_change(
+                    RuntimeOrigin::signed(9),
+                    NODE_B
+                ));
+                assert_eq!(MinerPrice::<TestRuntime>::get(NODE_B), Some(p));
+                assert_eq!(ComputeScoring::effective_price(&NODE_B), Some(p));
+                assert_ok!(ComputeScoring::check_tier_alias());
+            });
+        }
+    }
+
+    #[test]
+    fn index_49_refuses_a_price_the_alias_cannot_hold() {
+        new_test_ext().execute_with(|| {
+            // k_num < k_den: alias(t) = floor(3t / 2) skips 2, 5, 8, ...
+            mock_set_tier_ratios([(2, 3), (1, 1), (1, 1)]);
+            go_live();
+            assert_eq!(ComputeScoring::ru_to_nvme_exact(2), None);
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP), NODE, 2),
+                Error::<TestRuntime>::PriceNotRepresentable
+            );
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                3
+            ));
+            assert_eq!(
+                PendingPriceChange::<TestRuntime>::get(NODE)
+                    .unwrap()
+                    .new_price,
+                3
+            );
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
+    #[test]
+    fn index_49_keeps_the_legacy_refusals() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP_B), NODE, 100),
+                Error::<TestRuntime>::NotNodeOperator
+            );
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP), NODE, 0),
+                Error::<TestRuntime>::PriceOutOfBounds
+            );
+            let ru_ceiling = PriceCeiling::<TestRuntime>::get().unwrap();
+            assert_noop!(
+                ComputeScoring::announce_price_change(
+                    RuntimeOrigin::signed(OP),
+                    NODE,
+                    ru_ceiling + 1
+                ),
+                Error::<TestRuntime>::PriceOutOfBounds
+            );
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                1_000
+            ));
+            System::set_block_number(6);
+            assert_ok!(ComputeScoring::apply_price_change(
+                RuntimeOrigin::signed(9),
+                NODE
+            ));
+            System::set_block_number(20);
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP), NODE, 1_501),
+                Error::<TestRuntime>::PriceChangeTooLarge
+            );
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                1_500
+            ));
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
+    #[test]
+    fn index_52_routes_to_the_nvme_tier_bounds() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(ComputeScoring::set_price_bounds(
+                RuntimeOrigin::root(),
+                5_000,
+                Some(15_000)
+            ));
+            // Widest nvme range whose alias stays in [5_000, 15_000].
+            assert_eq!(
+                TierPriceBounds::<TestRuntime>::get(DiskTier::Nvme),
+                Some((7_000, 21_001))
+            );
+            assert_eq!(ComputeScoring::nvme_to_ru(21_001), 15_000);
+            assert_eq!(ComputeScoring::nvme_to_ru(21_002), 15_001);
+            assert_eq!(ComputeScoring::nvme_to_ru(6_999), 4_999);
+            assert_eq!(PriceFloor::<TestRuntime>::get(), 5_000);
+            assert_eq!(PriceCeiling::<TestRuntime>::get(), Some(15_000));
+            // Other tiers untouched.
+            assert_eq!(
+                TierPriceBounds::<TestRuntime>::get(DiskTier::Ssd),
+                Some(WIDE)
+            );
+            assert_ok!(ComputeScoring::check_tier_alias());
+            // A tier ceiling is mandatory.
+            assert_noop!(
+                ComputeScoring::set_price_bounds(RuntimeOrigin::root(), 5_000, None),
+                Error::<TestRuntime>::InvalidPricePolicy
+            );
+        });
+    }
+
+    #[test]
+    fn nvme_tier_bounds_resync_the_ru_bounds_after_migration() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(ComputeScoring::set_tier_price_bounds(
+                RuntimeOrigin::root(),
+                DiskTier::Nvme,
+                4_932,
+                12_330
+            ));
+            assert_eq!(PriceFloor::<TestRuntime>::get(), 3_522);
+            assert_eq!(PriceCeiling::<TestRuntime>::get(), Some(8_807));
+            assert_ok!(ComputeScoring::check_tier_alias());
+            // A non-nvme tier leaves the RU bounds alone.
+            assert_ok!(ComputeScoring::set_tier_price_bounds(
+                RuntimeOrigin::root(),
+                DiskTier::Hdd,
+                1,
+                2
+            ));
+            assert_eq!(PriceCeiling::<TestRuntime>::get(), Some(8_807));
+        });
+    }
+
+    // --- tier announcements: every "must refuse" -------------------------
+
+    #[test]
+    fn tier_price_outside_bounds_is_refused() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(ComputeScoring::set_tier_price_bounds(
+                RuntimeOrigin::root(),
+                DiskTier::Ssd,
+                100,
+                200
+            ));
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Ssd, 201),
+                Error::<TestRuntime>::PriceOutOfBounds
+            );
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Ssd, 99),
+                Error::<TestRuntime>::PriceOutOfBounds
+            );
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Ssd, 0),
+                Error::<TestRuntime>::PriceOutOfBounds
+            );
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Ssd, 200));
+        });
+    }
+
+    #[test]
+    fn tier_announcement_before_bounds_is_refused() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            TierPriceBounds::<TestRuntime>::remove(DiskTier::Hdd);
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Hdd, 100),
+                Error::<TestRuntime>::PriceBoundsNotConfigured
+            );
+        });
+    }
+
+    #[test]
+    fn tier_announcement_needs_the_node_operator() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_noop!(
+                announce_tier(NODE, OP_B, DiskTier::Nvme, 100),
+                Error::<TestRuntime>::NotNodeOperator
+            );
+        });
+    }
+
+    #[test]
+    fn tier_step_above_one_and_a_half_is_refused() {
+        new_test_ext().execute_with(|| {
+            setup();
+            MinerPrice::<TestRuntime>::insert(NODE, 10_000);
+            set_all_tier_bounds(WIDE);
+            migrate_all();
+            // hdd anchor 25_000: ×1.5 = 37_500, ÷1.5 = 16_666.
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Hdd, 37_501),
+                Error::<TestRuntime>::PriceChangeTooLarge
+            );
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Hdd, 16_665),
+                Error::<TestRuntime>::PriceChangeTooLarge
+            );
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Hdd, 37_500));
+        });
+    }
+
+    #[test]
+    fn tier_interval_is_per_node_and_tier() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Nvme, 1_000)); // block 1
+            System::set_block_number(5);
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Nvme, 1_100),
+                Error::<TestRuntime>::PriceChangeTooSoon
+            );
+            // Another tier, or another node, has its own clock.
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Ssd, 1_000));
+            assert_ok!(announce_tier(NODE_B, OP_B, DiskTier::Nvme, 1_000));
+            System::set_block_number(11);
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Nvme, 1_100));
+        });
+    }
+
+    #[test]
+    fn tier_notice_window_is_per_node_and_tier() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Ssd, 1_000)); // effective 6
+            System::set_block_number(3);
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Hdd, 1_000)); // effective 8
+            System::set_block_number(5);
+            assert_eq!(
+                ComputeScoring::effective_tier_price(&NODE, DiskTier::Ssd),
+                None
+            );
+            assert_noop!(
+                ComputeScoring::apply_tier_price_change(
+                    RuntimeOrigin::signed(9),
+                    NODE,
+                    DiskTier::Ssd
+                ),
+                Error::<TestRuntime>::NoPriceChangeDue
+            );
+            System::set_block_number(6);
+            assert_eq!(
+                ComputeScoring::effective_tier_price(&NODE, DiskTier::Ssd),
+                Some(1_000)
+            );
+            assert_ok!(ComputeScoring::apply_tier_price_change(
+                RuntimeOrigin::signed(9),
+                NODE,
+                DiskTier::Ssd
+            ));
+            assert_noop!(
+                ComputeScoring::apply_tier_price_change(
+                    RuntimeOrigin::signed(9),
+                    NODE,
+                    DiskTier::Hdd
+                ),
+                Error::<TestRuntime>::NoPriceChangeDue
+            );
+            assert_eq!(
+                TierPrice::<TestRuntime>::get(NODE, DiskTier::Ssd),
+                Some(1_000)
+            );
+            // A non-nvme tier never touches the RU alias.
+            assert!(MinerPrice::<TestRuntime>::get(NODE).is_none());
+            assert!(PendingPriceChange::<TestRuntime>::get(NODE).is_none());
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
+    #[test]
+    fn nvme_tier_announcement_dual_writes_the_ru_mirror() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Nvme, 14_003));
+            // floor(14_003 × 5 / 7) = 10_002.
+            assert_eq!(
+                PendingPriceChange::<TestRuntime>::get(NODE),
+                Some(PriceChange {
+                    new_price: 10_002,
+                    effective_block: 6
+                })
+            );
+            System::set_block_number(6);
+            assert_ok!(ComputeScoring::apply_tier_price_change(
+                RuntimeOrigin::signed(9),
+                NODE,
+                DiskTier::Nvme
+            ));
+            assert_eq!(MinerPrice::<TestRuntime>::get(NODE), Some(10_002));
+            assert!(PendingPriceChange::<TestRuntime>::get(NODE).is_none());
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
+    #[test]
+    fn nvme_pending_outside_tightened_bounds_is_discarded_with_its_mirror() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(announce_tier(NODE, OP, DiskTier::Nvme, 14_000));
+            assert_ok!(ComputeScoring::set_tier_price_bounds(
+                RuntimeOrigin::root(),
+                DiskTier::Nvme,
+                1,
+                13_999
+            ));
+            System::set_block_number(6);
+            // The RU reader follows the tier: the pending no longer counts.
+            assert_eq!(ComputeScoring::effective_price(&NODE), None);
+            assert_ok!(ComputeScoring::apply_tier_price_change(
+                RuntimeOrigin::signed(9),
+                NODE,
+                DiskTier::Nvme
+            ));
+            assert!(PendingTierPriceChange::<TestRuntime>::get(NODE, DiskTier::Nvme).is_none());
+            assert!(PendingPriceChange::<TestRuntime>::get(NODE).is_none());
+            assert!(MinerPrice::<TestRuntime>::get(NODE).is_none());
+            System::assert_has_event(
+                ComputeEvent::PendingTierPriceDiscarded {
+                    node_id: NODE,
+                    tier: DiskTier::Nvme,
+                    new_price: 14_000,
+                }
+                .into(),
+            );
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
+    /// The alias checker itself catches every divergence shape, so the
+    /// `check_tier_alias()` assertions above (and `try_state`) mean
+    /// something.
+    #[test]
+    fn alias_divergence_is_detected() {
+        new_test_ext().execute_with(|| {
+            go_live();
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                10_000
+            ));
+            System::set_block_number(6);
+            assert_ok!(ComputeScoring::apply_price_change(
+                RuntimeOrigin::signed(9),
+                NODE
+            ));
+            assert_ok!(ComputeScoring::check_tier_alias());
+
+            MinerPrice::<TestRuntime>::insert(NODE, 9_999);
+            assert!(ComputeScoring::check_tier_alias().is_err());
+            MinerPrice::<TestRuntime>::insert(NODE, 10_000);
+
+            PendingPriceChange::<TestRuntime>::insert(
+                NODE,
+                PriceChange {
+                    new_price: 9_000u128,
+                    effective_block: 9u64,
+                },
+            );
+            assert!(ComputeScoring::check_tier_alias().is_err());
+            PendingPriceChange::<TestRuntime>::remove(NODE);
+
+            PriceCeiling::<TestRuntime>::put(1);
+            assert!(ComputeScoring::check_tier_alias().is_err());
+        });
+    }
+
+    // --- deregistration --------------------------------------------------
+
+    #[test]
+    fn deregistration_purges_tier_prices_but_keeps_anchors() {
+        new_test_ext().execute_with(|| {
+            register_child_for_force_tests();
+            let node = sp_core::ed25519::Pair::from_seed(&[0xCC; 32]).public().0;
+            setup();
+            set_all_tier_bounds(WIDE);
+            migrate_all();
+            assert_ok!(announce_tier(node, CHILD_FORCE, DiskTier::Hdd, 2_000));
+            assert_ok!(announce_tier(node, CHILD_FORCE, DiskTier::Nvme, 1_400));
+            System::set_block_number(6);
+            assert_ok!(ComputeScoring::force_deregister_child(
+                RuntimeOrigin::signed(FAMILY_FORCE),
+                CHILD_FORCE,
+            ));
+            for tier in DiskTier::ALL {
+                assert!(TierPrice::<TestRuntime>::get(node, tier).is_none());
+                assert!(PendingTierPriceChange::<TestRuntime>::get(node, tier).is_none());
+            }
+            assert_eq!(
+                TierPriceMagnitudeAnchor::<TestRuntime>::get(node, DiskTier::Hdd),
+                Some(2_000)
+            );
+            assert_eq!(
+                TierPriceMagnitudeAnchor::<TestRuntime>::get(node, DiskTier::Nvme),
+                Some(1_400)
+            );
+            assert_eq!(PriceMagnitudeAnchor::<TestRuntime>::get(node), Some(1_000));
+            assert!(MinerPrice::<TestRuntime>::get(node).is_none());
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
+    /// A node deregistered BEFORE the migration only has the RU anchor:
+    /// its first tier announcement is still speed-limited from it.
+    #[test]
+    fn legacy_ru_anchor_limits_the_first_tier_price() {
+        new_test_ext().execute_with(|| {
+            setup();
+            PriceMagnitudeAnchor::<TestRuntime>::insert(NODE, 10_000);
+            set_all_tier_bounds(WIDE);
+            migrate_all();
+            assert_eq!(
+                TierPriceMagnitudeAnchor::<TestRuntime>::get(NODE, DiskTier::Hdd),
+                Some(25_000)
+            );
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Hdd, 37_501),
+                Error::<TestRuntime>::PriceChangeTooLarge
+            );
+            // A node id that registers after the migration falls back to it too.
+            TierPriceMagnitudeAnchor::<TestRuntime>::remove(NODE, DiskTier::Hdd);
+            assert_noop!(
+                announce_tier(NODE, OP, DiskTier::Hdd, 37_501),
+                Error::<TestRuntime>::PriceChangeTooLarge
+            );
+        });
+    }
+}

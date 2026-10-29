@@ -243,6 +243,28 @@ impl pallet_compute_scoring::Config for TestRuntime {
     type MaxLiveAttestationBody = ConstU32<1024>;
     type MaxVmIdLen = ConstU32<64>;
     type MaxKbsAttestationPubkeys = ConstU32<4>;
+    type TierPriceRatios = MockTierPriceRatios;
+}
+
+/// Default test ratios `(k_num, k_den)` for nvme / ssd / hdd: non-integer
+/// on purpose, so every rounding path is exercised.
+pub const DEFAULT_TIER_RATIOS: [(u128, u128); 3] = [(7, 5), (14, 9), (5, 2)];
+
+thread_local! {
+    static TIER_RATIOS: RefCell<[(u128, u128); 3]> = const { RefCell::new(DEFAULT_TIER_RATIOS) };
+}
+
+/// Overrides the tier ratios for the current test thread (e.g. a
+/// `k_num < k_den` nvme ratio, where some RU prices have no exact preimage).
+pub fn mock_set_tier_ratios(ratios: [(u128, u128); 3]) {
+    TIER_RATIOS.with(|r| *r.borrow_mut() = ratios);
+}
+
+pub struct MockTierPriceRatios;
+impl frame_support::traits::Get<[(u128, u128); 3]> for MockTierPriceRatios {
+    fn get() -> [(u128, u128); 3] {
+        TIER_RATIOS.with(|r| *r.borrow())
+    }
 }
 
 /// Unix-time value the mock's `Timestamp` pallet exposes via
@@ -274,6 +296,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
         // PR-I6: also clear the `RankingsSink` recording so every
         // test starts with an empty bridge payload.
         mock_clear_pushed_rankings();
+        mock_set_tier_ratios(DEFAULT_TIER_RATIOS);
     });
     ext
 }

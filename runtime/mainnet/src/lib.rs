@@ -389,6 +389,14 @@ impl pallet_compute_scoring::Config for Runtime {
 	type MaxLiveAttestationBody = ConstU32<1024>;
 	type MaxVmIdLen = ConstU32<64>;
 	type MaxKbsAttestationPubkeys = ConstU32<8>;
+	// Bound to the published RU → RU_B ratios (compute-miner-pay contract,
+	// formula v1). Must not change once `migrate_tier_prices` has run.
+	type TierPriceRatios = ComputeTierPriceRatios;
+}
+
+parameter_types! {
+	pub const ComputeTierPriceRatios: [(u128, u128); 3] =
+		pallet_compute_scoring::SPEC_TIER_PRICE_RATIOS;
 }
 
 impl pallet_arion::Config for Runtime {
@@ -2458,6 +2466,10 @@ type Migrations = (
 	migrations::ActivateMinerPaymentBank<Runtime>,
 	migrations::InitAlphaPriceUpdatedAt<Runtime>,
 	migrations::HippocampusComputeSettlementV2<Runtime>,
+	// compute-scoring v0 -> v1 (tier prices): version bump only; prices move
+	// through the cursor call `migrate_tier_prices`. thebrain #71 also
+	// introduces a v1: whichever lands second renumbers.
+	pallet_compute_scoring::migrations::MigrateV0ToV1<Runtime>,
 );
 
 /// Block type as expected by this runtime.
