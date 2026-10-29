@@ -24,7 +24,7 @@
 use super::*;
 use crate::pallet::Pallet as ComputeScoring;
 use frame_benchmarking::v2::*;
-use frame_support::traits::Currency;
+use frame_support::traits::{Currency, EnsureOrigin};
 use frame_system::RawOrigin;
 use sp_std::vec;
 use sp_std::vec::Vec;
@@ -161,17 +161,24 @@ mod benches {
     }
 
     #[benchmark]
-    fn set_tier_price_bounds() {
+    fn set_tier_price_bounds() -> Result<(), BenchmarkError> {
+        // The runtime's admin origin is not root (thebrain: a pinned
+        // authority), so take whatever origin it accepts.
+        let origin = T::ComputeScoringAdminOrigin::try_successful_origin()
+            .map_err(|_| BenchmarkError::Weightless)?;
         tier_bounds::<T>();
         TierMigrationCursor::<T>::put(TierMigrationStatus::Done);
         #[extrinsic_call]
-        _(RawOrigin::Root, DiskTier::Nvme, 10u128, 1_000u128);
+        _(origin as T::RuntimeOrigin, DiskTier::Nvme, 10u128, 1_000u128);
+        Ok(())
     }
 
     /// `n` priced nodes with a pending decrease: alternately already due
     /// (the legacy bounds are read) and not yet due (carried per tier).
     #[benchmark]
-    fn migrate_tier_prices(n: Linear<1, 64>) {
+    fn migrate_tier_prices(n: Linear<1, 64>) -> Result<(), BenchmarkError> {
+        let origin = T::ComputeScoringAdminOrigin::try_successful_origin()
+            .map_err(|_| BenchmarkError::Weightless)?;
         tier_bounds::<T>();
         for i in 0..n {
             let node_id = node(i);
@@ -187,8 +194,9 @@ mod benches {
             );
         }
         #[extrinsic_call]
-        _(RawOrigin::Root, n);
+        _(origin as T::RuntimeOrigin, n);
         assert_eq!(TierMigrationCursor::<T>::get(), TierMigrationStatus::Done);
+        Ok(())
     }
 
     // Runs every benchmark above as an ordinary test against the
