@@ -132,11 +132,14 @@ impl WeightInfo for () {
 
 /// Weights of the compute settlement calls (10-18).
 ///
-/// Hand-set upper estimates, the same convention as the rest of this file;
-/// `benchmarking.rs` measures each call at its worst case (four approver keys
-/// tried, `pay_compute_part` at `MaxEntriesPerPart` entries with every
-/// transfer failing over to the owed account) and the figures below are kept
-/// above those measurements. Reads and writes are counted from the code.
+/// Measured with `benchmarking.rs` (each call at its worst case: four approver
+/// keys with the signer last; `pay_compute_part` up to `MaxEntriesPerPart`
+/// entries, every transfer failing over to the owed account):
+/// `hippius benchmark pallet --chain dev --pallet pallet_hippocampus
+/// --extrinsic '*' --steps 20 --repeat 10`, 2026-10-29, on a development VM
+/// (Xeon E5-2650 @ 2.00GHz, compiled wasm). Execution time and proof size are
+/// the measured ones; reads and writes are the larger of the measured and the
+/// counted figures. Re-run on the reference machine before mainnet.
 pub trait SettlementWeightInfo {
 	fn submit_compute_approval() -> Weight;
 	fn pay_compute_part(n: u32) -> Weight;
@@ -151,10 +154,11 @@ pub trait SettlementWeightInfo {
 
 fn settlement_weight<W: Get<frame_support::weights::RuntimeDbWeight>>(
 	ps: u64,
+	proof: u64,
 	reads: u64,
 	writes: u64,
 ) -> Weight {
-	Weight::from_parts(ps, 0)
+	Weight::from_parts(ps, proof)
 		.saturating_add(W::get().reads(reads))
 		.saturating_add(W::get().writes(writes))
 }
@@ -162,47 +166,41 @@ fn settlement_weight<W: Get<frame_support::weights::RuntimeDbWeight>>(
 macro_rules! settlement_weights {
 	($db:ty) => {
 		fn submit_compute_approval() -> Weight {
-			// Up to 4 sr25519 verifications (~60 µs each), key-role scans,
-			// ~22 reads (switches, keys, three role lists, genesis hash,
-			// order, params, pin, revenue, paid, price) and 6 writes
-			// (approval, progress, pin, reservation, completion).
-			settlement_weight::<$db>(400_000_000, 22, 6)
+			// Measured 768.3 µs, 19 reads, 5 writes; counted up to 22 reads
+			// (role lists) and 6 writes (completion of a 0-part approval).
+			settlement_weight::<$db>(768_264_000, 4_467, 22, 6)
 		}
 		fn pay_compute_part(n: u32) -> Weight {
-			// Fixed: switches, submitter, approval, progress, genesis hash,
-			// settlement balance, params, daily counter, clock; writes
-			// progress, window paid, daily counter, reservation, completion.
-			// Per entry, worst case: a failed transfer (2 reads) then the
-			// transfer to the owed account (2 reads, 2 writes) and the owed
-			// map and total (2 reads, 2 writes).
-			settlement_weight::<$db>(120_000_000, 14, 7).saturating_add(
-				settlement_weight::<$db>(160_000_000, 6, 4).saturating_mul(n.into()),
+			// Measured 292.7 µs + 150.1 µs per entry; counted per entry a
+			// failed transfer, the owed transfer and the owed map and total.
+			settlement_weight::<$db>(292_666_247, 6_196, 15, 12).saturating_add(
+				settlement_weight::<$db>(150_094_314, 2_603, 6, 4).saturating_mul(n.into()),
 			)
 		}
 		fn claim_compute_owed() -> Weight {
-			settlement_weight::<$db>(70_000_000, 6, 4)
+			settlement_weight::<$db>(212_763_000, 6_196, 6, 4)
 		}
 		fn fund_compute_settlement() -> Weight {
 			// Worst case: the owed account seeded first (its balance read, a
 			// second transfer), then the settlement transfer.
-			settlement_weight::<$db>(110_000_000, 5, 4)
+			settlement_weight::<$db>(298_592_000, 6_196, 5, 4)
 		}
 		fn revoke_compute_approval() -> Weight {
-			settlement_weight::<$db>(350_000_000, 6, 4)
+			settlement_weight::<$db>(674_323_000, 4_979, 7, 5)
 		}
 		fn schedule_compute_root_change() -> Weight {
 			// Key validation reads the three role lists.
-			settlement_weight::<$db>(60_000_000, 5, 1)
+			settlement_weight::<$db>(107_761_000, 1_602, 5, 1)
 		}
 		fn apply_compute_root_change() -> Weight {
 			// Re-validation plus the heaviest change (defund: a transfer).
-			settlement_weight::<$db>(120_000_000, 10, 6)
+			settlement_weight::<$db>(247_158_000, 6_196, 10, 6)
 		}
 		fn cancel_compute_root_change() -> Weight {
-			settlement_weight::<$db>(15_000_000, 1, 1)
+			settlement_weight::<$db>(53_863_000, 3_617, 1, 1)
 		}
 		fn disable_compute_settlement() -> Weight {
-			settlement_weight::<$db>(15_000_000, 0, 2)
+			settlement_weight::<$db>(35_241_000, 0, 0, 2)
 		}
 	};
 }
