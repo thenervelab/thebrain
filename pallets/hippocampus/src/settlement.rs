@@ -98,8 +98,8 @@ impl Approval {
 	}
 }
 
-/// Payment progress of one approval (contract §4 fields, then the chain's
-/// completion day).
+/// Payment progress of one approval (contract §4). Completion is recorded in
+/// `ComputeRevisionSeq`.
 #[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 pub struct Progress<AccountId> {
 	/// Next part to pay.
@@ -111,8 +111,6 @@ pub struct Progress<AccountId> {
 	pub usd_paid: u128,
 	/// Alpha paid so far (transfers and owed alike).
 	pub alpha_paid: u128,
-	/// UTC day (window number) the approval completed, `None` while open.
-	pub completed_day: Option<u32>,
 }
 
 /// A root-only settlement change, applied after `RootChangeDelay`.

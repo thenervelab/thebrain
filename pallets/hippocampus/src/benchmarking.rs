@@ -61,7 +61,6 @@ fn setup<T: Config>() -> (T::AccountId, sr25519::Public) {
 	ComputeSettlementSubmitters::<T>::put(BoundedVec::try_from(submitters).unwrap());
 	ComputeSettlementApproverKeys::<T>::put(BoundedVec::try_from(approvers).unwrap());
 	ComputePayoutParams::<T>::put((1u32, params()));
-	ComputeParamsHistory::<T>::insert(1u32, params());
 	ComputeMaxDailyAlpha::<T>::put(u128::MAX);
 	FirstComputeWindow::<T>::put(WINDOW);
 	NextComputeWindow::<T>::put(WINDOW);

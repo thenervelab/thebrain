@@ -5,10 +5,10 @@
 use crate::{
 	mock::*,
 	settlement::{self as st, ApprovalInput, ChangeKind, Entry, PayoutParams, RootChange},
-	ComputeApprovedUnpaid, ComputeApproval, ComputeDailyAlpha, ComputeOwed, ComputeOwedTotal,
+	ApprovedUnpaidAlpha, ComputeApproval, ComputeDailyAlpha, ComputeOwed, ComputeOwedTotal,
 	ComputePayoutParams, ComputeProgress, ComputeSettlementEnabled, ComputeWindowPaid,
 	DistributionEnabled, Error, Event, FirstComputeWindow, NextComputeWindow, PendingRootChange,
-	WindowParams,
+	WindowParams, ComputeLastRevisionDay, ComputeRevisionSeq, InFlightApproval, NextRevisionSeq,
 };
 use frame_support::{
 	assert_noop, assert_ok,
@@ -162,48 +162,20 @@ fn assert_refused(result: frame_support::dispatch::DispatchResultWithPostInfo, e
 }
 
 // ---------------------------------------------------------------------------
-// Contract vectors: hippius-backend #732 rev 3 (000fbbe0),
-// docs/design/compute-miner-pay-interfaces.md §7 and
-// docs/design/compute-miner-pay-vectors.py.
+// Contract vectors (interface contract §7): see `settlement_vectors.rs`.
 // ---------------------------------------------------------------------------
 
-const V_PRICE: u128 = 4_500_000_000_000_000_000;
-const V_WINDOW: u32 = 20390;
-const V_PARAMS_MSG: &str = "0x686970706975733a636f6d707574652d706172616d733a763188130a005160000000000000";
-const V_PARAMS_HASH: &str = "0x42b46aa7fcdc2e201ef3b9ae80fb6efa43700d54511efe911e4bd03190ebd519";
-const V_EVIDENCE_ROOT: &str = "0x34b0d2a0ab90aa188a4dc834f665a0dfc817adeff16f0b4149346670633113fd";
-const V0_PART0_MSG: &str = "0x686970706975733a636f6d707574652d706172743a76311111111111111111111111111111111111111111111111111111111111111111a64f00000000080101010101010101010101010101010101010101010101010101010101010101002095226ec4630000000000000000001c075ab2a62b16000000000000000000020202020202020202020202020202020202020202020202020202020202020200a04638a61a34000000000000000000c7b10ff024940b000000000000000000";
-const V0_PART0_HASH: &str = "0x2d3e1e2a8157fb5028979c3789dc2eea8cf6d1844cbb361b83598ea7ffe3c183";
-const V0_PAYABLE_ROOT: &str = "0xc8bf79ddded9f148e5a6a843c8206826ec798a5024a0f28c5b4d8d8cd95d5cf9";
-const V0_PAYLOAD: &str = "0x686970706975733a636f6d707574652d736574746c653a76311111111111111111111111111111111111111111111111111111111111111111a64f00000001042d3e1e2a8157fb5028979c3789dc2eea8cf6d1844cbb361b83598ea7ffe3c18300c0db5a14df97000000000000000000000042712836733e0000000000000000c8bf79ddded9f148e5a6a843c8206826ec798a5024a0f28c5b4d8d8cd95d5cf934b0d2a0ab90aa188a4dc834f665a0dfc817adeff16f0b4149346670633113fda77707000000000001000000010042b46aa7fcdc2e201ef3b9ae80fb6efa43700d54511efe911e4bd03190ebd519";
-const V0_DIGEST: &str = "0xed2c170c2d038d4dc4bd2e2c2cab1f4780a8fd30ee611d901cbebca684a0286b";
-const V0_REVOKE_MSG: &str = "0x686970706975733a636f6d707574652d7265766f6b653a76311111111111111111111111111111111111111111111111111111111111111111a64f000000ed2c170c2d038d4dc4bd2e2c2cab1f4780a8fd30ee611d901cbebca684a0286b";
-const V0_REVOKE_DIGEST: &str = "0xc5c92773765f49794b85f9a13a14586fb4918ac276a4684152e6c8b09f05dc33";
-const V1_PART0_HASH: &str = "0x84619017f74c38f36bfd38c9ece9189f6bd07b8bc4dc790b49f89059dadb9f6d";
-const V1_PAYABLE_ROOT: &str = "0x74885581c1eb3db2d4b3848f528184b6be7614829933d7149bc66933481f3d99";
-const V1_PAYLOAD: &str = "0x686970706975733a636f6d707574652d736574746c653a76311111111111111111111111111111111111111111111111111111111111111111a64f000001010484619017f74c38f36bfd38c9ece9189f6bd07b8bc4dc790b49f89059dadb9f6d00906a9f09e96d000000000000000000000042712836733e000000000000000074885581c1eb3db2d4b3848f528184b6be7614829933d7149bc66933481f3d9934b0d2a0ab90aa188a4dc834f665a0dfc817adeff16f0b4149346670633113fde88207000000000001000000010042b46aa7fcdc2e201ef3b9ae80fb6efa43700d54511efe911e4bd03190ebd519";
-const V1_DIGEST: &str = "0x189c6ed6c92dc060ae048955e3174422b9961c707ac6986ee8a5ab7079787ec5";
-
-fn vector_entries_rev0() -> Vec<Entry<AccountId>> {
-	vec![
-		Entry { family: family(1), usd: 28_082_000_000_000_000, alpha: 6_240_444_444_444_444 },
-		Entry { family: family(2), usd: 14_666_000_000_000_000, alpha: 3_259_111_111_111_111 },
-	]
-}
-
-fn vector_entries_rev1() -> Vec<Entry<AccountId>> {
-	vec![Entry { family: family(3), usd: 30_937_000_000_000_000, alpha: 6_874_888_888_888_888 }]
-}
+use crate::settlement_vectors::*;
 
 fn vector_input_rev0() -> ApprovalInput {
 	ApprovalInput {
 		parts: 1,
 		part_hashes: BoundedVec::try_from(vec![h256(V0_PART0_HASH)]).unwrap(),
-		usd: 42_748_000_000_000_000,
+		usd: V0_USD,
 		price: V_PRICE,
 		payable_root: h256(V0_PAYABLE_ROOT),
 		evidence_root: h256(V_EVIDENCE_ROOT),
-		upto_hour: 489_383,
+		upto_hour: V0_UPTO_HOUR,
 		params_version: 1,
 		formula_version: 1,
 		params_hash: h256(V_PARAMS_HASH),
@@ -214,11 +186,11 @@ fn vector_input_rev1() -> ApprovalInput {
 	ApprovalInput {
 		parts: 1,
 		part_hashes: BoundedVec::try_from(vec![h256(V1_PART0_HASH)]).unwrap(),
-		usd: 30_937_000_000_000_000,
+		usd: V1_USD,
 		price: V_PRICE,
 		payable_root: h256(V1_PAYABLE_ROOT),
 		evidence_root: h256(V_EVIDENCE_ROOT),
-		upto_hour: 492_264,
+		upto_hour: V1_UPTO_HOUR,
 		params_version: 1,
 		formula_version: 1,
 		params_hash: h256(V_PARAMS_HASH),
@@ -267,6 +239,11 @@ fn contract_vectors_reproduce_byte_for_byte() {
 	assert!(!sp_io::crypto::sr25519_verify(&sig, digest.as_bytes(), &other_signer().public()));
 }
 
+/// The least revenue for which `paid` passes the cap at 50 % + 0.1 %.
+fn min_charged(paid: u128) -> u128 {
+	(paid * 10_000).div_ceil(5_010)
+}
+
 #[test]
 fn contract_vector_settles_end_to_end_with_its_revision() {
 	new_test_ext().execute_with(|| {
@@ -279,15 +256,13 @@ fn contract_vector_settles_end_to_end_with_its_revision() {
 		root_apply(RootChange::Enable);
 		fresh_price(V_PRICE);
 		set_current_window(V_WINDOW + 8);
-		// Paying 42748 µUSD at r + ε = 50.1 % needs > 85325 µUSD of revenue.
-		set_final_charged(V_WINDOW, 85_326_000_000_000_000);
-		let _ = Balances::deposit_creating(&Hippocampus::settlement_account(), 100_000_000_000_000_000);
+		let _ = Balances::deposit_creating(&Hippocampus::settlement_account(), 1_000_000_000_000_000_000);
 		for s in 1..=3u8 {
 			let _ = Balances::deposit_creating(&family(s), 1_000);
 		}
 
-		// One µUSD less revenue and the same approval is above the cap.
-		set_final_charged(V_WINDOW, 85_325_000_000_000_000);
+		// One credit less revenue and the vector approval is above the cap.
+		set_final_charged(V_WINDOW, min_charged(V0_USD) - 1);
 		let sig = approver().sign(h256(V0_DIGEST).as_bytes());
 		assert_refused(
 			Hippocampus::submit_compute_approval(
@@ -299,7 +274,7 @@ fn contract_vector_settles_end_to_end_with_its_revision() {
 			),
 			Error::<Test>::RevenueCapExceeded,
 		);
-		set_final_charged(V_WINDOW, 85_326_000_000_000_000);
+		set_final_charged(V_WINDOW, min_charged(V0_USD));
 		assert_eq!(
 			Hippocampus::submit_compute_approval(
 				RuntimeOrigin::signed(submitter()),
@@ -310,26 +285,41 @@ fn contract_vector_settles_end_to_end_with_its_revision() {
 			),
 			Ok(PostDispatchInfo { actual_weight: None, pays_fee: Pays::No })
 		);
-		assert_eq!(ComputeApproval::<Test>::get((V_WINDOW, 0)).unwrap().approval_digest, h256(V0_DIGEST));
 		assert_eq!(
-			WindowParams::<Test>::get(V_WINDOW),
-			Some((1, h256(V_PARAMS_HASH), 1))
+			ComputeApproval::<Test>::get((V_WINDOW, 0)).unwrap().approval_digest,
+			h256(V0_DIGEST)
 		);
-		assert_ok!(pay(V_WINDOW, 0, 0, vector_entries_rev0()));
-		assert_eq!(Balances::free_balance(family(1)), 1_000 + 6_240_444_444_444_444);
-		assert_eq!(Balances::free_balance(family(2)), 1_000 + 3_259_111_111_111_111);
-		assert_eq!(
-			ComputeWindowPaid::<Test>::get(V_WINDOW),
-			(42_748_000_000_000_000, 6_240_444_444_444_444 + 3_259_111_111_111_111)
-		);
+		assert_eq!(WindowParams::<Test>::get(V_WINDOW), Some((1, params(), 1)));
+		assert_eq!(InFlightApproval::<Test>::get(), Some((V_WINDOW, 0)));
+		let rev0 = vector_entries_rev0();
+		assert_ok!(pay(V_WINDOW, 0, 0, rev0.clone()));
+		for e in &rev0 {
+			assert_eq!(Balances::free_balance(&e.family), 1_000 + e.alpha);
+		}
+		let rev0_alpha: u128 = rev0.iter().map(|e| e.alpha).sum();
+		assert_eq!(ComputeWindowPaid::<Test>::get(V_WINDOW), (V0_USD, rev0_alpha));
 		assert_eq!(NextComputeWindow::<Test>::get(), V_WINDOW + 1);
+		assert_eq!(ComputeRevisionSeq::<Test>::get((V_WINDOW, 0)), Some(0));
+		assert_eq!(NextRevisionSeq::<Test>::get(), 1);
+		assert_eq!(ApprovedUnpaidAlpha::<Test>::get(), 0);
 
-		// The escrowed line matured: its revenue moved into the window and
-		// revision 1 pays it on a later day.
+		// The escrowed lines matured: their revenue moved into the window and
+		// revision 1 pays them on a later day, inside the window's headroom.
 		set_current_window(V_WINDOW + 120);
-		set_final_charged(V_WINDOW, 147_077_000_000_000_000);
 		fresh_price(V_PRICE);
+		set_final_charged(V_WINDOW, min_charged(V0_USD + V1_USD) - 1);
 		let sig = approver().sign(h256(V1_DIGEST).as_bytes());
+		assert_refused(
+			Hippocampus::submit_compute_approval(
+				RuntimeOrigin::signed(submitter()),
+				V_WINDOW,
+				1,
+				vector_input_rev1(),
+				sig.clone(),
+			),
+			Error::<Test>::RevenueCapExceeded,
+		);
+		set_final_charged(V_WINDOW, min_charged(V0_USD + V1_USD));
 		assert_ok!(Hippocampus::submit_compute_approval(
 			RuntimeOrigin::signed(submitter()),
 			V_WINDOW,
@@ -337,9 +327,15 @@ fn contract_vector_settles_end_to_end_with_its_revision() {
 			vector_input_rev1(),
 			sig
 		));
-		assert_ok!(pay(V_WINDOW, 1, 0, vector_entries_rev1()));
-		assert_eq!(Balances::free_balance(family(3)), 1_000 + 6_874_888_888_888_888);
-		assert_eq!(ComputeWindowPaid::<Test>::get(V_WINDOW).0, 73_685_000_000_000_000);
+		let rev1 = vector_entries_rev1();
+		let before: Vec<u128> = rev1.iter().map(|e| Balances::free_balance(&e.family)).collect();
+		assert_ok!(pay(V_WINDOW, 1, 0, rev1.clone()));
+		for (e, b) in rev1.iter().zip(before) {
+			assert_eq!(Balances::free_balance(&e.family), b + e.alpha);
+		}
+		assert_eq!(ComputeWindowPaid::<Test>::get(V_WINDOW).0, V0_USD + V1_USD);
+		assert_eq!(ComputeRevisionSeq::<Test>::get((V_WINDOW, 1)), Some(1));
+		assert_eq!(ComputeLastRevisionDay::<Test>::get(V_WINDOW), Some(V_WINDOW + 120));
 	});
 }
 
@@ -359,7 +355,7 @@ fn a_window_settles_in_ordered_parts_and_advances() {
 		}
 		let _ = Balances::deposit_creating(&family(200), 100);
 		approve(W, 0, &parts);
-		assert_eq!(ComputeApprovedUnpaid::<Test>::get(), 6_700);
+		assert_eq!(ApprovedUnpaidAlpha::<Test>::get(), 6_700);
 		assert_ok!(pay(W, 0, 0, p0));
 		assert_eq!(NextComputeWindow::<Test>::get(), W);
 		assert_eq!(ComputeWindowPaid::<Test>::get(W), (0, 0));
@@ -368,10 +364,12 @@ fn a_window_settles_in_ordered_parts_and_advances() {
 			Ok(PostDispatchInfo { actual_weight: None, pays_fee: Pays::No })
 		);
 		assert_eq!(ComputeWindowPaid::<Test>::get(W), (6_700, 6_700));
-		assert_eq!(ComputeApprovedUnpaid::<Test>::get(), 0);
+		assert_eq!(ApprovedUnpaidAlpha::<Test>::get(), 0);
 		assert_eq!(NextComputeWindow::<Test>::get(), W + 1);
 		assert_eq!(Balances::free_balance(family(200)), 400);
-		assert_eq!(ComputeProgress::<Test>::get((W, 0)).unwrap().completed_day, Some(W + 8));
+		assert_eq!(ComputeRevisionSeq::<Test>::get((W, 0)), Some(0));
+		assert_eq!(ComputeLastRevisionDay::<Test>::get(W), Some(W + 8));
+		assert!(InFlightApproval::<Test>::get().is_none());
 		assert_eq!(Balances::free_balance(Hippocampus::settlement_account()), FUNDED - 6_700);
 	});
 }
@@ -382,7 +380,8 @@ fn zero_parts_completes_at_approval() {
 		setup();
 		approve(W, 0, &[]);
 		assert_eq!(NextComputeWindow::<Test>::get(), W + 1);
-		assert!(ComputeProgress::<Test>::get((W, 0)).unwrap().completed_day.is_some());
+		assert!(ComputeRevisionSeq::<Test>::contains_key((W, 0)));
+		assert!(InFlightApproval::<Test>::get().is_none());
 		assert_noop!(pay(W, 0, 0, vec![entry(1, 1)]).map_err(|e| e.error), err(Error::<Test>::PartOutOfOrder));
 	});
 }
@@ -514,7 +513,7 @@ fn revoke_frees_the_slot_before_any_part_is_paid() {
 		));
 		assert!(ComputeApproval::<Test>::get((W, 0)).is_none());
 		assert!(WindowParams::<Test>::get(W).is_none());
-		assert_eq!(ComputeApprovedUnpaid::<Test>::get(), 0);
+		assert_eq!(ApprovedUnpaidAlpha::<Test>::get(), 0);
 		// The slot can be approved again.
 		approve(W, 0, &parts);
 	});
@@ -770,6 +769,59 @@ fn signature_by_non_approver_or_over_other_context_is_refused() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn one_approval_in_flight_across_all_windows() {
+	new_test_ext().execute_with(|| {
+		setup();
+		let _ = Balances::deposit_creating(&family(1), 100);
+		approve(W, 0, &[vec![entry(1, 10)]]);
+		assert_ok!(pay(W, 0, 0, vec![entry(1, 10)]));
+		// Revision 0 of W + 1 in flight blocks a revision of W.
+		set_final_charged(W + 1, CHARGED);
+		approve(W + 1, 0, &[vec![entry(1, 10)]]);
+		set_current_window(W + 9);
+		assert_refused(
+			submit(W, 1, input_for(W, 1, &[vec![entry(1, 1)]], 1)),
+			Error::<Test>::ApprovalInFlight,
+		);
+		assert_ok!(pay(W + 1, 0, 0, vec![entry(1, 10)]));
+		approve(W, 1, &[vec![entry(1, 1)]]);
+		assert_ok!(pay(W, 1, 0, vec![entry(1, 1)]));
+		// Completion order is global.
+		assert_eq!(ComputeRevisionSeq::<Test>::get((W, 0)), Some(0));
+		assert_eq!(ComputeRevisionSeq::<Test>::get((W + 1, 0)), Some(1));
+		assert_eq!(ComputeRevisionSeq::<Test>::get((W, 1)), Some(2));
+		assert_eq!(NextRevisionSeq::<Test>::get(), 3);
+		assert!(InFlightApproval::<Test>::get().is_none());
+	});
+}
+
+#[test]
+fn parts_without_usd_is_malformed() {
+	new_test_ext().execute_with(|| {
+		setup();
+		let mut input = input_for(W, 0, &[vec![entry(1, 10)]], 10);
+		input.usd = 0;
+		assert_refused(submit(W, 0, input), Error::<Test>::MalformedApproval);
+	});
+}
+
+#[test]
+fn defund_keeps_what_is_owed() {
+	new_test_ext().execute_with(|| {
+		setup();
+		approve(W, 0, &[vec![entry(9, 5)]]);
+		assert_ok!(pay(W, 0, 0, vec![entry(9, 5)]));
+		assert_eq!(ComputeOwedTotal::<Test>::get(), 5);
+		root_apply(RootChange::RevenueAccount(dave()));
+		root_apply(RootChange::Defund(u128::MAX));
+		assert_eq!(
+			Balances::free_balance(Hippocampus::settlement_account()),
+			EXISTENTIAL_DEPOSIT + 5
+		);
+	});
+}
+
+#[test]
 fn window_before_first_or_out_of_order_is_refused() {
 	new_test_ext().execute_with(|| {
 		setup();
@@ -793,12 +845,12 @@ fn revision_needs_the_previous_completed_and_stays_within_horizon() {
 			submit(W, 1, input_for(W, 1, &[vec![entry(1, 1)]], 1)),
 			Error::<Test>::RevisionOutOfOrder,
 		);
-		// Revision 0 approved but not completed.
+		// Revision 0 approved but not completed: it is in flight.
 		approve(W, 0, &[vec![entry(1, 10)]]);
 		set_current_window(W + 9);
 		assert_refused(
 			submit(W, 1, input_for(W, 1, &[vec![entry(1, 1)]], 1)),
-			Error::<Test>::RevisionOutOfOrder,
+			Error::<Test>::ApprovalInFlight,
 		);
 		assert_ok!(pay(W, 0, 0, vec![entry(1, 10)]));
 		// Revision 2 before revision 1.

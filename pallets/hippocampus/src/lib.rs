@@ -58,6 +58,9 @@ mod tests;
 #[cfg(test)]
 mod settlement_tests;
 
+#[cfg(test)]
+mod settlement_vectors;
+
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 
@@ -367,11 +370,25 @@ pub mod pallet {
 	pub type ComputePayoutParams<T: Config> =
 		StorageValue<_, (u32, st::PayoutParams), OptionQuery>;
 
-	/// Every params version ever applied, so a revision checks its cap with
-	/// the share pinned at revision 0 after a params change.
+	/// The approval being paid, if any: one at a time across all windows.
 	#[pallet::storage]
-	pub type ComputeParamsHistory<T: Config> =
-		StorageMap<_, Twox64Concat, u32, st::PayoutParams, OptionQuery>;
+	pub type InFlightApproval<T: Config> = StorageValue<_, (u32, u8), OptionQuery>;
+
+	/// Global completion order of approvals, `(window, revision)` → seq
+	/// (the backend nets debts in this order). Present = completed.
+	#[pallet::storage]
+	pub type ComputeRevisionSeq<T: Config> =
+		StorageMap<_, Twox64Concat, (u32, u8), u64, OptionQuery>;
+
+	/// The next completion sequence number.
+	#[pallet::storage]
+	pub type NextRevisionSeq<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+	/// UTC day (`current_compute_period / 24`) the window's latest revision
+	/// completed; revision `k > 0` needs it before today.
+	#[pallet::storage]
+	pub type ComputeLastRevisionDay<T: Config> =
+		StorageMap<_, Twox64Concat, u32, u32, OptionQuery>;
 
 	/// Most alpha settlement may pay per UTC day. Zero (the default) pays
 	/// nothing.
@@ -406,11 +423,11 @@ pub mod pallet {
 	pub type ComputeProgress<T: Config> =
 		StorageMap<_, Twox64Concat, (u32, u8), st::Progress<T::AccountId>, OptionQuery>;
 
-	/// `(params_version, params_hash, formula_version)` pinned by revision 0
-	/// of the window; later revisions must match it.
+	/// `(params_version, ParamsV1, formula_version)` pinned by revision 0 of
+	/// the window; later revisions must match it and use its share.
 	#[pallet::storage]
 	pub type WindowParams<T: Config> =
-		StorageMap<_, Twox64Concat, u32, (u32, H256, u16), OptionQuery>;
+		StorageMap<_, Twox64Concat, u32, (u32, st::PayoutParams, u16), OptionQuery>;
 
 	/// Paid per window by completed revisions: `(usd credits, alpha)`.
 	#[pallet::storage]
@@ -430,9 +447,11 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type ComputeDailyAlpha<T: Config> = StorageValue<_, (u64, u128), ValueQuery>;
 
-	/// Alpha reserved by open approvals and not yet paid.
+	/// Alpha reserved by the approval in flight and not yet paid:
+	/// `floor(usd × 1e18 / price)` at approval, less each part paid; the rest
+	/// is released at completion or revoke.
 	#[pallet::storage]
-	pub type ComputeApprovedUnpaid<T: Config> = StorageValue<_, u128, ValueQuery>;
+	pub type ApprovedUnpaidAlpha<T: Config> = StorageValue<_, u128, ValueQuery>;
 
 	/// Where `Defund` pays to; set by root.
 	#[pallet::storage]
@@ -689,6 +708,8 @@ pub mod pallet {
 		/// A part other than the last does not carry `MaxEntriesPerPart`
 		/// entries.
 		NonCanonicalPart,
+		/// Another approval is being paid; one at a time.
+		ApprovalInFlight,
 	}
 
 	#[pallet::call]
@@ -1079,14 +1100,14 @@ pub mod pallet {
 			let digest = st::approval_digest(&Self::genesis_hash(), window, revision, &input);
 			Self::ensure_approver_signature(&digest, &backend_sig)?;
 
+			ensure!(InFlightApproval::<T>::get().is_none(), Error::<T>::ApprovalInFlight);
 			ensure!(
 				!ComputeApproval::<T>::contains_key((window, revision)),
 				Error::<T>::ApprovalExists
 			);
 			ensure!(
 				input.part_hashes.len() == usize::from(input.parts)
-					&& (input.parts > 0 || input.usd == 0)
-					&& (input.parts == 0 || input.usd > 0),
+					&& ((input.parts == 0) == (input.usd == 0)),
 				Error::<T>::MalformedApproval
 			);
 			let first = FirstComputeWindow::<T>::get().ok_or(Error::<T>::FirstWindowNotSet)?;
@@ -1116,9 +1137,10 @@ pub mod pallet {
 			if revision == 0 {
 				WindowParams::<T>::insert(
 					window,
-					(input.params_version, input.params_hash, input.formula_version),
+					(input.params_version, params, input.formula_version),
 				);
 			}
+			InFlightApproval::<T>::put((window, revision));
 			let event = Event::ComputeApprovalSubmitted {
 				window,
 				revision,
@@ -1142,10 +1164,9 @@ pub mod pallet {
 					last_family: Self::zero_account(),
 					usd_paid: 0,
 					alpha_paid: 0,
-					completed_day: None,
 				},
 			);
-			ComputeApprovedUnpaid::<T>::mutate(|r| *r = r.saturating_add(alpha));
+			ApprovedUnpaidAlpha::<T>::mutate(|r| *r = r.saturating_add(alpha));
 			Self::deposit_event(event);
 
 			if parts == 0 {
@@ -1178,10 +1199,9 @@ pub mod pallet {
 				.input;
 			let mut progress =
 				ComputeProgress::<T>::get((window, revision)).ok_or(Error::<T>::NoApproval)?;
+			// A completed approval has `next_part == parts`.
 			ensure!(
-				progress.completed_day.is_none()
-					&& part == progress.next_part
-					&& part < approval.parts,
+				part == progress.next_part && part < approval.parts,
 				Error::<T>::PartOutOfOrder
 			);
 			ensure!(!entries.is_empty(), Error::<T>::EmptyPart);
@@ -1257,7 +1277,7 @@ pub mod pallet {
 			progress.alpha_paid = progress.alpha_paid.saturating_add(part_alpha);
 			ComputeProgress::<T>::insert((window, revision), &progress);
 			ComputeDailyAlpha::<T>::put((day, spent));
-			ComputeApprovedUnpaid::<T>::mutate(|r| *r = r.saturating_sub(part_alpha));
+			ApprovedUnpaidAlpha::<T>::mutate(|r| *r = r.saturating_sub(part_alpha));
 			Self::deposit_event(Event::ComputePartPaid {
 				window,
 				revision,
@@ -1327,8 +1347,11 @@ pub mod pallet {
 				ComputeApproval::<T>::get((window, revision)).ok_or(Error::<T>::NoApproval)?;
 			let progress =
 				ComputeProgress::<T>::get((window, revision)).ok_or(Error::<T>::NoApproval)?;
+			// In flight and untouched: a completed approval is no longer in
+			// flight, a started one has paid a part.
 			ensure!(
-				progress.next_part == 0 && progress.completed_day.is_none(),
+				progress.next_part == 0
+					&& InFlightApproval::<T>::get() == Some((window, revision)),
 				Error::<T>::ApprovalAlreadyStarted
 			);
 			let digest = st::revoke_digest(
@@ -1345,7 +1368,8 @@ pub mod pallet {
 				WindowParams::<T>::remove(window);
 			}
 			let reserved = approval.reserved_alpha();
-			ComputeApprovedUnpaid::<T>::mutate(|r| *r = r.saturating_sub(reserved));
+			ApprovedUnpaidAlpha::<T>::mutate(|r| *r = r.saturating_sub(reserved));
+			InFlightApproval::<T>::kill();
 			Self::deposit_event(Event::ComputeApprovalRevoked { window, revision });
 			Ok(Pays::No.into())
 		}
@@ -1521,30 +1545,29 @@ pub mod pallet {
 			input: &st::ApprovalInput,
 		) -> Result<st::PayoutParams, DispatchError> {
 			ensure!(input.formula_version == st::FORMULA_VERSION, Error::<T>::ParamsMismatch);
-			let (version, hash, formula, params) = if revision == 0 {
+			let (version, params, formula) = if revision == 0 {
 				ensure!(window == NextComputeWindow::<T>::get(), Error::<T>::WindowOutOfOrder);
 				let (version, params) =
 					ComputePayoutParams::<T>::get().ok_or(Error::<T>::ParamsNotSet)?;
-				(version, st::params_hash(&params), st::FORMULA_VERSION, params)
+				(version, params, st::FORMULA_VERSION)
 			} else {
 				ensure!(
 					today <= window.saturating_add(T::ComputeRevisionHorizon::get()),
 					Error::<T>::RevisionTooLate
 				);
-				let previous = ComputeProgress::<T>::get((window, revision - 1))
+				ensure!(
+					ComputeRevisionSeq::<T>::contains_key((window, revision - 1)),
+					Error::<T>::RevisionOutOfOrder
+				);
+				let last_day = ComputeLastRevisionDay::<T>::get(window)
 					.ok_or(Error::<T>::RevisionOutOfOrder)?;
-				let done = previous.completed_day.ok_or(Error::<T>::RevisionOutOfOrder)?;
-				ensure!(done < today, Error::<T>::RevisionSameDay);
-				let (version, hash, formula) =
-					WindowParams::<T>::get(window).ok_or(Error::<T>::RevisionOutOfOrder)?;
-				let params =
-					ComputeParamsHistory::<T>::get(version).ok_or(Error::<T>::ParamsNotSet)?;
-				(version, hash, formula, params)
+				ensure!(last_day < today, Error::<T>::RevisionSameDay);
+				WindowParams::<T>::get(window).ok_or(Error::<T>::RevisionOutOfOrder)?
 			};
 			ensure!(
 				input.params_version == version
 					&& input.formula_version == formula
-					&& input.params_hash == hash,
+					&& input.params_hash == st::params_hash(&params),
 				Error::<T>::ParamsMismatch
 			);
 			Ok(params)
@@ -1586,15 +1609,18 @@ pub mod pallet {
 		/// revision 0 opens the next window.
 		fn complete_approval(window: u32, revision: u8, today: u32) {
 			let Some(approval) = ComputeApproval::<T>::get((window, revision)) else { return };
-			let Some(mut progress) = ComputeProgress::<T>::get((window, revision)) else { return };
-			progress.completed_day = Some(today);
+			let Some(progress) = ComputeProgress::<T>::get((window, revision)) else { return };
 			let dust = approval.reserved_alpha().saturating_sub(progress.alpha_paid);
-			ComputeApprovedUnpaid::<T>::mutate(|r| *r = r.saturating_sub(dust));
+			ApprovedUnpaidAlpha::<T>::mutate(|r| *r = r.saturating_sub(dust));
 			ComputeWindowPaid::<T>::mutate(window, |(usd, alpha)| {
 				*usd = usd.saturating_add(progress.usd_paid);
 				*alpha = alpha.saturating_add(progress.alpha_paid);
 			});
-			ComputeProgress::<T>::insert((window, revision), &progress);
+			let seq = NextRevisionSeq::<T>::get();
+			ComputeRevisionSeq::<T>::insert((window, revision), seq);
+			NextRevisionSeq::<T>::put(seq.saturating_add(1));
+			ComputeLastRevisionDay::<T>::insert(window, today);
+			InFlightApproval::<T>::kill();
 			if revision == 0 {
 				NextComputeWindow::<T>::put(window.saturating_add(1));
 			}
@@ -1647,7 +1673,6 @@ pub mod pallet {
 					let version =
 						ComputePayoutParams::<T>::get().map_or(1, |(v, _)| v.saturating_add(1));
 					ComputePayoutParams::<T>::put((version, params));
-					ComputeParamsHistory::<T>::insert(version, params);
 				},
 				st::RootChange::MaxDailyAlpha(max) => ComputeMaxDailyAlpha::<T>::put(max),
 				st::RootChange::FirstWindow(window) => {
@@ -1664,7 +1689,8 @@ pub mod pallet {
 				st::RootChange::Defund(amount) => {
 					let to = ComputeRevenueAccount::<T>::get().ok_or(Error::<T>::NoRevenueAccount)?;
 					let headroom = Self::settlement_spendable()
-						.saturating_sub(ComputeApprovedUnpaid::<T>::get());
+						.saturating_sub(ApprovedUnpaidAlpha::<T>::get())
+						.saturating_sub(ComputeOwedTotal::<T>::get().saturated_into());
 					let amount = amount.min(headroom);
 					ensure!(amount > 0, Error::<T>::NothingToDefund);
 					let amount: BalanceOf<T> = amount.saturated_into();
