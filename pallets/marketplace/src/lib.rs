@@ -131,6 +131,19 @@ pub mod pallet {
 			// single read when the queue is empty, which is almost always.
 			weight_used = weight_used.saturating_add(Self::process_pending_repricing());
 
+			// Compute escrow gets guaranteed capacity every block, not only
+			// leftover idle weight: deferred entries must be filed, and
+			// unfrozen escrow released, well inside the 160-window retention
+			// or the revenue would be dropped. A few reads when there is
+			// nothing to do. See `DEFERRED_ESCROW_BLOCK_SHARE`.
+			let escrow_budget = DEFERRED_ESCROW_BLOCK_SHARE
+				* <T as frame_system::Config>::BlockWeights::get().max_block;
+			let filed = Self::file_deferred_escrow(escrow_budget);
+			let swept = Self::sweep_frozen_compute_charges(
+				(escrow_budget + escrow_budget).saturating_sub(filed),
+			);
+			weight_used = weight_used.saturating_add(filed).saturating_add(swept);
+
 			// Referral commissions accrued by hourly billing are swept out on
 			// their own cadence, independent of the charge interval that earns
 			// them: billing writes the balance, this pays it.
@@ -187,11 +200,13 @@ pub mod pallet {
 		/// replay any more. Nothing depends on it running promptly: an
 		/// unpruned record is only storage, never a wrong answer.
 		fn on_idle(_n: BlockNumberFor<T>, remaining_weight: Weight) -> Weight {
+			// Deferred escrow and the frozen-charge sweep have guaranteed
+			// capacity in `on_initialize`; idle weight only speeds them up.
 			let mut used = Self::prune_compute_usage(remaining_weight);
 			used = used
 				.saturating_add(Self::prune_compute_charged(remaining_weight.saturating_sub(used)));
-			// Deferred escrow is filed before the sweep, so a batch's whole
-			// escrow is in place when the sweep releases it.
+			// Filed before the sweep, so a batch's whole escrow is in place
+			// when the sweep releases it.
 			used = used
 				.saturating_add(Self::file_deferred_escrow(remaining_weight.saturating_sub(used)));
 			used.saturating_add(Self::sweep_frozen_compute_charges(
@@ -2906,8 +2921,24 @@ pub mod pallet {
 	/// filed by `on_idle`, so the row weight stays fixed and nothing is lost.
 	pub const MAX_FROZEN_ESCROWS_PER_DEBIT: u32 = 2;
 
-	/// Deferred escrow entries `on_idle` files per run.
-	pub const MAX_DEFERRED_ESCROWS_PER_RUN: usize = 64;
+	/// Deferred escrow entries one run files (`on_initialize` or `on_idle`).
+	pub const MAX_DEFERRED_ESCROWS_PER_RUN: usize = 128;
+
+	/// Share of every block `on_initialize` gives to filing deferred escrow.
+	///
+	/// Capacity, not opportunism: 0.5 % of a 2 s block files ~65 entries a
+	/// block, ~0.9 M a day. What can be enqueued is bounded by the billing
+	/// rule itself — one row per `(period, account)`, at most 14 deferred
+	/// entries per row (16 batches walked, 2 escrowed directly) — so even
+	/// 2 500 accounts that each drain 16 frozen batches every hour (~0.84 M
+	/// entries a day) fit one day of capacity, and any catch-up burst is
+	/// absorbed weeks before the 160-window retention. The frozen-charge
+	/// sweep then gets what filing left of twice this share (at least
+	/// another 0.5 %), so unfrozen escrow is released on the same guarantee;
+	/// with the renewal (5 %), hourly (3 %) and alpha release (1 %) budgets
+	/// this keeps hook work within the 10 % `AVERAGE_ON_INITIALIZE_RATIO`.
+	/// `on_idle` adds whatever weight is left on top.
+	pub const DEFERRED_ESCROW_BLOCK_SHARE: Perbill = Perbill::from_parts(5_000_000);
 
 	/// Backed credits one debit took from one batch.
 	pub(crate) struct BackedTake {

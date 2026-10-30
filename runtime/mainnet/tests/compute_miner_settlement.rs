@@ -331,6 +331,31 @@ fn a_debit_draining_many_frozen_batches_escrows_every_one() {
 }
 
 #[test]
+fn escrow_is_filed_and_released_without_any_idle_weight() {
+	use frame_support::traits::Hooks;
+	new_test_ext().execute_with(|| {
+		let a = account(10);
+		let batches: Vec<u64> = (0..5).map(|_| deposit(&a, 300, 300, true)).collect();
+		submit_v2(PERIOD, vec![row(&a, &[(UsageKind::Compute, 1_500)], 1)]);
+		assert!(pallet_marketplace::PendingFrozenEscrow::<Runtime>::get(0).is_some());
+		// Blocks always full: no `on_idle` at all, only `on_initialize`.
+		let next = System::block_number() + 1;
+		System::set_block_number(next);
+		Marketplace::on_initialize(next);
+		assert!(pallet_marketplace::PendingFrozenEscrow::<Runtime>::get(0).is_none());
+		for b in &batches {
+			assert_eq!(FrozenComputeCharge::<Runtime>::get(b, W), 300);
+		}
+		let release = pallet_marketplace::Batches::<Runtime>::get(batches[0]).unwrap().release_time;
+		for n in release..release + 3 {
+			System::set_block_number(n);
+			Marketplace::on_initialize(n);
+		}
+		assert_eq!(charged(W), 1_500);
+	});
+}
+
+#[test]
 fn deferred_escrow_is_filed_in_part_when_weight_is_short() {
 	new_test_ext().execute_with(|| {
 		let a = account(10);
