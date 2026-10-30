@@ -166,9 +166,12 @@ fn settlement_weight<W: Get<frame_support::weights::RuntimeDbWeight>>(
 macro_rules! settlement_weights {
 	($db:ty) => {
 		fn submit_compute_approval() -> Weight {
-			// Measured 768.3 µs, 19 reads, 5 writes; counted up to 22 reads
-			// (role lists) and 6 writes (completion of a 0-part approval).
-			settlement_weight::<$db>(768_264_000, 4_467, 22, 6)
+			// Measured 768.3 µs, 19 reads, 5 writes (16-part approval). A
+			// 0-part approval also completes at once: counted up to 27 reads
+			// (role lists, completion) and 11 writes (approval, progress,
+			// window params, in flight, reservation, window paid, seq and
+			// next seq, last day, next window), with 5 more reads' proof.
+			settlement_weight::<$db>(768_264_000, 4_467 + 5 * 2_600, 27, 11)
 		}
 		fn pay_compute_part(n: u32) -> Weight {
 			// Measured 292.7 µs + 150.1 µs per entry; counted per entry a

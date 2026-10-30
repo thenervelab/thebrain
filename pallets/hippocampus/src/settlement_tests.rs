@@ -890,6 +890,13 @@ fn records_past_the_revision_horizon_are_pruned() {
 		assert_ok!(pay(W + 1, 0, 0, vec![entry(1, 10)]));
 
 		let max = Weight::from_parts(u64::MAX, u64::MAX);
+		// No proof-size room, no work, even with all the time in the world.
+		set_current_window(W + 161);
+		assert_eq!(
+			Hippocampus::on_idle(System::block_number(), Weight::from_parts(u64::MAX, 0)),
+			Weight::zero()
+		);
+		assert!(ComputeApproval::<Test>::contains_key((W, 0)));
 		// Inside the horizon nothing goes.
 		set_current_window(W + 160);
 		Hippocampus::on_idle(System::block_number(), max);
