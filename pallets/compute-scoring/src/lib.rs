@@ -90,7 +90,7 @@ use frame_support::{
 };
 use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
-use sp_core::ed25519;
+use sp_core::{ed25519, U256};
 use sp_runtime::{
     traits::{Saturating, Verify, Zero},
     RuntimeDebug, SaturatedConversion,
@@ -925,13 +925,33 @@ pub mod pallet {
         /// past this is a config change, not an on-chain limit.
         #[pallet::constant]
         type MaxKbsAttestationPubkeys: Get<u32>;
+
+        /// Per-tier conversion ratio `(k_num, k_den)` from the legacy RU
+        /// price to the tier's RU_B price, indexed by
+        /// `DiskTier as usize`: `TierPrice = MinerPrice × k_num / k_den`
+        /// (µUSD per RU_B-h from µUSD per RU-h), and the `MinerPrice`
+        /// alias is `floor(TierPrice[Nvme] × k_den / k_num)`.
+        ///
+        /// The published values are [`SPEC_TIER_PRICE_RATIOS`]. They must
+        /// not change once [`Pallet::migrate_tier_prices`] has run, or the
+        /// alias drifts. Both terms must be non-zero (`integrity_test`);
+        /// `k_num ≥ k_den` for nvme makes every RU price exactly
+        /// representable through `announce_price_change`.
+        #[pallet::constant]
+        type TierPriceRatios: Get<[(u128, u128); 3]>;
     }
 
     // =====================================================================
     // Pallet + Storage
     // =====================================================================
 
+    /// v1: per-tier prices beside the RU `MinerPrice` alias. The bump
+    /// carries no data migration; prices move through the cursor call
+    /// [`Pallet::migrate_tier_prices`] (see [`crate::migrations`]).
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     #[pallet::without_storage_info]
     pub struct Pallet<T>(_);
 
@@ -1480,6 +1500,117 @@ pub mod pallet {
     pub type MaxPriceChangeDenom<T> = StorageValue<_, u32, ValueQuery, DefaultMaxPriceChangeDenom>;
 
     // =====================================================================
+    // compute-miner-pay §3 — per-tier prices in RU_B
+    //
+    // Beside the legacy RU items above, which stay as a written alias of
+    // the nvme tier once `migrate_tier_prices` has completed:
+    // `MinerPrice[node] = floor(TierPrice[node][Nvme] × k_den / k_num)` and
+    // `PendingPriceChange` mirrors the nvme pending change, so readers
+    // that decode the raw legacy items keep working. The change policy
+    // (interval, notice, max step) is the legacy one, applied per
+    // `(node, tier)`.
+    // =====================================================================
+
+    /// Disk tier a price applies to.
+    #[derive(
+        Clone,
+        Copy,
+        Encode,
+        Decode,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        RuntimeDebug,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    pub enum DiskTier {
+        #[codec(index = 0)]
+        Nvme,
+        #[codec(index = 1)]
+        Ssd,
+        #[codec(index = 2)]
+        Hdd,
+    }
+
+    impl DiskTier {
+        pub const ALL: [DiskTier; 3] = [DiskTier::Nvme, DiskTier::Ssd, DiskTier::Hdd];
+    }
+
+    /// RU → RU_B ratios `(k_num, k_den)` for nvme / ssd / hdd, as published
+    /// in the compute-miner-pay interface contract (§2.2, formula v1):
+    /// `k_num = 2250 × VCPU_HOUR_UUSD` (the `small` flavor's RU × 1000 ×
+    /// 24 657 µUSD), `k_den = 1000 × list_small[tier]` from the live
+    /// `ComputePrice` rows at spec freeze. The runtime binds
+    /// `Config::TierPriceRatios` to these.
+    pub const SPEC_TIER_PRICE_RATIOS: [(u128, u128); 3] = [
+        (55_478_250, 45_207_000),
+        (55_478_250, 38_631_000),
+        (55_478_250, 23_918_000),
+    ];
+
+    /// Progress of the one-shot RU → per-tier price migration.
+    #[derive(
+        Clone, Copy, Encode, Decode, PartialEq, Eq, Default, RuntimeDebug, TypeInfo, MaxEncodedLen,
+    )]
+    pub enum TierMigrationStatus {
+        /// Legacy behaviour: the RU items are authoritative.
+        #[default]
+        NotStarted,
+        /// Nodes up to and including `last` (in `NodeIdToChild` key
+        /// order) are converted. Price calls are refused meanwhile.
+        InProgress { last: [u8; 32] },
+        /// Tier prices are authoritative; the RU items are the alias.
+        Done,
+    }
+
+    /// Current effective price (µUSD per RU_B-h) per node and tier.
+    #[pallet::storage]
+    pub type TierPrice<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, [u8; 32], Twox64Concat, DiskTier, u128, OptionQuery>;
+
+    /// Announced-but-not-yet-effective tier price change.
+    #[pallet::storage]
+    pub type PendingTierPriceChange<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        [u8; 32],
+        Twox64Concat,
+        DiskTier,
+        PriceChange<BlockNumberFor<T>>,
+        OptionQuery,
+    >;
+
+    /// Block of the last tier price ANNOUNCEMENT (rate limiter), per
+    /// `(node, tier)`.
+    #[pallet::storage]
+    pub type LastTierPriceChangeBlock<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        [u8; 32],
+        Twox64Concat,
+        DiskTier,
+        BlockNumberFor<T>,
+        ValueQuery,
+    >;
+
+    /// Tier magnitude anchor kept through deregistration (R10, per tier).
+    #[pallet::storage]
+    pub type TierPriceMagnitudeAnchor<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, [u8; 32], Twox64Concat, DiskTier, u128, OptionQuery>;
+
+    /// `(floor, ceiling)` per tier, µUSD per RU_B-h. Absent ⇒ that tier
+    /// refuses every announcement (R12).
+    #[pallet::storage]
+    pub type TierPriceBounds<T: Config> =
+        StorageMap<_, Twox64Concat, DiskTier, (u128, u128), OptionQuery>;
+
+    /// Cursor of [`Pallet::migrate_tier_prices`].
+    #[pallet::storage]
+    pub type TierMigrationCursor<T: Config> = StorageValue<_, TierMigrationStatus, ValueQuery>;
+
+    // =====================================================================
     // Genesis
     // =====================================================================
 
@@ -1764,6 +1895,14 @@ pub mod pallet {
         // --- PR-3 marketplace ---
         /// A node announced a price change effective at `effective_block`.
         /// vali migrates VMs that no longer fit before then.
+        ///
+        /// Alias period (tier prices live): this is ALSO emitted, in RU
+        /// units, as the mirror of every nvme `TierPriceChangeAnnounced`
+        /// (from index 49 and index 57 alike), right after it in the
+        /// same extrinsic. It is the same announcement twice: an indexer
+        /// subscribed to both families must count one of them, e.g.
+        /// skip this one when a `TierPriceChangeAnnounced { tier: Nvme }`
+        /// for the same `node_id` and `effective_block` precedes it.
         PriceChangeAnnounced {
             node_id: [u8; 32],
             old_price: Option<u128>,
@@ -1792,6 +1931,48 @@ pub mod pallet {
             notice: BlockNumberFor<T>,
             max_numer: u32,
             max_denom: u32,
+        },
+
+        // --- compute-miner-pay §3 tier prices ---
+        /// A node announced a tier price change effective at `effective_block`.
+        /// For `tier: Nvme` it is followed by the legacy RU mirror
+        /// `PriceChangeAnnounced` (the same announcement; see there).
+        TierPriceChangeAnnounced {
+            node_id: [u8; 32],
+            tier: DiskTier,
+            old_price: Option<u128>,
+            new_price: u128,
+            effective_block: BlockNumberFor<T>,
+        },
+        /// A pending tier price no longer fits the tier bounds and was
+        /// discarded at apply time (R13, per tier).
+        PendingTierPriceDiscarded {
+            node_id: [u8; 32],
+            tier: DiskTier,
+            new_price: u128,
+        },
+        /// A previously-announced tier price change became effective.
+        TierPriceChangeApplied {
+            node_id: [u8; 32],
+            tier: DiskTier,
+            new_price: u128,
+        },
+        /// Admin set a tier's price floor/ceiling.
+        TierPriceBoundsSet {
+            tier: DiskTier,
+            floor: u128,
+            ceiling: u128,
+        },
+        /// The migration dropped a pending RU price increase (only
+        /// decreases are carried into the tiers).
+        PendingPriceIncreaseDropped {
+            node_id: [u8; 32],
+            new_price: u128,
+        },
+        /// One `migrate_tier_prices` batch ran over `processed` nodes.
+        TierMigrationBatch {
+            processed: u32,
+            complete: bool,
         },
     }
 
@@ -1993,6 +2174,19 @@ pub mod pallet {
         InvalidPricePolicy,
         /// No pending price change is due for application.
         NoPriceChangeDue,
+
+        // --- compute-miner-pay §3 tier prices ---
+        /// `migrate_tier_prices` already completed.
+        TierMigrationAlreadyDone,
+        /// The tier migration is running; price changes wait for it.
+        TierMigrationInProgress,
+        /// Tier prices are not live until `migrate_tier_prices` completes.
+        TierPricesNotMigrated,
+        /// The RU price has no nvme tier price whose alias is exactly it,
+        /// so storing it would make `MinerPrice` diverge from the tier.
+        PriceNotRepresentable,
+        /// `migrate_tier_prices` needs `limit > 0`.
+        InvalidMigrationLimit,
     }
 
     // =====================================================================
@@ -2272,6 +2466,12 @@ pub mod pallet {
         /// Lazy — vali always reads the correct value even before
         /// [`apply_price_change`] has materialised it on-chain.
         pub fn effective_price(node_id: &[u8; 32]) -> Option<u128> {
+            // Alias period: the nvme tier is authoritative, the RU value
+            // is its alias (the pending mirror alone could pass the
+            // image bounds while the tier price no longer fits its own).
+            if Self::tier_prices_live() {
+                return Self::effective_tier_price(node_id, DiskTier::Nvme).map(Self::nvme_to_ru);
+            }
             if let Some(p) = PendingPriceChange::<T>::get(node_id) {
                 // R13: a pending that has escaped a later bounds
                 // tightening must not become the consumed price just
@@ -2325,6 +2525,416 @@ pub mod pallet {
                 None => (current / numer).saturating_mul(denom),
             };
             new_price <= upper && new_price >= lower
+        }
+
+        // --- compute-miner-pay §3 tier helpers ---
+
+        /// `true` once `migrate_tier_prices` completed: tier prices are
+        /// authoritative and the RU items are written aliases.
+        pub fn tier_prices_live() -> bool {
+            TierMigrationCursor::<T>::get() == TierMigrationStatus::Done
+        }
+
+        /// Refuse price changes while the migration runs.
+        fn ensure_not_migrating() -> DispatchResult {
+            ensure!(
+                !matches!(
+                    TierMigrationCursor::<T>::get(),
+                    TierMigrationStatus::InProgress { .. }
+                ),
+                Error::<T>::TierMigrationInProgress
+            );
+            Ok(())
+        }
+
+        fn tier_ratio(tier: DiskTier) -> (u128, u128) {
+            T::TierPriceRatios::get()[tier as usize]
+        }
+
+        /// `a × num / den` in `U256`, rounded down or up, saturating at
+        /// `u128::MAX` (a zero `den` is refused by `integrity_test`).
+        fn mul_div(a: u128, num: u128, den: u128, round_up: bool) -> u128 {
+            if den == 0 {
+                return u128::MAX;
+            }
+            let prod = U256::from(a) * U256::from(num);
+            let den = U256::from(den);
+            let mut q = prod / den;
+            if round_up && !(prod % den).is_zero() {
+                q += U256::one();
+            }
+            u128::try_from(q).unwrap_or(u128::MAX)
+        }
+
+        /// The RU alias of an nvme tier price: `floor(t × k_den / k_num)`.
+        pub fn nvme_to_ru(tier_price: u128) -> u128 {
+            let (num, den) = Self::tier_ratio(DiskTier::Nvme);
+            Self::mul_div(tier_price, den, num, false)
+        }
+
+        /// The smallest nvme tier price whose alias is exactly `ru`, if
+        /// one exists (always when `k_num ≥ k_den`). Using the floor
+        /// conversion instead would round-trip `p → p − 1`.
+        pub fn ru_to_nvme_exact(ru: u128) -> Option<u128> {
+            let (num, den) = Self::tier_ratio(DiskTier::Nvme);
+            let t = Self::mul_div(ru, num, den, true);
+            (Self::nvme_to_ru(t) == ru).then_some(t)
+        }
+
+        /// Migration conversion of an RU price to `tier`:
+        /// `floor(p × k_num / k_den)`, except nvme which takes the exact
+        /// alias preimage when there is one, so `MinerPrice` survives the
+        /// migration unchanged unless clamped.
+        fn ru_to_tier(ru: u128, tier: DiskTier) -> u128 {
+            if tier == DiskTier::Nvme {
+                if let Some(t) = Self::ru_to_nvme_exact(ru) {
+                    return t;
+                }
+            }
+            let (num, den) = Self::tier_ratio(tier);
+            Self::mul_div(ru, num, den, false)
+        }
+
+        fn within_tier_bounds(tier: DiskTier, price: u128) -> bool {
+            match TierPriceBounds::<T>::get(tier) {
+                Some((floor, ceiling)) => price >= floor && price <= ceiling,
+                None => false,
+            }
+        }
+
+        /// The tier price a consumer should use NOW (as `effective_price`).
+        pub fn effective_tier_price(node_id: &[u8; 32], tier: DiskTier) -> Option<u128> {
+            if let Some(p) = PendingTierPriceChange::<T>::get(node_id, tier) {
+                if Self::now() >= p.effective_block && Self::within_tier_bounds(tier, p.new_price) {
+                    return Some(p.new_price);
+                }
+            }
+            TierPrice::<T>::get(node_id, tier)
+        }
+
+        /// Magnitude anchor for a tier announcement: the effective tier
+        /// price, else the tier anchor kept through deregistration, else
+        /// the legacy RU anchor of a node deregistered before migration.
+        fn tier_anchor(node_id: &[u8; 32], tier: DiskTier) -> Option<u128> {
+            Self::effective_tier_price(node_id, tier)
+                .or_else(|| TierPriceMagnitudeAnchor::<T>::get(node_id, tier))
+                .or_else(|| {
+                    PriceMagnitudeAnchor::<T>::get(node_id).map(|p| Self::ru_to_tier(p, tier))
+                })
+        }
+
+        /// The smallest RU price index 49 can announce against an nvme
+        /// tier floor: the smallest `ru` whose exact preimage
+        /// `ru_to_nvme_exact(ru)` is `≥ tier_floor`.
+        ///
+        /// `alias(tier_floor)` itself is NOT always that: for
+        /// `k_num > k_den` (the published nvme ratio) several tier
+        /// prices share one alias, and its smallest preimage can sit
+        /// below `tier_floor` — then `alias(tier_floor)` passes the RU
+        /// bounds but is refused by the tier bounds, and the reachable
+        /// floor is the next RU price (whose preimage is above
+        /// `tier_floor`). For `k_num < k_den` the alias is injective and
+        /// `alias(tier_floor)` is always reachable.
+        pub fn ru_floor_of_nvme(tier_floor: u128) -> u128 {
+            let ru = Self::nvme_to_ru(tier_floor);
+            match Self::ru_to_nvme_exact(ru) {
+                Some(t) if t >= tier_floor => ru,
+                _ => ru.saturating_add(1),
+            }
+        }
+
+        /// Reset `PriceFloor` / `PriceCeiling` to the RU range index 49
+        /// can actually announce under the nvme tier bounds (the alias
+        /// period's legacy bounds): floor = `ru_floor_of_nvme(floor)`,
+        /// ceiling = `alias(ceiling)` (whose smallest preimage is always
+        /// `≤ ceiling`). An RU price is then within these bounds iff its
+        /// exact preimage is within the nvme bounds, so the advertised
+        /// legacy bounds are exactly the reachable ones. An nvme range
+        /// holding no preimage at all syncs to `floor > ceiling`, which
+        /// refuses every RU announcement — as the tier bounds would.
+        fn sync_legacy_bounds_from_nvme() {
+            if let Some((floor, ceiling)) = TierPriceBounds::<T>::get(DiskTier::Nvme) {
+                let floor = Self::ru_floor_of_nvme(floor);
+                let ceiling = Self::nvme_to_ru(ceiling);
+                PriceFloor::<T>::put(floor);
+                PriceCeiling::<T>::put(ceiling);
+                Self::deposit_event(Event::PriceBoundsSet {
+                    floor,
+                    ceiling: Some(ceiling),
+                });
+            }
+        }
+
+        /// Shared body of `set_tier_price_bounds` and, in the alias
+        /// period, of `set_price_bounds`.
+        fn do_set_tier_price_bounds(tier: DiskTier, floor: u128, ceiling: u128) -> DispatchResult {
+            ensure!(floor <= ceiling, Error::<T>::InvalidPricePolicy);
+            TierPriceBounds::<T>::insert(tier, (floor, ceiling));
+            Self::deposit_event(Event::TierPriceBoundsSet {
+                tier,
+                floor,
+                ceiling,
+            });
+            if tier == DiskTier::Nvme && Self::tier_prices_live() {
+                Self::sync_legacy_bounds_from_nvme();
+            }
+            Ok(())
+        }
+
+        /// Shared body of `announce_tier_price_change` and, for nvme, of
+        /// `announce_price_change` in the alias period. The caller has
+        /// checked the operator and that tier prices are live.
+        fn do_announce_tier_price(
+            node_id: [u8; 32],
+            tier: DiskTier,
+            new_price: u128,
+        ) -> DispatchResult {
+            ensure!(new_price > 0, Error::<T>::PriceOutOfBounds);
+            ensure!(
+                TierPriceBounds::<T>::contains_key(tier),
+                Error::<T>::PriceBoundsNotConfigured
+            );
+            ensure!(
+                Self::within_tier_bounds(tier, new_price),
+                Error::<T>::PriceOutOfBounds
+            );
+            let now = Self::now();
+            let last = LastTierPriceChangeBlock::<T>::get(node_id, tier);
+            if !last.is_zero() {
+                ensure!(
+                    now >= last.saturating_add(MinPriceChangeIntervalBlocks::<T>::get()),
+                    Error::<T>::PriceChangeTooSoon
+                );
+            }
+            if let Some(current) = Self::tier_anchor(&node_id, tier) {
+                ensure!(
+                    Self::within_price_magnitude(current, new_price),
+                    Error::<T>::PriceChangeTooLarge
+                );
+            }
+
+            let effective_block = now.saturating_add(PriceChangeNoticeBlocks::<T>::get());
+            PendingTierPriceChange::<T>::insert(
+                node_id,
+                tier,
+                PriceChange {
+                    new_price,
+                    effective_block,
+                },
+            );
+            LastTierPriceChangeBlock::<T>::insert(node_id, tier, now);
+            Self::deposit_event(Event::TierPriceChangeAnnounced {
+                node_id,
+                tier,
+                old_price: TierPrice::<T>::get(node_id, tier),
+                new_price,
+                effective_block,
+            });
+            if tier == DiskTier::Nvme {
+                // Dual-write the RU mirror for raw `PendingPriceChange` readers,
+                // and emit the legacy event for RU-only indexers. This is a
+                // DOUBLE EVENT for one announcement: indexers subscribed to
+                // both `TierPriceChangeAnnounced` and `PriceChangeAnnounced`
+                // must not count an nvme announce twice (see `Event`).
+                let ru = Self::nvme_to_ru(new_price);
+                PendingPriceChange::<T>::insert(
+                    node_id,
+                    PriceChange {
+                        new_price: ru,
+                        effective_block,
+                    },
+                );
+                LastPriceChangeBlock::<T>::insert(node_id, now);
+                Self::deposit_event(Event::PriceChangeAnnounced {
+                    node_id,
+                    old_price: MinerPrice::<T>::get(node_id),
+                    new_price: ru,
+                    effective_block,
+                });
+            }
+            Ok(())
+        }
+
+        /// Shared body of `apply_tier_price_change` and, for nvme, of
+        /// `apply_price_change` in the alias period.
+        fn do_apply_tier_price(node_id: [u8; 32], tier: DiskTier) -> DispatchResult {
+            let pending = PendingTierPriceChange::<T>::get(node_id, tier)
+                .ok_or(Error::<T>::NoPriceChangeDue)?;
+            ensure!(
+                Self::now() >= pending.effective_block,
+                Error::<T>::NoPriceChangeDue
+            );
+            PendingTierPriceChange::<T>::remove(node_id, tier);
+            let mirror = if tier == DiskTier::Nvme {
+                PendingPriceChange::<T>::take(node_id)
+            } else {
+                None
+            };
+            // R13 per tier: a pending announced under looser bounds is
+            // discarded, and this still returns Ok (see apply_price_change).
+            if !Self::within_tier_bounds(tier, pending.new_price) {
+                Self::deposit_event(Event::PendingTierPriceDiscarded {
+                    node_id,
+                    tier,
+                    new_price: pending.new_price,
+                });
+                if let Some(m) = mirror {
+                    Self::deposit_event(Event::PendingPriceDiscarded {
+                        node_id,
+                        new_price: m.new_price,
+                    });
+                }
+                return Ok(());
+            }
+            TierPrice::<T>::insert(node_id, tier, pending.new_price);
+            Self::deposit_event(Event::TierPriceChangeApplied {
+                node_id,
+                tier,
+                new_price: pending.new_price,
+            });
+            if tier == DiskTier::Nvme {
+                let ru = Self::nvme_to_ru(pending.new_price);
+                MinerPrice::<T>::insert(node_id, ru);
+                Self::deposit_event(Event::PriceChangeApplied {
+                    node_id,
+                    new_price: ru,
+                });
+            }
+            Ok(())
+        }
+
+        /// Convert one node's RU price state into the three tiers.
+        ///
+        /// - A pending change already past its notice and within the
+        ///   (still legacy) bounds is what consumers see: it is taken as
+        ///   the current price.
+        /// - A pending outside the legacy bounds (due or not) is
+        ///   discarded with `PendingPriceDiscarded`, as R13 does in
+        ///   `effective_price` / `apply_price_change`.
+        /// - Otherwise a pending DECREASE is carried to every tier with
+        ///   its effective block; a pending increase (or a first price
+        ///   not yet effective) is dropped.
+        /// - Prices are clamped to the tier bounds; the tier anchor is
+        ///   the converted price; the interval clock is carried.
+        /// - The RU items are rewritten as the alias of the nvme tier.
+        fn migrate_node_prices(node_id: [u8; 32], now: BlockNumberFor<T>) {
+            let base = MinerPrice::<T>::get(node_id);
+            let mut current = base;
+            let mut carried: Option<PriceChange<BlockNumberFor<T>>> = None;
+            if let Some(p) = PendingPriceChange::<T>::take(node_id) {
+                let in_bounds = Self::within_price_bounds(p.new_price);
+                if now >= p.effective_block && in_bounds {
+                    current = Some(p.new_price);
+                } else if !in_bounds {
+                    // R13: legacy `effective_price` suppresses this
+                    // pending and `apply_price_change` discards it.
+                    // Carrying it would clamp it onto the tier floor
+                    // and, once due, make it the consumed price.
+                    Self::deposit_event(Event::PendingPriceDiscarded {
+                        node_id,
+                        new_price: p.new_price,
+                    });
+                } else if base.is_some_and(|b| p.new_price < b) {
+                    carried = Some(p);
+                } else {
+                    Self::deposit_event(Event::PendingPriceIncreaseDropped {
+                        node_id,
+                        new_price: p.new_price,
+                    });
+                }
+            }
+            let legacy_anchor = PriceMagnitudeAnchor::<T>::get(node_id);
+            let last = LastPriceChangeBlock::<T>::get(node_id);
+
+            for tier in DiskTier::ALL {
+                // Bounds are checked present before the migration starts.
+                let (floor, ceiling) = TierPriceBounds::<T>::get(tier).unwrap_or((0, u128::MAX));
+                let convert = |ru: u128| Self::ru_to_tier(ru, tier).clamp(floor, ceiling);
+                if let Some(c) = current {
+                    let t = convert(c);
+                    TierPrice::<T>::insert(node_id, tier, t);
+                    TierPriceMagnitudeAnchor::<T>::insert(node_id, tier, t);
+                    if let Some(p) = carried.as_ref() {
+                        let pt = convert(p.new_price);
+                        if pt < t {
+                            PendingTierPriceChange::<T>::insert(
+                                node_id,
+                                tier,
+                                PriceChange {
+                                    new_price: pt,
+                                    effective_block: p.effective_block,
+                                },
+                            );
+                        }
+                    }
+                } else if let Some(a) = legacy_anchor {
+                    TierPriceMagnitudeAnchor::<T>::insert(node_id, tier, convert(a));
+                }
+                if !last.is_zero() {
+                    LastTierPriceChangeBlock::<T>::insert(node_id, tier, last);
+                }
+            }
+
+            match TierPrice::<T>::get(node_id, DiskTier::Nvme) {
+                Some(t) => MinerPrice::<T>::insert(node_id, Self::nvme_to_ru(t)),
+                None => MinerPrice::<T>::remove(node_id),
+            }
+            if let Some(p) = PendingTierPriceChange::<T>::get(node_id, DiskTier::Nvme) {
+                PendingPriceChange::<T>::insert(
+                    node_id,
+                    PriceChange {
+                        new_price: Self::nvme_to_ru(p.new_price),
+                        effective_block: p.effective_block,
+                    },
+                );
+            }
+        }
+
+        /// The alias invariant of the alias period: every RU item equals
+        /// the inverse conversion of the nvme tier, both ways, and the
+        /// legacy bounds are the announceable RU range of the nvme bounds
+        /// (`sync_legacy_bounds_from_nvme`).
+        #[cfg(any(feature = "try-runtime", test))]
+        pub fn check_tier_alias() -> Result<(), &'static str> {
+            if !Self::tier_prices_live() {
+                return Ok(());
+            }
+            for (node, tier, t) in TierPrice::<T>::iter() {
+                if tier == DiskTier::Nvme && MinerPrice::<T>::get(node) != Some(Self::nvme_to_ru(t))
+                {
+                    return Err("MinerPrice diverges from the nvme tier price");
+                }
+            }
+            for node in MinerPrice::<T>::iter_keys() {
+                if !TierPrice::<T>::contains_key(node, DiskTier::Nvme) {
+                    return Err("MinerPrice without an nvme tier price");
+                }
+            }
+            for (node, tier, p) in PendingTierPriceChange::<T>::iter() {
+                if tier != DiskTier::Nvme {
+                    continue;
+                }
+                let want = PriceChange {
+                    new_price: Self::nvme_to_ru(p.new_price),
+                    effective_block: p.effective_block,
+                };
+                if PendingPriceChange::<T>::get(node) != Some(want) {
+                    return Err("PendingPriceChange diverges from the nvme tier pending");
+                }
+            }
+            for node in PendingPriceChange::<T>::iter_keys() {
+                if !PendingTierPriceChange::<T>::contains_key(node, DiskTier::Nvme) {
+                    return Err("PendingPriceChange without an nvme tier pending");
+                }
+            }
+            if let Some((floor, ceiling)) = TierPriceBounds::<T>::get(DiskTier::Nvme) {
+                if PriceFloor::<T>::get() != Self::ru_floor_of_nvme(floor)
+                    || PriceCeiling::<T>::get() != Some(Self::nvme_to_ru(ceiling))
+                {
+                    return Err("legacy price bounds diverge from the nvme tier bounds");
+                }
+            }
+            Ok(())
         }
 
         fn base_child_deposit() -> BalanceOf<T> {
@@ -2590,6 +3200,23 @@ pub mod pallet {
     // =====================================================================
     // Extrinsics
     // =====================================================================
+
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        fn integrity_test() {
+            for (num, den) in T::TierPriceRatios::get() {
+                assert!(
+                    num > 0 && den > 0,
+                    "compute-scoring: every TierPriceRatios term must be non-zero"
+                );
+            }
+        }
+
+        #[cfg(feature = "try-runtime")]
+        fn try_state(_n: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+            Self::check_tier_alias().map_err(Into::into)
+        }
+    }
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
@@ -3796,8 +4423,14 @@ pub mod pallet {
         /// magnitude-bounded, clamped to `[floor, ceiling]`, and takes
         /// effect only after the notice window — giving vali time to
         /// migrate any VM that no longer fits the tenant's budget.
+        ///
+        /// Alias period (tier prices live): `new_price` is in RU units and
+        /// announces the nvme tier at the smallest tier price whose alias
+        /// is exactly `new_price`, so the RU price is stored exactly; a
+        /// price with no such preimage is refused.
         #[pallet::call_index(49)]
-        #[pallet::weight(<T as pallet::Config>::WeightInfo::register_child())]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::register_child()
+            .max(<T as pallet::Config>::WeightInfo::announce_tier_price_change()))]
         pub fn announce_price_change(
             origin: OriginFor<T>,
             node_id: [u8; 32],
@@ -3812,6 +4445,24 @@ pub mod pallet {
             // would trap the node — once `MinerPrice == 0` the magnitude
             // bounds collapse to `[0, 0]`, so it could never be raised.
             ensure!(new_price > 0, Error::<T>::PriceOutOfBounds);
+            Self::ensure_not_migrating()?;
+            if Self::tier_prices_live() {
+                ensure!(
+                    TierPriceBounds::<T>::contains_key(DiskTier::Nvme),
+                    Error::<T>::PriceBoundsNotConfigured
+                );
+                ensure!(
+                    Self::within_price_bounds(new_price),
+                    Error::<T>::PriceOutOfBounds
+                );
+                // Equivalent to the tier-bounds gate below: the legacy
+                // bounds are synced to exactly the announceable RU range
+                // (`sync_legacy_bounds_from_nvme`), so `PriceFloor` /
+                // `PriceCeiling` themselves are announceable.
+                let tier_price =
+                    Self::ru_to_nvme_exact(new_price).ok_or(Error::<T>::PriceNotRepresentable)?;
+                return Self::do_announce_tier_price(node_id, DiskTier::Nvme, tier_price);
+            }
             // R12: genesis does not run on a runtime upgrade, so a
             // chain upgraded into this pallet has PriceCeiling = None.
             // Unbounded is not an acceptable default — refuse every
@@ -3876,10 +4527,17 @@ pub mod pallet {
         /// Permissionless: materialise a node's due price change on-chain
         /// (consumers already see it via `effective_price`; this makes the
         /// canonical storage + event).
+        ///
+        /// Alias period: applies the nvme tier change (and its RU mirror).
         #[pallet::call_index(51)]
-        #[pallet::weight(<T as pallet::Config>::WeightInfo::set_base_child_deposit())]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::set_base_child_deposit()
+            .max(<T as pallet::Config>::WeightInfo::apply_tier_price_change()))]
         pub fn apply_price_change(origin: OriginFor<T>, node_id: [u8; 32]) -> DispatchResult {
             ensure_signed(origin)?;
+            Self::ensure_not_migrating()?;
+            if Self::tier_prices_live() {
+                return Self::do_apply_tier_price(node_id, DiskTier::Nvme);
+            }
             let pending =
                 PendingPriceChange::<T>::get(node_id).ok_or(Error::<T>::NoPriceChangeDue)?;
             ensure!(
@@ -3920,8 +4578,14 @@ pub mod pallet {
         }
 
         /// Admin: set the price floor/ceiling.
+        ///
+        /// Alias period: the RU bounds set the nvme tier bounds to the
+        /// widest tier range whose alias stays in `[floor, ceiling]` (a
+        /// ceiling is then mandatory), and the RU bounds become the image
+        /// of the nvme bounds.
         #[pallet::call_index(52)]
-        #[pallet::weight((<T as pallet::Config>::WeightInfo::set_base_child_deposit(), Pays::No))]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::set_base_child_deposit()
+            .max(<T as pallet::Config>::WeightInfo::set_tier_price_bounds()), Pays::No))]
         pub fn set_price_bounds(
             origin: OriginFor<T>,
             floor: u128,
@@ -3930,6 +4594,18 @@ pub mod pallet {
             T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
             if let Some(c) = ceiling {
                 ensure!(floor <= c, Error::<T>::InvalidPricePolicy);
+            }
+            Self::ensure_not_migrating()?;
+            if Self::tier_prices_live() {
+                let ceiling = ceiling.ok_or(Error::<T>::InvalidPricePolicy)?;
+                let (num, den) = Self::tier_ratio(DiskTier::Nvme);
+                // Smallest t with alias(t) ≥ floor; largest t with
+                // alias(t) ≤ ceiling, i.e. t·k_den < (ceiling + 1)·k_num.
+                let tier_floor = Self::mul_div(floor, num, den, true);
+                let tier_ceiling =
+                    Self::mul_div(ceiling.saturating_add(1), num, den, true).saturating_sub(1);
+                ensure!(tier_floor <= tier_ceiling, Error::<T>::InvalidPricePolicy);
+                return Self::do_set_tier_price_bounds(DiskTier::Nvme, tier_floor, tier_ceiling);
             }
             PriceFloor::<T>::put(floor);
             match ceiling {
@@ -3967,6 +4643,122 @@ pub mod pallet {
                 max_denom,
             });
             Ok(())
+        }
+
+        // --- compute-miner-pay §3 tier prices -----------------------------
+
+        /// Node operator: announce a tier price change (µUSD per RU_B-h).
+        /// Same rules as `announce_price_change`, per `(node, tier)`:
+        /// positive, tier bounds set and respected, interval, ×step
+        /// against the tier anchor, effective after the notice window.
+        /// Refused until `migrate_tier_prices` has completed.
+        #[pallet::call_index(57)]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::announce_tier_price_change())]
+        pub fn announce_tier_price_change(
+            origin: OriginFor<T>,
+            node_id: [u8; 32],
+            tier: DiskTier,
+            new_price: u128,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            ensure!(
+                NodeIdToChild::<T>::get(node_id).as_ref() == Some(&who),
+                Error::<T>::NotNodeOperator
+            );
+            Self::ensure_not_migrating()?;
+            ensure!(Self::tier_prices_live(), Error::<T>::TierPricesNotMigrated);
+            Self::do_announce_tier_price(node_id, tier, new_price)
+        }
+
+        /// Permissionless: materialise a due tier price change (a pending
+        /// that no longer fits the tier bounds is discarded, still `Ok`).
+        #[pallet::call_index(58)]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::apply_tier_price_change())]
+        pub fn apply_tier_price_change(
+            origin: OriginFor<T>,
+            node_id: [u8; 32],
+            tier: DiskTier,
+        ) -> DispatchResult {
+            ensure_signed(origin)?;
+            Self::ensure_not_migrating()?;
+            ensure!(Self::tier_prices_live(), Error::<T>::TierPricesNotMigrated);
+            Self::do_apply_tier_price(node_id, tier)
+        }
+
+        /// Admin: set a tier's `(floor, ceiling)` in µUSD per RU_B-h. For
+        /// nvme in the alias period, the RU bounds follow (their image).
+        #[pallet::call_index(59)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::set_tier_price_bounds(), Pays::No))]
+        pub fn set_tier_price_bounds(
+            origin: OriginFor<T>,
+            tier: DiskTier,
+            floor: u128,
+            ceiling: u128,
+        ) -> DispatchResult {
+            T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
+            // Frozen while the cursor runs: every node must be clamped
+            // against the same bounds, and the migration cannot be rerun.
+            Self::ensure_not_migrating()?;
+            Self::do_set_tier_price_bounds(tier, floor, ceiling)
+        }
+
+        /// Admin: convert up to `limit` registered nodes' RU prices into
+        /// per-tier prices (see `migrate_node_prices`), resuming from the
+        /// cursor. Needs all three tier bounds. On the last batch the RU
+        /// bounds are reset to the announceable RU range of the nvme
+        /// bounds and tier
+        /// prices go live; a further call is refused.
+        #[pallet::call_index(60)]
+        #[pallet::weight((<T as pallet::Config>::WeightInfo::migrate_tier_prices(*limit), Pays::No))]
+        pub fn migrate_tier_prices(origin: OriginFor<T>, limit: u32) -> DispatchResultWithPostInfo {
+            T::ComputeScoringAdminOrigin::ensure_origin(origin)?;
+            // `limit = 0` would be an `Ok` no-op that still emits a batch
+            // event: refuse it rather than let a typo look like progress.
+            ensure!(limit > 0, Error::<T>::InvalidMigrationLimit);
+            let status = TierMigrationCursor::<T>::get();
+            ensure!(
+                status != TierMigrationStatus::Done,
+                Error::<T>::TierMigrationAlreadyDone
+            );
+            ensure!(
+                DiskTier::ALL.iter().all(TierPriceBounds::<T>::contains_key),
+                Error::<T>::PriceBoundsNotConfigured
+            );
+
+            let mut keys = match status {
+                TierMigrationStatus::InProgress { last } => {
+                    NodeIdToChild::<T>::iter_keys_from(NodeIdToChild::<T>::hashed_key_for(last))
+                }
+                _ => NodeIdToChild::<T>::iter_keys(),
+            };
+            let now = Self::now();
+            let mut processed: u32 = 0;
+            let mut last = None;
+            while processed < limit {
+                match keys.next() {
+                    Some(node_id) => {
+                        Self::migrate_node_prices(node_id, now);
+                        last = Some(node_id);
+                        processed += 1;
+                    }
+                    None => break,
+                }
+            }
+            let complete = processed < limit || keys.next().is_none();
+            if complete {
+                TierMigrationCursor::<T>::put(TierMigrationStatus::Done);
+                Self::sync_legacy_bounds_from_nvme();
+            } else if let Some(last) = last {
+                TierMigrationCursor::<T>::put(TierMigrationStatus::InProgress { last });
+            }
+            Self::deposit_event(Event::TierMigrationBatch {
+                processed,
+                complete,
+            });
+            Ok(Some(<T as pallet::Config>::WeightInfo::migrate_tier_prices(
+                processed,
+            ))
+            .into())
         }
     }
 
@@ -4009,8 +4801,27 @@ pub mod pallet {
             // and the change-interval clock keeps running, so
             // deregister → cooldown → re-register no longer resets
             // the ladder.
-            if let Some(last_price) = Self::effective_price(&reg.node_id) {
-                PriceMagnitudeAnchor::<T>::insert(reg.node_id, last_price);
+            // Same per tier: purge the prices, keep the anchors and clocks.
+            // In the alias period the RU anchor is the alias of the nvme
+            // one, so the nvme tier price is read once for both.
+            let live = Self::tier_prices_live();
+            if !live {
+                if let Some(last_price) = Self::effective_price(&reg.node_id) {
+                    PriceMagnitudeAnchor::<T>::insert(reg.node_id, last_price);
+                }
+            }
+            for tier in DiskTier::ALL {
+                if let Some(last_price) = Self::effective_tier_price(&reg.node_id, tier) {
+                    TierPriceMagnitudeAnchor::<T>::insert(reg.node_id, tier, last_price);
+                    if live && tier == DiskTier::Nvme {
+                        PriceMagnitudeAnchor::<T>::insert(
+                            reg.node_id,
+                            Self::nvme_to_ru(last_price),
+                        );
+                    }
+                }
+                TierPrice::<T>::remove(reg.node_id, tier);
+                PendingTierPriceChange::<T>::remove(reg.node_id, tier);
             }
             MinerPrice::<T>::remove(reg.node_id);
             PendingPriceChange::<T>::remove(reg.node_id);
@@ -4068,4 +4879,31 @@ pub mod pallet {
             Ok(())
         }
     }
+}
+
+/// Storage migrations.
+pub mod migrations {
+    use super::*;
+    use frame_support::{migrations::VersionedMigration, traits::UncheckedOnRuntimeUpgrade};
+
+    /// v0 → v1 (compute-miner-pay §3, per-tier prices). Only the version
+    /// moves: the new tier items start empty and the RU prices are
+    /// converted by the admin cursor call `migrate_tier_prices`, so no
+    /// unbounded work runs inside the upgrade block. thebrain #71 also
+    /// introduces a v1 for this pallet: whichever lands second renumbers.
+    pub struct VersionBumpOnly<T>(core::marker::PhantomData<T>);
+
+    impl<T: Config> UncheckedOnRuntimeUpgrade for VersionBumpOnly<T> {
+        fn on_runtime_upgrade() -> Weight {
+            Weight::zero()
+        }
+    }
+
+    pub type MigrateV0ToV1<T> = VersionedMigration<
+        0,
+        1,
+        VersionBumpOnly<T>,
+        Pallet<T>,
+        <T as frame_system::Config>::DbWeight,
+    >;
 }

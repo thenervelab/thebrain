@@ -45,6 +45,13 @@ pub trait WeightInfo {
     fn set_kbs_attestation_pubkey() -> Weight;
     fn remove_kbs_attestation_pubkey() -> Weight;
     fn submit_live_attestation() -> Weight;
+
+    // --- compute-miner-pay §3 tier prices ---
+    fn announce_tier_price_change() -> Weight;
+    fn apply_tier_price_change() -> Weight;
+    fn set_tier_price_bounds() -> Weight;
+    /// `n` = nodes converted in the batch.
+    fn migrate_tier_prices(n: u32) -> Weight;
 }
 
 /// Weights for `pallet_compute_scoring` using the Substrate node and
@@ -60,10 +67,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     }
 
     /// Storage: ~6 reads + ~6 writes (status flip + counter updates).
+    /// Plus per tier (3): pending, bounds, price reads; anchor, price,
+    /// pending writes (compute-miner-pay §3).
     fn deregister_child() -> Weight {
         Weight::from_parts(30_000_000, 0)
-            .saturating_add(T::DbWeight::get().reads(6))
-            .saturating_add(T::DbWeight::get().writes(6))
+            .saturating_add(T::DbWeight::get().reads(15))
+            .saturating_add(T::DbWeight::get().writes(15))
     }
 
     fn claim_unbonded() -> Weight {
@@ -180,6 +189,58 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().reads(5))
             .saturating_add(T::DbWeight::get().writes(3))
     }
+
+    /// Storage: NodeIdToChild, TierMigrationCursor (×2), TierPriceBounds
+    ///   (×3), LastTierPriceChangeBlock, PendingTierPriceChange,
+    ///   TierPrice (×2), TierPriceMagnitudeAnchor, PriceMagnitudeAnchor,
+    ///   policy (×4), MinerPrice, PriceFloor, PriceCeiling = 20 reads;
+    ///   PendingTierPriceChange, LastTierPriceChangeBlock, and for nvme
+    ///   PendingPriceChange + LastPriceChangeBlock = 4 writes.
+    ///
+    /// Execution time and proof size measured in the thebrain runtime
+    /// (`hippius benchmark pallet --chain dev --pallet pallet_compute_scoring`,
+    /// 2026-10-29, development VM, steps 20 / repeat 10); reads and writes
+    /// the larger of measured and counted. Same for the three below.
+    fn announce_tier_price_change() -> Weight {
+        Weight::from_parts(212_296_000, 4_048)
+            .saturating_add(T::DbWeight::get().reads(20))
+            .saturating_add(T::DbWeight::get().writes(4))
+    }
+
+    /// Storage: TierMigrationCursor (×2), PendingTierPriceChange,
+    ///   TierPriceBounds, PendingPriceChange = 5 reads; pending tier
+    ///   remove, PendingPriceChange take, TierPrice, MinerPrice = 4 writes.
+    fn apply_tier_price_change() -> Weight {
+        Weight::from_parts(125_574_000, 4_156)
+            .saturating_add(T::DbWeight::get().reads(5))
+            .saturating_add(T::DbWeight::get().writes(4))
+    }
+
+    /// Storage: TierMigrationCursor, TierPriceBounds = 2 reads;
+    ///   TierPriceBounds, PriceFloor, PriceCeiling = 3 writes.
+    ///   A live nvme call reads the cursor up to three times plus
+    ///   `TierPriceBounds` through the shared helper: 4 reads charged.
+    fn set_tier_price_bounds() -> Weight {
+        Weight::from_parts(81_179_000, 1_777)
+            .saturating_add(T::DbWeight::get().reads(4))
+            .saturating_add(T::DbWeight::get().writes(3))
+    }
+
+    /// Base: cursor, 3 bounds, one key peek, cursor + legacy bounds
+    ///   writes. Per node: NodeIdToChild key, MinerPrice,
+    ///   PendingPriceChange, PriceFloor + PriceCeiling (any pending),
+    ///   PriceMagnitudeAnchor, LastPriceChangeBlock, 3 bounds, nvme
+    ///   TierPrice + pending = 12 reads; per tier price,
+    ///   anchor, pending, clock (×3) + MinerPrice + PendingPriceChange
+    ///   (×2) = 15 writes.
+    fn migrate_tier_prices(n: u32) -> Weight {
+        Weight::from_parts(87_850_920, 8_877)
+            .saturating_add(Weight::from_parts(164_862_900, 2_712).saturating_mul(n as u64))
+            .saturating_add(T::DbWeight::get().reads(7))
+            .saturating_add(T::DbWeight::get().writes(3))
+            .saturating_add(T::DbWeight::get().reads(12).saturating_mul(n as u64))
+            .saturating_add(T::DbWeight::get().writes(15).saturating_mul(n as u64))
+    }
 }
 
 /// `()` impl for runtimes / tests that don't care about precise
@@ -225,6 +286,18 @@ impl WeightInfo for () {
         Weight::zero()
     }
     fn submit_live_attestation() -> Weight {
+        Weight::zero()
+    }
+    fn announce_tier_price_change() -> Weight {
+        Weight::zero()
+    }
+    fn apply_tier_price_change() -> Weight {
+        Weight::zero()
+    }
+    fn set_tier_price_bounds() -> Weight {
+        Weight::zero()
+    }
+    fn migrate_tier_prices(_n: u32) -> Weight {
         Weight::zero()
     }
 }

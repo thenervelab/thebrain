@@ -24,7 +24,7 @@
 use super::*;
 use crate::pallet::Pallet as ComputeScoring;
 use frame_benchmarking::v2::*;
-use frame_support::traits::Currency;
+use frame_support::traits::{Currency, EnsureOrigin};
 use frame_system::RawOrigin;
 use sp_std::vec;
 use sp_std::vec::Vec;
@@ -99,10 +99,109 @@ mod benches {
                 weight: 1_000,
             });
         }
-        let bounded: BoundedVec<_, T::MaxMinerStatusUpdatesPerCall> =
-            updates.try_into().unwrap();
+        let bounded: BoundedVec<_, T::MaxMinerStatusUpdatesPerCall> = updates.try_into().unwrap();
         #[extrinsic_call]
         _(RawOrigin::Root, retention + 2, bounded);
+    }
+
+    // --- compute-miner-pay §3 tier prices ---
+
+    fn node(i: u32) -> [u8; 32] {
+        let mut node_id = [0u8; 32];
+        node_id[..4].copy_from_slice(&i.to_le_bytes());
+        node_id
+    }
+
+    fn tier_bounds<T: Config>() {
+        for tier in DiskTier::ALL {
+            TierPriceBounds::<T>::insert(tier, (1u128, 1_000_000_000u128));
+        }
+        PriceCeiling::<T>::put(1_000_000_000u128);
+    }
+
+    /// Worst case: nvme (dual write) over a re-registered node whose only
+    /// anchor is the legacy RU one, so every anchor fallback is read.
+    #[benchmark]
+    fn announce_tier_price_change() {
+        let who = funded::<T>(0);
+        let node_id = node(0);
+        NodeIdToChild::<T>::insert(node_id, who.clone());
+        tier_bounds::<T>();
+        TierMigrationCursor::<T>::put(TierMigrationStatus::Done);
+        PriceMagnitudeAnchor::<T>::insert(node_id, 1_000u128);
+        #[extrinsic_call]
+        _(RawOrigin::Signed(who), node_id, DiskTier::Nvme, 1_200u128);
+        assert!(PendingTierPriceChange::<T>::contains_key(
+            node_id,
+            DiskTier::Nvme
+        ));
+    }
+
+    #[benchmark]
+    fn apply_tier_price_change() {
+        let who = funded::<T>(0);
+        let node_id = node(0);
+        NodeIdToChild::<T>::insert(node_id, who.clone());
+        tier_bounds::<T>();
+        TierMigrationCursor::<T>::put(TierMigrationStatus::Done);
+        ComputeScoring::<T>::announce_tier_price_change(
+            RawOrigin::Signed(who.clone()).into(),
+            node_id,
+            DiskTier::Nvme,
+            1_200u128,
+        )
+        .unwrap();
+        let due = frame_system::Pallet::<T>::block_number()
+            .saturating_add(PriceChangeNoticeBlocks::<T>::get());
+        frame_system::Pallet::<T>::set_block_number(due);
+        #[extrinsic_call]
+        _(RawOrigin::Signed(who), node_id, DiskTier::Nvme);
+        assert_eq!(TierPrice::<T>::get(node_id, DiskTier::Nvme), Some(1_200));
+    }
+
+    #[benchmark]
+    fn set_tier_price_bounds() -> Result<(), BenchmarkError> {
+        // The runtime's admin origin is not root (thebrain: a pinned
+        // authority), so take whatever origin it accepts.
+        let origin = T::ComputeScoringAdminOrigin::try_successful_origin()
+            .map_err(|_| BenchmarkError::Weightless)?;
+        tier_bounds::<T>();
+        TierMigrationCursor::<T>::put(TierMigrationStatus::Done);
+        #[extrinsic_call]
+        _(
+            origin as T::RuntimeOrigin,
+            DiskTier::Nvme,
+            10u128,
+            1_000u128,
+        );
+        Ok(())
+    }
+
+    /// `n` priced nodes with an in-bounds pending decrease: alternately
+    /// already due (taken as the price) and not yet due (carried per
+    /// tier). The legacy bounds are read for every pending.
+    #[benchmark]
+    fn migrate_tier_prices(n: Linear<1, 64>) -> Result<(), BenchmarkError> {
+        let origin = T::ComputeScoringAdminOrigin::try_successful_origin()
+            .map_err(|_| BenchmarkError::Weightless)?;
+        tier_bounds::<T>();
+        for i in 0..n {
+            let node_id = node(i);
+            NodeIdToChild::<T>::insert(node_id, funded::<T>(i));
+            MinerPrice::<T>::insert(node_id, 10_000u128);
+            let effective_block: u32 = if i % 2 == 0 { 0 } else { 1_000_000 };
+            PendingPriceChange::<T>::insert(
+                node_id,
+                PriceChange {
+                    new_price: 9_000u128,
+                    effective_block: effective_block.into(),
+                },
+            );
+        }
+        #[extrinsic_call]
+        _(origin as T::RuntimeOrigin, n);
+        assert_eq!(TierMigrationCursor::<T>::get(), TierMigrationStatus::Done);
+        Ok(())
     }
 
     // Runs every benchmark above as an ordinary test against the
