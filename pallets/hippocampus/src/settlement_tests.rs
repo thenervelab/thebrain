@@ -14,6 +14,7 @@ use frame_support::{
 	assert_noop, assert_ok,
 	dispatch::{Pays, PostDispatchInfo},
 	traits::Currency,
+	weights::Weight,
 	BoundedVec,
 };
 use sp_core::{sr25519, Pair, H256};
@@ -578,7 +579,7 @@ fn revoke_is_refused_once_a_part_is_paid() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn either_switch_off_refuses_submit_pay_and_claim() {
+fn either_switch_off_refuses_submit_and_pay_only_distribution_stops_claims() {
 	new_test_ext().execute_with(|| {
 		setup();
 		let parts = vec![vec![entry(1, 100)]];
@@ -587,9 +588,11 @@ fn either_switch_off_refuses_submit_pay_and_claim() {
 		ComputeSettlementEnabled::<Test>::put(false);
 		assert_refused(submit(W, 0, input.clone()), Error::<Test>::ComputeSettlementDisabled);
 		assert_refused(pay(W, 0, 0, parts[0].clone()), Error::<Test>::ComputeSettlementDisabled);
+		// A settlement pause does not stop claims: alice is refused only for
+		// having nothing owed.
 		assert_noop!(
 			Hippocampus::claim_compute_owed(RuntimeOrigin::signed(alice())),
-			Error::<Test>::ComputeSettlementDisabled
+			Error::<Test>::NothingOwed
 		);
 
 		ComputeSettlementEnabled::<Test>::put(true);
@@ -842,7 +845,7 @@ fn parts_without_usd_is_malformed() {
 }
 
 #[test]
-fn defund_keeps_what_is_owed() {
+fn defund_does_not_hold_back_owed_funds() {
 	new_test_ext().execute_with(|| {
 		setup();
 		approve(W, 0, &[vec![entry(9, 5)]]);
@@ -850,10 +853,91 @@ fn defund_keeps_what_is_owed() {
 		assert_eq!(ComputeOwedTotal::<Test>::get(), 5);
 		root_apply(RootChange::RevenueAccount(dave()));
 		root_apply(RootChange::Defund(u128::MAX));
-		assert_eq!(
-			Balances::free_balance(Hippocampus::settlement_account()),
-			EXISTENTIAL_DEPOSIT + 5
+		// The owed 5 already sit in the owed account; the settlement account
+		// keeps only its seed.
+		assert_eq!(Balances::free_balance(Hippocampus::settlement_account()), EXISTENTIAL_DEPOSIT);
+		assert_eq!(Balances::free_balance(Hippocampus::owed_account()), EXISTENTIAL_DEPOSIT + 5);
+	});
+}
+
+#[test]
+fn owed_funds_stay_claimable_while_settlement_is_paused() {
+	new_test_ext().execute_with(|| {
+		setup();
+		approve(W, 0, &[vec![entry(9, 5)]]);
+		assert_ok!(pay(W, 0, 0, vec![entry(9, 5)]));
+		let _ = Balances::deposit_creating(&family(9), 50);
+		assert_ok!(Hippocampus::disable_compute_settlement(RuntimeOrigin::root()));
+		assert_ok!(Hippocampus::claim_compute_owed(RuntimeOrigin::signed(family(9))));
+		assert_eq!(Balances::free_balance(family(9)), 55);
+	});
+}
+
+#[test]
+fn records_past_the_revision_horizon_are_pruned() {
+	use frame_support::traits::Hooks;
+	new_test_ext().execute_with(|| {
+		setup();
+		let _ = Balances::deposit_creating(&family(1), 100);
+		// W: revisions 0 and 1; W + 1: revision 0.
+		approve(W, 0, &[vec![entry(1, 10)]]);
+		assert_ok!(pay(W, 0, 0, vec![entry(1, 10)]));
+		set_current_window(W + 9);
+		approve(W, 1, &[vec![entry(1, 1)]]);
+		assert_ok!(pay(W, 1, 0, vec![entry(1, 1)]));
+		set_final_charged(W + 1, CHARGED);
+		approve(W + 1, 0, &[vec![entry(1, 10)]]);
+		assert_ok!(pay(W + 1, 0, 0, vec![entry(1, 10)]));
+
+		let max = Weight::from_parts(u64::MAX, u64::MAX);
+		// Inside the horizon nothing goes.
+		set_current_window(W + 160);
+		Hippocampus::on_idle(System::block_number(), max);
+		assert!(ComputeApproval::<Test>::contains_key((W, 0)));
+
+		// Past it for W only.
+		set_current_window(W + 161);
+		Hippocampus::on_idle(System::block_number(), max);
+		for k in 0..=1u8 {
+			assert!(!ComputeApproval::<Test>::contains_key((W, k)));
+			assert!(!ComputeProgress::<Test>::contains_key((W, k)));
+			assert!(!ComputeRevisionSeq::<Test>::contains_key((W, k)));
+		}
+		assert!(WindowParams::<Test>::get(W).is_none());
+		assert_eq!(ComputeWindowPaid::<Test>::get(W), (0, 0));
+		assert!(ComputeLastRevisionDay::<Test>::get(W).is_none());
+		assert_eq!(crate::ComputePrunedBefore::<Test>::get(), W + 1);
+		assert!(ComputeApproval::<Test>::contains_key((W + 1, 0)));
+
+		// The guards still hold for the pruned window.
+		fresh_price(PRICE);
+		set_final_charged(W, CHARGED);
+		assert_refused(
+			submit(W, 2, input_for(W, 2, &[vec![entry(1, 1)]], 1)),
+			Error::<Test>::WindowPruned,
 		);
+		assert_refused(submit(W, 0, input_for(W, 0, &[], 0)), Error::<Test>::WindowPruned);
+	});
+}
+
+#[test]
+fn pruning_waits_for_the_window_in_flight_and_is_bounded() {
+	use frame_support::traits::Hooks;
+	new_test_ext().execute_with(|| {
+		setup();
+		let _ = Balances::deposit_creating(&family(1), 100);
+		approve(W, 0, &[vec![entry(1, 10)]]);
+		assert_ok!(pay(W, 0, 0, vec![entry(1, 10)]));
+		// A revision of W submitted on its last allowed day, still in flight.
+		set_current_window(W + 160);
+		approve(W, 1, &[vec![entry(1, 1)]]);
+		set_current_window(W + 200);
+		let max = Weight::from_parts(u64::MAX, u64::MAX);
+		Hippocampus::on_idle(System::block_number(), max);
+		assert!(ComputeApproval::<Test>::contains_key((W, 0)));
+		assert!(ComputeApproval::<Test>::contains_key((W, 1)));
+		// No weight, no work.
+		assert_eq!(Hippocampus::on_idle(System::block_number(), Weight::zero()), Weight::zero());
 	});
 }
 

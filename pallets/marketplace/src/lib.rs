@@ -190,6 +190,10 @@ pub mod pallet {
 			let mut used = Self::prune_compute_usage(remaining_weight);
 			used = used
 				.saturating_add(Self::prune_compute_charged(remaining_weight.saturating_sub(used)));
+			// Deferred escrow is filed before the sweep, so a batch's whole
+			// escrow is in place when the sweep releases it.
+			used = used
+				.saturating_add(Self::file_deferred_escrow(remaining_weight.saturating_sub(used)));
 			used.saturating_add(Self::sweep_frozen_compute_charges(
 				remaining_weight.saturating_sub(used),
 			))
@@ -1459,6 +1463,22 @@ pub mod pallet {
 	/// where `on_idle` pruning resumes. `None` when nothing was ever counted.
 	#[pallet::storage]
 	pub type ComputeChargedPruneFrom<T: Config> = StorageValue<_, u32, OptionQuery>;
+
+	/// Escrow of frozen batches past the first `MAX_FROZEN_ESCROWS_PER_DEBIT`
+	/// a single debit drained: `seq → (window, [(batch_id, credits)])`, filed
+	/// into `FrozenComputeCharge` by `on_idle` in sequence order. An entry
+	/// whose batch was charged back meanwhile is dropped.
+	#[pallet::storage]
+	pub type PendingFrozenEscrow<T: Config> =
+		StorageMap<_, Twox64Concat, u64, (u32, Vec<(u64, u128)>), OptionQuery>;
+
+	/// Next `PendingFrozenEscrow` sequence number to write.
+	#[pallet::storage]
+	pub type PendingFrozenEscrowNext<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+	/// Next `PendingFrozenEscrow` sequence number to file.
+	#[pallet::storage]
+	pub type PendingFrozenEscrowHead<T: Config> = StorageValue<_, u64, ValueQuery>;
 
 	/// Where the `on_idle` walk over `FrozenComputeCharge` resumes (a raw
 	/// key); `None` to start from the beginning.
@@ -2881,8 +2901,13 @@ pub mod pallet {
 	/// over is moved by the next release.
 	pub const MAX_FROZEN_WINDOWS_PER_RELEASE: u32 = 48;
 
-	/// Most frozen batches one compute debit escrows revenue for.
+	/// Frozen batches one compute debit escrows directly; the escrow of any
+	/// further frozen batch it drains is deferred (`PendingFrozenEscrow`) and
+	/// filed by `on_idle`, so the row weight stays fixed and nothing is lost.
 	pub const MAX_FROZEN_ESCROWS_PER_DEBIT: u32 = 2;
+
+	/// Deferred escrow entries `on_idle` files per run.
+	pub const MAX_DEFERRED_ESCROWS_PER_RUN: usize = 64;
 
 	/// Backed credits one debit took from one batch.
 	pub(crate) struct BackedTake {
@@ -3566,27 +3591,34 @@ pub mod pallet {
 			let mut charged: u128 = 0;
 			let mut escrowed: u128 = 0;
 			let mut frozen_writes: u32 = 0;
+			let mut deferred: Vec<(u64, u128)> = Vec::new();
 			for take in takes {
 				let counted = mul_div_floor(take.backed, compute_billable, owed);
 				if counted == 0 {
 					continue;
 				}
 				if take.frozen {
-					// Bounded for the row weight. A debit drains every batch it
-					// walks but the last, so more than this is not expected;
-					// beyond it the escrow is dropped, which only lowers the
-					// revenue cap.
-					if frozen_writes >= MAX_FROZEN_ESCROWS_PER_DEBIT {
-						continue;
-					}
-					frozen_writes += 1;
-					FrozenComputeCharge::<T>::mutate(take.batch_id, window, |v| {
-						*v = v.saturating_add(counted)
-					});
 					escrowed = escrowed.saturating_add(counted);
+					// The first few are escrowed at once; every other frozen
+					// batch this debit drained goes into one deferred record,
+					// a single write whatever their number, which `on_idle`
+					// files into `FrozenComputeCharge`. Nothing is dropped.
+					if frozen_writes < MAX_FROZEN_ESCROWS_PER_DEBIT {
+						frozen_writes += 1;
+						FrozenComputeCharge::<T>::mutate(take.batch_id, window, |v| {
+							*v = v.saturating_add(counted)
+						});
+					} else {
+						deferred.push((take.batch_id, counted));
+					}
 				} else {
 					charged = charged.saturating_add(counted);
 				}
+			}
+			if !deferred.is_empty() {
+				let seq = PendingFrozenEscrowNext::<T>::get();
+				PendingFrozenEscrow::<T>::insert(seq, (window, deferred));
+				PendingFrozenEscrowNext::<T>::put(seq.saturating_add(1));
 			}
 			if charged > 0 {
 				Self::add_compute_charged(window, charged);
@@ -3731,6 +3763,56 @@ pub mod pallet {
 				FrozenChargeSweepCursor::<T>::kill();
 			} else {
 				FrozenChargeSweepCursor::<T>::put(resume_from);
+			}
+			meter.consumed()
+		}
+
+		/// File deferred escrow (`PendingFrozenEscrow`) into
+		/// `FrozenComputeCharge`, oldest record first, within `limit` and at
+		/// most `MAX_DEFERRED_ESCROWS_PER_RUN` entries. A record too long for
+		/// what is left is filed in part and resumed next time. An entry
+		/// whose batch no longer exists (charged back) is dropped.
+		pub fn file_deferred_escrow(limit: Weight) -> Weight {
+			let mut meter = WeightMeter::with_limit(limit);
+			// Head and next in, head out.
+			if meter.try_consume(Self::accumulator_access(2, 1)).is_err() {
+				return Weight::zero();
+			}
+			let start = PendingFrozenEscrowHead::<T>::get();
+			let next = PendingFrozenEscrowNext::<T>::get();
+			// A record read and its removal or rewrite.
+			let per_record = Self::accumulator_access(1, 1);
+			// The batch probe, the escrow read and write.
+			let per_entry = Self::accumulator_access(2, 1);
+			let mut head = start;
+			let mut budget = MAX_DEFERRED_ESCROWS_PER_RUN;
+			while head < next && budget > 0 && meter.try_consume(per_record).is_ok() {
+				let Some((window, mut entries)) = PendingFrozenEscrow::<T>::get(head) else {
+					head = head.saturating_add(1);
+					continue;
+				};
+				let mut filed = 0usize;
+				while filed < entries.len() && budget > 0 && meter.try_consume(per_entry).is_ok() {
+					let (batch_id, amount) = entries[filed];
+					if Batches::<T>::contains_key(batch_id) {
+						FrozenComputeCharge::<T>::mutate(batch_id, window, |v| {
+							*v = v.saturating_add(amount)
+						});
+					}
+					filed += 1;
+					budget -= 1;
+				}
+				if filed == entries.len() {
+					PendingFrozenEscrow::<T>::remove(head);
+					head = head.saturating_add(1);
+				} else {
+					entries.drain(..filed);
+					PendingFrozenEscrow::<T>::insert(head, (window, entries));
+					break;
+				}
+			}
+			if head != start {
+				PendingFrozenEscrowHead::<T>::put(head);
 			}
 			meter.consumed()
 		}

@@ -453,6 +453,15 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type ApprovedUnpaidAlpha<T: Config> = StorageValue<_, u128, ValueQuery>;
 
+	/// Settlement records of every window below this were pruned (past the
+	/// revision horizon); approvals for them are refused.
+	#[pallet::storage]
+	pub type ComputePrunedBefore<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+	/// Next revision of window `ComputePrunedBefore` the pruning removes.
+	#[pallet::storage]
+	pub type ComputePruneRevision<T: Config> = StorageValue<_, u8, ValueQuery>;
+
 	/// Where `Defund` pays to; set by root.
 	#[pallet::storage]
 	pub type ComputeRevenueAccount<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
@@ -713,6 +722,18 @@ pub mod pallet {
 		/// The settlement or owed account holds less than the existential
 		/// deposit; `fund_compute_settlement` seeds both.
 		SettlementNotSeeded,
+		/// The window is past the revision horizon and its records were
+		/// pruned.
+		WindowPruned,
+	}
+
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		/// Leftover block weight prunes settlement records of windows past
+		/// the revision horizon. Nothing depends on it running promptly.
+		fn on_idle(_n: BlockNumberFor<T>, remaining_weight: Weight) -> Weight {
+			Self::prune_settlement(remaining_weight)
+		}
 	}
 
 	#[pallet::call]
@@ -1115,6 +1136,7 @@ pub mod pallet {
 			);
 			let first = FirstComputeWindow::<T>::get().ok_or(Error::<T>::FirstWindowNotSet)?;
 			ensure!(window >= first, Error::<T>::WindowBeforeFirst);
+			ensure!(window >= ComputePrunedBefore::<T>::get(), Error::<T>::WindowPruned);
 
 			let today = T::ComputeRevenue::current_window();
 			let params = Self::check_order_and_params(window, revision, today, &input)?;
@@ -1302,11 +1324,15 @@ pub mod pallet {
 		}
 
 		/// Claim everything owed to the caller.
+		///
+		/// Already-earned funds stay claimable while settlement is paused:
+		/// only the bank's global `DistributionEnabled` emergency switch
+		/// stops a claim, not `ComputeSettlementEnabled`.
 		#[pallet::call_index(12)]
 		#[pallet::weight(<T as Config>::WeightInfo::claim_compute_owed())]
 		pub fn claim_compute_owed(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
-			Self::ensure_switches()?;
+			ensure!(DistributionEnabled::<T>::get(), Error::<T>::DistributionDisabled);
 			let amount = ComputeOwed::<T>::get(&who);
 			ensure!(!amount.is_zero(), Error::<T>::NothingOwed);
 			T::Currency::transfer(
@@ -1486,6 +1512,77 @@ pub mod pallet {
 		pub fn genesis_hash() -> H256 {
 			let hash = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
 			H256::decode(&mut &hash.encode()[..]).unwrap_or_default()
+		}
+
+		/// Remove the settlement records of windows past the revision horizon
+		/// (`W + ComputeRevisionHorizon < today`, the marketplace's revenue
+		/// retention too), oldest first, a revision at a time within `limit`.
+		///
+		/// Only completed windows (`W < NextComputeWindow`) and never the
+		/// window of the approval in flight. Per window: every revision's
+		/// `ComputeApproval`, `ComputeProgress` and `ComputeRevisionSeq`
+		/// (revisions are contiguous from 0: each needs the one before it
+		/// completed), then `WindowParams`, `ComputeWindowPaid` and
+		/// `ComputeLastRevisionDay`. `ComputePrunedBefore` keeps approvals for
+		/// pruned windows refused.
+		pub(crate) fn prune_settlement(limit: Weight) -> Weight {
+			const MAX_STEPS_PER_RUN: u32 = 16;
+			let db = T::DbWeight::get();
+			let mut meter = frame_support::weights::WeightMeter::with_limit(limit);
+			// First and next window, in flight, the clock, the cursor (two)
+			// in, the cursor out (reserved first: removals and the cursor
+			// must move together).
+			if meter.try_consume(db.reads_writes(6, 2)).is_err() {
+				return Weight::zero();
+			}
+			let Some(first) = FirstComputeWindow::<T>::get() else {
+				return meter.consumed();
+			};
+			let start_window = ComputePrunedBefore::<T>::get().max(first);
+			let start_revision = ComputePruneRevision::<T>::get();
+			let (mut window, mut revision) = (start_window, start_revision);
+			let today = T::ComputeRevenue::current_window();
+			let horizon = T::ComputeRevisionHorizon::get();
+			let next = NextComputeWindow::<T>::get();
+			let in_flight = InFlightApproval::<T>::get().map(|(w, _)| w);
+			// The approval probe; approval, progress and seq removed.
+			let step = db.reads_writes(1, 3);
+			// Window params, paid and last day removed.
+			let close = db.writes(3);
+			for _ in 0..MAX_STEPS_PER_RUN {
+				let prunable = window < next
+					&& window.saturating_add(horizon) < today
+					&& Some(window) != in_flight;
+				if !prunable || meter.try_consume(step).is_err() {
+					break;
+				}
+				if ComputeApproval::<T>::contains_key((window, revision)) {
+					ComputeApproval::<T>::remove((window, revision));
+					ComputeProgress::<T>::remove((window, revision));
+					ComputeRevisionSeq::<T>::remove((window, revision));
+					// At 255 this stays put: the next probe finds it gone
+					// and closes the window.
+					revision = revision.saturating_add(1);
+				} else {
+					if meter.try_consume(close).is_err() {
+						break;
+					}
+					Self::close_pruned_window(window);
+					window = window.saturating_add(1);
+					revision = 0;
+				}
+			}
+			if (window, revision) != (start_window, start_revision) {
+				ComputePrunedBefore::<T>::put(window);
+				ComputePruneRevision::<T>::put(revision);
+			}
+			meter.consumed()
+		}
+
+		fn close_pruned_window(window: u32) {
+			WindowParams::<T>::remove(window);
+			ComputeWindowPaid::<T>::remove(window);
+			ComputeLastRevisionDay::<T>::remove(window);
 		}
 
 		/// The all-zero account, `Progress::last_family` before part 0.
@@ -1722,8 +1819,8 @@ pub mod pallet {
 				st::RootChange::Defund(amount) => {
 					let to = ComputeRevenueAccount::<T>::get().ok_or(Error::<T>::NoRevenueAccount)?;
 					let headroom = Self::settlement_spendable()
-						.saturating_sub(ApprovedUnpaidAlpha::<T>::get())
-						.saturating_sub(ComputeOwedTotal::<T>::get().saturated_into());
+						.saturating_sub(ApprovedUnpaidAlpha::<T>::get());
+					// Owed funds sit in the owed account, not here: nothing to hold back.
 					let amount = amount.min(headroom);
 					ensure!(amount > 0, Error::<T>::NothingToDefund);
 					let amount: BalanceOf<T> = amount.saturated_into();
