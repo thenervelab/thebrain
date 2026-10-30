@@ -1482,10 +1482,17 @@ pub mod pallet {
 	/// Escrow of frozen batches past the first `MAX_FROZEN_ESCROWS_PER_DEBIT`
 	/// a single debit drained: `seq → (window, [(batch_id, credits)])`, filed
 	/// into `FrozenComputeCharge` by `on_idle` in sequence order. An entry
-	/// whose batch was charged back meanwhile is dropped.
+	/// whose batch was charged back meanwhile is dropped. A record holds at
+	/// most `MAX_DEFERRED_PER_RECORD` entries; a debit that drains more frozen
+	/// batches writes several records.
 	#[pallet::storage]
-	pub type PendingFrozenEscrow<T: Config> =
-		StorageMap<_, Twox64Concat, u64, (u32, Vec<(u64, u128)>), OptionQuery>;
+	pub type PendingFrozenEscrow<T: Config> = StorageMap<
+		_,
+		Twox64Concat,
+		u64,
+		(u32, BoundedVec<(u64, u128), ConstU32<MAX_DEFERRED_PER_RECORD>>),
+		OptionQuery,
+	>;
 
 	/// Next `PendingFrozenEscrow` sequence number to write.
 	#[pallet::storage]
@@ -2921,24 +2928,32 @@ pub mod pallet {
 	/// filed by `on_idle`, so the row weight stays fixed and nothing is lost.
 	pub const MAX_FROZEN_ESCROWS_PER_DEBIT: u32 = 2;
 
+	/// Most entries one `PendingFrozenEscrow` record holds: a debit walking
+	/// the 16 batches the billing weights are priced for (`MaxBatchesPerBuyer`,
+	/// `COMPUTE_BENCH_BATCHES`) defers at most 16 − 2.
+	pub const MAX_DEFERRED_PER_RECORD: u32 = 14;
+
 	/// Deferred escrow entries one run files (`on_initialize` or `on_idle`).
 	pub const MAX_DEFERRED_ESCROWS_PER_RUN: usize = 128;
 
-	/// Share of every block `on_initialize` gives to filing deferred escrow.
+	/// Share of every block `on_initialize` gives to filing deferred escrow;
+	/// the frozen-charge sweep then gets what filing left of twice this
+	/// share, so the two together take at most 0.5 % and, with the renewal
+	/// (5 %), hourly (3 %) and alpha release (1 %) budgets, the marketplace's
+	/// metered hook work stays at 9.5 %, under the 10 %
+	/// `AVERAGE_ON_INITIALIZE_RATIO`. `on_idle` adds whatever weight is left.
 	///
-	/// Capacity, not opportunism: 0.5 % of a 2 s block files ~65 entries a
-	/// block, ~0.9 M a day. What can be enqueued is bounded by the billing
-	/// rule itself — one row per `(period, account)`, at most 14 deferred
-	/// entries per row (16 batches walked, 2 escrowed directly) — so even
-	/// 2 500 accounts that each drain 16 frozen batches every hour (~0.84 M
-	/// entries a day) fit one day of capacity, and any catch-up burst is
-	/// absorbed weeks before the 160-window retention. The frozen-charge
-	/// sweep then gets what filing left of twice this share (at least
-	/// another 0.5 %), so unfrozen escrow is released on the same guarantee;
-	/// with the renewal (5 %), hourly (3 %) and alpha release (1 %) budgets
-	/// this keeps hook work within the 10 % `AVERAGE_ON_INITIALIZE_RATIO`.
-	/// `on_idle` adds whatever weight is left on top.
-	pub const DEFERRED_ESCROW_BLOCK_SHARE: Perbill = Perbill::from_parts(5_000_000);
+	/// Capacity: ~30 deferred entries a block (~0.43 M a day), and the
+	/// sweep at least as many escrow entries. Escrow entries exist only for
+	/// card batches inside their chargeback window, at most one per batch
+	/// and source window it was consumed in (a 30-day freeze spans ~34
+	/// windows), and card batches are created by the credits authority for
+	/// real card payments. Thousands of card deposits a day stay far inside
+	/// that capacity, with a 160-window retention to absorb any backlog. A
+	/// credits or billing authority flooding it could at worst delay escrow
+	/// past retention, which drops revenue (under-pays, never over-pays): the
+	/// same trusted-key residual the design already accepts for those keys.
+	pub const DEFERRED_ESCROW_BLOCK_SHARE: Perbill = Perbill::from_parts(2_500_000);
 
 	/// Backed credits one debit took from one batch.
 	pub(crate) struct BackedTake {
@@ -3647,9 +3662,16 @@ pub mod pallet {
 				}
 			}
 			if !deferred.is_empty() {
-				let seq = PendingFrozenEscrowNext::<T>::get();
-				PendingFrozenEscrow::<T>::insert(seq, (window, deferred));
-				PendingFrozenEscrowNext::<T>::put(seq.saturating_add(1));
+				// One record when the debit walked no more than the 16 batches
+				// the billing weights are priced for; more only past that.
+				let mut seq = PendingFrozenEscrowNext::<T>::get();
+				for chunk in deferred.chunks(MAX_DEFERRED_PER_RECORD as usize) {
+					let entries: BoundedVec<_, ConstU32<MAX_DEFERRED_PER_RECORD>> =
+						BoundedVec::truncate_from(chunk.to_vec());
+					PendingFrozenEscrow::<T>::insert(seq, (window, entries));
+					seq = seq.saturating_add(1);
+				}
+				PendingFrozenEscrowNext::<T>::put(seq);
 			}
 			if charged > 0 {
 				Self::add_compute_charged(window, charged);
@@ -3818,7 +3840,7 @@ pub mod pallet {
 			let mut head = start;
 			let mut budget = MAX_DEFERRED_ESCROWS_PER_RUN;
 			while head < next && budget > 0 && meter.try_consume(per_record).is_ok() {
-				let Some((window, mut entries)) = PendingFrozenEscrow::<T>::get(head) else {
+				let Some((window, entries)) = PendingFrozenEscrow::<T>::get(head) else {
 					head = head.saturating_add(1);
 					continue;
 				};
@@ -3837,8 +3859,9 @@ pub mod pallet {
 					PendingFrozenEscrow::<T>::remove(head);
 					head = head.saturating_add(1);
 				} else {
-					entries.drain(..filed);
-					PendingFrozenEscrow::<T>::insert(head, (window, entries));
+					let rest: BoundedVec<_, ConstU32<MAX_DEFERRED_PER_RECORD>> =
+						BoundedVec::truncate_from(entries.into_inner().split_off(filed));
+					PendingFrozenEscrow::<T>::insert(head, (window, rest));
 					break;
 				}
 			}

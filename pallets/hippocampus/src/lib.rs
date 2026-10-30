@@ -1527,12 +1527,15 @@ pub mod pallet {
 		/// pruned windows refused.
 		pub(crate) fn prune_settlement(limit: Weight) -> Weight {
 			const MAX_STEPS_PER_RUN: u32 = 16;
+			// `DbWeight` carries no proof size: FRAME's unbounded-map allowance per
+			// key touched (deletions included, for their trie path).
+			const PROOF_PER_READ: u64 = 2_600;
 			let db = T::DbWeight::get();
 			let mut meter = frame_support::weights::WeightMeter::with_limit(limit);
 			// First and next window, in flight, the clock, the cursor (two)
 			// in, the cursor out (reserved first: removals and the cursor
 			// must move together).
-			if meter.try_consume(db.reads_writes(6, 2)).is_err() {
+			if meter.try_consume(db.reads_writes(6, 2).saturating_add(Weight::from_parts(0, 6 * PROOF_PER_READ))).is_err() {
 				return Weight::zero();
 			}
 			let Some(first) = FirstComputeWindow::<T>::get() else {
@@ -1546,9 +1549,9 @@ pub mod pallet {
 			let next = NextComputeWindow::<T>::get();
 			let in_flight = InFlightApproval::<T>::get().map(|(w, _)| w);
 			// The approval probe; approval, progress and seq removed.
-			let step = db.reads_writes(1, 3);
+			let step = db.reads_writes(1, 3).saturating_add(Weight::from_parts(0, 4 * PROOF_PER_READ));
 			// Window params, paid and last day removed.
-			let close = db.writes(3);
+			let close = db.writes(3).saturating_add(Weight::from_parts(0, 3 * PROOF_PER_READ));
 			for _ in 0..MAX_STEPS_PER_RUN {
 				let prunable = window < next
 					&& window.saturating_add(horizon) < today
