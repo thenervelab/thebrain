@@ -197,6 +197,26 @@ neutral; ops enables them via `ComputeScoringAdminOrigin` once ready:
 While a layer is OFF it is inert (the oracle/EMA still track, staking still
 works, but eligibility never blocks and no balance is ever burned).
 
+### Tier prices (alias period)
+
+Once `migrate_tier_prices` completes, per-tier prices (nvme / ssd / hdd)
+are authoritative and the legacy RU items are written aliases of the nvme
+tier (`MinerPrice = floor(TierPrice[Nvme] × k_den / k_num)`):
+
+- `PriceFloor` / `PriceCeiling` are synced to the RU range index 49
+  (`announce_price_change`) can actually announce under the nvme tier
+  bounds. The floor is the smallest RU price whose exact nvme preimage is
+  `≥` the nvme floor — with `k_num > k_den` this can be one above
+  `alias(nvme_floor)`. Both advertised bounds are announceable.
+- **Double event on an nvme announce.** Every nvme announcement (index 49
+  or index 57) emits `TierPriceChangeAnnounced { tier: Nvme, .. }` and then
+  the legacy RU mirror `PriceChangeAnnounced`, in the same extrinsic, for
+  RU-only consumers. They describe ONE announcement: an indexer subscribed
+  to both must count only one (e.g. skip the `PriceChangeAnnounced` that
+  follows a `TierPriceChangeAnnounced { tier: Nvme }` with the same
+  `node_id` and `effective_block`). `apply` likewise emits
+  `TierPriceChangeApplied` + `PriceChangeApplied` (and both `…Discarded`).
+
 ---
 
 ## The off-chain half

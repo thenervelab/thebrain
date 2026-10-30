@@ -4984,6 +4984,24 @@ mod tier_prices {
     }
 
     #[test]
+    fn migration_refuses_a_zero_limit() {
+        new_test_ext().execute_with(|| {
+            setup();
+            MinerPrice::<TestRuntime>::insert(NODE, 10_000);
+            set_all_tier_bounds(WIDE);
+            assert_noop!(
+                ComputeScoring::migrate_tier_prices(RuntimeOrigin::root(), 0),
+                Error::<TestRuntime>::InvalidMigrationLimit
+            );
+            assert_eq!(
+                TierMigrationCursor::<TestRuntime>::get(),
+                TierMigrationStatus::NotStarted
+            );
+            migrate_all();
+        });
+    }
+
+    #[test]
     fn migration_refused_twice() {
         new_test_ext().execute_with(|| {
             go_live();
@@ -5078,11 +5096,10 @@ mod tier_prices {
             // Nodes without a price get none.
             assert!(TierPrice::<TestRuntime>::get(NODE_B, DiskTier::Nvme).is_none());
             assert!(MinerPrice::<TestRuntime>::get(NODE_B).is_none());
-            // RU bounds reset to the image of the nvme bounds.
-            assert_eq!(
-                PriceFloor::<TestRuntime>::get(),
-                ComputeScoring::nvme_to_ru(WIDE.0)
-            );
+            // RU bounds reset to the announceable image of the nvme
+            // bounds: alias(1) = 0 has preimage 0 < 1, so the floor is 1.
+            assert_eq!(ComputeScoring::nvme_to_ru(WIDE.0), 0);
+            assert_eq!(PriceFloor::<TestRuntime>::get(), 1);
             assert_eq!(
                 PriceCeiling::<TestRuntime>::get(),
                 Some(ComputeScoring::nvme_to_ru(WIDE.1))
@@ -5155,6 +5172,65 @@ mod tier_prices {
                 Some(16_800)
             );
             assert!(PendingPriceChange::<TestRuntime>::get(NODE_C).is_none());
+        });
+    }
+
+    /// R13 through the migration: a pending decrease that the legacy
+    /// bounds suppress (due) or would discard at apply (not yet due) is
+    /// discarded, not carried and clamped onto the tier floor.
+    #[test]
+    fn migration_discards_an_out_of_bounds_pending_decrease() {
+        new_test_ext().execute_with(|| {
+            setup();
+            // Floor tightened to 9_000 after both decreases to 8_000.
+            assert_ok!(ComputeScoring::set_price_bounds(
+                RuntimeOrigin::root(),
+                9_000,
+                Some(1_000_000_000)
+            ));
+            let due = PriceChange {
+                new_price: 8_000u128,
+                effective_block: 1u64,
+            };
+            MinerPrice::<TestRuntime>::insert(NODE, 10_000);
+            PendingPriceChange::<TestRuntime>::insert(NODE, due);
+            MinerPrice::<TestRuntime>::insert(NODE_B, 10_000);
+            PendingPriceChange::<TestRuntime>::insert(
+                NODE_B,
+                PriceChange {
+                    new_price: 8_000u128,
+                    effective_block: 50u64,
+                },
+            );
+            // Legacy R13: the due pending is not the consumed price.
+            assert_eq!(ComputeScoring::effective_price(&NODE), Some(10_000));
+
+            // nvme floor = 9_000 × 7 / 5: 8_000 would clamp onto it.
+            set_all_tier_bounds((12_600, 1_000_000_000));
+            migrate_all();
+
+            for node in [NODE, NODE_B] {
+                for tier in DiskTier::ALL {
+                    assert!(pending(node, tier).is_none());
+                }
+                assert!(PendingPriceChange::<TestRuntime>::get(node).is_none());
+                assert_eq!(
+                    TierPrice::<TestRuntime>::get(node, DiskTier::Nvme),
+                    Some(14_000)
+                );
+                assert_eq!(MinerPrice::<TestRuntime>::get(node), Some(10_000));
+                System::assert_has_event(
+                    ComputeEvent::PendingPriceDiscarded {
+                        node_id: node,
+                        new_price: 8_000,
+                    }
+                    .into(),
+                );
+            }
+            // Still the base price, now and after the notice elapses.
+            System::set_block_number(100);
+            assert_eq!(ComputeScoring::effective_price(&NODE), Some(10_000));
+            assert_eq!(ComputeScoring::effective_price(&NODE_B), Some(10_000));
         });
     }
 
@@ -5359,6 +5435,102 @@ mod tier_prices {
         }
     }
 
+    /// Published ratio (k_num > k_den): after `set_tier_price_bounds(Nvme)`
+    /// the advertised RU floor and ceiling are announceable through index
+    /// 49, and one tick outside each is refused.
+    #[test]
+    fn spec_ratio_synced_ru_bounds_are_exactly_announceable() {
+        use crate::pallet::SPEC_TIER_PRICE_RATIOS;
+        new_test_ext().execute_with(|| {
+            mock_set_tier_ratios(SPEC_TIER_PRICE_RATIOS);
+            go_live();
+            assert_ok!(ComputeScoring::set_tier_price_bounds(
+                RuntimeOrigin::root(),
+                DiskTier::Nvme,
+                5_002,
+                21_000
+            ));
+            // alias(5_002) = 4_075 has smallest preimage 5_001 < 5_002.
+            assert_eq!(ComputeScoring::nvme_to_ru(5_002), 4_075);
+            assert_eq!(ComputeScoring::ru_to_nvme_exact(4_075), Some(5_001));
+            assert_eq!(ComputeScoring::ru_to_nvme_exact(4_076), Some(5_003));
+            assert_eq!(PriceFloor::<TestRuntime>::get(), 4_076);
+            assert_eq!(ComputeScoring::ru_to_nvme_exact(17_112), Some(21_000));
+            assert_eq!(PriceCeiling::<TestRuntime>::get(), Some(17_112));
+            assert_ok!(ComputeScoring::check_tier_alias());
+
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP), NODE, 4_075),
+                Error::<TestRuntime>::PriceOutOfBounds
+            );
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP),
+                NODE,
+                4_076
+            ));
+            assert_eq!(pending(NODE, DiskTier::Nvme), Some(5_003));
+            assert_noop!(
+                ComputeScoring::announce_price_change(RuntimeOrigin::signed(OP_B), NODE_B, 17_113),
+                Error::<TestRuntime>::PriceOutOfBounds
+            );
+            assert_ok!(ComputeScoring::announce_price_change(
+                RuntimeOrigin::signed(OP_B),
+                NODE_B,
+                17_112
+            ));
+            assert_eq!(pending(NODE_B, DiskTier::Nvme), Some(21_000));
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
+    /// Sweep of nvme floors under the published ratio: the synced RU
+    /// floor is always announceable and the price below it never is —
+    /// including the floors where it differs from `alias(nvme_floor)`.
+    #[test]
+    fn spec_ratio_synced_ru_floor_is_the_announceable_minimum() {
+        use crate::pallet::SPEC_TIER_PRICE_RATIOS;
+        new_test_ext().execute_with(|| {
+            mock_set_tier_ratios(SPEC_TIER_PRICE_RATIOS);
+            go_live();
+            let mut shifted = 0u32;
+            for tier_floor in 5_000u128..5_300 {
+                let mut node = [0xD0; 32];
+                node[..16].copy_from_slice(&tier_floor.to_le_bytes());
+                NodeIdToChild::<TestRuntime>::insert(node, OP);
+                assert_ok!(ComputeScoring::set_tier_price_bounds(
+                    RuntimeOrigin::root(),
+                    DiskTier::Nvme,
+                    tier_floor,
+                    21_000
+                ));
+                let floor = PriceFloor::<TestRuntime>::get();
+                if floor != ComputeScoring::nvme_to_ru(tier_floor) {
+                    shifted += 1;
+                }
+                // Tight: the RU price below has its preimage below the floor.
+                assert!(ComputeScoring::ru_to_nvme_exact(floor - 1).unwrap() < tier_floor);
+                // `assert_err!`, not `assert_noop!`: a storage-root per
+                // iteration is slow, and a refused call is rolled back.
+                frame_support::assert_err!(
+                    ComputeScoring::announce_price_change(
+                        RuntimeOrigin::signed(OP),
+                        node,
+                        floor - 1
+                    ),
+                    Error::<TestRuntime>::PriceOutOfBounds
+                );
+                assert_ok!(ComputeScoring::announce_price_change(
+                    RuntimeOrigin::signed(OP),
+                    node,
+                    floor
+                ));
+                assert!(pending(node, DiskTier::Nvme).unwrap() >= tier_floor);
+            }
+            assert!(shifted > 0, "the sweep must hit a shifted floor");
+            assert_ok!(ComputeScoring::check_tier_alias());
+        });
+    }
+
     #[test]
     fn index_49_refuses_a_price_the_alias_cannot_hold() {
         new_test_ext().execute_with(|| {
@@ -5473,7 +5645,11 @@ mod tier_prices {
                 4_932,
                 12_330
             ));
-            assert_eq!(PriceFloor::<TestRuntime>::get(), 3_522);
+            // alias(4_932) = 3_522, but its smallest preimage is
+            // 4_931 < 4_932: the announceable floor is 3_523.
+            assert_eq!(ComputeScoring::nvme_to_ru(4_932), 3_522);
+            assert_eq!(ComputeScoring::ru_to_nvme_exact(3_522), Some(4_931));
+            assert_eq!(PriceFloor::<TestRuntime>::get(), 3_523);
             assert_eq!(PriceCeiling::<TestRuntime>::get(), Some(8_807));
             assert_ok!(ComputeScoring::check_tier_alias());
             // A non-nvme tier leaves the RU bounds alone.

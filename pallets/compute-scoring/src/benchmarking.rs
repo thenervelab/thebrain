@@ -99,8 +99,7 @@ mod benches {
                 weight: 1_000,
             });
         }
-        let bounded: BoundedVec<_, T::MaxMinerStatusUpdatesPerCall> =
-            updates.try_into().unwrap();
+        let bounded: BoundedVec<_, T::MaxMinerStatusUpdatesPerCall> = updates.try_into().unwrap();
         #[extrinsic_call]
         _(RawOrigin::Root, retention + 2, bounded);
     }
@@ -169,12 +168,18 @@ mod benches {
         tier_bounds::<T>();
         TierMigrationCursor::<T>::put(TierMigrationStatus::Done);
         #[extrinsic_call]
-        _(origin as T::RuntimeOrigin, DiskTier::Nvme, 10u128, 1_000u128);
+        _(
+            origin as T::RuntimeOrigin,
+            DiskTier::Nvme,
+            10u128,
+            1_000u128,
+        );
         Ok(())
     }
 
-    /// `n` priced nodes with a pending decrease: alternately already due
-    /// (the legacy bounds are read) and not yet due (carried per tier).
+    /// `n` priced nodes with an in-bounds pending decrease: alternately
+    /// already due (taken as the price) and not yet due (carried per
+    /// tier). The legacy bounds are read for every pending.
     #[benchmark]
     fn migrate_tier_prices(n: Linear<1, 64>) -> Result<(), BenchmarkError> {
         let origin = T::ComputeScoringAdminOrigin::try_successful_origin()

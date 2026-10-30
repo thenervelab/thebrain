@@ -228,7 +228,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
     /// Base: cursor, 3 bounds, one key peek, cursor + legacy bounds
     ///   writes. Per node: NodeIdToChild key, MinerPrice,
-    ///   PendingPriceChange, PriceFloor + PriceCeiling (due pending),
+    ///   PendingPriceChange, PriceFloor + PriceCeiling (any pending),
     ///   PriceMagnitudeAnchor, LastPriceChangeBlock, 3 bounds, nvme
     ///   TierPrice + pending = 12 reads; per tier price,
     ///   anchor, pending, clock (×3) + MinerPrice + PendingPriceChange
