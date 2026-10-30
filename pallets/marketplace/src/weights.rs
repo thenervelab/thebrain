@@ -264,8 +264,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// `compute_row` plus the `AccountChargeCapOverride` read.
 	fn submit_compute_usage(n: u32) -> Weight {
 		Weight::from_parts(50_000_000, 2_000)
-			.saturating_add(RocksDbWeight::get().reads(6))
-			.saturating_add(RocksDbWeight::get().writes(5))
+			.saturating_add(RocksDbWeight::get().reads(7))
+			.saturating_add(RocksDbWeight::get().writes(6))
 			.saturating_add(submit_row().saturating_mul(n.into()))
 	}
 
@@ -352,8 +352,8 @@ impl WeightInfo for () {
 	/// `compute_row` plus the `AccountChargeCapOverride` read.
 	fn submit_compute_usage(n: u32) -> Weight {
 		Weight::from_parts(50_000_000, 2_000)
-			.saturating_add(RocksDbWeight::get().reads(6))
-			.saturating_add(RocksDbWeight::get().writes(5))
+			.saturating_add(RocksDbWeight::get().reads(7))
+			.saturating_add(RocksDbWeight::get().writes(6))
 			.saturating_add(submit_row().saturating_mul(n.into()))
 	}
 
@@ -410,14 +410,17 @@ impl WeightInfo for () {
 ///
 /// Compute revenue accumulator (marketplace v3), on top: one
 /// `BatchBackedCredits` read per batch drawn (16) and up to
-/// `MAX_FROZEN_ESCROWS_PER_DEBIT` (2) `FrozenComputeCharge` read-writes, plus
-/// 20µs. The window total and its prune cursor are one key each for the
-/// whole call (every row of a call is for the same period), so they sit in
-/// the calls' fixed part. A full 250-row call grows to ~0.97s.
+/// `MAX_FROZEN_ESCROWS_PER_DEBIT` (2) `FrozenComputeCharge` read-writes, one
+/// `PendingFrozenEscrow` record holding the escrow of every further frozen
+/// batch the debit drained (one write whatever their number), plus 20µs.
+/// The window total, its prune cursor and the deferred-escrow sequence are
+/// one key each for the whole call (every row of a call is for the same
+/// period), so they sit in the calls' fixed part. A full 250-row call grows
+/// to ~1.0s.
 fn compute_row() -> Weight {
 	Weight::from_parts(220_000_000, 66_000 + 18 * 2_600)
 		.saturating_add(RocksDbWeight::get().reads(28 + 16 + 2))
-		.saturating_add(RocksDbWeight::get().writes(24 + 2))
+		.saturating_add(RocksDbWeight::get().writes(24 + 2 + 1))
 }
 
 /// One `submit_compute_usage` / `submit_usage_v2` row: `compute_row` plus

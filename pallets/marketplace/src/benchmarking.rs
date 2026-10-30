@@ -162,6 +162,12 @@ const COMPUTE_ARREARS: u128 = 500;
 /// Amount of each line of a benchmarked `submit_usage_v2` row.
 const USAGE_LINE: u128 = 100;
 
+/// Credits in each fragmented frozen batch of `compute_debtor`: enough that
+/// its share of a debit counts at least one credit of compute revenue, and
+/// few enough that the 15 together stay below the smallest debit (the
+/// arrears alone), so every debit still reaches the funded batch.
+const FRAGMENT: u128 = 30;
+
 /// Every `UsageKind`, in index order.
 const ALL_USAGE_KINDS: [UsageKind; 12] = [
 	UsageKind::Compute,
@@ -236,20 +242,26 @@ fn compute_debtor<T: Config>(index: u32) -> T::AccountId {
 	let who: T::AccountId = account("compute", index, SEED);
 	let zero = BlockNumberFor::<T>::from(0u32);
 
+	// Fragmented card batches still inside their chargeback window, each
+	// backed and holding a little: the debit drains every one of them, so a
+	// `Compute` line escrows the first two directly and defers the rest.
+	let frozen_until = frame_system::Pallet::<T>::block_number()
+		.saturating_add(BlockNumberFor::<T>::from(1_000_000u32));
 	for _ in 1..COMPUTE_BENCH_BATCHES {
-		push_batch::<T>(
+		let id = push_batch::<T>(
 			&who,
 			Batch {
 				owner: who.clone(),
-				credit_amount: FUNDING,
-				alpha_amount: FUNDING,
-				remaining_credits: 0,
-				remaining_alpha: 0,
+				credit_amount: FRAGMENT,
+				alpha_amount: FRAGMENT,
+				remaining_credits: FRAGMENT,
+				remaining_alpha: FRAGMENT,
 				pending_alpha: 0,
-				is_frozen: false,
-				release_time: zero,
+				is_frozen: true,
+				release_time: frozen_until,
 			},
 		);
+		BatchBackedCredits::<T>::insert(id, FRAGMENT);
 	}
 	let funded = push_batch::<T>(
 		&who,

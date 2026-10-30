@@ -294,6 +294,67 @@ fn idle_blocks_release_unfrozen_escrow() {
 }
 
 #[test]
+fn a_debit_draining_many_frozen_batches_escrows_every_one() {
+	new_test_ext().execute_with(|| {
+		let a = account(10);
+		// Five fragmented card batches of 300 credits, fully backed.
+		let batches: Vec<u64> = (0..5).map(|_| deposit(&a, 300, 300, true)).collect();
+		// One hour of 1_400 drains four of them and part of the fifth.
+		submit_v2(PERIOD, vec![row(&a, &[(UsageKind::Compute, 1_400)], 1)]);
+		assert_eq!(charged(W), 0);
+		// The first two are escrowed at once, the other three deferred.
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[0], W), 300);
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[1], W), 300);
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[2], W), 0);
+		let (window, deferred) = pallet_marketplace::PendingFrozenEscrow::<Runtime>::get(0).unwrap();
+		assert_eq!(window, W);
+		assert_eq!(deferred, vec![(batches[2], 300), (batches[3], 300), (batches[4], 200)]);
+
+		// A chargeback of a deferred batch before it is filed drops its part.
+		assert_ok!(Marketplace::chargeback(RuntimeOrigin::root(), batches[4]));
+
+		let max = <Runtime as frame_system::Config>::BlockWeights::get().max_block;
+		Marketplace::on_idle(System::block_number(), max);
+		assert!(pallet_marketplace::PendingFrozenEscrow::<Runtime>::get(0).is_none());
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[2], W), 300);
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[3], W), 300);
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[4], W), 0);
+
+		// After the chargeback window every surviving batch's revenue counts.
+		let batch = pallet_marketplace::Batches::<Runtime>::get(batches[0]).unwrap();
+		System::set_block_number(batch.release_time);
+		for _ in 0..3 {
+			Marketplace::on_idle(System::block_number(), max);
+		}
+		assert_eq!(charged(W), 1_200);
+	});
+}
+
+#[test]
+fn deferred_escrow_is_filed_in_part_when_weight_is_short() {
+	new_test_ext().execute_with(|| {
+		let a = account(10);
+		let batches: Vec<u64> = (0..6).map(|_| deposit(&a, 100, 100, true)).collect();
+		submit_v2(PERIOD, vec![row(&a, &[(UsageKind::Compute, 600)], 1)]);
+		assert_eq!(pallet_marketplace::PendingFrozenEscrow::<Runtime>::get(0).unwrap().1.len(), 4);
+		// Room for the overhead, one record and two entries only.
+		let db = <Runtime as frame_system::Config>::DbWeight::get();
+		let proof = |r: u64| frame_support::weights::Weight::from_parts(0, 2_600 * r);
+		let limit = db.reads_writes(2, 1) + proof(2) + db.reads_writes(1, 1) + proof(1)
+			+ (db.reads_writes(2, 1) + proof(2)) * 2;
+		Marketplace::file_deferred_escrow(limit);
+		assert_eq!(pallet_marketplace::PendingFrozenEscrow::<Runtime>::get(0).unwrap().1.len(), 2);
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[2], W), 100);
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[3], W), 100);
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[4], W), 0);
+		let max = <Runtime as frame_system::Config>::BlockWeights::get().max_block;
+		Marketplace::on_idle(System::block_number(), max);
+		assert!(pallet_marketplace::PendingFrozenEscrow::<Runtime>::get(0).is_none());
+		assert_eq!(FrozenComputeCharge::<Runtime>::get(batches[5], W), 100);
+	});
+}
+
+#[test]
 fn a_chargeback_deletes_the_escrow() {
 	new_test_ext().execute_with(|| {
 		let a = account(10);
