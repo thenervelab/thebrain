@@ -54,6 +54,23 @@ pub trait ArionBenchmarkHelper<AccountId, Balance> {
 	fn prime_payout_source(requester: &AccountId, amount: Balance);
 	/// Make `ProxyVerifier::can_register_child(family, child)` return true.
 	fn authorize_child(family: &AccountId, child: &AccountId);
+	/// Fund `family`, bond it and nominate, so settlement takes the heavier
+	/// `bond_extra` branch (a family already staking) *and* the bags-list rebag
+	/// a nominating family drives, rather than the first-time `bond` on a
+	/// non-voter. Needs balances and staking, which only the runtime has
+	/// concretely. Without it the settlement hook's declared weight — mandatory
+	/// in `on_initialize` — is measured short.
+	fn prebond_family(family: &AccountId, amount: Balance);
+}
+
+/// No-op helper so mocks and non-benchmarking runtimes can set
+/// `type BenchmarkHelper = ()`.
+#[cfg(feature = "runtime-benchmarks")]
+impl<AccountId, Balance> ArionBenchmarkHelper<AccountId, Balance> for () {
+	fn set_token_price(_: u128) {}
+	fn prime_payout_source(_: &AccountId, _: Balance) {}
+	fn authorize_child(_: &AccountId, _: &AccountId) {}
+	fn prebond_family(_: &AccountId, _: Balance) {}
 }
 
 #[frame_support::pallet]

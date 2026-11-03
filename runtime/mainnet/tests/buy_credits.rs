@@ -442,6 +442,61 @@ fn at_the_batch_cap_without_a_purchase_batch_refuses() {
 	});
 }
 
+/// At the cap, a purchase whose batch was fully spent and pruned still goes
+/// through: its pointer survived the prune, so `buy_credits` re-appends the
+/// batch and tops it up rather than failing with `TooManyBatches`. The list
+/// passes the cap here, exactly as sudo deposits already let it. (PR #62
+/// review: `main` topped up; the pointer-clearing fix regressed this.)
+#[test]
+fn at_the_batch_cap_a_pruned_purchase_batch_is_revived() {
+	new_test_ext().execute_with(|| {
+		let cap = MaxBatchesPerBuyer::get();
+
+		// A purchase batch (oldest), then enough backend deposits to fill the
+		// cap behind it — deposits are not bounded by the cap.
+		assert_ok!(buy(ALPHA, 0));
+		let purchase = NextBatchId::<Runtime>::get() - 1;
+		assert_eq!(LastPurchaseBatch::<Runtime>::get(buyer()), Some(purchase));
+		backend_deposit(cap);
+
+		// Spend the purchase batch exactly: being the oldest, the debit takes it
+		// and stops before the deposits. It is pruned from the list; the deposits
+		// stay — holding the account at the cap — and the pointer survives.
+		assert_ok!(Marketplace::consume_credits(buyer(), credits_for(ALPHA)));
+		let ids = UserBatches::<Runtime>::get(buyer()).unwrap();
+		assert!(!ids.contains(&purchase), "the spent purchase batch was pruned");
+		assert_eq!(ids.len() as u32, cap, "the deposits hold the account at the cap");
+		assert_eq!(LastPurchaseBatch::<Runtime>::get(buyer()), Some(purchase));
+		System::reset_events();
+
+		// At the cap: the purchase is re-filed and topped up, not refused.
+		let added = credits_for(ALPHA);
+		let next_before = NextBatchId::<Runtime>::get();
+		assert_ok!(buy(ALPHA, 0));
+
+		assert_eq!(NextBatchId::<Runtime>::get(), next_before, "no new batch opened");
+		let ids = UserBatches::<Runtime>::get(buyer()).unwrap();
+		assert!(ids.contains(&purchase), "the pruned batch is back in the list");
+		assert_eq!(ids.len() as u32, cap + 1, "re-filing passes the cap, as deposits do");
+		let batch = Batches::<Runtime>::get(purchase).unwrap();
+		assert_eq!(batch.remaining_credits, added, "the revived batch holds the new credits");
+		assert!(!batch.is_frozen);
+		assert_eq!(
+			marketplace_events(),
+			vec![
+				MarketplaceEvent::BatchDeposited { owner: buyer(), batch_id: purchase },
+				MarketplaceEvent::CreditsBought {
+					who: buyer(),
+					alpha_amount: ALPHA,
+					credit_amount: added,
+					batch_id: purchase,
+					alpha_price: PRICE,
+				},
+			]
+		);
+	});
+}
+
 #[test]
 fn non_transfer_proxy_cannot_buy_credits() {
 	let call = RuntimeCall::Marketplace(pallet_marketplace::Call::buy_credits {

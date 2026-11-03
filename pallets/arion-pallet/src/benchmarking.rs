@@ -1,10 +1,10 @@
-//! Benchmarks for the arion fund-moving paths.
+//! Benchmarks for the arion fund-moving and miner-payment paths.
 //!
 //! The headline entry is `miner_payment_settlement_hook`. It is the
 //! `on_initialize` settlement tick, not an extrinsic, so it is measured with
 //! `#[block]` over the internal `settle_miner_payments` rather than being given
 //! a benchmark-only dispatch entry. It is posed at its worst case across the
-//! three dimensions its declared weight now takes (#79):
+//! three dimensions its declared weight takes (#79):
 //!
 //! - `c` active children up to `MaxChildrenTotal`, seeded across `FamilyChildren`
 //!   with a payable accrual each, so the per-child accrue/convert loop runs in full;
@@ -13,7 +13,15 @@
 //! - `d` departed families up to `MaxDepartedPayoutsPerBlock`, each owed the max the
 //!   ledger holds, so the bounded departed-payout page runs in full.
 //!
-//! The payout source is primed generously (`BenchmarkHelper::prime_payout_source`)
+//! Every family that is *paid* (children-families and arrears-families, but not
+//! the departed ones, which are paid in free balance) is pre-bonded and
+//! nominated first, so settlement takes the heavier `bond_extra` branch *and*
+//! the bags-list rebag a nominating family drives — the shape every settlement
+//! after the first one meets — rather than the cheaper first-time `bond`. Without
+//! this the hook's declared weight, mandatory in `on_initialize`, is measured
+//! short.
+//!
+//! The payout source is primed generously (`ArionBenchmarkHelper::prime_payout_source`)
 //! so every payment *succeeds*: a successful payout is the worst case — it writes
 //! the staking bond and emits `FamilyPaid`, where a refused one would `continue`
 //! and touch less. The token price feed is set the same way so settlement does not
@@ -26,6 +34,10 @@
 //! The other two seed an active / unbonding child directly rather than going
 //! through `register_child`, so the measured block is only the call under test.
 //!
+//! `submit_miner_stats` is measured per update with every uid claimed, so each
+//! update takes the accrual path as well as the stats write. `set_miner_price`
+//! is the single price write.
+//!
 //! Run (see the module-level runbook the PR links):
 //!
 //! ```text
@@ -33,7 +45,7 @@
 //! ./target/release/hippius benchmark pallet \
 //!     --chain dev \
 //!     --pallet pallet_arion \
-//!     --extrinsic 'miner_payment_settlement_hook,register_child,deregister_child,claim_unbonded' \
+//!     --extrinsic 'miner_payment_settlement_hook,register_child,deregister_child,claim_unbonded,submit_miner_stats,set_miner_price' \
 //!     --steps 50 --repeat 20 \
 //!     --output pallets/arion-pallet/src/weights.rs
 //! ```
@@ -42,10 +54,10 @@
 
 use super::*;
 use frame_benchmarking::v2::*;
-use frame_support::traits::{Currency, ReservableCurrency};
+use frame_support::traits::{Currency, EnsureOrigin, ReservableCurrency};
 use frame_system::RawOrigin;
 use sp_core::crypto::KeyTypeId;
-use sp_runtime::{traits::SaturatedConversion, traits::Zero};
+use sp_runtime::traits::{SaturatedConversion, Zero};
 use sp_std::vec;
 
 /// Keystore key type used only to produce a valid node signature in the
@@ -63,19 +75,65 @@ type BalanceOf<T> = <<T as Config>::DepositCurrency as Currency<
 /// sanely-sized token payout given the prices set below (~1 token/child).
 const BYTE_BLOCKS: u128 = 1_000_000_000;
 
+/// 1.0 in the pallet's 18-decimal fixed point.
+const E18: u128 = 1_000_000_000_000_000_000;
+
 /// Prices in USD fixed-point (18 decimals): 1 USD/GiB/block, 1 USD/token.
-const PRICE_USD_PER_GB_BLOCK: u128 = 1_000_000_000_000_000_000;
-const TOKEN_PRICE_USD: u128 = 1_000_000_000_000_000_000;
+const PRICE_USD_PER_GB_BLOCK: u128 = E18;
+const TOKEN_PRICE_USD: u128 = E18;
 
 /// Per-family arrears / departed debt seeded on each row (1 token).
-const OWED: u128 = 1_000_000_000_000_000_000;
+const OWED: u128 = E18;
 
 /// Deposit forced on the paid `register_child` path.
 const DEPOSIT: u128 = 1_000_000_000_000;
 
+/// Raw shard bytes each seeded miner holds in the stats benchmark: one GiB.
+const SHARD_BYTES: u128 = 1 << 30;
+
+/// Blocks between the seeded accruals and the stats update.
+const ELAPSED: u32 = 1_000;
+
+/// Validator-observed stats for the `submit_miner_stats` benchmark.
+fn stats(bucket: u32) -> MinerStats {
+	MinerStats {
+		shard_count: 1_000,
+		shard_data_bytes: SHARD_BYTES,
+		strikes: 0,
+		last_seen_bucket: bucket,
+		bandwidth_bytes: 1_000_000,
+		integrity_fails: 0,
+	}
+}
+
+/// Claim `uid` for a fresh child of `family`, with stats and an accrual
+/// starting at `since`. Used by the stats benchmark.
+fn seed_miner<T: Config>(uid: u32, family: &T::AccountId, since: BlockNumberFor<T>) {
+	let child: T::AccountId = account("child", uid, SEED);
+	let mut node_id = [0u8; 32];
+	node_id[..4].copy_from_slice(&uid.to_le_bytes());
+	ChildRegistrations::<T>::insert(
+		&child,
+		ChildRegistration {
+			family: family.clone(),
+			node_id,
+			status: ChildStatus::Active,
+			deposit: 0u32.into(),
+			unbonding_end: 0u32.into(),
+		},
+	);
+	ChildMinerUid::<T>::insert(&child, uid);
+	MinerUidToChild::<T>::insert(uid, &child);
+	MinerStatsByUid::<T>::insert(uid, stats(0));
+	MinerAccruals::<T>::insert(uid, MinerAccrual { byte_blocks: 0, last_block: since });
+}
+
 /// Seed the full settlement worst case: `c` active children (grouped into
 /// families of `MaxChildrenPerFamily`), `f` arrears-carrying families, and `d`
-/// departed families owed the ledger max. Returns the block to settle at.
+/// departed families owed the ledger max. Every paid family (children-families
+/// and arrears-families, not the departed ones) is pre-bonded and nominated so
+/// settlement takes the heavier `bond_extra` + bags-rebag branch. Returns the
+/// block to settle at.
 fn seed_settlement<T: Config>(c: u32, f: u32, d: u32) -> BlockNumberFor<T> {
 	let now: BlockNumberFor<T> = 1_000u32.into();
 	frame_system::Pallet::<T>::set_block_number(now);
@@ -90,6 +148,10 @@ fn seed_settlement<T: Config>(c: u32, f: u32, d: u32) -> BlockNumberFor<T> {
 	let pool: BalanceOf<T> =
 		1_000_000_000_000_000_000_000_000_000_000u128.saturated_into(); // 1e30
 	T::BenchmarkHelper::prime_payout_source(&requester, pool);
+
+	// Amount to open each family's staking ledger with, so the payout bonds via
+	// the heavier `bond_extra` branch rather than a first-time `bond`.
+	let prebond: BalanceOf<T> = OWED.saturated_into();
 
 	// `c` active children, grouped into families at the per-family cap.
 	let per_family = T::MaxChildrenPerFamily::get().max(1);
@@ -121,13 +183,23 @@ fn seed_settlement<T: Config>(c: u32, f: u32, d: u32) -> BlockNumberFor<T> {
 	}
 	TotalActiveChildren::<T>::put(c);
 
-	// `f` families carrying arrears: each becomes a payout-loop entry.
+	// Pre-bond every children-family, so its accrual payout takes `bond_extra`.
+	let child_families = c.saturating_add(per_family - 1) / per_family; // ceil(c / per_family)
+	for fam_idx in 0..child_families {
+		let family: T::AccountId = account("settle_fam", fam_idx, SEED);
+		T::BenchmarkHelper::prebond_family(&family, prebond);
+	}
+
+	// `f` families carrying arrears: each becomes a payout-loop entry, pre-bonded
+	// so its arrears payout also takes `bond_extra`.
 	for j in 0..f {
 		let family: T::AccountId = account("arrears_fam", j, SEED);
 		FamilyArrears::<T>::insert(&family, OWED);
+		T::BenchmarkHelper::prebond_family(&family, prebond);
 	}
 
-	// `d` departed families owed the ledger max (bounded payout page).
+	// `d` departed families owed the ledger max (bounded payout page). Departed
+	// families are paid in free balance (no bond), so they are not pre-bonded.
 	for k in 0..d {
 		let family: T::AccountId = account("departed_fam", k, SEED);
 		DepartedFamilyArrears::<T>::insert(&family, OWED);
@@ -142,8 +214,8 @@ mod benchmarks {
 	use super::*;
 
 	/// Worst-case settlement tick: accrue every active child, pay + bond every
-	/// family, and drain a full departed-payout page. Ranges over all three
-	/// dimensions the declared weight takes.
+	/// family (on the heavier `bond_extra` path), and drain a full departed-payout
+	/// page. Ranges over all three dimensions the declared weight takes.
 	#[benchmark]
 	fn miner_payment_settlement_hook(
 		c: Linear<0, { T::MaxChildrenTotal::get() }>,
@@ -151,6 +223,15 @@ mod benchmarks {
 		d: Linear<0, { T::MaxDepartedPayoutsPerBlock::get() }>,
 	) {
 		let now = seed_settlement::<T>(c, f, d);
+
+		// Every arrears-family was pre-bonded, so its payout takes `bond_extra`.
+		if f > 0 {
+			let family: T::AccountId = account("arrears_fam", 0u32, SEED);
+			assert!(
+				T::Staking::stake(&family).is_ok(),
+				"arrears families are pre-bonded, so settlement takes bond_extra"
+			);
+		}
 
 		#[block]
 		{
@@ -270,5 +351,46 @@ mod benchmarks {
 		_(RawOrigin::Signed(family.clone()), child.clone());
 
 		assert!(!ChildRegistrations::<T>::contains_key(&child));
+	}
+
+	/// Each update claims a uid and takes the accrual path as well as the stats
+	/// write, ranged over `n` updates in the batch.
+	#[benchmark]
+	fn submit_miner_stats(n: Linear<1, { T::MaxStatsUpdates::get() }>) -> Result<(), BenchmarkError> {
+		let origin = T::StatsAuthorityOrigin::try_successful_origin()
+			.map_err(|_| BenchmarkError::Weightless)?;
+		let family: T::AccountId = account("family", 0, SEED);
+		for uid in 1..=n {
+			seed_miner::<T>(uid, &family, 1u32.into());
+		}
+		frame_system::Pallet::<T>::set_block_number((1 + ELAPSED).into());
+
+		let bucket = CurrentStatsBucket::<T>::get().saturating_add(1);
+		let updates: BoundedVec<MinerStatsUpdate, T::MaxStatsUpdates> = (1..=n)
+			.map(|uid| MinerStatsUpdate { uid, stats: stats(bucket) })
+			.collect::<Vec<_>>()
+			.try_into()
+			.map_err(|_| BenchmarkError::Weightless)?;
+
+		#[extrinsic_call]
+		_(origin as T::RuntimeOrigin, bucket, updates, Some(NetworkTotals::default()));
+
+		assert_eq!(CurrentStatsBucket::<T>::get(), bucket);
+		let accrued = MinerAccruals::<T>::get(n).map(|a| a.byte_blocks).unwrap_or(0);
+		assert_eq!(accrued, SHARD_BYTES * u128::from(ELAPSED), "the update took the accrual path");
+		Ok(())
+	}
+
+	/// Single price write.
+	#[benchmark]
+	fn set_miner_price() -> Result<(), BenchmarkError> {
+		let origin = T::ArionAdminOrigin::try_successful_origin()
+			.map_err(|_| BenchmarkError::Weightless)?;
+
+		#[extrinsic_call]
+		_(origin as T::RuntimeOrigin, E18);
+
+		assert_eq!(MinerPriceUsdPerGbBlock::<T>::get(), E18);
+		Ok(())
 	}
 }

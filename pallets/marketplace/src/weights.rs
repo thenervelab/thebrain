@@ -13,19 +13,22 @@
 //! means a wrong number here costs throughput (accounts wait for the next
 //! tick), never a block that overruns.
 //!
-//! `charge_account_due` is measured. Re-measure it whenever the charge path
-//! gains or loses storage access:
+//! `charge_account_due` and `hourly_charge` are measured — the two charges the
+//! billing hooks reserve per account, one on the monthly drain and one on the
+//! hourly sweep. Re-measure them whenever a charge path gains or loses storage
+//! access:
 //!
 //! ```text
 //! cargo build --release --bin hippius --features hippius/runtime-benchmarks
 //! ./target/release/hippius benchmark pallet \
 //!     --chain benchmark \
 //!     --pallet pallet_marketplace \
-//!     --extrinsic charge_account_due \
+//!     --extrinsic 'charge_account_due,hourly_charge' \
 //!     --steps 50 --repeat 20
 //! ```
 //!
-//! The remaining three are single storage operations and stay as estimates.
+//! The remaining single-storage-operation units (`hourly_probe`,
+//! `backfill_account`, `drain_overhead`, `day_probe`) stay as estimates.
 //!
 //! The two feeless compute billing calls, `submit_compute_usage` and
 //! `settle_compute_arrears`, are the exception to "not a weight table for the
@@ -80,8 +83,10 @@ pub trait WeightInfo {
 	/// this is the cost that grows with the chain's whole deposit history.
 	fn alpha_release_probe() -> Weight;
 
-	/// The *additional* cost of actually releasing one matured batch.
-	fn alpha_release() -> Weight;
+	/// The *additional* cost of actually releasing one matured batch. When the
+	/// release leaves the batch spent, the owner's batch list (`n` ids, bounded
+	/// by `MaxBatchesPerBuyer`) is rewritten whole, so `n` sizes that proof.
+	fn alpha_release(n: u32) -> Weight;
 
 	/// `submit_compute_usage` carrying `n` rows, every one of them posed at
 	/// the most expensive path a row can take.
@@ -106,53 +111,22 @@ pub trait WeightInfo {
 
 /// Weights for `pallet-marketplace` using the Substrate node's RocksDB weights.
 ///
-/// `charge_account_due` is **measured**; the other three remain conservative
-/// estimates of single storage operations, where any measurement would sit
-/// inside the rounding.
+/// `charge_account_due` and `hourly_charge` are **measured**; the remaining
+/// single-storage-operation units stay conservative estimates, where any
+/// measurement would sit inside the rounding.
 pub struct SubstrateWeight<T>(PhantomData<T>);
 
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-	/// Measured: 526.9µs, 7 reads, 21 writes, 1341 bytes of proof.
-	///
-	/// `hippius benchmark pallet --chain dev --pallet pallet_marketplace
-	/// --extrinsic charge_account_due`, against an account holding
-	/// `MaxActiveSubscriptions` subscriptions, all due, all payable, and far
-	/// enough in arrears that the catch-up loop runs its full
-	/// `max_catchup_months`.
-	///
-	/// The arrears are why this figure nearly doubled. The first measurement
-	/// posed the account merely *due*, which charges one cycle and pushes the
-	/// due date a month out, so the catch-up loop broke after a single pass:
-	/// 156.2µs / 7r / 11w, about 1.43ms all in. But the drain charges this flat
-	/// figure for an account whose loop may run three times, and the arrears
-	/// case is not exotic — it is exactly what a chain meets on the tick after
-	/// downtime, when the drain is busiest. Posed that way the same account
-	/// costs 2.80ms, with `PointTransactions` alone taking 15 writes
-	/// (`MaxActiveSubscriptions` × `max_catchup_months`) instead of 5.
-	///
-	/// The old number was therefore about half of the real worst case, in the
-	/// direction that lets a block run heavy. The cost of fixing it is
-	/// throughput: the meter now charges 2.80ms for *every* account, including
-	/// the steady-state ones that only ever cost ~1.43ms, so a tick admits
-	/// roughly 35 accounts rather than 69. That is the price of a bound that
-	/// holds in the case it exists for.
-	///
-	/// Carrying one read and one write over the measurement, pending a
-	/// re-measure: `commit_subscriptions` now reads `DueDayCursor` to clamp its
-	/// re-file, and re-files an arrears account on the cursor's own day where
-	/// the day-diff would have skipped the write. Added rather than folded into
-	/// the µs figure so the measured part stays the measured part, and in the
-	/// conservative direction either way.
-	///
-	/// Also carrying, on the same terms, the per-subscription renewal events
-	/// (`SubscriptionRenewed` / `SubscriptionRenewalFailed`) added after the
-	/// measurement: one per subscription per cycle, 15 in the measured case,
-	/// at 10µs each.
+	/// Measured (worst case: full MaxBatchesPerBuyer spent-batch list + referred
+	/// account paying through the bank, with the funder matured while frozen,
+	/// alpha pending and partly unbacked, so the debit takes the unfreeze branch
+	/// — `AlphaBalances`, `UnbackedBatchAlpha`, `TotalUndistributedBacking`).
+	/// 2026-10-27, steps 50 / repeat 20, on a dedicated Hippius benchmark VM
+	/// (AMD EPYC 7543 32-Core Processor).
 	fn charge_account_due() -> Weight {
-		Weight::from_parts(526_900_000, 1341)
-			.saturating_add(Weight::from_parts(150_000_000, 0))
-			.saturating_add(RocksDbWeight::get().reads(8))
-			.saturating_add(RocksDbWeight::get().writes(22))
+		Weight::from_parts(790_121_000, 4436)
+			.saturating_add(RocksDbWeight::get().reads(37))
+			.saturating_add(RocksDbWeight::get().writes(25))
 	}
 
 	/// Read the account's subscriptions once, then one index write per
@@ -189,12 +163,24 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(RocksDbWeight::get().writes(1))
 	}
 
-	/// Estimated: the 13 reads and 11 writes a *charged* user cost in that same
-	/// accounting, on top of the probe.
+	/// The *additional* cost when a user does owe something, on top of the
+	/// probe: the per-GiB debit (`consume_credits`), the referral accrual, the
+	/// transaction record and the last-charged marker.
+	///
+	/// Measured by `hourly_charge` in `benchmarking.rs`, posed at the debit's
+	/// worst case — a full `MaxBatchesPerBuyer` spent-batch list the charge
+	/// walks and prunes, behind one funding batch it drains, with a referred
+	/// user so the commission accrual writes, and the funder maturing while
+	/// frozen with alpha pending and partly unbacked so the drain also takes the
+	/// unfreeze branch. 2026-10-27, steps 50 / repeat 20, on the same VM as
+	/// `charge_account_due` (AMD EPYC 7543). The 26 reads are dominated by the
+	/// batch walk (`Batches` r:16 at the benchmark cap); the price and credit
+	/// reads the sweep does before this point are counted by `hourly_probe` and
+	/// the loop's `past_gate` reserve, not here.
 	fn hourly_charge() -> Weight {
-		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(13))
-			.saturating_add(RocksDbWeight::get().writes(11))
+		Weight::from_parts(138_483_000, 3279)
+			.saturating_add(RocksDbWeight::get().reads(26))
+			.saturating_add(RocksDbWeight::get().writes(10))
 	}
 
 	/// Estimated: one map read, which is what the skip path costs.
@@ -202,11 +188,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(1))
 	}
 
-	/// Estimated: the alpha balance, the backing tally and the batch row.
-	fn alpha_release() -> Weight {
+	/// Estimated: the alpha balance, the backing tally and the batch row,
+	/// plus — when the release leaves the batch spent — the owner's batch list,
+	/// read and rewritten (the extra reads/writes are slack). The list is
+	/// rewritten whole (`retain`), so its full bounded length (`n` ids, 16 bytes
+	/// of proof each) is charged on top of that single access, as in
+	/// `chargeback`.
+	fn alpha_release(n: u32) -> Weight {
 		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(2))
-			.saturating_add(RocksDbWeight::get().writes(4))
+			.saturating_add(RocksDbWeight::get().reads(4))
+			.saturating_add(RocksDbWeight::get().writes(6))
+			.saturating_add(Weight::from_parts(0, 16u64.saturating_mul(n as u64)))
 	}
 
 	/// Estimated, pending a benchmark run — see `compute_row`.
@@ -291,10 +283,11 @@ impl WeightInfo for () {
 		Weight::from_parts(0, 0).saturating_add(RocksDbWeight::get().reads(1))
 	}
 
-	fn alpha_release() -> Weight {
+	fn alpha_release(n: u32) -> Weight {
 		Weight::from_parts(0, 0)
-			.saturating_add(RocksDbWeight::get().reads(2))
-			.saturating_add(RocksDbWeight::get().writes(4))
+			.saturating_add(RocksDbWeight::get().reads(4))
+			.saturating_add(RocksDbWeight::get().writes(6))
+			.saturating_add(Weight::from_parts(0, 16u64.saturating_mul(n as u64)))
 	}
 
 	/// Estimated, pending a benchmark run — see `compute_row`.

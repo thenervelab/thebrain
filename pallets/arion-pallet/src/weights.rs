@@ -1,12 +1,19 @@
 //! Weights for `pallet_arion`.
 //!
-//! The fund-moving paths are MEASURED with frame-benchmarking:
-//! `miner_payment_settlement_hook`, `register_child`, `deregister_child` and
-//! `claim_unbonded`. The remaining entries are still conservative hand-written
-//! estimates (single storage ops or paths without a benchmark yet).
+//! The fund-moving and miner-payment paths are MEASURED with frame-benchmarking:
+//! `miner_payment_settlement_hook`, `register_child`, `deregister_child`,
+//! `claim_unbonded`, `submit_miner_stats` and `set_miner_price`. The remaining
+//! entries are still conservative hand-written estimates (single storage ops or
+//! paths without a benchmark yet).
 //!
 //! Measured on: AMD EPYC 9255 24-Core Processor, WASM `Compiled`,
 //! chain `benchmark`, STEPS: `50`, REPEAT: `20`, DATE: 2026-10-29.
+//!
+//! `miner_payment_settlement_hook`'s per-child (`c`) and per-family (`f`) terms
+//! are the `bond_extra` + bags-rebag figures measured on `main` (2026-10-27);
+//! the departed-payout (`d`) term is the #79 measurement, which is bond-path
+//! independent (departed families are paid in free balance, no bond) and so
+//! unaffected by the `bond_extra` change. See the note on the function itself.
 //!
 //! To re-measure (on reference hardware):
 //! ```bash
@@ -14,7 +21,7 @@
 //! ./target/release/hippius benchmark pallet \
 //!     --chain benchmark \
 //!     --pallet pallet_arion \
-//!     --extrinsic 'miner_payment_settlement_hook,register_child,deregister_child,claim_unbonded' \
+//!     --extrinsic 'miner_payment_settlement_hook,register_child,deregister_child,claim_unbonded,submit_miner_stats,set_miner_price' \
 //!     --steps 50 --repeat 20 \
 //!     --output /tmp/arion_weights.rs
 //! ```
@@ -101,20 +108,21 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().writes(7u64.saturating_mul(n.into())))
     }
 
-    /// Storage: Arion LastStatsBucket (r:1 w:1)
-    /// Storage: Arion MinerStats (r:n w:n) — read for payment accrual, then overwritten
-    /// Storage: Arion MinerAccruals (r:n w:n)
-    /// Storage: Arion TotalShards (r:1 w:1)
-    /// Storage: Arion TotalBandwidthBytes (r:1 w:1)
+    /// **Measured** (`benchmarking.rs`, steps 50, repeat 20, every uid
+    /// claimed so each update takes the accrual path).
+    ///
+    /// Storage: `Arion::CurrentStatsBucket` (r:1 w:1)
+    /// Storage: `Arion::MinerUidToChild` (r:n) — the claim check
+    /// Storage: `Arion::MinerStatsByUid` (r:n w:n) — read for accrual, then overwritten
+    /// Storage: `Arion::MinerAccruals` (r:n w:n)
+    /// Storage: `Arion::CurrentNetworkTotals` (w:1)
     fn submit_miner_stats(n: u32) -> Weight {
-        // Base: read/write aggregate state
-        // Per miner: accrue byte-blocks + write stats entry
-        Weight::from_parts(15_000_000, 0)
-            .saturating_add(Weight::from_parts(2_000_000, 0).saturating_mul(n.into()))
-            .saturating_add(T::DbWeight::get().reads(3))
-            .saturating_add(T::DbWeight::get().writes(3))
-            .saturating_add(T::DbWeight::get().reads((n as u64).saturating_mul(2)))
-            .saturating_add(T::DbWeight::get().writes((n as u64).saturating_mul(2)))
+        Weight::from_parts(11_911_721, 1703)
+            .saturating_add(Weight::from_parts(11_042_655, 2650).saturating_mul(n.into()))
+            .saturating_add(T::DbWeight::get().reads(1))
+            .saturating_add(T::DbWeight::get().reads((3_u64).saturating_mul(n.into())))
+            .saturating_add(T::DbWeight::get().writes(2))
+            .saturating_add(T::DbWeight::get().writes((2_u64).saturating_mul(n.into())))
     }
 
     /// Storage: Arion CurrentWeightBucket (r:1 w:1)
@@ -301,40 +309,49 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(T::DbWeight::get().writes(scan))
     }
 
-    /// Storage: Arion MinerPriceUsdPerGbBlock (r:0 w:1)
+    /// **Measured.** Storage: `Arion::MinerPriceUsdPerGbBlock` (w:1)
     fn set_miner_price() -> Weight {
-        Weight::from_parts(10_000_000, 0).saturating_add(T::DbWeight::get().writes(1))
+        Weight::from_parts(5_940_000, 0).saturating_add(T::DbWeight::get().writes(1))
     }
 
-    /// Measured over `c` active children, `f` families paid + bonded, and `d`
-    /// departed-family payouts. `d` carries no per-unit ref-time term — within
-    /// standard error its cost is in the reads/writes alone. The per-family
-    /// term (`f`) dominates: it pays the bank, bonds the payout as stake, and
-    /// touches the staking ledger. See the module header for the run details.
+    /// **Measured.** Every child payable, every family carrying arrears, the bank
+    /// paying in full into fresh accounts and each payout taking a `bond_extra` —
+    /// the heavier branch families take from the second settlement on, posed by
+    /// pre-bonding and nominating every paid family in the benchmark setup.
+    ///
+    /// Per child (4 r, 1 w): `ChildRegistrations`, `ChildMinerUid`,
+    /// `MinerStatsByUid` reads and a `MinerAccruals` r/w. Per family (8 r, 5 w):
+    /// `FamilyArrears` r/w, the bank transfer (`System::Account` r/w), and the
+    /// `bond_extra` — `Staking::Bonded`, `VirtualStakers`, `Balances::Freezes`
+    /// reads plus `Staking::Ledger`, `Balances::Locks` and the nominating
+    /// family's `BagsList::ListNodes` rebag, all r/w. Fixed: the two prices, the
+    /// bank's reserve ledgers and requester checks, its payout totals, the
+    /// bags-list bag headers, `LastSettlementBlock`.
+    ///
+    /// The `c` and `f` terms are the values measured on `main` (2026-10-27, steps
+    /// 50 / repeat 20, dedicated Hippius benchmark VM, AMD EPYC 7543 32-Core
+    /// Processor). At the runtime's caps (1_000 children, 600 families) the
+    /// active-settlement part is ~148.4ms of execution plus 8_853 reads and
+    /// 4_041 writes, once per settlement interval.
+    ///
+    /// The `d` term is the bounded departed-family payout page (#79): free-balance
+    /// transfers with no bond, so it is independent of the `bond_extra` change —
+    /// 2 r/w and a proof-size slice per paid departed family, with no per-unit
+    /// ref-time term (within standard error its cost is in the reads/writes).
     /// Range: `c ∈ [0, 1000]`, `f ∈ [0, 600]`, `d ∈ [0, 10]`.
     fn miner_payment_settlement_hook(
         max_children_total: u32,
         max_families: u32,
         max_departed: u32,
     ) -> Weight {
-        // Minimum execution time: 19_008_961_000 picoseconds.
-        Weight::from_parts(19_046_116_000, 0)
-            .saturating_add(Weight::from_parts(0, 7497))
-            // Standard Error: 160_383
-            .saturating_add(Weight::from_parts(9_993_349, 0).saturating_mul(max_children_total.into()))
-            // Standard Error: 267_250
-            .saturating_add(Weight::from_parts(71_131_128, 0).saturating_mul(max_families.into()))
-            .saturating_add(T::DbWeight::get().reads(21))
-            .saturating_add(T::DbWeight::get().reads((4_u64).saturating_mul(max_children_total.into())))
-            .saturating_add(T::DbWeight::get().reads((7_u64).saturating_mul(max_families.into())))
-            .saturating_add(T::DbWeight::get().reads((2_u64).saturating_mul(max_departed.into())))
-            .saturating_add(T::DbWeight::get().writes(8))
-            .saturating_add(T::DbWeight::get().writes((1_u64).saturating_mul(max_children_total.into())))
-            .saturating_add(T::DbWeight::get().writes((6_u64).saturating_mul(max_families.into())))
-            .saturating_add(T::DbWeight::get().writes((2_u64).saturating_mul(max_departed.into())))
-            .saturating_add(Weight::from_parts(0, 2760).saturating_mul(max_children_total.into()))
-            .saturating_add(Weight::from_parts(0, 2609).saturating_mul(max_departed.into()))
-            .saturating_add(Weight::from_parts(0, 3774).saturating_mul(max_families.into()))
+        let (c, f, d) = (max_children_total as u64, max_families as u64, max_departed as u64);
+        Weight::from_parts(28_144_331_000, 92522)
+            .saturating_add(Weight::from_parts(11_371_952, 2796).saturating_mul(c))
+            .saturating_add(Weight::from_parts(181_487_445, 3774).saturating_mul(f))
+            // Departed-family payout page (#79): bond-independent, 2 r/w + proof per `d`.
+            .saturating_add(Weight::from_parts(0, 2609).saturating_mul(d))
+            .saturating_add(T::DbWeight::get().reads(53_u64.saturating_add(c.saturating_mul(4)).saturating_add(f.saturating_mul(8)).saturating_add(d.saturating_mul(2))))
+            .saturating_add(T::DbWeight::get().writes(41_u64.saturating_add(c).saturating_add(f.saturating_mul(5)).saturating_add(d.saturating_mul(2))))
     }
 }
 
@@ -348,12 +365,12 @@ impl WeightInfo for () {
     }
 
     fn submit_miner_stats(n: u32) -> Weight {
-        Weight::from_parts(15_000_000, 0)
-            .saturating_add(Weight::from_parts(2_000_000, 0).saturating_mul(n.into()))
-            .saturating_add(RocksDbWeight::get().reads(3))
-            .saturating_add(RocksDbWeight::get().writes(3))
-            .saturating_add(RocksDbWeight::get().reads((n as u64).saturating_mul(2)))
-            .saturating_add(RocksDbWeight::get().writes((n as u64).saturating_mul(2)))
+        Weight::from_parts(11_911_721, 1703)
+            .saturating_add(Weight::from_parts(11_042_655, 2650).saturating_mul(n.into()))
+            .saturating_add(RocksDbWeight::get().reads(1))
+            .saturating_add(RocksDbWeight::get().reads((3_u64).saturating_mul(n.into())))
+            .saturating_add(RocksDbWeight::get().writes(2))
+            .saturating_add(RocksDbWeight::get().writes((2_u64).saturating_mul(n.into())))
     }
 
     fn submit_node_quality(n: u32, families: u32, children_per_family: u32) -> Weight {
@@ -482,29 +499,22 @@ impl WeightInfo for () {
     }
 
     fn set_miner_price() -> Weight {
-        Weight::from_parts(10_000_000, 0).saturating_add(RocksDbWeight::get().writes(1))
+        Weight::from_parts(5_940_000, 0).saturating_add(RocksDbWeight::get().writes(1))
     }
 
+    // `c`/`f` measured on `main` (`bond_extra` + rebag); `d` is the #79
+    // departed-payout page (bond-independent). See the `SubstrateWeight` impl.
     fn miner_payment_settlement_hook(
         max_children_total: u32,
         max_families: u32,
         max_departed: u32,
     ) -> Weight {
-        // Minimum execution time: 19_008_961_000 picoseconds.
-        Weight::from_parts(19_046_116_000, 0)
-            .saturating_add(Weight::from_parts(0, 7497))
-            .saturating_add(Weight::from_parts(9_993_349, 0).saturating_mul(max_children_total.into()))
-            .saturating_add(Weight::from_parts(71_131_128, 0).saturating_mul(max_families.into()))
-            .saturating_add(RocksDbWeight::get().reads(21))
-            .saturating_add(RocksDbWeight::get().reads((4_u64).saturating_mul(max_children_total.into())))
-            .saturating_add(RocksDbWeight::get().reads((7_u64).saturating_mul(max_families.into())))
-            .saturating_add(RocksDbWeight::get().reads((2_u64).saturating_mul(max_departed.into())))
-            .saturating_add(RocksDbWeight::get().writes(8))
-            .saturating_add(RocksDbWeight::get().writes((1_u64).saturating_mul(max_children_total.into())))
-            .saturating_add(RocksDbWeight::get().writes((6_u64).saturating_mul(max_families.into())))
-            .saturating_add(RocksDbWeight::get().writes((2_u64).saturating_mul(max_departed.into())))
-            .saturating_add(Weight::from_parts(0, 2760).saturating_mul(max_children_total.into()))
-            .saturating_add(Weight::from_parts(0, 2609).saturating_mul(max_departed.into()))
-            .saturating_add(Weight::from_parts(0, 3774).saturating_mul(max_families.into()))
+        let (c, f, d) = (max_children_total as u64, max_families as u64, max_departed as u64);
+        Weight::from_parts(21_048_622_000, 6997)
+            .saturating_add(Weight::from_parts(7_626_195, 2797).saturating_mul(c))
+            .saturating_add(Weight::from_parts(86_367_685, 3774).saturating_mul(f))
+            .saturating_add(Weight::from_parts(0, 2609).saturating_mul(d))
+            .saturating_add(RocksDbWeight::get().reads(16_u64.saturating_add(c.saturating_mul(4)).saturating_add(f.saturating_mul(8)).saturating_add(d.saturating_mul(2))))
+            .saturating_add(RocksDbWeight::get().writes(4_u64.saturating_add(c).saturating_add(f.saturating_mul(4)).saturating_add(d.saturating_mul(2))))
     }
 }
