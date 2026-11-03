@@ -451,29 +451,42 @@ impl pallet_arion::Config for Runtime {
 	type Staking = Staking;
 	type TokenPriceUsd = AlphaTokenPriceUsd;
 	type SettlementInterval = ArionSettlementInterval;
+	type MaxDepartedPayoutsPerBlock = ConstU32<10>;
 	#[cfg(feature = "runtime-benchmarks")]
-	type BenchmarkHelper = ArionBenchmarkHelper;
+	type BenchmarkHelper = ArionBenchHelper;
 }
 
-/// Funds the bank and sets the alpha price for the Arion settlement benchmark.
+/// Cross-pallet setup for the arion benchmarks (see
+/// `pallet_arion::ArionBenchmarkHelper`): the payout bank and USD token price
+/// feed live in other pallets, `register_child`'s proxy check is this runtime's
+/// `ProxyVerifier`, and pre-bonding a family needs Balances + Staking — none of
+/// which the arion crate can reach alone.
 #[cfg(feature = "runtime-benchmarks")]
-pub struct ArionBenchmarkHelper;
+pub struct ArionBenchHelper;
 #[cfg(feature = "runtime-benchmarks")]
-impl pallet_arion::BenchmarkHelper<AccountId> for ArionBenchmarkHelper {
-	fn fund_payout_source(requester: &AccountId, amount: u128) {
-		let bank = pallet_hippocampus::Pallet::<Runtime>::account_id();
-		let _ = <Balances as frame_support::traits::Currency<AccountId>>::deposit_creating(
-			&bank, amount,
-		);
-		pallet_hippocampus::WhitelistedRequesters::<Runtime>::insert(requester, ());
-		pallet_hippocampus::DistributionEnabled::<Runtime>::put(true);
-	}
-
+impl pallet_arion::ArionBenchmarkHelper<AccountId, Balance> for ArionBenchHelper {
 	fn set_token_price(price: u128) {
 		pallet_credits::AlphaPrice::<Runtime>::put(price);
 	}
 
-	fn prebond_family(family: &AccountId, amount: u128) {
+	fn prime_payout_source(requester: &AccountId, amount: Balance) {
+		use frame_support::traits::Currency;
+		pallet_hippocampus::DistributionEnabled::<Runtime>::put(true);
+		pallet_hippocampus::WhitelistedRequesters::<Runtime>::insert(requester, ());
+		let bank = pallet_hippocampus::Pallet::<Runtime>::account_id();
+		let _ = <Balances as Currency<AccountId>>::deposit_creating(&bank, amount);
+	}
+
+	fn authorize_child(family: &AccountId, child: &AccountId) {
+		let _ = pallet_proxy::Pallet::<Runtime>::add_proxy_delegate(
+			family,
+			child.clone(),
+			ProxyType::Any,
+			0u32.into(),
+		);
+	}
+
+	fn prebond_family(family: &AccountId, amount: Balance) {
 		// Fund the family and open a staking ledger, so at settlement
 		// `Staking::stake(family)` is already `Ok` and the payout bonds via the
 		// heavier `bond_extra` branch rather than a first-time `bond`.
