@@ -308,28 +308,40 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
+			// Honest DB accounting: tally the reads/writes this hook actually
+			// performs and declare them, instead of returning `Weight::zero()`.
+			// `on_initialize` is mandatory block weight, so under-declaring it lets
+			// the block builder overfill the block with extrinsics.
+			let mut reads = 0u64;
+			let mut writes = 0u64;
+
 			let clear_interval = <T as pallet::Config>::RequestsClearInterval::get();
 
-			// Clear entries every 10 blocks
+			// Clear entries every `RequestsClearInterval` blocks
 			if _n % clear_interval.into() == 0u32.into() {
 				// Clear all entries; limit is u32::MAX to ensure we get them all
-				let _result = RequestsCount::<T>::clear(u32::MAX, None);
+				let result = RequestsCount::<T>::clear(u32::MAX, None);
+				reads = reads.saturating_add(result.loops as u64);
+				writes = writes.saturating_add(result.unique as u64);
 			}
 
 			let hardware_clear_interval =
 				<T as pallet::Config>::HardwareSubmitRequestsClearInterval::get();
 
-			// Clear entries every 1500 blocks
+			// Clear stale hardware-request counters
 			if _n % hardware_clear_interval.into() == 0u32.into() {
 				// Iterate through all entries in HardwareRequestsCount
 				HardwareRequestsCount::<T>::iter().for_each(|(node_id, _count)| {
+					// Two reads per entry scanned: the iterated count + the last-block lookup.
+					reads = reads.saturating_add(2);
 					let last_request_block = HardwareRequestsLastBlock::<T>::get(&node_id);
 
-					// Check if 1500 blocks have passed since the last request
+					// Check if the interval has passed since the last request
 					if _n.saturating_sub(last_request_block) >= hardware_clear_interval.into() {
 						// Reset the requests count and last block for this node
 						HardwareRequestsCount::<T>::remove(&node_id);
 						HardwareRequestsLastBlock::<T>::remove(&node_id);
+						writes = writes.saturating_add(2);
 					}
 				});
 			}
@@ -341,21 +353,39 @@ pub mod pallet {
 
 			let consensus_period = <T as pallet::Config>::ConsensusPeriod::get();
 			if _n % consensus_period == 0u32.into() {
-				Self::apply_consensus();
+				let (c_reads, c_writes) = Self::apply_consensus();
+				reads = reads.saturating_add(c_reads);
+				writes = writes.saturating_add(c_writes);
 			}
 
 			let epoch_clear_interval = <T as pallet::Config>::EpochDuration::get();
 			let first_epoch_block = 38u32.into(); // hardcoded or derived
 
-			if _n.saturating_sub(first_epoch_block) % epoch_clear_interval.into() == 0u32.into() {
+			// Guard `_n >= first_epoch_block`: without it, `saturating_sub` floors at
+			// 0 and `0 % interval == 0` fires this clear every block before the first
+			// epoch boundary.
+			if _n >= first_epoch_block
+				&& _n.saturating_sub(first_epoch_block) % epoch_clear_interval.into()
+					== 0u32.into()
+			{
 				// Clear per-epoch pin stats for all miners
-				let _ = TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
-				let _ = SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
-				let _ = TotalPingChecksPerEpoch::<T>::clear(u32::MAX, None);
-				let _ = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let r1 = TotalPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let r2 = SuccessfulPinChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let r3 = TotalPingChecksPerEpoch::<T>::clear(u32::MAX, None);
+				let r4 = SuccessfulPingChecksPerEpoch::<T>::clear(u32::MAX, None);
+				reads = reads
+					.saturating_add(r1.loops as u64)
+					.saturating_add(r2.loops as u64)
+					.saturating_add(r3.loops as u64)
+					.saturating_add(r4.loops as u64);
+				writes = writes
+					.saturating_add(r1.unique as u64)
+					.saturating_add(r2.unique as u64)
+					.saturating_add(r3.unique as u64)
+					.saturating_add(r4.unique as u64);
 			}
 
-			Weight::zero()
+			T::DbWeight::get().reads_writes(reads, writes)
 		}
 
 		fn offchain_worker(block_number: BlockNumberFor<T>) {
@@ -1532,17 +1562,27 @@ pub mod pallet {
 			Ok(hex_result.to_string())
 		}
 
-		fn apply_consensus() {
+		/// Returns `(reads, writes)` — the DB operations performed, so the
+		/// `on_initialize` caller can declare honest weight for this mandatory
+		/// maintenance work instead of leaving it unaccounted.
+		fn apply_consensus() -> (u64, u64) {
 			let all_miners: Vec<Vec<u8>> = TemporaryPinReports::<T>::iter_keys()
 				.map(|(miner_id, _)| miner_id)
 				.collect::<Vec<_>>();
 			let threshold = <T as pallet::Config>::ConsensusThreshold::get();
+
+			// One read per report key scanned above; the per-miner reads/writes
+			// are added in the loop below.
+			let mut reads = all_miners.len() as u64;
+			let mut writes = 0u64;
 
 			for miner_id in all_miners {
 				let reports: Vec<MinerPinMetrics> =
 					TemporaryPinReports::<T>::iter_prefix(&miner_id)
 						.map(|(_, report)| report)
 						.collect();
+				// One read per report row scanned for this miner.
+				reads = reads.saturating_add(reports.len() as u64);
 
 				if reports.is_empty() {
 					continue;
@@ -1622,6 +1662,9 @@ pub mod pallet {
 					);
 
 					if agreeing_validators >= threshold {
+						// 5 reads + 5 writes: NodeMetrics plus the four per-epoch counters.
+						reads = reads.saturating_add(5);
+						writes = writes.saturating_add(5);
 						let mut metrics = NodeMetrics::<T>::get(&miner_id).unwrap_or_default();
 						metrics.total_pin_checks += avg_total_pin_checks;
 						metrics.successful_pin_checks += avg_successful_pin_checks;
@@ -1665,10 +1708,13 @@ pub mod pallet {
 						Self::deposit_event(Event::ConsensusFailed { miner_id: miner_id.clone() });
 					}
 
-					// Clear temporary reports for this miner
+					// Clear temporary reports for this miner (one write per row removed).
 					TemporaryPinReports::<T>::remove_prefix(&miner_id, None);
+					writes = writes.saturating_add(reports.len() as u64);
 				}
 			}
+
+			(reads, writes)
 		}
 	}
 }

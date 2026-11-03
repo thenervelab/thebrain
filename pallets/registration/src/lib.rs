@@ -358,9 +358,11 @@ pub mod pallet {
 			let mut reads: u64 = 0;
 			let mut writes: u64 = 0;
 
-			// Initialize fees if not already set
+			// Initialize fees if not already set. Use `next().is_none()` (one read)
+			// rather than `iter().count()`, which scanned the whole map every block
+			// just to test emptiness.
 			reads = reads.saturating_add(1);
-			if CurrentNodeTypeFee::<T>::iter().count() == 0 {
+			if CurrentNodeTypeFee::<T>::iter().next().is_none() {
 				Self::initialize_node_type_fees();
 				writes = writes.saturating_add(5);
 			}
@@ -440,17 +442,22 @@ pub mod pallet {
 				}
 			}
 
-			// GC used challenges (keep it light)
-			UsedChallenges::<T>::iter()
+			// GC used challenges. The scan reads every row, so count the full scan
+			// (not just the expired subset removed) for an honest weight.
+			let mut scanned = 0u64;
+			let expired: Vec<_> = UsedChallenges::<T>::iter()
+				.map(|(h, until)| {
+					scanned = scanned.saturating_add(1);
+					(h, until)
+				})
 				.filter(|(_, until)| *until <= _n)
 				.map(|(h, _)| h)
-				.collect::<Vec<_>>()
-				.into_iter()
-				.for_each(|h| {
-					reads = reads.saturating_add(1);
-					UsedChallenges::<T>::remove(h);
-					writes = writes.saturating_add(1);
-				});
+				.collect();
+			reads = reads.saturating_add(scanned);
+			for h in expired {
+				UsedChallenges::<T>::remove(h);
+				writes = writes.saturating_add(1);
+			}
 
 			T::DbWeight::get().reads_writes(reads, writes)
 		}
