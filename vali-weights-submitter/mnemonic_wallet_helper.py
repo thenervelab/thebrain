@@ -7,37 +7,27 @@ import bittensor as bt
 import yaml
 import os
 
+from wallet_utils import mnemonic_wallet
+
 def load_config():
     with open("config.yaml", 'r') as file:
         return yaml.safe_load(file)
 
-def create_wallet_from_mnemonic(mnemonic, path="m/44'/354'/0'/0'/0'"):
-    """Create a wallet from mnemonic phrase and return wallet info."""
+def create_wallet_from_mnemonic(mnemonic, path=None):
+    """Create a wallet from mnemonic phrase and return wallet info.
+
+    The key is derived with no derivation path (same as the weight submitter);
+    `path` is accepted for backwards compatibility and ignored.
+    """
     try:
-        # Create keypair from mnemonic using substrate-interface
-        from substrateinterface import Keypair
-        keypair = Keypair.create_from_mnemonic(mnemonic, ss58_format=42)
-        
-        # Create a minimal wallet-like object
-        class MnemonicWallet:
-            def __init__(self, keypair):
-                self.hotkey = type('Hotkey', (), {
-                    'ss58_address': keypair.ss58_address,
-                    'keypair': keypair
-                })()
-                self.keypair = keypair
-                self.coldkey = type('Coldkey', (), {
-                    'ss58_address': keypair.ss58_address,
-                    'keypair': keypair
-                })()
-        
-        wallet = MnemonicWallet(keypair)
-        
+        # Same in-memory wallet the weight submitter signs with
+        wallet = mnemonic_wallet(mnemonic)
+
         print(f"✓ Wallet created successfully!")
         print(f"Hotkey SS58 address: {wallet.hotkey.ss58_address}")
-        print(f"Coldkey SS58 address: {wallet.coldkey.ss58_address}")
-        print(f"Derivation path: {path}")
-        
+        if path:
+            print(f"Note: derivation path {path!r} is ignored; the key is derived without a path")
+
         return wallet
         
     except Exception as e:
@@ -58,7 +48,7 @@ def test_mnemonic_wallet():
     if not mnemonic:
         mnemonic = config['wallet'].get('mnemonic')
     
-    path = config['wallet'].get('mnemonic_path', "m/44'/354'/0'/0'/0'")
+    path = config['wallet'].get('mnemonic_path')
     
     if not mnemonic or mnemonic == "your twelve word mnemonic phrase here":
         print("Please set BITTENSOR_MNEMONIC environment variable or valid mnemonic phrase in config.yaml")
@@ -70,7 +60,7 @@ def test_mnemonic_wallet():
     if wallet:
         # Test connection to Bittensor
         try:
-            # bittensor v11: blocking Subtensor, balances namespace, close optional
+            # bittensor 11.x: blocking Subtensor, balances namespace
             subtensor = bt.Subtensor(network=config['bittensor']['chain_endpoint'])
             balance = subtensor.balances.get(wallet.hotkey.ss58_address)
             print(f"✓ Wallet balance: {balance} TAO")
@@ -86,7 +76,6 @@ def generate_config_template():
 wallet:
   use_mnemonic: true
   # mnemonic: "your twelve word mnemonic phrase here"  # Set via environment variable instead
-  mnemonic_path: "m/44'/354'/0'/0'/0'"
   
   # Alternative: use local wallet files
   # use_mnemonic: false
@@ -111,7 +100,7 @@ if __name__ == "__main__":
         elif sys.argv[1] == "create":
             if len(sys.argv) > 2:
                 mnemonic = sys.argv[2]
-                path = sys.argv[3] if len(sys.argv) > 3 else "m/44'/354'/0'/0'/0'"
+                path = sys.argv[3] if len(sys.argv) > 3 else None
                 create_wallet_from_mnemonic(mnemonic, path)
             else:
                 print("Usage: python mnemonic_wallet_helper.py create 'your mnemonic phrase' [path]")

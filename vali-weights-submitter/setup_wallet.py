@@ -20,21 +20,22 @@ def setup_wallet():
         
         # Create coldkey
         print("Creating coldkey...")
-        # Use btcli command instead
+        # Use btcli (bundled with bittensor 11.x) instead
         import subprocess
+        wallets_path = os.path.expanduser("~/.bittensor/wallets/")
         subprocess.run([
-            "btcli", "wallet", "new_coldkey", 
-            "--wallet.name", "default",
-            "--wallet.path", "~/.bittensor/wallets/"
+            "btcli", "wallet", "new-coldkey",
+            "--wallet", "default",
+            "--wallet-path", wallets_path
         ], check=True)
-        
+
         # Create hotkey
         print("Creating hotkey...")
         subprocess.run([
-            "btcli", "wallet", "new_hotkey", 
-            "--wallet.name", "default",
-            "--wallet.hotkey", "default",
-            "--wallet.path", "~/.bittensor/wallets/"
+            "btcli", "wallet", "new-hotkey",
+            "--wallet", "default",
+            "--wallet-hotkey", "default",
+            "--wallet-path", wallets_path
         ], check=True)
         
         print("✓ Wallet created successfully!")
