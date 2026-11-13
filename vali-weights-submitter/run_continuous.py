@@ -121,8 +121,14 @@ class ContinuousWeightSubmitter:
         self.logger.info(f"Starting continuous weight submission every {block_interval} blocks"
                          f"{' (DRY RUN)' if self.dry_run else ''}")
 
+        # Extra attempts within one window after a failed submission (e.g. the SDK's
+        # rate-limit preflight saying "retry in ~1 blocks", or a Hippius RPC hiccup),
+        # one block poll apart, before giving up on the window.
+        window_retries = self.config['weights'].get('window_retries', 5)
+
         submission_count = 0
         target_block = None
+        failed_attempts = 0
 
         while self.running:
             try:
@@ -152,11 +158,23 @@ class ContinuousWeightSubmitter:
                 duration = (datetime.now() - start_time).total_seconds()
                 if success:
                     self.logger.info(f"✅ Weight submission #{submission_count} completed successfully in {duration:.2f} seconds")
-                else:
-                    self.logger.error(f"❌ Weight submission #{submission_count} failed after {duration:.2f} seconds")
+                    failed_attempts = 0
+                    target_block = self.next_target_block(current_block)
+                    self.logger.info(f"Next submission at block {target_block}")
+                    continue
 
-                target_block = self.next_target_block(current_block)
-                self.logger.info(f"Next submission at block {target_block}")
+                failed_attempts += 1
+                self.logger.error(f"❌ Weight submission #{submission_count} failed after {duration:.2f} seconds")
+                if failed_attempts <= window_retries:
+                    # Keep the same target: the next poll (about one block later) retries
+                    self.logger.info(f"Retrying in {check_interval}s (retry {failed_attempts}/{window_retries} "
+                                     f"for target block {target_block})")
+                    await asyncio.sleep(check_interval)
+                else:
+                    failed_attempts = 0
+                    target_block = self.next_target_block(current_block)
+                    self.logger.error(f"Giving up on this window after {window_retries} retries; "
+                                      f"next submission at block {target_block}")
 
             except Exception as e:
                 self.logger.error(f"Error in continuous run: {e}")

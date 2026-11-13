@@ -40,6 +40,9 @@ weights:
   # Resubmit on transient tx-pool rejections (nonce races, "priority too low")
   # instead of losing a whole submission window.
   retries: 2
+  # run_continuous.py: extra attempts within one window after a failed submission
+  # (one block poll apart), e.g. when the rate-limit preflight says "retry in ~1 blocks".
+  window_retries: 5
   # Block interval configuration. Must stay above the subnet's weights rate limit.
   block_interval: 101  # Submit every 101 blocks (100 block intervals)
   block_check_interval: 12  # Check block every 12 seconds

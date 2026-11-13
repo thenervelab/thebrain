@@ -64,6 +64,7 @@ Edit `config.yaml` to customize the behavior:
 - `wait_for_finalization`: Wait for transaction finalization
 - `period`: Transaction validity period (blocks)
 - `retries`: Resubmissions on transient tx-pool rejections (default: 2)
+- `window_retries`: For `run_continuous.py`, extra attempts within one submission window after a failure, one block poll apart (default: 5). Covers e.g. the rate-limit preflight ("retry in ~1 blocks") or a Hippius RPC hiccup without losing the whole window
 - `block_interval`: Blocks between submissions for `run_continuous.py` (default: 101; keep above the subnet's weights rate limit)
 - `block_check_interval`: Seconds between block polls (default: 12)
 - `use_modulo_timing`: `true` aligns submissions to multiples of `block_interval`; `false` waits `block_interval` blocks after the previous submission
