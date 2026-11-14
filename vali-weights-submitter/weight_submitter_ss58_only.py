@@ -7,13 +7,11 @@ This version uses SS58 address for querying but requires local wallet for weight
 import asyncio
 import logging
 import yaml
-import numpy as np
-from typing import Dict, List, Tuple, Optional
-import time
+from typing import Dict, List, Tuple
 
 import bittensor as bt
 from bittensor.wallet import Wallet
-from substrateinterface import SubstrateInterface, Keypair
+from substrateinterface import SubstrateInterface
 
 
 class WeightSubmitterSS58:
@@ -98,10 +96,11 @@ class WeightSubmitterSS58:
         self.logger.info(f"Fetching metagraph for subnet {self.config['bittensor']['subnet_id']}...")
         
         try:
-            # v11: metagraph lives under the subnets namespace, neurons are typed records
-            metagraph = self.subtensor.subnets.metagraph(
-                netuid=self.config['bittensor']['subnet_id']
-            )
+            # bittensor 11.x: typed metagraph under the subnets namespace (None if the subnet is missing)
+            netuid = self.config['bittensor']['subnet_id']
+            metagraph = self.subtensor.subnets.metagraph(netuid, commitments=False)
+            if metagraph is None:
+                raise RuntimeError(f"Subnet {netuid} does not exist on {self.subtensor.network}")
 
             # Create mapping of UID to hotkey
             # Note: no axon filter — subnet 75 miners don't serve axons, and the

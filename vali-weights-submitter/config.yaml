@@ -4,42 +4,52 @@
 # Bittensor Configuration
 bittensor:
   subnet_id: 75
-  rpc_endpoint: "ws://127.0.0.1:9945"
-  chain_endpoint: "finney"  # Use testnet for testing, or "finney" for mainnet
-  
-# Hippius Chain Configuration  
+  # Single endpoint for ALL Bittensor traffic: block polling, metagraph reads and
+  # weight submission. A network name ("finney", "test", "local") or a websocket
+  # URL, e.g. "ws://127.0.0.1:9945" for a local subtensor node.
+  chain_endpoint: "finney"
+
+# Hippius Chain Configuration (a separate, non-Bittensor substrate chain)
 hippius:
   rpc_endpoint: "ws://127.0.0.1:9944"
   ranking_storage_key: "rankingStorage.rankedList"
-  
-# Wallet Configuration
 
+# Wallet Configuration
+# Exactly one signing method is used, chosen by use_mnemonic:
+#   use_mnemonic: true  -> derive the hotkey from the BITTENSOR_MNEMONIC env var
+#   use_mnemonic: false -> load the on-disk btcli wallet named below
 wallet:
-  # Option 1: Use local wallet (set use_ss58_address to false)
+  use_mnemonic: true
+
+  # Used when use_mnemonic is false.
   name: "default"
   hotkey: "default"
   path: "~/.bittensor/wallets/"
-  
-  # Option 2: Use SS58 address directly (set use_ss58_address to true)
-  use_ss58_address: true
+
+  # Optional safety check: when use_ss58_address is true, startup fails unless the
+  # signing hotkey equals ss58_address.
+  use_ss58_address: false
   ss58_address: "YOUR VALI SS58 ADDRESS"
-  
-  # Option 3: Use mnemonic phrase (set use_mnemonic to true)
-  use_mnemonic: true  # Set to true to use mnemonic phrase
-  # mnemonic: "your twelve word mnemonic phrase here"  # Set via environment variable instead
-  #mnemonic_path: "m/44'/354'/0'/0'/0'"  # Bittensor derivation path
-  
+
 # Weight Submission Configuration
 weights:
   version_key: 0
   wait_for_inclusion: true
   wait_for_finalization: false
   period: 8
-  # Block interval configuration
+  # Resubmit on transient tx-pool rejections (nonce races, "priority too low")
+  # instead of losing a whole submission window.
+  retries: 2
+  # run_continuous.py: extra attempts within one window after a failed submission
+  # (one block poll apart), e.g. when the rate-limit preflight says "retry in ~1 blocks".
+  window_retries: 5
+  # Block interval configuration. Must stay above the subnet's weights rate limit.
   block_interval: 101  # Submit every 101 blocks (100 block intervals)
   block_check_interval: 12  # Check block every 12 seconds
-  use_modulo_timing: true  # Use modulo arithmetic for consistent submission timing
-  
+  # true: align submissions to multiples of block_interval (consistent across restarts)
+  # false: submit block_interval blocks after the previous submission
+  use_modulo_timing: true
+
 # Logging Configuration
 logging:
   level: "INFO"

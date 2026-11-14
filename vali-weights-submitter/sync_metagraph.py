@@ -43,6 +43,19 @@ try:
 except Exception as e:
     pass  # Ignore if this fails
 
+
+U16_MAX = 65535
+
+
+def dividend_to_u16(dividend: float) -> int:
+    """Convert an SDK dividend (normalized 0..1 float) to the raw u16 the chain stores.
+
+    Metagraph.submit_hot_keys_info takes `dividends: Vec<u16>`; passing the float
+    directly would be truncated to 0 by the SCALE encoder.
+    """
+    return min(U16_MAX, max(0, round(float(dividend) * U16_MAX)))
+
+
 class StorageMonitor:
     def __init__(self, config_path="config.yaml"):
         # Load configuration
@@ -50,8 +63,8 @@ class StorageMonitor:
         
         # Your chain connection - using WebSocket from config
         self.my_chain_url = self.config['hippius']['rpc_endpoint']
-        # Bittensor chain connection - using WebSocket from config
-        self.bittensor_chain_url = self.config['bittensor']['rpc_endpoint']
+        # Bittensor chain connection - network name or websocket URL from config
+        self.bittensor_network = self.config['bittensor']['chain_endpoint']
         
         self.my_chain = None
         self.bittensor_chain = None
@@ -106,10 +119,9 @@ class StorageMonitor:
                     )
                 logger.info("✅ Connected to your chain")
 
-                logger.info(f"Connecting to Bittensor chain using Bittensor library...")
-                # Use Bittensor library for Bittensor connection (same as run_continuous.py)
-                # bittensor v11: bt.Subtensor is blocking when called directly
-                self.bittensor_chain = bt.Subtensor(network="finney")  # Use mainnet
+                logger.info(f"Connecting to Bittensor chain ({self.bittensor_network}) using Bittensor library...")
+                # bittensor 11.x: blocking when used directly, connects lazily on first call
+                self.bittensor_chain = bt.Subtensor(network=self.bittensor_network)
                 logger.info("✅ Connected to Bittensor chain using Bittensor library")
 
                 return True
@@ -133,13 +145,13 @@ class StorageMonitor:
                 time.sleep(10)
 
     def get_block_number(self, substrate):
-        """Get the latest block number"""
+        """Get the latest block number, or None if it could not be read"""
         try:
             block_hash = substrate.rpc_request("chain_getBlockHash", [])["result"]
             if block_hash:
                 block_data = substrate.get_block(block_hash=block_hash)
                 return block_data["header"]["number"]
-            return 0
+            return None
         except Exception as e:
             logger.error(f"Error getting block number: {e}")
             # If it's an SSL error, try to refresh the connection
@@ -150,7 +162,9 @@ class StorageMonitor:
                     self._hippius_ssl_error_count += 1
                 else:
                     self._hippius_ssl_error_count = 1
-            return 0
+            # None (not 0): returning 0 made blocks_since_last hugely negative and
+            # silently suppressed submissions
+            return None
 
     def update_uids_with_roles(self, uids, dividends):
         """Update UIDs with roles based on dividends"""
@@ -168,51 +182,48 @@ class StorageMonitor:
             updated_uids.append(updated_uid)
         return updated_uids
 
-    def get_uids_from_bittensor(self):
-        """Fetch UIDs from Bittensor chain for net_uid 75"""
-        try:
-            # bittensor v11: metagraph lives under subnets namespace, neurons are typed records
-            metagraph = self.bittensor_chain.subnets.metagraph(netuid=self.net_uid)
+    def get_metagraph_snapshot(self):
+        """Fetch UIDs and dividends for net_uid from ONE metagraph read.
 
-            # Create mapping of UID to hotkey
-            # Note: no axon filter — subnet 75 miners don't serve axons, and the
-            # legacy code's `axon_info.ip != 0` check was a no-op (ip was a str)
-            uids = []
-            for neuron in metagraph:
-                uids.append({
-                    "address": neuron.hotkey,
-                    "id": neuron.uid,
-                    "role": "None",
-                    "substrate_address": neuron.hotkey
-                })
-            
-            logger.info(f"Fetched {len(uids)} active UIDs from Bittensor")
-            return uids
-            
-        except Exception as e:
-            logger.error(f"Error fetching UIDs: {e}")
-            return []
+        Both come from the same block, so dividends are always indexed by the
+        same UIDs they are submitted with.
 
-    def get_dividends_from_bittensor(self):
-        """Fetch dividends from Bittensor chain for net_uid 75"""
+        Returns:
+            (uids, dividends): uid dicts, and a uid-indexed list of u16 dividends.
+            Both empty on failure.
+        """
         try:
-            # bittensor v11: dividends are per-neuron fields, rebuild the uid-indexed list
-            metagraph = self.bittensor_chain.subnets.metagraph(netuid=self.net_uid)
+            # bittensor 11.x: typed metagraph under the subnets namespace (None if the subnet is missing)
+            metagraph = self.bittensor_chain.subnets.metagraph(self.net_uid, commitments=False)
+            if metagraph is None:
+                logger.error(f"Subnet {self.net_uid} not found on {self.bittensor_network}")
+                return [], []
 
             neurons = list(metagraph)
-            if neurons:
-                dividends = [0.0] * (max(n.uid for n in neurons) + 1)
-                for n in neurons:
-                    dividends[n.uid] = float(n.dividends)
-                logger.info(f"Fetched {len(dividends)} dividends from Bittensor")
-                return dividends
-            else:
-                logger.warning("No dividends found in metagraph")
-                return []
-                
+            if not neurons:
+                logger.warning("Metagraph has no neurons")
+                return [], []
+
+            # Note: no axon filter — subnet 75 miners don't serve axons
+            uids = [
+                {
+                    "address": n.hotkey,
+                    "id": n.uid,
+                    "role": "None",
+                    "substrate_address": n.hotkey,
+                }
+                for n in neurons
+            ]
+            dividends = [0] * (max(n.uid for n in neurons) + 1)
+            for n in neurons:
+                dividends[n.uid] = dividend_to_u16(n.dividends)
+
+            logger.info(f"Fetched {len(uids)} UIDs and {len(dividends)} dividends from Bittensor (block {metagraph.block})")
+            return uids, dividends
+
         except Exception as e:
-            logger.error(f"Error fetching dividends: {e}")
-            return []
+            logger.error(f"Error fetching metagraph: {e}")
+            return [], []
 
     def submit_hotkeys_to_my_chain(self, hotkeys, dividends):
         """Submit hotkeys and dividends to your chain"""
@@ -257,6 +268,10 @@ class StorageMonitor:
             return
 
         self.last_processed_block = self.get_block_number(self.my_chain)  # Hippius chain
+        while self.last_processed_block is None:
+            logger.warning("Could not read the Hippius block number, retrying in 10s...")
+            await asyncio.sleep(10)
+            self.last_processed_block = self.get_block_number(self.my_chain)
         logger.info(f"Starting monitoring from Hippius chain at block {self.last_processed_block}")
         logger.info(f"Will submit every {self.block_interval} Hippius blocks")
         
@@ -264,8 +279,7 @@ class StorageMonitor:
         submit_immediately = False
         if submit_immediately:
             logger.info("🚀 Submitting immediately on startup...")
-            uids = self.get_uids_from_bittensor()
-            dividends = self.get_dividends_from_bittensor()
+            uids, dividends = self.get_metagraph_snapshot()
             if uids and dividends:
                 updated_uids = self.update_uids_with_roles(uids, dividends)
                 if self.submit_hotkeys_to_my_chain(updated_uids, dividends):
@@ -313,7 +327,12 @@ class StorageMonitor:
                             logger.error(f"Full reconnection also failed: {full_reconnect_e}")
                             await asyncio.sleep(10)
                             continue
-                
+
+                if current_block is None:
+                    # Hippius block unreadable this poll; skip rather than miscount
+                    await asyncio.sleep(6)
+                    continue
+
                 blocks_since_last = current_block - self.last_processed_block
                 
                 # Log progress every 10 blocks
@@ -334,9 +353,8 @@ class StorageMonitor:
                         logger.info(f"Attempt {retry_count}/{max_retries} to fetch data from Bittensor...")
                         
                         try:
-                            uids = self.get_uids_from_bittensor()
-                            dividends = self.get_dividends_from_bittensor()
-                            
+                            uids, dividends = self.get_metagraph_snapshot()
+
                             if uids and dividends:
                                 logger.info(f"✅ Successfully fetched {len(uids)} UIDs and {len(dividends)} dividends")
                                 break
@@ -376,7 +394,7 @@ class StorageMonitor:
                     try:
                         # Test Hippius connection
                         test_block = self.get_block_number(self.my_chain)
-                        if test_block > 0:
+                        if test_block is not None:
                             logger.info(f"✅ Hippius connection healthy (block: {test_block})")
                         else:
                             logger.warning("⚠️ Hippius connection may be unhealthy")
