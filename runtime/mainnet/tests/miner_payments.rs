@@ -587,7 +587,7 @@ fn migration_builds_uid_reverse_index_and_drops_duplicates() {
 		// Version advanced past every step: running again is a no-op.
 		assert_eq!(
 			<pallet_arion::Pallet<Runtime> as GetStorageVersion>::on_chain_storage_version(),
-			StorageVersion::new(3)
+			StorageVersion::new(4)
 		);
 	});
 }
