@@ -637,7 +637,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("hippius"),
 	impl_name: create_runtime_str!("hippius"),
 	authoring_version: 1,
-	spec_version: 92023,
+	spec_version: 92024,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -1782,15 +1782,6 @@ impl pallet_alpha_bridge::Config for Runtime {
 	type WeightInfo = pallet_alpha_bridge::weights::SubstrateWeight<Runtime>;
 }
 
-parameter_types! {
-	pub const IpReleasePeriod: u64 = 15 * DAYS;
-}
-
-impl pallet_ip::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type IpReleasePeriod = IpReleasePeriod;
-}
-
 impl pallet_calendar::Config for Runtime {}
 
 parameter_types! {
@@ -2394,7 +2385,7 @@ construct_runtime!(
 		Credits: pallet_credits = 65,
 		// ContainerRegistry: pallet_container_registry = 69,
 		AlphaBridge: pallet_alpha_bridge = 73,
-		PalletIp: pallet_ip = 74,
+		// 74 was PalletIp (pallet_ip) — removed; storage cleared by migrations::RemovePalletIp.
 		// IpfsPallet: ipfs_pallet = 75,
 		Arion: pallet_arion = 76,
 		PalletCalendar: pallet_calendar = 78,
@@ -2431,6 +2422,7 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 type Migrations = (
 	migrations::ActivateMinerPaymentBank<Runtime>,
 	migrations::InitAlphaPriceUpdatedAt<Runtime>,
+	migrations::RemovePalletIp,
 );
 
 /// Block type as expected by this runtime.
@@ -3840,22 +3832,6 @@ impl_runtime_apis! {
 
 		fn get_total_node_rewards(account: AccountId32) -> u128 {
 			<pallet_rankings::Pallet<Runtime>>::get_total_node_rewards(account)
-		}
-
-		fn get_client_ip(client_id: AccountId32) -> Option<Vec<u8>>{
-			<pallet_ip::Pallet<Runtime>>::get_client_ip(&client_id)
-		}
-
-		fn get_hypervisor_ip( hypervisor_id: Vec<u8>) -> Option<Vec<u8>>{
-			<pallet_ip::Pallet<Runtime>>::get_hypervisor_ip(hypervisor_id)
-		}
-
-		fn get_vm_ip( vm_id: Vec<u8>) -> Option<Vec<u8>>{
-			<pallet_ip::Pallet<Runtime>>::get_vm_ip(vm_id)
-		}
-
-		fn get_storage_miner_ip( miner_id: Vec<u8>) -> Option<Vec<u8>>{
-			<pallet_ip::Pallet<Runtime>>::get_storage_miner_ip(miner_id)
 		}
 
 		fn get_free_credits_rpc(account: Option<AccountId32>) -> Vec<(AccountId32, u128)>{

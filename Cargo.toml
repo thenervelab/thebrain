@@ -35,9 +35,7 @@ members = [
     "precompiles/verify-ecdsa-stark-signature",
     "precompiles/verify-bls381-signature",
     "precompiles/marketplace",
-    "precompiles/sub-accounts",
     "precompiles/account-profile",
-    "precompiles/notifications",
     "evm-tracer",
 ]
 exclude = ["pallets/benchmarking"]
@@ -360,34 +358,24 @@ evm-tracer = { path = "evm-tracer", default-features = false }
 
 pallet-execution-unit = { path = "pallets/execution-unit", default-features = false }
 pallet-arion  = { path = "pallets/arion-pallet", default-features = false }
-ipfs-pallet  = { path = "pallets/ipfs", default-features = false }
 pallet-alpha-bridge = { path = "pallets/alpha-bridge", default-features = false }
 pallet-hippocampus = { path = "pallets/hippocampus", default-features = false }
-pallet-ip = { path = "pallets/ip", default-features = false }
 pallet-calendar = { path = "pallets/calendar", default-features = false }
 pallet-rankings   = { path = "pallets/ranking", default-features = false }
 pallet-utils  = { path = "pallets/utils", default-features = false }
 pallet-oracle = { path = "pallets/oracles", default-features = false }
 pallet-account-profile  = { path = "pallets/account-profile", default-features = false }
-pallet-notifications  = { path = "pallets/notifications", default-features = false }
 pallet-registration  = { path = "pallets/registration", default-features = false }
-pallet-subaccount  = { path = "pallets/subAccounts", default-features = false }
-#pallet-backup = { path = "pallets/backup", default-features = false }
 pallet-credits = { path = "pallets/credits", default-features = false }
-pallet-compute = { path = "pallets/compute", default-features = false }
 pallet-compute-scoring = { path = "pallets/compute-scoring", default-features = false }
-pallet-container-registry = { path = "pallets/containerRegistry", default-features = false }
 lite-json = { version = "0.2.0", default-features = false }
 
 pallet-staking = { path = "pallets/staking", default-features = false }
 pallet-staking-reward-curve = { path = "pallets/staking/reward-curve", default-features = false }
 
 pallet-metagraph = { path = "pallets/metagraph", default-features = false }
-pallet-ipfs-precompile = { path = "precompiles/ipfs-pin", default-features = false }
 pallet-account-profile-precompile= { path = "precompiles/account-profile", default-features = false }
 
-pallet-sub-account-precompile = { path = "precompiles/sub-accounts", default-features = false }
-pallet-notifications-precompile = { path = "precompiles/notifications", default-features = false }
 
 pallet-registeration-precompile = { path = "frame/registration", default-features = false }
 pallet-sophia  = { path = "pallets/sophia", default-features = false }

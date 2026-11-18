@@ -60,7 +60,6 @@ pub mod pallet {
 	use frame_system::offchain::SendTransactionTypes;
 	use frame_system::offchain::SignedPayload;
 	use frame_system::pallet_prelude::*;
-	use pallet_ip::Pallet as IpPallet;
 	use scale_info::prelude::vec;
 	use scale_info::prelude::vec::Vec;
 	use sp_core::hashing;
@@ -76,7 +75,6 @@ pub mod pallet {
 		+ pallet_balances::Config
 		+ SendTransactionTypes<Call<Self>>
 		+ frame_system::offchain::SigningTypes
-		+ pallet_ip::Config
 	{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
@@ -491,23 +489,6 @@ pub mod pallet {
 
 			// Helper function to insert a referral code for a user
 			Self::insert_referral_code(&who.clone(), code)?;
-
-			let client_ip = IpPallet::<T>::get_client_ip(&who.clone());
-
-			if client_ip.is_none() {
-				let mut vm_available_ips = IpPallet::<T>::available_client_ips();
-
-				if let Some(ip) = vm_available_ips.pop() {
-					if let Err(e) = IpPallet::<T>::assign_ip_to_client(who.clone(), ip) {
-						log::error!(
-							target: "runtime::credits",
-							"assign_ip_to_client failed for {:?}: {:?}",
-							who,
-							e
-						);
-					}
-				}
-			}
 
 			Self::deposit_event(Event::MintedAccountCredits { who, amount });
 

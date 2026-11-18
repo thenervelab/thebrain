@@ -4648,12 +4648,10 @@ dependencies = [
  "pallet-im-online",
  "pallet-indices",
  "pallet-insecure-randomness-collective-flip 25.0.0",
- "pallet-ip",
  "pallet-marketplace",
  "pallet-metagraph",
  "pallet-multisig",
  "pallet-nomination-pools",
- "pallet-notifications",
  "pallet-offences",
  "pallet-preimage",
  "pallet-proxy 37.0.0",
@@ -5690,29 +5688,6 @@ dependencies = [
  "widestring",
  "windows-sys 0.48.0",
  "winreg",
-]
-
-[[package]]
-name = "ipfs-pallet"
-version = "4.0.0-dev"
-dependencies = [
- "frame-benchmarking 37.0.0",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "hex",
- "log",
- "pallet-proxy 37.0.0",
- "pallet-registration",
- "pallet-staking 37.0.0",
- "pallet-utils",
- "parity-scale-codec",
- "scale-info",
- "serde",
- "serde_json",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
 ]
 
 [[package]]
@@ -7818,7 +7793,6 @@ dependencies = [
  "frame-system 37.1.0",
  "log",
  "pallet-balances 38.0.1",
- "pallet-ip",
  "pallet-timestamp 36.0.1",
  "parity-scale-codec",
  "scale-info",
@@ -7972,28 +7946,6 @@ dependencies = [
  "sp-runtime 39.0.3",
  "sp-session 35.0.0",
  "sp-staking 34.0.0",
-]
-
-[[package]]
-name = "pallet-backup"
-version = "0.1.0"
-dependencies = [
- "frame-benchmarking 37.0.0",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "ipfs-pallet",
- "log",
- "pallet-compute",
- "pallet-marketplace",
- "pallet-registration",
- "pallet-utils",
- "parity-scale-codec",
- "scale-info",
- "serde_json",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
 ]
 
 [[package]]
@@ -8178,28 +8130,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-compute"
-version = "0.1.0"
-dependencies = [
- "frame-benchmarking 37.0.0",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "log",
- "pallet-ip",
- "pallet-registration",
- "pallet-subaccount",
- "pallet-utils",
- "parity-scale-codec",
- "scale-info",
- "serde",
- "serde_json",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
-]
-
-[[package]]
 name = "pallet-compute-scoring"
 version = "0.0.1"
 dependencies = [
@@ -8211,24 +8141,6 @@ dependencies = [
  "pallet-proxy 37.0.0",
  "pallet-registration",
  "pallet-timestamp 36.0.1",
- "parity-scale-codec",
- "scale-info",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
-]
-
-[[package]]
-name = "pallet-container-registry"
-version = "0.1.0"
-dependencies = [
- "frame-benchmarking 37.0.0",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "ipfs-pallet",
- "log",
- "pallet-marketplace",
  "parity-scale-codec",
  "scale-info",
  "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
@@ -8340,7 +8252,6 @@ dependencies = [
  "frame-system 37.1.0",
  "log",
  "pallet-balances 38.0.1",
- "pallet-ip",
  "parity-scale-codec",
  "scale-info",
  "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
@@ -9090,22 +9001,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-ip"
-version = "0.1.0"
-dependencies = [
- "frame-benchmarking 37.0.0",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "log",
- "parity-scale-codec",
- "scale-info",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
-]
-
-[[package]]
 name = "pallet-marketplace"
 version = "0.1.0"
 dependencies = [
@@ -9242,49 +9137,6 @@ dependencies = [
  "sp-runtime 39.0.3",
  "sp-staking 34.0.0",
  "sp-tracing 17.0.0",
-]
-
-[[package]]
-name = "pallet-notifications"
-version = "0.1.0"
-dependencies = [
- "frame-benchmarking 37.0.0",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "parity-scale-codec",
- "scale-info",
- "serde",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
-]
-
-[[package]]
-name = "pallet-notifications-precompile"
-version = "0.2.0"
-dependencies = [
- "derive_more 1.0.0",
- "fp-account",
- "fp-evm",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "hex",
- "hex-literal 0.4.1",
- "log",
- "num_enum",
- "pallet-balances 38.0.1",
- "pallet-evm",
- "pallet-notifications",
- "pallet-timestamp 36.0.1",
- "parity-scale-codec",
- "precompile-utils",
- "scale-info",
- "serde",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
 ]
 
 [[package]]
@@ -9537,52 +9389,6 @@ dependencies = [
  "quote",
  "sp-runtime 39.0.3",
  "syn 2.0.100",
-]
-
-[[package]]
-name = "pallet-sub-account-precompile"
-version = "0.2.0"
-dependencies = [
- "derive_more 1.0.0",
- "fp-account",
- "fp-evm",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "hex",
- "hex-literal 0.4.1",
- "log",
- "num_enum",
- "pallet-balances 38.0.1",
- "pallet-evm",
- "pallet-subaccount",
- "pallet-timestamp 36.0.1",
- "parity-scale-codec",
- "precompile-utils",
- "scale-info",
- "serde",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
-]
-
-[[package]]
-name = "pallet-subaccount"
-version = "4.0.0-dev"
-dependencies = [
- "frame-benchmarking 37.0.0",
- "frame-support 37.1.0",
- "frame-system 37.1.0",
- "log",
- "pallet-assets 39.0.0",
- "pallet-timestamp 36.0.1",
- "pallet-treasury",
- "parity-scale-codec",
- "scale-info",
- "sp-core 34.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
- "sp-io 38.0.1",
- "sp-runtime 39.0.3",
- "sp-std 14.0.0 (git+https://github.com/paritytech/polkadot-sdk?branch=stable2407)",
 ]
 
 [[package]]
