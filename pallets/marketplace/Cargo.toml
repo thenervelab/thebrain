@@ -27,10 +27,8 @@ sp-arithmetic = { workspace = true, default-features = false }
 serde = { version = "1.0", optional = true, features = ["derive"] }
 
 sp-io = { default-features = false, workspace = true }
-#pallet-compute = { workspace = true, default-features = false }
 hex = { workspace = true }
 log = { version = "0.4.22", default-features = false }
-#pallet-notifications = { workspace = true }
 pallet-registration = { default-features = false, workspace = true }
 pallet-rankings = { default-features = false, workspace = true }
 pallet-credits = { default-features = false, workspace = true }
@@ -59,8 +57,6 @@ std = [
     "pallet-timestamp/std",
     "sp-core/std",
     "sp-arithmetic/std",
-    #"pallet-compute/std",
-    #"pallet-notifications/std",
     "serde",
     "pallet-registration/std",
     "pallet-credits/std",

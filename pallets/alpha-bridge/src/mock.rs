@@ -26,7 +26,6 @@ frame_support::construct_runtime!(
 		System: frame_system,
 		Balances: pallet_balances,
 		Timestamp: pallet_timestamp,
-		PalletIp: pallet_ip,
 		AlphaBridge: pallet_alpha_bridge,
 	}
 );
@@ -68,15 +67,6 @@ impl pallet_timestamp::Config for Test {
 	type OnTimestampSet = ();
 	type MinimumPeriod = ConstU64<10000>;
 	type WeightInfo = ();
-}
-
-parameter_types! {
-	pub const IpReleasePeriod: u64 = 15 * 24 * 60 * 60 * 1000 / 2000; // 15 days in blocks (assuming 2s block time)
-}
-
-impl pallet_ip::Config for Test {
-	type RuntimeEvent = RuntimeEvent;
-	type IpReleasePeriod = IpReleasePeriod;
 }
 
 parameter_types! {

@@ -71,6 +71,20 @@ impl<T: pallet_session::Config> OnRuntimeUpgrade for MigrateSessionKeys<T> {
 	}
 }
 
+frame_support::parameter_types! {
+	/// Pallet name exactly as declared in `construct_runtime!` (`PalletIp: pallet_ip = 74`).
+	pub const PalletIpName: &'static str = "PalletIp";
+}
+
+/// Clears all on-chain storage left behind by `pallet_ip` (index 74), which has been removed
+/// from the runtime. Uses `RemovePallet`, which hashes the pallet name to the real storage
+/// prefix (`twox_128("PalletIp")`) and is a no-op once the prefix is empty, so it is safe to
+/// leave in `Migrations` until the next upgrade after it has run.
+pub type RemovePalletIp = frame_support::migrations::RemovePallet<
+	PalletIpName,
+	<Runtime as frame_system::Config>::DbWeight,
+>;
+
 /// Migration to remove pallet_ip, pallet_container_registry, and the LinkedNodes
 /// storage item from pallet_registration.
 ///

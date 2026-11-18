@@ -94,7 +94,6 @@ pallet-vesting = { workspace = true }
 hippius-primitives = { workspace = true, features = ["verifying"] }
 hippius-crypto-primitives = { workspace = true }
 
-#ipfs-pallet = { workspace = true }
 pallet-alpha-bridge = { workspace = true }
 pallet-hippocampus = { workspace = true }
 pallet-utils = { workspace = true }
@@ -104,14 +103,9 @@ pallet-compute-scoring = { workspace = true }
 pallet-execution-unit = { workspace = true }
 pallet-metagraph = { workspace = true }
 pallet-bittensor = { workspace = true }
-#pallet-subaccount  = { workspace = true }
-pallet-notifications = { workspace = true }
 pallet-account-profile  = { workspace = true }
 pallet-rankings  = { workspace = true }
-#pallet-backup = { workspace = true }
 pallet-credits = { workspace = true }
-#pallet-compute = { workspace = true }
-#pallet-container-registry = { workspace = true }
 
 # Frontier dependencies
 fp-evm = { workspace = true }
@@ -151,10 +145,7 @@ pallet-evm-precompile-verify-ecdsa-stark-signature = { workspace = true }
 pallet-evm-precompile-verify-bls381-signature = { workspace = true }
 precompile-utils = { workspace = true }
 pallet-marketplace = { workspace = true, default-features = false }
-# pallet-sub-account-precompile = { workspace = true }
 pallet-account-profile-precompile = { workspace = true }
-# pallet-notifications-precompile = { workspace = true }
-pallet-ip = { workspace = true }
 pallet-calendar = { workspace = true }
 
 
@@ -280,17 +271,13 @@ std = [
     "fixed/std",
     "hex/std",
     "primitive-types/std",
-    # "pallet-sub-account-precompile/std",
-    # "pallet-notifications-precompile/std",
     "pallet-account-profile-precompile/std",
 
     # Hippius dependencies
     "hippius-primitives/std",
     "hippius-crypto-primitives/std",
     
-    "pallet-ip/std",
     "pallet-calendar/std",
-    #"ipfs-pallet/std",
     "pallet-alpha-bridge/std",
     "pallet-hippocampus/std",
 	"pallet-registration/std",
@@ -298,16 +285,11 @@ std = [
     "pallet-metagraph/std",
     "pallet-marketplace/std",
     "pallet-bittensor/std",
-    #"pallet-subaccount/std",
-    "pallet-notifications/std",
     "pallet-account-profile/std",
     "pallet-utils/std",
     "pallet-compute-scoring/std",
     "pallet-rankings/std",
-    #"pallet-backup/std",
     "pallet-credits/std",
-    #"pallet-compute/std",   
-    #"pallet-container-registry/std",
 
     # Frontier
     "fp-evm/std",
